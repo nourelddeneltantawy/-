@@ -71,22 +71,40 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 fun AppRoot() {
-    var currentUser by remember { mutableStateOf(Firebase.auth.currentUser) }
+    val initialUser = try {
+        Firebase.auth.currentUser
+    } catch (_: Throwable) {
+        null
+    }
+    var currentUser by remember { mutableStateOf(initialUser) }
     var isGuestMode by remember { mutableStateOf(false) }
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
-    val credentialManager = remember { CredentialManager.create(context) }
+    val credentialManager = remember {
+        try {
+            CredentialManager.create(context)
+        } catch (_: Throwable) {
+            null
+        }
+    }
 
     DisposableEffect(Unit) {
         val listener = FirebaseAuth.AuthStateListener { auth ->
-            currentUser = auth.currentUser
-            if (auth.currentUser != null) {
-                isGuestMode = false
-            }
+            try {
+                currentUser = auth.currentUser
+                if (auth.currentUser != null) {
+                    isGuestMode = false
+                }
+            } catch (_: Throwable) {}
         }
-        Firebase.auth.addAuthStateListener(listener)
+        try {
+            Firebase.auth.addAuthStateListener(listener)
+        } catch (_: Throwable) {}
+
         onDispose {
-            Firebase.auth.removeAuthStateListener(listener)
+            try {
+                Firebase.auth.removeAuthStateListener(listener)
+            } catch (_: Throwable) {}
         }
     }
 
@@ -94,7 +112,7 @@ fun AppRoot() {
         AuthScreen(
             onAuthSuccess = {
                 isGuestMode = false
-                currentUser = Firebase.auth.currentUser
+                currentUser = try { Firebase.auth.currentUser } catch (_: Throwable) { null }
             },
             onContinueAsGuest = {
                 isGuestMode = true
@@ -108,11 +126,13 @@ fun AppRoot() {
             onSignOut = {
                 isGuestMode = false
                 if (currentUser != null) {
-                    Firebase.auth.signOut()
+                    try {
+                        Firebase.auth.signOut()
+                    } catch (_: Throwable) {}
                     coroutineScope.launch {
                         try {
-                            credentialManager.clearCredentialState(ClearCredentialStateRequest())
-                        } catch (_: Exception) {}
+                            credentialManager?.clearCredentialState(ClearCredentialStateRequest())
+                        } catch (_: Throwable) {}
                         currentUser = null
                     }
                 } else {

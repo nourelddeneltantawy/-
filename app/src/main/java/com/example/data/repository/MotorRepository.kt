@@ -23,11 +23,22 @@ import java.util.UUID
 
 class MotorRepository(private val db: FirebaseFirestore) {
 
-    constructor(context: Context) : this(
-        FirebaseFirestore.getInstance(
-            context.applicationContext.getString(R.string.firestore_database_id)
-        )
-    )
+    companion object {
+        fun createFirestore(context: Context): FirebaseFirestore {
+            return try {
+                val dbId = context.applicationContext.getString(R.string.firestore_database_id)
+                if (dbId.isNotBlank()) {
+                    FirebaseFirestore.getInstance(dbId)
+                } else {
+                    FirebaseFirestore.getInstance()
+                }
+            } catch (_: Throwable) {
+                FirebaseFirestore.getInstance()
+            }
+        }
+    }
+
+    constructor(context: Context) : this(createFirestore(context))
 
     private val auth = Firebase.auth
 

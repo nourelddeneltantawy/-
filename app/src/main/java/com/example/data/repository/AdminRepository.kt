@@ -21,14 +21,12 @@ import kotlinx.coroutines.tasks.await
 
 class AdminRepository(
     private val db: FirebaseFirestore,
-    private val auth: FirebaseAuth = Firebase.auth
+    private val auth: FirebaseAuth = try { Firebase.auth } catch (_: Throwable) { FirebaseAuth.getInstance() }
 ) {
 
     constructor(context: Context) : this(
-        FirebaseFirestore.getInstance(
-            context.applicationContext.getString(R.string.firestore_database_id)
-        ),
-        Firebase.auth
+        MotorRepository.createFirestore(context),
+        try { Firebase.auth } catch (_: Throwable) { FirebaseAuth.getInstance() }
     )
 
     companion object {

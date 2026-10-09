@@ -35,13 +35,19 @@ class MotorViewModel(application: Application) : AndroidViewModel(application) {
 
     private val repository = MotorRepository(application)
     private val adminRepository = AdminRepository(application)
-    private val auth = Firebase.auth
+    private val auth by lazy {
+        try {
+            Firebase.auth
+        } catch (_: Throwable) {
+            com.google.firebase.auth.FirebaseAuth.getInstance()
+        }
+    }
 
     val currentUserId: String?
-        get() = auth.currentUser?.uid
+        get() = try { auth.currentUser?.uid } catch (_: Throwable) { null }
 
     val currentUserEmail: String?
-        get() = auth.currentUser?.email
+        get() = try { auth.currentUser?.email } catch (_: Throwable) { null }
 
     private val _userRole = MutableStateFlow(UserRole.REGULAR)
     val userRole: StateFlow<UserRole> = _userRole.asStateFlow()
@@ -62,6 +68,7 @@ class MotorViewModel(application: Application) : AndroidViewModel(application) {
         )
 
     val adminsList: StateFlow<List<AdminRecord>> = adminRepository.observeAdmins()
+        .catch { emit(emptyList()) }
         .stateIn(
             scope = viewModelScope,
             started = SharingStarted.WhileSubscribed(5000L),
@@ -96,26 +103,36 @@ class MotorViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun checkUserRoleAndInitialize() {
         viewModelScope.launch {
-            val email = currentUserEmail
-            if (email != null) {
-                if (AdminRepository.isSuperAdminEmail(email)) {
-                    _userRole.value = UserRole.SUPER_ADMIN
-                    adminRepository.bootstrapSuperAdminsIfMissing()
-                    try {
-                        repository.seedDefaultMotorsIfEmpty()
-                    } catch (_: Exception) {}
-                } else {
-                    val isDynamic = adminRepository.checkIsAdmin(email)
-                    if (isDynamic) {
-                        _userRole.value = UserRole.ADMIN
+            try {
+                val email = currentUserEmail
+                if (email != null) {
+                    if (AdminRepository.isSuperAdminEmail(email)) {
+                        _userRole.value = UserRole.SUPER_ADMIN
+                        try {
+                            adminRepository.bootstrapSuperAdminsIfMissing()
+                        } catch (_: Throwable) {}
                         try {
                             repository.seedDefaultMotorsIfEmpty()
-                        } catch (_: Exception) {}
+                        } catch (_: Throwable) {}
                     } else {
-                        _userRole.value = UserRole.REGULAR
+                        val isDynamic = try {
+                            adminRepository.checkIsAdmin(email)
+                        } catch (_: Throwable) {
+                            false
+                        }
+                        if (isDynamic) {
+                            _userRole.value = UserRole.ADMIN
+                            try {
+                                repository.seedDefaultMotorsIfEmpty()
+                            } catch (_: Throwable) {}
+                        } else {
+                            _userRole.value = UserRole.REGULAR
+                        }
                     }
+                } else {
+                    _userRole.value = UserRole.REGULAR
                 }
-            } else {
+            } catch (_: Throwable) {
                 _userRole.value = UserRole.REGULAR
             }
         }

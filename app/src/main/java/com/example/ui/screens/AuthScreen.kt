@@ -81,22 +81,34 @@ fun AuthScreen(
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
-    val credentialManager = remember { CredentialManager.create(context) }
+    val credentialManager = remember {
+        try {
+            CredentialManager.create(context)
+        } catch (_: Throwable) {
+            null
+        }
+    }
     var isLoading by remember { mutableStateOf(false) }
     val snackbarHostState = remember { SnackbarHostState() }
 
-    // Attempt silent auto-sign in on screen launch
+    // Attempt silent auto-sign in on screen launch safely
     LaunchedEffect(Unit) {
-        if (Firebase.auth.currentUser != null) {
-            onAuthSuccess()
-            return@LaunchedEffect
+        try {
+            if (Firebase.auth.currentUser != null) {
+                onAuthSuccess()
+                return@LaunchedEffect
+            }
+            if (credentialManager != null) {
+                attemptSilentAutoSignIn(
+                    context = context,
+                    credentialManager = credentialManager,
+                    onAuthSuccess = onAuthSuccess,
+                    scope = coroutineScope
+                )
+            }
+        } catch (_: Throwable) {
+            // Do not fail startup if auth or network is unavailable
         }
-        attemptSilentAutoSignIn(
-            context = context,
-            credentialManager = credentialManager,
-            onAuthSuccess = onAuthSuccess,
-            scope = coroutineScope
-        )
     }
 
     Box(
@@ -413,12 +425,16 @@ fun attemptSilentAutoSignIn(
 
 fun handleInteractiveGoogleSignIn(
     context: Context,
-    credentialManager: CredentialManager,
+    credentialManager: CredentialManager?,
     onAuthSuccess: () -> Unit,
     onAuthError: (String) -> Unit,
     onCancelled: () -> Unit,
     scope: CoroutineScope
 ) {
+    if (credentialManager == null) {
+        onAuthError("خدمات تسجيل الدخول غير متوفرة على هذا الجهاز")
+        return
+    }
     val clientId = getGoogleWebClientId(context)
     if (clientId.isBlank()) {
         onAuthError("إعدادات Google Sign-In غير متوفرة")
