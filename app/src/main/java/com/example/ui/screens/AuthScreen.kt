@@ -350,6 +350,25 @@ private fun FeatureRow(
     }
 }
 
+private const val DEFAULT_WEB_CLIENT_ID_FALLBACK = "194875724444-sj3st9c7cvgbic0lgtcnaa3m6mpehq7i.apps.googleusercontent.com"
+
+private fun getGoogleWebClientId(context: Context): String {
+    return try {
+        context.getString(R.string.default_web_client_id)
+    } catch (_: Exception) {
+        try {
+            val resId = context.resources.getIdentifier("default_web_client_id", "string", context.packageName)
+            if (resId != 0) {
+                context.getString(resId)
+            } else {
+                DEFAULT_WEB_CLIENT_ID_FALLBACK
+            }
+        } catch (_: Exception) {
+            DEFAULT_WEB_CLIENT_ID_FALLBACK
+        }
+    }
+}
+
 fun attemptSilentAutoSignIn(
     context: Context,
     credentialManager: CredentialManager,
@@ -361,9 +380,8 @@ fun attemptSilentAutoSignIn(
         return
     }
 
-    val clientId = try {
-        context.getString(R.string.default_web_client_id)
-    } catch (_: Exception) {
+    val clientId = getGoogleWebClientId(context)
+    if (clientId.isBlank()) {
         return
     }
 
@@ -401,9 +419,8 @@ fun handleInteractiveGoogleSignIn(
     onCancelled: () -> Unit,
     scope: CoroutineScope
 ) {
-    val clientId = try {
-        context.getString(R.string.default_web_client_id)
-    } catch (e: Exception) {
+    val clientId = getGoogleWebClientId(context)
+    if (clientId.isBlank()) {
         onAuthError("إعدادات Google Sign-In غير متوفرة")
         return
     }
