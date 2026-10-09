@@ -1,0 +1,167 @@
+{
+  "entities": {
+    "Pinout": {
+      "title": "Pinout",
+      "description": "Definition of a single terminal/pin of the washing machine motor",
+      "type": "object",
+      "properties": {
+        "pinNumber": {
+          "type": "integer",
+          "description": "Sequential terminal pin order number"
+        },
+        "name": {
+          "type": "string",
+          "description": "Name and function of the pin, e.g. Tacho, Carbon Brush, Common Stator"
+        },
+        "wireColor": {
+          "type": "string",
+          "description": "Wire color or dual color description, e.g. Orange + Purple"
+        },
+        "colorHex": {
+          "type": "string",
+          "description": "Primary visual color hex code for UI badges"
+        },
+        "functionDesc": {
+          "type": "string",
+          "description": "Detailed technical explanation of the terminal pin"
+        }
+      },
+      "required": ["pinNumber", "name", "wireColor"]
+    },
+    "Motor": {
+      "title": "Motor",
+      "description": "Washing machine motor model with wiring diagram and ordered pinout sheet",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique motor document identifier"
+        },
+        "userId": {
+          "type": "string",
+          "description": "UID of the user or technician who owns or created this entry"
+        },
+        "name": {
+          "type": "string",
+          "description": "Display name of the motor, e.g. ماتور يونيون إير / سامسونج"
+        },
+        "brand": {
+          "type": "string",
+          "description": "Appliance manufacturer brand"
+        },
+        "model": {
+          "type": "string",
+          "description": "Motor model number or chassis code"
+        },
+        "motorType": {
+          "type": "string",
+          "description": "Type of motor: Universal Carbon Brush, Inverter BLDC/DD, Induction Multi-Speed"
+        },
+        "notes": {
+          "type": "string",
+          "description": "Technical notes, resistance measurements (Ohms) or capacitor values (uF)"
+        },
+        "imageUrl": {
+          "type": "string",
+          "description": "URL or asset reference to the motor wiring diagram photo"
+        },
+        "pinouts": {
+          "type": "array",
+          "description": "Ordered sequential list of terminals and wire colors",
+          "items": {
+            "$ref": "#/entities/Pinout"
+          }
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Creation timestamp; clients must submit FieldValue.serverTimestamp()"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Last update timestamp; clients must submit FieldValue.serverTimestamp()"
+        }
+      },
+      "required": ["id", "userId", "name", "brand", "model", "pinouts", "createdAt", "updatedAt"]
+    },
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Technician user profile information",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Firebase Auth user identifier"
+        },
+        "email": {
+          "type": "string",
+          "description": "Technician email address"
+        },
+        "displayName": {
+          "type": "string",
+          "description": "Technician or engineer display name"
+        },
+        "role": {
+          "type": "string",
+          "description": "User role: technician or admin"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Creation timestamp"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Update timestamp"
+        }
+      },
+      "required": ["userId", "email", "displayName", "createdAt", "updatedAt"]
+    },
+    "AdminUser": {
+      "title": "AdminUser",
+      "description": "Active administrator whitelist record",
+      "type": "object",
+      "properties": {
+        "email": {
+          "type": "string",
+          "description": "Whitelisted administrator email address"
+        },
+        "addedBy": {
+          "type": "string",
+          "description": "Email or UID of the Super Admin who added this admin"
+        },
+        "role": {
+          "type": "string",
+          "description": "Administrator role: admin or super_admin"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Creation timestamp; clients must submit FieldValue.serverTimestamp()"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Update timestamp; clients must submit FieldValue.serverTimestamp()"
+        }
+      },
+      "required": ["email", "addedBy", "role", "createdAt", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/motors/{motorId}": {
+      "schema": "#/entities/Motor",
+      "description": "Directory of washing machine motor diagrams and terminal pinouts"
+    },
+    "/users/{userId}": {
+      "schema": "#/entities/UserProfile",
+      "description": "Registered technician user profiles"
+    },
+    "/admins/{adminEmail}": {
+      "schema": "#/entities/AdminUser",
+      "description": "Active administrator whitelist directory managed by Super Admins"
+    }
+  }
+}
