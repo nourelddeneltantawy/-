@@ -2,6 +2,7 @@ package com.example.ui.screens
 
 import android.app.Activity
 import android.content.Context
+import android.content.ContextWrapper
 import android.util.Log
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -426,6 +427,12 @@ fun attemptSilentAutoSignIn(
     }
 }
 
+private tailrec fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
+}
+
 fun handleInteractiveGoogleSignIn(
     context: Context,
     credentialManager: CredentialManager?,
@@ -434,39 +441,49 @@ fun handleInteractiveGoogleSignIn(
     onCancelled: () -> Unit,
     scope: CoroutineScope
 ) {
-    if (credentialManager == null) {
-        onAuthError("خدمات تسجيل الدخول غير متوفرة على هذا الجهاز")
-        return
-    }
-    val clientId = getGoogleWebClientId(context)
-    if (clientId.isBlank()) {
-        onAuthError("إعدادات Google Sign-In غير متوفرة")
-        return
-    }
-
-    val signInOption = GetSignInWithGoogleOption.Builder(serverClientId = clientId).build()
-    val request = GetCredentialRequest.Builder()
-        .addCredentialOption(signInOption)
-        .build()
-
-    scope.launch {
-        try {
-            val result = credentialManager.getCredential(context as Activity, request)
-            val credential = result.credential
-            if (credential is CustomCredential && credential.type == TYPE_GOOGLE_ID_TOKEN_CREDENTIAL) {
-                val googleIdToken = GoogleIdTokenCredential.createFrom(credential.data).idToken
-                val authCredential = GoogleAuthProvider.getCredential(googleIdToken, null)
-                Firebase.auth.signInWithCredential(authCredential).await()
-                onAuthSuccess()
-            } else {
-                onAuthError("نوع بيانات الاعتماد غير متوقع")
-            }
-        } catch (e: GetCredentialCancellationException) {
-            Log.w("Auth", "Google Sign-In flow cancelled: ${e.message}", e)
-            onCancelled()
-        } catch (e: Exception) {
-            Log.e("Auth", "Google Sign-In failed", e)
-            onAuthError(e.localizedMessage ?: "فشل تسجيل الدخول")
+    try {
+        if (credentialManager == null) {
+            onAuthError("خدمات تسجيل الدخول غير متوفرة على هذا الجهاز")
+            return
         }
+        val targetActivity = context.findActivity()
+        if (targetActivity == null) {
+            onAuthError("تعذر العثور على شاشة النشاط الرئيسية للمتابعة")
+            return
+        }
+        val clientId = getGoogleWebClientId(context)
+        if (clientId.isBlank()) {
+            onAuthError("إعدادات Google Sign-In غير متوفرة حالياً")
+            return
+        }
+
+        val signInOption = GetSignInWithGoogleOption.Builder(serverClientId = clientId).build()
+        val request = GetCredentialRequest.Builder()
+            .addCredentialOption(signInOption)
+            .build()
+
+        scope.launch {
+            try {
+                val result = credentialManager.getCredential(targetActivity, request)
+                val credential = result.credential
+                if (credential is CustomCredential && credential.type == TYPE_GOOGLE_ID_TOKEN_CREDENTIAL) {
+                    val googleIdToken = GoogleIdTokenCredential.createFrom(credential.data).idToken
+                    val authCredential = GoogleAuthProvider.getCredential(googleIdToken, null)
+                    Firebase.auth.signInWithCredential(authCredential).await()
+                    onAuthSuccess()
+                } else {
+                    onAuthError("نوع بيانات الاعتماد غير متوقع")
+                }
+            } catch (e: GetCredentialCancellationException) {
+                Log.w("Auth", "Google Sign-In flow cancelled: ${e.message}", e)
+                onCancelled()
+            } catch (e: Throwable) {
+                Log.e("Auth", "Google Sign-In failed", e)
+                onAuthError(e.localizedMessage ?: "فشل تسجيل الدخول عبر Google")
+            }
+        }
+    } catch (t: Throwable) {
+        Log.e("Auth", "Unexpected error initiating Google Sign-In", t)
+        onAuthError("حدث خطأ غير متوقع أثناء بدء تسجيل الدخول: ${t.localizedMessage ?: ""}")
     }
 }
