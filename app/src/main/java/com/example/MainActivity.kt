@@ -50,7 +50,8 @@ enum class Screen {
     DETAIL,
     ADMIN_EDIT,
     AI_STUDIO,
-    MANAGE_ADMINS
+    MANAGE_ADMINS,
+    AUTH
 }
 
 class MainActivity : ComponentActivity() {
@@ -77,24 +78,12 @@ fun AppRoot() {
         null
     }
     var currentUser by remember { mutableStateOf(initialUser) }
-    var isGuestMode by remember { mutableStateOf(false) }
-    val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
-    val credentialManager = remember {
-        try {
-            CredentialManager.create(context)
-        } catch (_: Throwable) {
-            null
-        }
-    }
 
     DisposableEffect(Unit) {
         val listener = FirebaseAuth.AuthStateListener { auth ->
             try {
                 currentUser = auth.currentUser
-                if (auth.currentUser != null) {
-                    isGuestMode = false
-                }
             } catch (_: Throwable) {}
         }
         try {
@@ -108,39 +97,22 @@ fun AppRoot() {
         }
     }
 
-    if (currentUser == null && !isGuestMode) {
-        AuthScreen(
-            onAuthSuccess = {
-                isGuestMode = false
-                currentUser = try { Firebase.auth.currentUser } catch (_: Throwable) { null }
-            },
-            onContinueAsGuest = {
-                isGuestMode = true
+    AppContent(
+        userId = currentUser?.uid ?: "guest",
+        userEmail = currentUser?.email,
+        isGuest = currentUser == null,
+        onSignOut = {
+            if (currentUser != null) {
+                try {
+                    Firebase.auth.signOut()
+                } catch (_: Throwable) {}
+                currentUser = null
             }
-        )
-    } else {
-        AppContent(
-            userId = currentUser?.uid ?: "guest",
-            userEmail = currentUser?.email,
-            isGuest = isGuestMode && currentUser == null,
-            onSignOut = {
-                isGuestMode = false
-                if (currentUser != null) {
-                    try {
-                        Firebase.auth.signOut()
-                    } catch (_: Throwable) {}
-                    coroutineScope.launch {
-                        try {
-                            credentialManager?.clearCredentialState(ClearCredentialStateRequest())
-                        } catch (_: Throwable) {}
-                        currentUser = null
-                    }
-                } else {
-                    currentUser = null
-                }
-            }
-        )
-    }
+        },
+        onAuthSuccess = {
+            currentUser = try { Firebase.auth.currentUser } catch (_: Throwable) { null }
+        }
+    )
 }
 
 @Composable
@@ -149,6 +121,7 @@ fun AppContent(
     userEmail: String?,
     isGuest: Boolean = false,
     onSignOut: () -> Unit,
+    onAuthSuccess: () -> Unit = {},
     motorViewModel: MotorViewModel = viewModel(),
     aiViewModel: AiStudioViewModel = viewModel()
 ) {
@@ -203,7 +176,13 @@ fun AppContent(
                             currentScreen = Screen.AI_STUDIO
                         }
                     },
-                    onSignOutClick = onSignOut,
+                    onSignOutClick = {
+                        if (isGuest) {
+                            currentScreen = Screen.AUTH
+                        } else {
+                            onSignOut()
+                        }
+                    },
                     userEmail = userEmail,
                     isAdmin = isAdmin,
                     isSuperAdmin = isSuperAdmin,
@@ -327,6 +306,25 @@ fun AppContent(
                         }
                     )
                 }
+            }
+
+            Screen.AUTH -> {
+                BackHandler {
+                    currentScreen = Screen.CATALOG
+                }
+                AuthScreen(
+                    onAuthSuccess = {
+                        onAuthSuccess()
+                        motorViewModel.refreshUserRole()
+                        currentScreen = Screen.CATALOG
+                    },
+                    onContinueAsGuest = {
+                        currentScreen = Screen.CATALOG
+                    },
+                    onBackClick = {
+                        currentScreen = Screen.CATALOG
+                    }
+                )
             }
         }
     }

@@ -22,12 +22,15 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.activity.compose.BackHandler
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.ElectricBolt
 import androidx.compose.material.icons.filled.Engineering
 import androidx.compose.material.icons.filled.Hub
 import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -80,6 +83,7 @@ import kotlinx.coroutines.tasks.await
 fun AuthScreen(
     onAuthSuccess: () -> Unit,
     onContinueAsGuest: () -> Unit = {},
+    onBackClick: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -94,23 +98,11 @@ fun AuthScreen(
     var isLoading by remember { mutableStateOf(false) }
     val snackbarHostState = remember { SnackbarHostState() }
 
-    // Attempt silent auto-sign in on screen launch safely
-    LaunchedEffect(Unit) {
-        try {
-            if (Firebase.auth.currentUser != null) {
-                onAuthSuccess()
-                return@LaunchedEffect
-            }
-            if (credentialManager != null) {
-                attemptSilentAutoSignIn(
-                    context = context,
-                    credentialManager = credentialManager,
-                    onAuthSuccess = onAuthSuccess,
-                    scope = coroutineScope
-                )
-            }
-        } catch (_: Throwable) {
-            // Do not fail startup if auth or network is unavailable
+    BackHandler {
+        if (onBackClick != null) {
+            onBackClick()
+        } else {
+            onContinueAsGuest()
         }
     }
 
@@ -127,6 +119,20 @@ fun AuthScreen(
                 )
             )
     ) {
+        if (onBackClick != null) {
+            IconButton(
+                onClick = onBackClick,
+                modifier = Modifier
+                    .padding(top = 40.dp, end = 16.dp)
+                    .align(Alignment.TopEnd)
+            ) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.ArrowForward,
+                    contentDescription = "رجوع إلى الكتالوج",
+                    tint = Color.White
+                )
+            }
+        }
         Column(
             modifier = Modifier
                 .fillMaxSize()
