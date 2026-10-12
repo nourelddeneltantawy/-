@@ -36,6 +36,7 @@ import com.example.ui.screens.AuthScreen
 import com.example.ui.screens.CatalogScreen
 import com.example.ui.screens.ManageAdminsScreen
 import com.example.ui.screens.MotorDetailScreen
+import com.example.ui.screens.SplashScreen
 import com.example.ui.theme.MyApplicationTheme
 import com.example.ui.viewmodel.AiStudioViewModel
 import com.example.ui.viewmodel.MotorViewModel
@@ -72,13 +73,27 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 fun AppRoot() {
+    var isSplashFinished by remember { mutableStateOf(false) }
+
+    if (!isSplashFinished) {
+        SplashScreen(
+            onReady = {
+                isSplashFinished = true
+            }
+        )
+    } else {
+        SafeAppContainer()
+    }
+}
+
+@Composable
+fun SafeAppContainer() {
     val initialUser = try {
         Firebase.auth.currentUser
     } catch (_: Throwable) {
         null
     }
     var currentUser by remember { mutableStateOf(initialUser) }
-    val coroutineScope = rememberCoroutineScope()
 
     DisposableEffect(Unit) {
         val listener = FirebaseAuth.AuthStateListener { auth ->

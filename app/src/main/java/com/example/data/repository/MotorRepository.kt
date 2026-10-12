@@ -40,7 +40,13 @@ class MotorRepository(private val db: FirebaseFirestore) {
 
     constructor(context: Context) : this(createFirestore(context))
 
-    private val auth = Firebase.auth
+    private val auth by lazy {
+        try {
+            Firebase.auth
+        } catch (_: Throwable) {
+            com.google.firebase.auth.FirebaseAuth.getInstance()
+        }
+    }
 
     fun requireUserId(): String {
         return auth.currentUser?.uid
@@ -49,22 +55,32 @@ class MotorRepository(private val db: FirebaseFirestore) {
 
     fun observeMotors(): Flow<List<Motor>> = flow {
         val path = "motors"
-        emitAll(
-            db.collection(path)
-                .orderBy("createdAt", Query.Direction.DESCENDING)
-                .snapshots()
-                .map { snapshot ->
-                    snapshot.documents.mapNotNull { doc ->
-                        doc.toObject(Motor::class.java)?.copy(id = doc.id)
+        try {
+            emitAll(
+                db.collection(path)
+                    .orderBy("createdAt", Query.Direction.DESCENDING)
+                    .snapshots()
+                    .map { snapshot ->
+                        val remoteMotors = snapshot.documents.mapNotNull { doc ->
+                            doc.toObject(Motor::class.java)?.copy(id = doc.id)
+                        }
+                        if (remoteMotors.isEmpty()) {
+                            DefaultMotorsData.getDefaultMotors("guest")
+                        } else {
+                            remoteMotors
+                        }
                     }
-                }
-                .catch { error ->
-                    if (error is Exception) {
-                        handleFirestoreError(error, OperationType.LIST, path)
+                    .catch { error ->
+                        if (error is Exception) {
+                            handleFirestoreError(error, OperationType.LIST, path)
+                        }
+                        // Fallback safely to offline default motors on network/Firestore errors
+                        emit(DefaultMotorsData.getDefaultMotors("guest"))
                     }
-                    throw error
-                }
-        )
+            )
+        } catch (e: Throwable) {
+            emit(DefaultMotorsData.getDefaultMotors("guest"))
+        }
     }
 
     suspend fun getMotorById(motorId: String): Result<Motor> {

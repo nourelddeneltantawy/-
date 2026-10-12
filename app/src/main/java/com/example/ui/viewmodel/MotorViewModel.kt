@@ -3,6 +3,7 @@ package com.example.ui.viewmodel
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.data.DefaultMotorsData
 import com.example.data.model.AdminRecord
 import com.example.data.model.Motor
 import com.example.data.model.Pinout
@@ -60,11 +61,11 @@ class MotorViewModel(application: Application) : AndroidViewModel(application) {
 
     val motorsState: StateFlow<MotorsUiState> = repository.observeMotors()
         .map<List<Motor>, MotorsUiState> { MotorsUiState.Success(it) }
-        .catch { emit(MotorsUiState.Error(it.message ?: "فشل في تحميل المواتير")) }
+        .catch { emit(MotorsUiState.Success(DefaultMotorsData.getDefaultMotors("guest"))) }
         .stateIn(
             scope = viewModelScope,
             started = SharingStarted.WhileSubscribed(5000L),
-            initialValue = MotorsUiState.Loading
+            initialValue = MotorsUiState.Success(DefaultMotorsData.getDefaultMotors("guest"))
         )
 
     val adminsList: StateFlow<List<AdminRecord>> = adminRepository.observeAdmins()
@@ -94,7 +95,12 @@ class MotorViewModel(application: Application) : AndroidViewModel(application) {
     val isSaving = _isSaving.asStateFlow()
 
     init {
-        checkUserRoleAndInitialize()
+        viewModelScope.launch {
+            try {
+                kotlinx.coroutines.delay(1200)
+                checkUserRoleAndInitialize()
+            } catch (_: Throwable) {}
+        }
     }
 
     fun refreshUserRole() {
