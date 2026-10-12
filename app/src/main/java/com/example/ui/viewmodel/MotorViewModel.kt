@@ -34,8 +34,22 @@ sealed interface MotorsUiState {
 
 class MotorViewModel(application: Application) : AndroidViewModel(application) {
 
-    private val repository = MotorRepository(application)
-    private val adminRepository = AdminRepository(application)
+    private val repository by lazy {
+        try {
+            MotorRepository(getApplication())
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    private val adminRepository by lazy {
+        try {
+            AdminRepository(getApplication())
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
     private val auth by lazy {
         try {
             Firebase.auth
@@ -59,22 +73,13 @@ class MotorViewModel(application: Application) : AndroidViewModel(application) {
     val isSuperAdmin: Boolean
         get() = _userRole.value == UserRole.SUPER_ADMIN
 
-    val motorsState: StateFlow<MotorsUiState> = repository.observeMotors()
-        .map<List<Motor>, MotorsUiState> { MotorsUiState.Success(it) }
-        .catch { emit(MotorsUiState.Success(DefaultMotorsData.getDefaultMotors("guest"))) }
-        .stateIn(
-            scope = viewModelScope,
-            started = SharingStarted.WhileSubscribed(5000L),
-            initialValue = MotorsUiState.Success(DefaultMotorsData.getDefaultMotors("guest"))
-        )
+    private val _motorsState = MutableStateFlow<MotorsUiState>(
+        MotorsUiState.Success(DefaultMotorsData.getDefaultMotors("guest"))
+    )
+    val motorsState: StateFlow<MotorsUiState> = _motorsState.asStateFlow()
 
-    val adminsList: StateFlow<List<AdminRecord>> = adminRepository.observeAdmins()
-        .catch { emit(emptyList()) }
-        .stateIn(
-            scope = viewModelScope,
-            started = SharingStarted.WhileSubscribed(5000L),
-            initialValue = emptyList()
-        )
+    private val _adminsList = MutableStateFlow<List<AdminRecord>>(emptyList())
+    val adminsList: StateFlow<List<AdminRecord>> = _adminsList.asStateFlow()
 
     private val _searchQuery = MutableStateFlow("")
     val searchQuery = _searchQuery.asStateFlow()
@@ -95,9 +100,32 @@ class MotorViewModel(application: Application) : AndroidViewModel(application) {
     val isSaving = _isSaving.asStateFlow()
 
     init {
+        // Start background observation safely and completely non-blocking
+        viewModelScope.launch {
+            try {
+                kotlinx.coroutines.delay(800)
+                repository?.observeMotors()?.collect { motorsList ->
+                    if (motorsList.isNotEmpty()) {
+                        _motorsState.value = MotorsUiState.Success(motorsList)
+                    }
+                }
+            } catch (_: Throwable) {
+                // Keep default motors in state
+            }
+        }
+
         viewModelScope.launch {
             try {
                 kotlinx.coroutines.delay(1200)
+                adminRepository?.observeAdmins()?.collect { list ->
+                    _adminsList.value = list
+                }
+            } catch (_: Throwable) {}
+        }
+
+        viewModelScope.launch {
+            try {
+                kotlinx.coroutines.delay(1500)
                 checkUserRoleAndInitialize()
             } catch (_: Throwable) {}
         }
@@ -115,21 +143,21 @@ class MotorViewModel(application: Application) : AndroidViewModel(application) {
                     if (AdminRepository.isSuperAdminEmail(email)) {
                         _userRole.value = UserRole.SUPER_ADMIN
                         try {
-                            adminRepository.bootstrapSuperAdminsIfMissing()
+                            adminRepository?.bootstrapSuperAdminsIfMissing()
                         } catch (_: Throwable) {}
                         try {
-                            repository.seedDefaultMotorsIfEmpty()
+                            repository?.seedDefaultMotorsIfEmpty()
                         } catch (_: Throwable) {}
                     } else {
                         val isDynamic = try {
-                            adminRepository.checkIsAdmin(email)
+                            adminRepository?.checkIsAdmin(email) ?: false
                         } catch (_: Throwable) {
                             false
                         }
                         if (isDynamic) {
                             _userRole.value = UserRole.ADMIN
                             try {
-                                repository.seedDefaultMotorsIfEmpty()
+                                repository?.seedDefaultMotorsIfEmpty()
                             } catch (_: Throwable) {}
                         } else {
                             _userRole.value = UserRole.REGULAR
@@ -175,7 +203,13 @@ class MotorViewModel(application: Application) : AndroidViewModel(application) {
 
         viewModelScope.launch {
             _isSaving.value = true
-            val result = repository.saveMotor(motor)
+            val repo = repository
+            if (repo == null) {
+                _isSaving.value = false
+                _actionMessage.value = "خدمة التخزين السحابي غير متصلة حالياً"
+                return@launch
+            }
+            val result = repo.saveMotor(motor)
             _isSaving.value = false
             if (result.isSuccess) {
                 _actionMessage.value = "تم حفظ ونشر الماتور بنجاح!"
@@ -197,7 +231,12 @@ class MotorViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         viewModelScope.launch {
-            val result = repository.deleteMotor(motorId)
+            val repo = repository
+            if (repo == null) {
+                _actionMessage.value = "خدمة التخزين السحابي غير متصلة حالياً"
+                return@launch
+            }
+            val result = repo.deleteMotor(motorId)
             if (result.isSuccess) {
                 _actionMessage.value = "تم حذف الماتور بنجاح"
                 if (_selectedMotor.value?.id == motorId) {
@@ -222,8 +261,13 @@ class MotorViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         viewModelScope.launch {
+            val adminRepo = adminRepository
+            if (adminRepo == null) {
+                onComplete(Result.failure(IllegalStateException("خدمة إدارة المشرفين غير متصلة")))
+                return@launch
+            }
             val addedBy = currentUserEmail ?: "Super Admin"
-            val result = adminRepository.addAdmin(email, addedBy)
+            val result = adminRepo.addAdmin(email, addedBy)
             if (result.isSuccess) {
                 _actionMessage.value = "تمت إضافة المشرف $email بنجاح إلى القائمة البيضاء"
             }
@@ -242,7 +286,12 @@ class MotorViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         viewModelScope.launch {
-            val result = adminRepository.removeAdmin(email)
+            val adminRepo = adminRepository
+            if (adminRepo == null) {
+                onComplete(Result.failure(IllegalStateException("خدمة إدارة المشرفين غير متصلة")))
+                return@launch
+            }
+            val result = adminRepo.removeAdmin(email)
             if (result.isSuccess) {
                 _actionMessage.value = "تم سحب صلاحيات الإشراف من $email"
             }
