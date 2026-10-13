@@ -58,28 +58,35 @@ class MotorRepository(private val db: FirebaseFirestore) {
         try {
             emitAll(
                 db.collection(path)
-                    .orderBy("createdAt", Query.Direction.DESCENDING)
                     .snapshots()
                     .map { snapshot ->
                         val remoteMotors = snapshot.documents.mapNotNull { doc ->
-                            doc.toObject(Motor::class.java)?.copy(id = doc.id)
+                            try {
+                                doc.toObject(
+                                    Motor::class.java,
+                                    com.google.firebase.firestore.DocumentSnapshot.ServerTimestampBehavior.ESTIMATE
+                                )?.copy(id = doc.id)
+                            } catch (_: Throwable) {
+                                null
+                            }
                         }
-                        if (remoteMotors.isEmpty()) {
-                            DefaultMotorsData.getDefaultMotors("guest")
+                        if (remoteMotors.isNotEmpty()) {
+                            remoteMotors.sortedByDescending { it.createdAt ?: it.updatedAt }
                         } else {
-                            remoteMotors
+                            DefaultMotorsData.getDefaultMotors(auth.currentUser?.uid ?: "guest")
                         }
                     }
                     .catch { error ->
+                        android.util.Log.w("MotorRepository", "Firestore observeMotors error, using fallback: ${error.message}")
                         if (error is Exception) {
                             handleFirestoreError(error, OperationType.LIST, path)
                         }
-                        // Fallback safely to offline default motors on network/Firestore errors
-                        emit(DefaultMotorsData.getDefaultMotors("guest"))
+                        emit(DefaultMotorsData.getDefaultMotors(auth.currentUser?.uid ?: "guest"))
                     }
             )
         } catch (e: Throwable) {
-            emit(DefaultMotorsData.getDefaultMotors("guest"))
+            android.util.Log.e("MotorRepository", "observeMotors exception", e)
+            emit(DefaultMotorsData.getDefaultMotors(auth.currentUser?.uid ?: "guest"))
         }
     }
 

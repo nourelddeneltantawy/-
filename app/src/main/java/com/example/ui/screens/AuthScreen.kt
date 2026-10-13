@@ -81,7 +81,7 @@ import kotlinx.coroutines.tasks.await
 
 @Composable
 fun AuthScreen(
-    onAuthSuccess: () -> Unit,
+    onAuthSuccess: (userEmail: String?) -> Unit,
     onContinueAsGuest: () -> Unit = {},
     onBackClick: (() -> Unit)? = null,
     modifier: Modifier = Modifier
@@ -222,9 +222,9 @@ fun AuthScreen(
                     handleInteractiveGoogleSignIn(
                         context = context,
                         credentialManager = credentialManager,
-                        onAuthSuccess = {
+                        onAuthSuccess = { signedInEmail ->
                             isLoading = false
-                            onAuthSuccess()
+                            onAuthSuccess(signedInEmail)
                         },
                         onAuthError = { errorMsg ->
                             isLoading = false
@@ -442,7 +442,7 @@ private tailrec fun Context.findActivity(): Activity? = when (this) {
 fun handleInteractiveGoogleSignIn(
     context: Context,
     credentialManager: CredentialManager?,
-    onAuthSuccess: () -> Unit,
+    onAuthSuccess: (userEmail: String?) -> Unit,
     onAuthError: (String) -> Unit,
     onCancelled: () -> Unit,
     scope: CoroutineScope
@@ -472,36 +472,51 @@ fun handleInteractiveGoogleSignIn(
             try {
                 val result = credentialManager.getCredential(targetActivity, request)
                 val credential = result.credential
-                val googleIdToken: String? = when {
-                    credential is CustomCredential && credential.type == TYPE_GOOGLE_ID_TOKEN_CREDENTIAL -> {
-                        GoogleIdTokenCredential.createFrom(credential.data).idToken
-                    }
-                    credential is CustomCredential -> {
+                val googleIdToken: String? = try {
+                    if (credential is CustomCredential && credential.type == TYPE_GOOGLE_ID_TOKEN_CREDENTIAL) {
                         try {
                             GoogleIdTokenCredential.createFrom(credential.data).idToken
                         } catch (_: Throwable) {
-                            null
+                            credential.data.getString("com.google.android.libraries.identity.googleid.BUNDLE_KEY_ID_TOKEN")
+                                ?: credential.data.getString("id_token")
+                                ?: credential.data.getString("idToken")
                         }
-                    }
-                    else -> {
+                    } else if (credential is CustomCredential) {
                         try {
+                            GoogleIdTokenCredential.createFrom(credential.data).idToken
+                        } catch (_: Throwable) {
+                            credential.data.getString("com.google.android.libraries.identity.googleid.BUNDLE_KEY_ID_TOKEN")
+                                ?: credential.data.getString("id_token")
+                                ?: credential.data.getString("idToken")
+                        }
+                    } else {
+                        val bundle = try {
                             val dataField = credential::class.java.getDeclaredMethod("getData")
-                            val bundle = dataField.invoke(credential) as? android.os.Bundle
-                            if (bundle != null) {
-                                GoogleIdTokenCredential.createFrom(bundle).idToken
-                            } else {
-                                null
-                            }
+                            dataField.invoke(credential) as? android.os.Bundle
                         } catch (_: Throwable) {
                             null
                         }
+                        bundle?.let { b ->
+                            try {
+                                GoogleIdTokenCredential.createFrom(b).idToken
+                            } catch (_: Throwable) {
+                                b.getString("com.google.android.libraries.identity.googleid.BUNDLE_KEY_ID_TOKEN")
+                                    ?: b.getString("id_token")
+                                    ?: b.getString("idToken")
+                            }
+                        }
                     }
+                } catch (e: Throwable) {
+                    Log.e("Auth", "Failed extracting Google ID token", e)
+                    null
                 }
 
                 if (googleIdToken != null) {
                     val authCredential = GoogleAuthProvider.getCredential(googleIdToken, null)
-                    Firebase.auth.signInWithCredential(authCredential).await()
-                    onAuthSuccess()
+                    val authResult = Firebase.auth.signInWithCredential(authCredential).await()
+                    val email = authResult.user?.email ?: Firebase.auth.currentUser?.email
+                    Log.i("Auth", "Google sign in completed successfully. User email: $email, uid: ${authResult.user?.uid}")
+                    onAuthSuccess(email)
                 } else {
                     onAuthError("تعذر استخراج بيانات المصادقة من حساب Google")
                 }

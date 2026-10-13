@@ -99,58 +99,54 @@ class MotorViewModel(application: Application) : AndroidViewModel(application) {
     private val _isSaving = MutableStateFlow(false)
     val isSaving = _isSaving.asStateFlow()
 
+    private var observeJob: kotlinx.coroutines.Job? = null
+
     init {
-        // Start background observation safely and completely non-blocking
-        viewModelScope.launch {
-            try {
-                kotlinx.coroutines.delay(400)
-                repository?.observeMotors()?.collect { motorsList ->
-                    if (motorsList.isNotEmpty()) {
-                        _motorsState.value = MotorsUiState.Success(motorsList)
-                    }
-                }
-            } catch (_: Throwable) {
-                // Keep default motors in state
-            }
-        }
+        startObservingMotors()
 
         viewModelScope.launch {
             try {
-                kotlinx.coroutines.delay(600)
                 adminRepository?.observeAdmins()?.collect { list ->
                     _adminsList.value = list
                 }
             } catch (_: Throwable) {}
         }
 
-        viewModelScope.launch {
-            try {
-                kotlinx.coroutines.delay(800)
-                checkUserRoleAndInitialize()
-            } catch (_: Throwable) {}
-        }
+        checkUserRoleAndInitialize()
     }
 
-    fun refreshUserRole() {
-        checkUserRoleAndInitialize()
-        // Also re-trigger motor loading in case user permissions/cloud state changed
-        viewModelScope.launch {
+    fun startObservingMotors() {
+        observeJob?.cancel()
+        observeJob = viewModelScope.launch {
             try {
                 repository?.observeMotors()?.collect { motorsList ->
-                    if (motorsList.isNotEmpty()) {
-                        _motorsState.value = MotorsUiState.Success(motorsList)
-                    }
+                    _motorsState.value = MotorsUiState.Success(motorsList)
                 }
-            } catch (_: Throwable) {}
+            } catch (e: Throwable) {
+                android.util.Log.e("MotorViewModel", "Error in startObservingMotors", e)
+            }
         }
     }
 
-    private fun checkUserRoleAndInitialize() {
+    fun refreshUserRole(emailOverride: String? = null) {
+        val targetEmail = emailOverride ?: currentUserEmail
+        if (targetEmail != null) {
+            val cleanEmail = targetEmail.trim().lowercase()
+            if (AdminRepository.isSuperAdminEmail(cleanEmail)) {
+                _userRole.value = UserRole.SUPER_ADMIN
+            }
+        }
+        checkUserRoleAndInitialize(emailOverride)
+        startObservingMotors()
+    }
+
+    fun checkUserRoleAndInitialize(emailOverride: String? = null) {
         viewModelScope.launch {
             try {
-                val email = currentUserEmail
+                val email = emailOverride ?: currentUserEmail
                 if (email != null) {
-                    if (AdminRepository.isSuperAdminEmail(email)) {
+                    val cleanEmail = email.trim().lowercase()
+                    if (AdminRepository.isSuperAdminEmail(cleanEmail)) {
                         _userRole.value = UserRole.SUPER_ADMIN
                         try {
                             adminRepository?.bootstrapSuperAdminsIfMissing()
@@ -160,7 +156,7 @@ class MotorViewModel(application: Application) : AndroidViewModel(application) {
                         } catch (_: Throwable) {}
                     } else {
                         val isDynamic = try {
-                            adminRepository?.checkIsAdmin(email) ?: false
+                            adminRepository?.checkIsAdmin(cleanEmail) ?: false
                         } catch (_: Throwable) {
                             false
                         }

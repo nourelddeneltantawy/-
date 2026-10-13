@@ -150,8 +150,13 @@ fun AppContent(
     val selectedMotorType by motorViewModel.selectedMotorType.collectAsState()
     val selectedMotor by motorViewModel.selectedMotor.collectAsState()
     val adminsList by motorViewModel.adminsList.collectAsState()
-    val isSuperAdmin = !isGuest && motorViewModel.isSuperAdmin
-    val isAdmin = !isGuest && motorViewModel.isAdmin
+    val userRole by motorViewModel.userRole.collectAsState()
+    val isSuperAdmin = !isGuest && (userRole == com.example.ui.viewmodel.UserRole.SUPER_ADMIN)
+    val isAdmin = !isGuest && (userRole == com.example.ui.viewmodel.UserRole.ADMIN || userRole == com.example.ui.viewmodel.UserRole.SUPER_ADMIN)
+
+    androidx.compose.runtime.LaunchedEffect(userEmail) {
+        motorViewModel.refreshUserRole(userEmail)
+    }
 
     val allMotors = (motorsState as? MotorsUiState.Success)?.motors ?: emptyList()
     val existingBrands = remember(allMotors) {
@@ -328,9 +333,9 @@ fun AppContent(
                     currentScreen = Screen.CATALOG
                 }
                 AuthScreen(
-                    onAuthSuccess = {
+                    onAuthSuccess = { signedInEmail ->
                         onAuthSuccess()
-                        motorViewModel.refreshUserRole()
+                        motorViewModel.refreshUserRole(signedInEmail)
                         currentScreen = Screen.CATALOG
                     },
                     onContinueAsGuest = {
