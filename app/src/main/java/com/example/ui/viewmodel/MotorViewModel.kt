@@ -103,7 +103,7 @@ class MotorViewModel(application: Application) : AndroidViewModel(application) {
         // Start background observation safely and completely non-blocking
         viewModelScope.launch {
             try {
-                kotlinx.coroutines.delay(800)
+                kotlinx.coroutines.delay(400)
                 repository?.observeMotors()?.collect { motorsList ->
                     if (motorsList.isNotEmpty()) {
                         _motorsState.value = MotorsUiState.Success(motorsList)
@@ -116,7 +116,7 @@ class MotorViewModel(application: Application) : AndroidViewModel(application) {
 
         viewModelScope.launch {
             try {
-                kotlinx.coroutines.delay(1200)
+                kotlinx.coroutines.delay(600)
                 adminRepository?.observeAdmins()?.collect { list ->
                     _adminsList.value = list
                 }
@@ -125,7 +125,7 @@ class MotorViewModel(application: Application) : AndroidViewModel(application) {
 
         viewModelScope.launch {
             try {
-                kotlinx.coroutines.delay(1500)
+                kotlinx.coroutines.delay(800)
                 checkUserRoleAndInitialize()
             } catch (_: Throwable) {}
         }
@@ -133,6 +133,16 @@ class MotorViewModel(application: Application) : AndroidViewModel(application) {
 
     fun refreshUserRole() {
         checkUserRoleAndInitialize()
+        // Also re-trigger motor loading in case user permissions/cloud state changed
+        viewModelScope.launch {
+            try {
+                repository?.observeMotors()?.collect { motorsList ->
+                    if (motorsList.isNotEmpty()) {
+                        _motorsState.value = MotorsUiState.Success(motorsList)
+                    }
+                }
+            } catch (_: Throwable) {}
+        }
     }
 
     private fun checkUserRoleAndInitialize() {

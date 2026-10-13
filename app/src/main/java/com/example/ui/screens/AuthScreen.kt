@@ -472,13 +472,38 @@ fun handleInteractiveGoogleSignIn(
             try {
                 val result = credentialManager.getCredential(targetActivity, request)
                 val credential = result.credential
-                if (credential is CustomCredential && credential.type == TYPE_GOOGLE_ID_TOKEN_CREDENTIAL) {
-                    val googleIdToken = GoogleIdTokenCredential.createFrom(credential.data).idToken
+                val googleIdToken: String? = when {
+                    credential is CustomCredential && credential.type == TYPE_GOOGLE_ID_TOKEN_CREDENTIAL -> {
+                        GoogleIdTokenCredential.createFrom(credential.data).idToken
+                    }
+                    credential is CustomCredential -> {
+                        try {
+                            GoogleIdTokenCredential.createFrom(credential.data).idToken
+                        } catch (_: Throwable) {
+                            null
+                        }
+                    }
+                    else -> {
+                        try {
+                            val dataField = credential::class.java.getDeclaredMethod("getData")
+                            val bundle = dataField.invoke(credential) as? android.os.Bundle
+                            if (bundle != null) {
+                                GoogleIdTokenCredential.createFrom(bundle).idToken
+                            } else {
+                                null
+                            }
+                        } catch (_: Throwable) {
+                            null
+                        }
+                    }
+                }
+
+                if (googleIdToken != null) {
                     val authCredential = GoogleAuthProvider.getCredential(googleIdToken, null)
                     Firebase.auth.signInWithCredential(authCredential).await()
                     onAuthSuccess()
                 } else {
-                    onAuthError("نوع بيانات الاعتماد غير متوقع")
+                    onAuthError("تعذر استخراج بيانات المصادقة من حساب Google")
                 }
             } catch (e: GetCredentialCancellationException) {
                 Log.w("Auth", "Google Sign-In flow cancelled: ${e.message}", e)
