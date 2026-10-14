@@ -58,6 +58,11 @@ enum class Screen {
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        try {
+            FirebaseInitializer.ensureInitialized(this)
+        } catch (e: Throwable) {
+            android.util.Log.e("MainActivity", "Firebase initialization error: ${e.message}")
+        }
         enableEdgeToEdge()
         setContent {
             MyApplicationTheme {
@@ -88,7 +93,9 @@ fun AppRoot() {
 
 @Composable
 fun SafeAppContainer() {
+    val context = LocalContext.current
     val initialUser = try {
+        FirebaseInitializer.ensureInitialized(context)
         Firebase.auth.currentUser
     } catch (_: Throwable) {
         null

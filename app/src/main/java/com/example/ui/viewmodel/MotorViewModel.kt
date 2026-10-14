@@ -52,9 +52,15 @@ class MotorViewModel(application: Application) : AndroidViewModel(application) {
 
     private val auth by lazy {
         try {
+            com.example.FirebaseInitializer.ensureInitialized(getApplication())
             Firebase.auth
         } catch (_: Throwable) {
-            com.google.firebase.auth.FirebaseAuth.getInstance()
+            try {
+                com.google.firebase.auth.FirebaseAuth.getInstance()
+            } catch (_: Throwable) {
+                val app = com.example.FirebaseInitializer.ensureInitialized(getApplication())
+                com.google.firebase.auth.FirebaseAuth.getInstance(app)
+            }
         }
     }
 

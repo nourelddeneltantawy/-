@@ -9,8 +9,8 @@ class WasherMotorsApp : Application() {
         super.onCreate()
         try {
             // Guarantee FirebaseApp is safely initialized before any component uses it
-            val app = FirebaseApp.initializeApp(this)
-            Log.d("WasherMotorsApp", "Firebase initialized successfully: ${app?.name}")
+            val app = FirebaseInitializer.ensureInitialized(this)
+            Log.d("WasherMotorsApp", "Firebase initialized successfully: ${app.name}")
         } catch (e: Throwable) {
             Log.e("WasherMotorsApp", "Firebase initialization caught error: ${e.message}", e)
         }

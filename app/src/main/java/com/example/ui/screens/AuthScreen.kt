@@ -88,6 +88,13 @@ fun AuthScreen(
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
+
+    androidx.compose.runtime.LaunchedEffect(Unit) {
+        try {
+            com.example.FirebaseInitializer.ensureInitialized(context)
+        } catch (_: Throwable) {}
+    }
+
     val credentialManager = remember {
         try {
             CredentialManager.create(context)
@@ -397,10 +404,18 @@ fun attemptSilentAutoSignIn(
     onAuthSuccess: () -> Unit,
     scope: CoroutineScope
 ) {
-    if (Firebase.auth.currentUser != null) {
-        onAuthSuccess()
-        return
-    }
+    try {
+        com.example.FirebaseInitializer.ensureInitialized(context)
+        val firebaseAuth = try {
+            Firebase.auth
+        } catch (_: Throwable) {
+            com.google.firebase.auth.FirebaseAuth.getInstance()
+        }
+        if (firebaseAuth.currentUser != null) {
+            onAuthSuccess()
+            return
+        }
+    } catch (_: Throwable) {}
 
     val clientId = getGoogleWebClientId(context)
     if (clientId.isBlank()) {
@@ -424,7 +439,12 @@ fun attemptSilentAutoSignIn(
             if (credential is CustomCredential && credential.type == TYPE_GOOGLE_ID_TOKEN_CREDENTIAL) {
                 val googleIdToken = GoogleIdTokenCredential.createFrom(credential.data).idToken
                 val authCredential = GoogleAuthProvider.getCredential(googleIdToken, null)
-                Firebase.auth.signInWithCredential(authCredential).await()
+                val firebaseAuth = try {
+                    Firebase.auth
+                } catch (_: Throwable) {
+                    com.google.firebase.auth.FirebaseAuth.getInstance()
+                }
+                firebaseAuth.signInWithCredential(authCredential).await()
                 onAuthSuccess()
             }
         } catch (_: Exception) {
@@ -448,6 +468,15 @@ fun handleInteractiveGoogleSignIn(
     scope: CoroutineScope
 ) {
     try {
+        // 1. Ensure FirebaseApp is fully initialized before CredentialManager
+        try {
+            com.example.FirebaseInitializer.ensureInitialized(context)
+        } catch (t: Throwable) {
+            Log.e("Auth", "Failed ensuring Firebase initialization", t)
+            onAuthError("تعذر تهيئة خدمات فايربيس على الجهاز: ${t.localizedMessage ?: ""}")
+            return
+        }
+
         if (credentialManager == null) {
             onAuthError("خدمات تسجيل الدخول غير متوفرة على هذا الجهاز")
             return
@@ -512,9 +541,16 @@ fun handleInteractiveGoogleSignIn(
                 }
 
                 if (googleIdToken != null) {
+                    // Re-ensure FirebaseApp is initialized before auth calls
+                    com.example.FirebaseInitializer.ensureInitialized(context)
                     val authCredential = GoogleAuthProvider.getCredential(googleIdToken, null)
-                    val authResult = Firebase.auth.signInWithCredential(authCredential).await()
-                    val email = authResult.user?.email ?: Firebase.auth.currentUser?.email
+                    val firebaseAuth = try {
+                        Firebase.auth
+                    } catch (_: Throwable) {
+                        com.google.firebase.auth.FirebaseAuth.getInstance()
+                    }
+                    val authResult = firebaseAuth.signInWithCredential(authCredential).await()
+                    val email = authResult.user?.email ?: firebaseAuth.currentUser?.email
                     Log.i("Auth", "Google sign in completed successfully. User email: $email, uid: ${authResult.user?.uid}")
                     onAuthSuccess(email)
                 } else {

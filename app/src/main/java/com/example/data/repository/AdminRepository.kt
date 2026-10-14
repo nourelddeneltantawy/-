@@ -26,7 +26,17 @@ class AdminRepository(
 
     constructor(context: Context) : this(
         MotorRepository.createFirestore(context),
-        try { Firebase.auth } catch (_: Throwable) { FirebaseAuth.getInstance() }
+        try {
+            com.example.FirebaseInitializer.ensureInitialized(context)
+            Firebase.auth
+        } catch (_: Throwable) {
+            try {
+                FirebaseAuth.getInstance()
+            } catch (_: Throwable) {
+                val app = com.example.FirebaseInitializer.ensureInitialized(context)
+                FirebaseAuth.getInstance(app)
+            }
+        }
     )
 
     companion object {
