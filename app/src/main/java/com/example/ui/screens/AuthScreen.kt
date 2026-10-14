@@ -73,6 +73,8 @@ import com.google.android.libraries.identity.googleid.GetSignInWithGoogleOption
 import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
 import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential.Companion.TYPE_GOOGLE_ID_TOKEN_CREDENTIAL
 import com.google.firebase.Firebase
+import com.google.firebase.FirebaseApp
+import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.GoogleAuthProvider
 import com.google.firebase.auth.auth
 import kotlinx.coroutines.CoroutineScope
@@ -89,10 +91,14 @@ fun AuthScreen(
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
 
-    androidx.compose.runtime.LaunchedEffect(Unit) {
+    LaunchedEffect(Unit) {
         try {
-            com.example.FirebaseInitializer.ensureInitialized(context)
-        } catch (_: Throwable) {}
+            FirebaseApp.initializeApp(context)
+        } catch (_: Throwable) {
+            try {
+                com.example.FirebaseInitializer.ensureInitialized(context)
+            } catch (_: Throwable) {}
+        }
     }
 
     val credentialManager = remember {
@@ -470,11 +476,13 @@ fun handleInteractiveGoogleSignIn(
     try {
         // 1. Ensure FirebaseApp is fully initialized before CredentialManager
         try {
-            com.example.FirebaseInitializer.ensureInitialized(context)
-        } catch (t: Throwable) {
-            Log.e("Auth", "Failed ensuring Firebase initialization", t)
-            onAuthError("تعذر تهيئة خدمات فايربيس على الجهاز: ${t.localizedMessage ?: ""}")
-            return
+            FirebaseApp.initializeApp(context)
+        } catch (_: Throwable) {
+            try {
+                com.example.FirebaseInitializer.ensureInitialized(context)
+            } catch (t: Throwable) {
+                Log.e("Auth", "Failed ensuring Firebase initialization", t)
+            }
         }
 
         if (credentialManager == null) {

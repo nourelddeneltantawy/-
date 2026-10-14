@@ -42,6 +42,7 @@ import com.example.ui.viewmodel.AiStudioViewModel
 import com.example.ui.viewmodel.MotorViewModel
 import com.example.ui.viewmodel.MotorsUiState
 import com.google.firebase.Firebase
+import com.google.firebase.FirebaseApp
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.auth
 import kotlinx.coroutines.launch
@@ -59,9 +60,13 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         try {
-            FirebaseInitializer.ensureInitialized(this)
-        } catch (e: Throwable) {
-            android.util.Log.e("MainActivity", "Firebase initialization error: ${e.message}")
+            FirebaseApp.initializeApp(this)
+        } catch (_: Throwable) {
+            try {
+                FirebaseInitializer.ensureInitialized(this)
+            } catch (e: Throwable) {
+                android.util.Log.e("MainActivity", "Firebase initialization error: ${e.message}")
+            }
         }
         enableEdgeToEdge()
         setContent {
