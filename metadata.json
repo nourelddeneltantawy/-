@@ -1,6 +1,8 @@
 {
   "name": "دليل مواتير الغسالات",
-  "description": "دليل ومخططات أطراف وأسلاك مواتير الغسالات للفنيين والمهندسين مع إمكانية إضافة وتعديل الأطراف",
+  "description": "تطبيق متكامل لمخططات وتوصيلات أطراف مواتير الغسالات (يونيون إير، سامسونج، إل جي) مع وضع المشرف والتعديل واستوديو الذكاء الاصطناعي",
   "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
 }

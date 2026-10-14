@@ -7,327 +7,96 @@ object DefaultMotorsData {
     fun getDefaultMotors(userId: String): List<Motor> {
         return listOf(
             Motor(
-                id = "motor_unionaire_8pin",
+                id = "motor_unionaire_univ_1",
                 userId = userId,
-                name = "ماتور يونيون إير / سامسونج (8 أطراف)",
-                brand = "يونيون إير / سامسونج",
-                model = "C.E.SET MCA 38/64-148",
-                motorType = "شربون سرعات (Universal)",
-                notes = "ماتور شربون كلاسيكي واسع الانتشار في غسالات يونيون إير وسامسونج ودايو. مقاومة التاكو حوالي 60-70 أوم، مقاومة ملف الشربون 2-4 أوم.",
-                imageUrl = "unionaire_motor",
+                name = "ماتور يونيون إير يونيفرسال (كاربون بروش)",
+                brand = "Unionaire",
+                model = "UW-600 / UW-800",
+                motorType = "Universal (شربون)",
+                notes = "ماتور سرعات شربون يونيون إير شائع في الغسالات الفوق أوتوماتيك والأوتوماتيك، مقاومة التاكو بين 65 إلى 70 أوم، تأكد من سلامة الشربون ونظافة الكوليكتور قبل التوصيل.",
+                imageUrl = "",
                 pinouts = listOf(
-                    Pinout(
-                        pinNumber = 1,
-                        name = "تاكو 1 (Tachometer 1)",
-                        wireColor = "أصفر",
-                        colorHex = "#EAB308",
-                        functionDesc = "طرف مولد نبضات السرعة (تاكو) متصل بحساس الماجنتيك على ذيل الماتور"
-                    ),
-                    Pinout(
-                        pinNumber = 2,
-                        name = "تاكو 2 (Tachometer 2)",
-                        wireColor = "أصفر",
-                        colorHex = "#EAB308",
-                        functionDesc = "الطرف الثاني لمولد نبضات السرعة لقراءة الـ RPM في الكارتة"
-                    ),
-                    Pinout(
-                        pinNumber = 3,
-                        name = "شربون 1 (Carbon Brush 1)",
-                        wireColor = "أحمر",
-                        colorHex = "#EF4444",
-                        functionDesc = "فرشاة الشربون الأولى المتصلة بالعضو الدوار (Rotor/Armature)"
-                    ),
-                    Pinout(
-                        pinNumber = 4,
-                        name = "ملف ثابت 1 (Stator Coil 1)",
-                        wireColor = "بني",
-                        colorHex = "#854D0E",
-                        functionDesc = "بداية ملفات الجزء الثابت لتوليد المجال المغناطيسي الرئيسي"
-                    ),
-                    Pinout(
-                        pinNumber = 5,
-                        name = "ملف وسط نصفي (Stator Tap)",
-                        wireColor = "برتقالي",
-                        colorHex = "#F97316",
-                        functionDesc = "تفريعة وسطية من ملف الستاتور لسرعة الغسيل الهادئة وعزم الدوران"
-                    ),
-                    Pinout(
-                        pinNumber = 6,
-                        name = "شربون 2 (Carbon Brush 2)",
-                        wireColor = "أزرق",
-                        colorHex = "#2563EB",
-                        functionDesc = "فرشاة الشربون المقابلة لتكتمل دائرة العضو الدوار مع ريليهات العكس"
-                    ),
-                    Pinout(
-                        pinNumber = 7,
-                        name = "أوفرلود حراري 1 (Thermal Overload)",
-                        wireColor = "أبيض",
-                        colorHex = "#94A3B8",
-                        functionDesc = "مفتاح حراري مدمج داخل الملفات يقطع الدائرة عند ارتفاع الحرارة فوق 130°C"
-                    ),
-                    Pinout(
-                        pinNumber = 8,
-                        name = "أوفرلود حراري 2 (Thermal Overload)",
-                        wireColor = "أبيض",
-                        colorHex = "#94A3B8",
-                        functionDesc = "طرف العودة للحماية الحرارية متصل تسلسلياً مع خط التغذية"
-                    )
+                    Pinout(1, "تاكو 1 (Tacho Generator)", "أصفر", "#EAB308", "طرف حساس سرعة الدوران للدائرة الإلكترونية"),
+                    Pinout(2, "تاكو 2 (Tacho Generator)", "أصفر", "#EAB308", "طرف حساس سرعة الدوران للدائرة الإلكترونية"),
+                    Pinout(3, "شربون 1 (Rotor / Brush 1)", "أحمر", "#EF4444", "توصيل الفرشاة الكربونية الدوارة الأولى"),
+                    Pinout(4, "شربون 2 (Rotor / Brush 2)", "رمادي", "#6B7280", "توصيل الفرشاة الكربونية الدوارة الثانية"),
+                    Pinout(5, "ملف الستاتور 1 (Stator Common)", "أزرق", "#3B82F6", "بداية ملفات الثابت المشتركة"),
+                    Pinout(6, "ملف الستاتور 2 (Stator Tap / High Speed)", "بني", "#854D0E", "تفريعة سرعة الدوران العالية (العصر)"),
+                    Pinout(7, "ملف الستاتور 3 (Stator Low Speed)", "أسود", "#1F2937", "تفريعة سرعة الغسيل الهادئة")
+                )
+            ),
+            Motor(
+                id = "motor_samsung_bldc_inverter",
+                userId = userId,
+                name = "ماتور سامسونج إنفرتر الدفع المباشر (Direct Drive BLDC)",
+                brand = "Samsung",
+                model = "EcoBubble WW80 / WW90",
+                motorType = "Inverter BLDC (3-Phase)",
+                notes = "ماتور سامسونج إنفرتر ثلاثي الأوجه بدون شربون، توصيل U-V-W متساوي المقاومة بدقة (حوالي 12.5 أوم بين كل طرفين). لا يتم توصيله مباشرة على تيار 220 فولت دون كارتة الإنفرتر.",
+                imageUrl = "",
+                pinouts = listOf(
+                    Pinout(1, "Phase U (الطور الأول)", "أزرق", "#3B82F6", "تغذية الطور U من موديول الإنفرتر IPM"),
+                    Pinout(2, "Phase V (الطور الثاني)", "أحمر", "#EF4444", "تغذية الطور V من موديول الإنفرتر IPM"),
+                    Pinout(3, "Phase W (الطور الثالث)", "أبيض", "#E2E8F0", "تغذية الطور W من موديول الإنفرتر IPM"),
+                    Pinout(4, "Hall Sensor VCC (+5V)", "برتقالي", "#F97316", "تغذية حساسات الموضع هول سنسور"),
+                    Pinout(5, "Hall Sensor GND (أرضي الحساس)", "أسود", "#1F2937", "أرضي حساسات الموضع"),
+                    Pinout(6, "Hall Signal A", "أخضر", "#22C55E", "إشارة هول سنسور للموقع الزاوي A"),
+                    Pinout(7, "Hall Signal B", "أزرق فاتح", "#38BDF8", "إشارة هول سنسور للموقع الزاوي B")
                 )
             ),
             Motor(
                 id = "motor_lg_direct_drive",
                 userId = userId,
-                name = "ماتور ال جي دايركت درايف (LG Direct Drive BLDC)",
-                brand = "ال جي (LG)",
-                model = "F1496 / 6871ER1078T",
-                motorType = "انفرتر دفع مباشر (Inverter DD)",
-                notes = "محرك انفرتر 3 أطوار بدون سيور، مقاومة متطابقة بين الأطوار الثلاثة U-V-W وتساوي حوالي 8-11 أوم. يحتوي على فيشة حساس هول Hall Sensor منفصلة لقياس الموضع والسرعة.",
-                imageUrl = "lg_dd_motor",
+                name = "ماتور إل جي إنفرتر دايركت درايف (LG Direct Drive)",
+                brand = "LG",
+                model = "F4J6 / F1496",
+                motorType = "Inverter Direct Drive",
+                notes = "ماتور غسالات إل جي سمارت إنفرتر، متصل بحلة الغسيل مباشرة بدون سير. ملفات الستاتور 3 أطراف متساوية تماماً (حوالي 8.5 إلى 9.2 أوم)، فحص فيشة الهول سنسور ضروري عند ظهور رمز الخطأ LE.",
+                imageUrl = "",
                 pinouts = listOf(
-                    Pinout(
-                        pinNumber = 1,
-                        name = "ملف طور U (Phase U)",
-                        wireColor = "أحمر",
-                        colorHex = "#DC2626",
-                        functionDesc = "الطور الأول للستاتور متصل بموديول IPM في كارتة الانفرتر"
-                    ),
-                    Pinout(
-                        pinNumber = 2,
-                        name = "ملف طور V (Phase V)",
-                        wireColor = "أبيض",
-                        colorHex = "#F1F5F9",
-                        functionDesc = "الطور الثاني لمولد الحركة المغناطيسية المتزامنة"
-                    ),
-                    Pinout(
-                        pinNumber = 3,
-                        name = "ملف طور W (Phase W)",
-                        wireColor = "أزرق",
-                        colorHex = "#1D4ED8",
-                        functionDesc = "الطور الثالث للستاتور"
-                    ),
-                    Pinout(
-                        pinNumber = 4,
-                        name = "تغذية حساس هول (+5V VCC)",
-                        wireColor = "أصفر",
-                        colorHex = "#EAB308",
-                        functionDesc = "جهد 5 فولت مستمر لتغذية آي سي حساسات هول"
-                    ),
-                    Pinout(
-                        pinNumber = 5,
-                        name = "إشارة هول 1 (Hall Signal A)",
-                        wireColor = "أزرق فاتح",
-                        colorHex = "#38BDF8",
-                        functionDesc = "نبضات موضع الدوار للميكروكونترولر لحساب زاوية التشغيل"
-                    ),
-                    Pinout(
-                        pinNumber = 6,
-                        name = "إشارة هول 2 (Hall Signal B)",
-                        wireColor = "أخضر",
-                        colorHex = "#22C55E",
-                        functionDesc = "نبضات الموضع للاتجاه والسرعة"
-                    ),
-                    Pinout(
-                        pinNumber = 7,
-                        name = "أرضي حساس هول (GND)",
-                        wireColor = "رمادي",
-                        colorHex = "#64748B",
-                        functionDesc = "الطرف السالب المشترك لحساسات هول"
-                    )
+                    Pinout(1, "الطور الأول U", "أزرق", "#3B82F6", "خرج كارتة الإنفرتر الطور U"),
+                    Pinout(2, "الطور الثاني V", "أحمر", "#EF4444", "خرج كارتة الإنفرتر الطور V"),
+                    Pinout(3, "الطور الثالث W", "أصفر", "#EAB308", "خرج كارتة الإنفرتر الطور W"),
+                    Pinout(4, "أرضي الحماية (Earth)", "أخضر/أصفر", "#10B981", "تأريض شاسيه الماتور للحماية من الصعق")
                 )
             ),
             Motor(
-                id = "motor_samsung_digital_inverter",
+                id = "motor_whirlpool_ceset_8pin",
                 userId = userId,
-                name = "ماتور سامسونج ديجيتال انفرتر (Samsung DIT)",
-                brand = "سامسونج (Samsung)",
-                model = "EcoBubble DIT-1200",
-                motorType = "انفرتر حزام (BLDC Inverter)",
-                notes = "ماتور BLDC فائق الكفاءة لغسالات سامسونج إيكو بابل، يتميز بهدوء تام وعمر طويل. المقاومة بين أي طرفين من أطراف الطاقة U, V, W متساوية بدقة (حوالي 5.5 أوم).",
-                imageUrl = "samsung_dit_motor",
+                name = "ماتور ويرلبول / زانوسي 8 أطراف سيسيت (CESET 8-Pin)",
+                brand = "Whirlpool",
+                model = "MCA 38/64 - 148",
+                motorType = "Universal (شربون)",
+                notes = "ماتور إيطالي سيسيت شائع في غسالات زانوسي، إيديال، ويرلبول. يحتوي على فيوز حراري مدمج داخل الملفات للحماية من السخونة الزائدة.",
+                imageUrl = "",
                 pinouts = listOf(
-                    Pinout(
-                        pinNumber = 1,
-                        name = "طور المحرك U (Motor Phase U)",
-                        wireColor = "أزرق + أبيض",
-                        colorHex = "#3B82F6",
-                        functionDesc = "خط الطاقة الأساسي الأول من موديول الانفرتر"
-                    ),
-                    Pinout(
-                        pinNumber = 2,
-                        name = "طور المحرك V (Motor Phase V)",
-                        wireColor = "أحمر + أسود",
-                        colorHex = "#EF4444",
-                        functionDesc = "خط الطاقة الأساسي الثاني"
-                    ),
-                    Pinout(
-                        pinNumber = 3,
-                        name = "طور المحرك W (Motor Phase W)",
-                        wireColor = "أصفر + أخضر",
-                        colorHex = "#10B981",
-                        functionDesc = "خط الطاقة الأساسي الثالث"
-                    ),
-                    Pinout(
-                        pinNumber = 4,
-                        name = "حساس تاكو انفرتر 1 (FG Signal)",
-                        wireColor = "بنفسجي",
-                        colorHex = "#8B5CF6",
-                        functionDesc = "إشارة التردد المغناطيسي (Frequency Generator) لمعرفة السرعة بدقة"
-                    ),
-                    Pinout(
-                        pinNumber = 5,
-                        name = "حساس تاكو انفرتر 2 (FG Signal)",
-                        wireColor = "برتقالي + بنفسجي",
-                        colorHex = "#A855F7",
-                        functionDesc = "طرف العودة لإشارة التردد المغناطيسي"
-                    )
+                    Pinout(1, "تاكو 1", "أحمر", "#EF4444", "مولد نبضات السرعة التاكو"),
+                    Pinout(2, "تاكو 2", "أحمر", "#EF4444", "مولد نبضات السرعة التاكو"),
+                    Pinout(3, "شربون 1", "أسود", "#1F2937", "طرف الشربون الأيمن"),
+                    Pinout(4, "شربون 2", "رمادي", "#6B7280", "طرف الشربون الأيسر"),
+                    Pinout(5, "ملف ستاتور 1", "بني", "#854D0E", "طرف الثابت"),
+                    Pinout(6, "ملف ستاتور 2", "أزرق", "#3B82F6", "طرف الثابت المشترك"),
+                    Pinout(7, "أوفرلود حراري 1 (Thermal Protector)", "أبيض", "#E2E8F0", "فيوز الحماية الحرارية داخل الملفات"),
+                    Pinout(8, "أوفرلود حراري 2 (Thermal Protector)", "أبيض", "#E2E8F0", "تابع فيوز الحماية الحرارية")
                 )
             ),
             Motor(
-                id = "motor_indesit_ceset_6pin",
+                id = "motor_bosch_maxx_universal",
                 userId = userId,
-                name = "ماتور إنديست / أريستون 6 أطراف (Indesit / Ariston)",
-                brand = "إنديست / أريستون",
-                model = "CESET MCA 52/64",
-                motorType = "شربون (Universal)",
-                notes = "ماتور كلاسيكي بدون تفريعة وسطى، أطرافه واضحة ومباشرة: طرفين تاكو، طرفين شربون، وطرفين لملف الستاتور. مقاومة التاكو 115-180 أوم.",
-                imageUrl = "indesit_motor",
+                name = "ماتور بوش ماكس 7 أطراف (Bosch Maxx / Siemens)",
+                brand = "Bosch",
+                model = "Maxx 6 / Maxx 7 Classixx",
+                motorType = "Universal (شربون)",
+                notes = "ماتور ألماني بوش يتميز بنعومة الدوران، فحص كوليكتور الماتور وتأكد من عدم وجود تفحيم أو تآكل غير متساوٍ في الشربون.",
+                imageUrl = "",
                 pinouts = listOf(
-                    Pinout(
-                        pinNumber = 1,
-                        name = "تاكو 1 (Tachometer Coil)",
-                        wireColor = "برتقالي",
-                        colorHex = "#F97316",
-                        functionDesc = "حساس سرعة الدوران الخلفي"
-                    ),
-                    Pinout(
-                        pinNumber = 2,
-                        name = "تاكو 2 (Tachometer Coil)",
-                        wireColor = "برتقالي",
-                        colorHex = "#F97316",
-                        functionDesc = "حساس سرعة الدوران الخلفي"
-                    ),
-                    Pinout(
-                        pinNumber = 3,
-                        name = "ملف الستاتور 1 (Stator Field 1)",
-                        wireColor = "أزرق",
-                        colorHex = "#2563EB",
-                        functionDesc = "بداية ملفات الحقل المغناطيسي الثابت"
-                    ),
-                    Pinout(
-                        pinNumber = 4,
-                        name = "شربون 1 (Rotor Brush 1)",
-                        wireColor = "رمادي",
-                        colorHex = "#64748B",
-                        functionDesc = "طرف الفرشاة الكربونية الأولى للروتور"
-                    ),
-                    Pinout(
-                        pinNumber = 5,
-                        name = "ملف الستاتور 2 (Stator Field 2)",
-                        wireColor = "أخضر",
-                        colorHex = "#16A34A",
-                        functionDesc = "نهاية ملفات الحقل المغناطيسي الثابت"
-                    ),
-                    Pinout(
-                        pinNumber = 6,
-                        name = "شربون 2 (Rotor Brush 2)",
-                        wireColor = "أسود",
-                        colorHex = "#1E293B",
-                        functionDesc = "طرف الفرشاة الكربونية الثانية للروتور"
-                    )
-                )
-            ),
-            Motor(
-                id = "motor_toshiba_top_load",
-                userId = userId,
-                name = "ماتور توشيبا فوق أوتوماتيك (Toshiba Top Load)",
-                brand = "توشيبا (Toshiba)",
-                model = "AW-B8080 / AW-DUG1700",
-                motorType = "حثي مكثف (Capacitor Induction)",
-                notes = "محرك حثي ذو اتجاهين مع مكثف تشغيل 12-14 ميكروفاراد. المقاومة بين الطرف المشترك وأي من طرفي الدوران متطابقة تماماً (حوالي 18-22 أوم).",
-                imageUrl = "toshiba_motor",
-                pinouts = listOf(
-                    Pinout(
-                        pinNumber = 1,
-                        name = "طرف مشترك رئيسي (Common N)",
-                        wireColor = "أزرق داكن",
-                        colorHex = "#1E3A8A",
-                        functionDesc = "خط النيوترال المشترك لكلا ملفي الدوران اليمين واليسار"
-                    ),
-                    Pinout(
-                        pinNumber = 2,
-                        name = "دوران يمين (CW Rotation / Phase)",
-                        wireColor = "أحمر",
-                        colorHex = "#DC2626",
-                        functionDesc = "متصل بأحد أقطاب المكثف، وعند تغذيته بـ 220V يدور الماتور باتجاه عقارب الساعة"
-                    ),
-                    Pinout(
-                        pinNumber = 3,
-                        name = "دوران شمال (CCW Rotation / Phase)",
-                        wireColor = "أصفر",
-                        colorHex = "#EAB308",
-                        functionDesc = "متصل بالقطب الآخر للمكثف، وعند تغذيته بـ 220V يدور الماتور عكس عقارب الساعة"
-                    )
-                )
-            ),
-            Motor(
-                id = "motor_zanussi_7pin",
-                userId = userId,
-                name = "ماتور زانوسي / إلكترولوكس 7 أطراف (Zanussi / SOLE)",
-                brand = "زانوسي / إلكترولوكس",
-                model = "SOLE Type 20572",
-                motorType = "شربون سرعات متعددة",
-                notes = "ماتور شهير في غسالات زانوسي أيديال وإلكترولوكس. يشمل تفريعة لسرعة العصر الفائق والتدرج في سرعات الغسيل.",
-                imageUrl = "zanussi_motor",
-                pinouts = listOf(
-                    Pinout(
-                        pinNumber = 1,
-                        name = "تاكو 1 (Tacho)",
-                        wireColor = "أصفر",
-                        colorHex = "#EAB308",
-                        functionDesc = "حساس سرعة الماتور"
-                    ),
-                    Pinout(
-                        pinNumber = 2,
-                        name = "تاكو 2 (Tacho)",
-                        wireColor = "أصفر",
-                        colorHex = "#EAB308",
-                        functionDesc = "حساس سرعة الماتور"
-                    ),
-                    Pinout(
-                        pinNumber = 3,
-                        name = "شربون 1 (Brush 1)",
-                        wireColor = "أسود",
-                        colorHex = "#0F172A",
-                        functionDesc = "شربون العضو الدوار"
-                    ),
-                    Pinout(
-                        pinNumber = 4,
-                        name = "ستاتور سرعة عالية (Stator High Speed)",
-                        wireColor = "أحمر",
-                        colorHex = "#DC2626",
-                        functionDesc = "ملف العصر والسرعات العالية (مقاومة أقل)"
-                    ),
-                    Pinout(
-                        pinNumber = 5,
-                        name = "ستاتور سرعة هادئة (Stator Low Speed)",
-                        wireColor = "بني",
-                        colorHex = "#78350F",
-                        functionDesc = "ملف الغسيل الهادئ والعزم المرتفع"
-                    ),
-                    Pinout(
-                        pinNumber = 6,
-                        name = "ستاتور مشترك (Stator Common)",
-                        wireColor = "أبيض",
-                        colorHex = "#CBD5E1",
-                        functionDesc = "الطرف المشترك لملفات الستاتور"
-                    ),
-                    Pinout(
-                        pinNumber = 7,
-                        name = "شربون 2 (Brush 2)",
-                        wireColor = "رمادي",
-                        colorHex = "#64748B",
-                        functionDesc = "شربون العضو الدوار الثاني"
-                    )
+                    Pinout(1, "تاكو A", "أبيض", "#E2E8F0", "حساس السرعة تاكو"),
+                    Pinout(2, "تاكو B", "أبيض", "#E2E8F0", "حساس السرعة تاكو"),
+                    Pinout(3, "شربون 1", "أحمر", "#EF4444", "الفرشاة الكربونية"),
+                    Pinout(4, "شربون 2", "أخضر", "#22C55E", "الفرشاة الكربونية المقابلة"),
+                    Pinout(5, "ستاتور كامل", "بني", "#854D0E", "الملف الكامل لأعلى سرعة دوران"),
+                    Pinout(6, "ستاتور فرعي", "رمادي", "#6B7280", "نقطة الوسط لسرعة الغسيل العادية"),
+                    Pinout(7, "ستاتور مشترك", "أزرق", "#3B82F6", "الطرف المشترك لملفات الثابت")
                 )
             )
         )

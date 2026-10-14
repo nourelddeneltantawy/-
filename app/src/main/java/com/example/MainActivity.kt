@@ -9,25 +9,20 @@ import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.unit.LayoutDirection
-import androidx.credentials.ClearCredentialStateRequest
-import androidx.credentials.CredentialManager
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.data.model.Motor
 import com.example.ui.screens.AdminMotorScreen
@@ -41,10 +36,10 @@ import com.example.ui.theme.MyApplicationTheme
 import com.example.ui.viewmodel.AiStudioViewModel
 import com.example.ui.viewmodel.MotorViewModel
 import com.example.ui.viewmodel.MotorsUiState
+import com.example.ui.viewmodel.UserRole
 import com.google.firebase.Firebase
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.auth
-import kotlinx.coroutines.launch
 
 enum class Screen {
     CATALOG,
@@ -151,10 +146,10 @@ fun AppContent(
     val selectedMotor by motorViewModel.selectedMotor.collectAsState()
     val adminsList by motorViewModel.adminsList.collectAsState()
     val userRole by motorViewModel.userRole.collectAsState()
-    val isSuperAdmin = !isGuest && (userRole == com.example.ui.viewmodel.UserRole.SUPER_ADMIN)
-    val isAdmin = !isGuest && (userRole == com.example.ui.viewmodel.UserRole.ADMIN || userRole == com.example.ui.viewmodel.UserRole.SUPER_ADMIN)
+    val isSuperAdmin = !isGuest && (userRole == UserRole.SUPER_ADMIN)
+    val isAdmin = !isGuest && (userRole == UserRole.ADMIN || userRole == UserRole.SUPER_ADMIN)
 
-    androidx.compose.runtime.LaunchedEffect(userEmail) {
+    LaunchedEffect(userEmail) {
         motorViewModel.refreshUserRole(userEmail)
     }
 
