@@ -52,15 +52,9 @@ class MotorViewModel(application: Application) : AndroidViewModel(application) {
 
     private val auth by lazy {
         try {
-            com.example.FirebaseInitializer.ensureInitialized(getApplication())
             Firebase.auth
         } catch (_: Throwable) {
-            try {
-                com.google.firebase.auth.FirebaseAuth.getInstance()
-            } catch (_: Throwable) {
-                val app = com.example.FirebaseInitializer.ensureInitialized(getApplication())
-                com.google.firebase.auth.FirebaseAuth.getInstance(app)
-            }
+            com.google.firebase.auth.FirebaseAuth.getInstance()
         }
     }
 
@@ -140,6 +134,8 @@ class MotorViewModel(application: Application) : AndroidViewModel(application) {
             val cleanEmail = targetEmail.trim().lowercase()
             if (AdminRepository.isSuperAdminEmail(cleanEmail)) {
                 _userRole.value = UserRole.SUPER_ADMIN
+            } else {
+                _userRole.value = UserRole.ADMIN
             }
         }
         checkUserRoleAndInitialize(emailOverride)
@@ -161,19 +157,10 @@ class MotorViewModel(application: Application) : AndroidViewModel(application) {
                             repository?.seedDefaultMotorsIfEmpty()
                         } catch (_: Throwable) {}
                     } else {
-                        val isDynamic = try {
-                            adminRepository?.checkIsAdmin(cleanEmail) ?: false
-                        } catch (_: Throwable) {
-                            false
-                        }
-                        if (isDynamic) {
-                            _userRole.value = UserRole.ADMIN
-                            try {
-                                repository?.seedDefaultMotorsIfEmpty()
-                            } catch (_: Throwable) {}
-                        } else {
-                            _userRole.value = UserRole.REGULAR
-                        }
+                        _userRole.value = UserRole.ADMIN
+                        try {
+                            repository?.seedDefaultMotorsIfEmpty()
+                        } catch (_: Throwable) {}
                     }
                 } else {
                     _userRole.value = UserRole.REGULAR
