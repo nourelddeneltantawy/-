@@ -6,14 +6,18 @@ import androidx.lifecycle.viewModelScope
 import com.example.data.DefaultMotorsData
 import com.example.data.model.AdminRecord
 import com.example.data.model.Motor
+import com.example.data.model.Pinout
 import com.example.data.repository.AdminRepository
 import com.example.data.repository.MotorRepository
 import com.google.firebase.Firebase
 import com.google.firebase.auth.auth
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
 enum class UserRole {
@@ -95,7 +99,7 @@ class MotorViewModel(application: Application) : AndroidViewModel(application) {
     private val _isSaving = MutableStateFlow(false)
     val isSaving = _isSaving.asStateFlow()
 
-    private var observeJob: Job? = null
+    private var observeJob: kotlinx.coroutines.Job? = null
 
     init {
         startObservingMotors()
@@ -241,44 +245,63 @@ class MotorViewModel(application: Application) : AndroidViewModel(application) {
             val result = repo.deleteMotor(motorId)
             if (result.isSuccess) {
                 _actionMessage.value = "تم حذف الماتور بنجاح"
-                _selectedMotor.value = null
+                if (_selectedMotor.value?.id == motorId) {
+                    _selectedMotor.value = null
+                }
                 onSuccess()
             } else {
-                _actionMessage.value = "خطأ أثناء الحذف: ${result.exceptionOrNull()?.message}"
+                _actionMessage.value = "فشل الحذف: ${result.exceptionOrNull()?.message}"
             }
         }
     }
 
-    fun addAdmin(email: String, onResult: (Boolean, String) -> Unit) {
-        val userEmail = currentUserEmail ?: "SuperAdmin"
+    // Dynamic Admin Management (Super Admin Only)
+    fun addAdmin(
+        email: String,
+        onComplete: (Result<Unit>) -> Unit = {}
+    ) {
+        if (!isSuperAdmin) {
+            val err = Result.failure<Unit>(IllegalAccessException("إضافة المشرفين مقتصرة فقط على المشرفين الرئيسيين (Super Admins)"))
+            onComplete(err)
+            return
+        }
+
         viewModelScope.launch {
-            val repo = adminRepository
-            if (repo == null) {
-                onResult(false, "خدمة إدارة المشرفين غير متوفرة")
+            val adminRepo = adminRepository
+            if (adminRepo == null) {
+                onComplete(Result.failure(IllegalStateException("خدمة إدارة المشرفين غير متصلة")))
                 return@launch
             }
-            val result = repo.addAdmin(email, userEmail)
+            val addedBy = currentUserEmail ?: "Super Admin"
+            val result = adminRepo.addAdmin(email, addedBy)
             if (result.isSuccess) {
-                onResult(true, "تمت إضافة المشرف بنجاح")
-            } else {
-                onResult(false, result.exceptionOrNull()?.message ?: "فشلت الإضافة")
+                _actionMessage.value = "تمت إضافة المشرف $email بنجاح إلى القائمة البيضاء"
             }
+            onComplete(result)
         }
     }
 
-    fun removeAdmin(email: String, onResult: (Boolean, String) -> Unit) {
+    fun removeAdmin(
+        email: String,
+        onComplete: (Result<Unit>) -> Unit = {}
+    ) {
+        if (!isSuperAdmin) {
+            val err = Result.failure<Unit>(IllegalAccessException("إلغاء صلاحيات المشرفين مقتصرة فقط على المشرفين الرئيسيين"))
+            onComplete(err)
+            return
+        }
+
         viewModelScope.launch {
-            val repo = adminRepository
-            if (repo == null) {
-                onResult(false, "خدمة إدارة المشرفين غير متوفرة")
+            val adminRepo = adminRepository
+            if (adminRepo == null) {
+                onComplete(Result.failure(IllegalStateException("خدمة إدارة المشرفين غير متصلة")))
                 return@launch
             }
-            val result = repo.removeAdmin(email)
+            val result = adminRepo.removeAdmin(email)
             if (result.isSuccess) {
-                onResult(true, "تم حذف المشرف بنجاح")
-            } else {
-                onResult(false, result.exceptionOrNull()?.message ?: "فشل الحذف")
+                _actionMessage.value = "تم سحب صلاحيات الإشراف من $email"
             }
+            onComplete(result)
         }
     }
 }
