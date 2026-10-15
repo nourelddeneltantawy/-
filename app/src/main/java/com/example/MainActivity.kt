@@ -88,26 +88,33 @@ fun AppRoot() {
 
 @Composable
 fun SafeAppContainer() {
-    val initialUser = try {
-        Firebase.auth.currentUser
-    } catch (_: Throwable) {
-        null
+    val context = LocalContext.current
+    val auth = remember(context) {
+        try {
+            val app = com.example.data.FirebaseInitializer.ensureFirebaseInitialized(context)
+            if (app != null) FirebaseAuth.getInstance(app) else Firebase.auth
+        } catch (_: Throwable) {
+            try { FirebaseAuth.getInstance() } catch (_: Throwable) { null }
+        }
     }
-    var currentUser by remember { mutableStateOf(initialUser) }
 
-    DisposableEffect(Unit) {
-        val listener = FirebaseAuth.AuthStateListener { auth ->
+    var currentUser by remember(auth) {
+        mutableStateOf(try { auth?.currentUser } catch (_: Throwable) { null })
+    }
+
+    DisposableEffect(auth) {
+        val listener = FirebaseAuth.AuthStateListener { firebaseAuth ->
             try {
-                currentUser = auth.currentUser
+                currentUser = firebaseAuth.currentUser
             } catch (_: Throwable) {}
         }
         try {
-            Firebase.auth.addAuthStateListener(listener)
+            auth?.addAuthStateListener(listener)
         } catch (_: Throwable) {}
 
         onDispose {
             try {
-                Firebase.auth.removeAuthStateListener(listener)
+                auth?.removeAuthStateListener(listener)
             } catch (_: Throwable) {}
         }
     }
@@ -119,13 +126,13 @@ fun SafeAppContainer() {
         onSignOut = {
             if (currentUser != null) {
                 try {
-                    Firebase.auth.signOut()
+                    auth?.signOut() ?: Firebase.auth.signOut()
                 } catch (_: Throwable) {}
                 currentUser = null
             }
         },
         onAuthSuccess = {
-            currentUser = try { Firebase.auth.currentUser } catch (_: Throwable) { null }
+            currentUser = try { auth?.currentUser ?: Firebase.auth.currentUser } catch (_: Throwable) { null }
         }
     )
 }

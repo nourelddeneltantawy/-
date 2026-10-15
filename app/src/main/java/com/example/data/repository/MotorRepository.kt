@@ -11,7 +11,6 @@ import com.google.firebase.Firebase
 import com.google.firebase.auth.auth
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
-import com.google.firebase.firestore.Query
 import com.google.firebase.firestore.snapshots
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
@@ -21,43 +20,77 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.tasks.await
 import java.util.UUID
 
-class MotorRepository(private val db: FirebaseFirestore) {
+class MotorRepository(
+    private val db: FirebaseFirestore?,
+    private val context: Context? = null
+) {
 
     companion object {
-        fun createFirestore(context: Context): FirebaseFirestore {
+        fun createFirestore(context: Context): FirebaseFirestore? {
             return try {
-                val dbId = context.applicationContext.getString(R.string.firestore_database_id)
-                if (dbId.isNotBlank()) {
-                    FirebaseFirestore.getInstance(dbId)
+                val app = com.example.data.FirebaseInitializer.ensureFirebaseInitialized(context)
+                val dbId = try {
+                    context.applicationContext.getString(R.string.firestore_database_id)
+                } catch (_: Throwable) { "" }
+
+                if (app != null) {
+                    if (dbId.isNotBlank()) {
+                        FirebaseFirestore.getInstance(app, dbId)
+                    } else {
+                        FirebaseFirestore.getInstance(app)
+                    }
                 } else {
-                    FirebaseFirestore.getInstance()
+                    if (dbId.isNotBlank()) {
+                        FirebaseFirestore.getInstance(dbId)
+                    } else {
+                        FirebaseFirestore.getInstance()
+                    }
                 }
-            } catch (_: Throwable) {
-                FirebaseFirestore.getInstance()
+            } catch (t: Throwable) {
+                android.util.Log.e("MotorRepository", "Could not create Firestore instance: ${t.message}", t)
+                null
             }
         }
     }
 
-    constructor(context: Context) : this(createFirestore(context))
+    constructor(db: FirebaseFirestore) : this(db as FirebaseFirestore?, null)
 
-    private val auth by lazy {
+    constructor(context: Context) : this(createFirestore(context), context)
+
+    private val auth: com.google.firebase.auth.FirebaseAuth? by lazy {
         try {
-            Firebase.auth
+            val app = context?.let { com.example.data.FirebaseInitializer.ensureFirebaseInitialized(it) }
+            if (app != null) {
+                com.google.firebase.auth.FirebaseAuth.getInstance(app)
+            } else {
+                Firebase.auth
+            }
         } catch (_: Throwable) {
-            com.google.firebase.auth.FirebaseAuth.getInstance()
+            try {
+                com.google.firebase.auth.FirebaseAuth.getInstance()
+            } catch (_: Throwable) {
+                null
+            }
         }
     }
 
     fun requireUserId(): String {
-        return auth.currentUser?.uid
+        return auth?.currentUser?.uid
             ?: throw IllegalStateException("User must be signed in with Google before accessing Firestore.")
     }
 
     fun observeMotors(): Flow<List<Motor>> = flow {
+        val currentUid = try { auth?.currentUser?.uid ?: "guest" } catch (_: Throwable) { "guest" }
+        val database = db
+        if (database == null) {
+            emit(DefaultMotorsData.getDefaultMotors(currentUid))
+            return@flow
+        }
+
         val path = "motors"
         try {
             emitAll(
-                db.collection(path)
+                database.collection(path)
                     .snapshots()
                     .map { snapshot ->
                         val remoteMotors = snapshot.documents.mapNotNull { doc ->
@@ -73,7 +106,7 @@ class MotorRepository(private val db: FirebaseFirestore) {
                         if (remoteMotors.isNotEmpty()) {
                             remoteMotors.sortedByDescending { it.createdAt ?: it.updatedAt }
                         } else {
-                            DefaultMotorsData.getDefaultMotors(auth.currentUser?.uid ?: "guest")
+                            DefaultMotorsData.getDefaultMotors(currentUid)
                         }
                     }
                     .catch { error ->
@@ -81,19 +114,20 @@ class MotorRepository(private val db: FirebaseFirestore) {
                         if (error is Exception) {
                             handleFirestoreError(error, OperationType.LIST, path)
                         }
-                        emit(DefaultMotorsData.getDefaultMotors(auth.currentUser?.uid ?: "guest"))
+                        emit(DefaultMotorsData.getDefaultMotors(currentUid))
                     }
             )
         } catch (e: Throwable) {
             android.util.Log.e("MotorRepository", "observeMotors exception", e)
-            emit(DefaultMotorsData.getDefaultMotors(auth.currentUser?.uid ?: "guest"))
+            emit(DefaultMotorsData.getDefaultMotors(currentUid))
         }
     }
 
     suspend fun getMotorById(motorId: String): Result<Motor> {
+        val database = db ?: return Result.failure(IllegalStateException("قاعدة البيانات السحابية غير متوفرة حالياً"))
         val path = "motors/$motorId"
         return try {
-            val doc = db.collection("motors").document(motorId).get().await()
+            val doc = database.collection("motors").document(motorId).get().await()
             val motor = doc.toObject(Motor::class.java)?.copy(id = doc.id)
             if (motor != null) {
                 Result.success(motor)
@@ -107,9 +141,10 @@ class MotorRepository(private val db: FirebaseFirestore) {
     }
 
     suspend fun saveMotor(motor: Motor): Result<String> {
+        val database = db ?: return Result.failure(IllegalStateException("قاعدة البيانات السحابية غير متوفرة حالياً"))
         val uid = requireUserId()
         val motorId = if (motor.id.isNotBlank()) motor.id else UUID.randomUUID().toString()
-        val docRef = db.collection("motors").document(motorId)
+        val docRef = database.collection("motors").document(motorId)
         val path = "motors/$motorId"
 
         return try {
@@ -144,9 +179,10 @@ class MotorRepository(private val db: FirebaseFirestore) {
     }
 
     suspend fun deleteMotor(motorId: String): Result<Unit> {
+        val database = db ?: return Result.failure(IllegalStateException("قاعدة البيانات السحابية غير متوفرة حالياً"))
         val path = "motors/$motorId"
         return try {
-            db.collection("motors").document(motorId).delete().await()
+            database.collection("motors").document(motorId).delete().await()
             Result.success(Unit)
         } catch (e: Exception) {
             handleFirestoreError(e, OperationType.DELETE, path)
@@ -155,10 +191,11 @@ class MotorRepository(private val db: FirebaseFirestore) {
     }
 
     suspend fun seedDefaultMotorsIfEmpty(): Result<Int> {
+        val database = db ?: return Result.failure(IllegalStateException("قاعدة البيانات السحابية غير متوفرة حالياً"))
         val uid = requireUserId()
         val path = "motors"
         return try {
-            val existingDocs = db.collection(path)
+            val existingDocs = database.collection(path)
                 .limit(1)
                 .get()
                 .await()
@@ -167,7 +204,7 @@ class MotorRepository(private val db: FirebaseFirestore) {
                 val defaults = DefaultMotorsData.getDefaultMotors(uid)
                 for (motor in defaults) {
                     val motorId = motor.id
-                    val docRef = db.collection("motors").document(motorId)
+                    val docRef = database.collection("motors").document(motorId)
                     val payload = motor.toMap().toMutableMap()
                     payload["id"] = motorId
                     payload["userId"] = uid

@@ -20,13 +20,26 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.tasks.await
 
 class AdminRepository(
-    private val db: FirebaseFirestore,
-    private val auth: FirebaseAuth = try { Firebase.auth } catch (_: Throwable) { FirebaseAuth.getInstance() }
+    private val db: FirebaseFirestore?,
+    private val auth: FirebaseAuth? = null
 ) {
 
     constructor(context: Context) : this(
         MotorRepository.createFirestore(context),
-        try { Firebase.auth } catch (_: Throwable) { FirebaseAuth.getInstance() }
+        try {
+            val app = com.example.data.FirebaseInitializer.ensureFirebaseInitialized(context)
+            if (app != null) {
+                FirebaseAuth.getInstance(app)
+            } else {
+                Firebase.auth
+            }
+        } catch (_: Throwable) {
+            try {
+                FirebaseAuth.getInstance()
+            } catch (_: Throwable) {
+                null
+            }
+        }
     )
 
     companion object {
@@ -42,7 +55,7 @@ class AdminRepository(
     }
 
     fun isCurrentUserSuperAdmin(): Boolean {
-        val email = auth.currentUser?.email
+        val email = try { auth?.currentUser?.email } catch (_: Throwable) { null }
         return isSuperAdminEmail(email)
     }
 
@@ -50,9 +63,10 @@ class AdminRepository(
         if (email == null) return false
         val cleanEmail = email.trim().lowercase()
         if (SUPER_ADMIN_EMAILS.contains(cleanEmail)) return true
+        val database = db ?: return false
 
         return try {
-            val doc = db.collection("admins").document(cleanEmail).get().await()
+            val doc = database.collection("admins").document(cleanEmail).get().await()
             doc.exists()
         } catch (_: Exception) {
             false
@@ -61,12 +75,13 @@ class AdminRepository(
 
     fun observeAdmins(): Flow<List<AdminRecord>> = flow {
         val path = "admins"
-        if (!isCurrentUserSuperAdmin()) {
+        val database = db
+        if (!isCurrentUserSuperAdmin() || database == null) {
             emit(emptyList())
             return@flow
         }
         emitAll(
-            db.collection(path)
+            database.collection(path)
                 .orderBy("createdAt", Query.Direction.ASCENDING)
                 .snapshots()
                 .map { snapshot ->
@@ -81,6 +96,7 @@ class AdminRepository(
     }
 
     suspend fun addAdmin(rawEmail: String, addedBy: String): Result<Unit> {
+        val database = db ?: return Result.failure(IllegalStateException("قاعدة البيانات السحابية غير متوفرة حالياً"))
         val cleanEmail = rawEmail.trim().lowercase()
         val path = "admins/$cleanEmail"
         if (!cleanEmail.contains("@") || !cleanEmail.contains(".")) {
@@ -96,7 +112,7 @@ class AdminRepository(
                 "createdAt" to FieldValue.serverTimestamp(),
                 "updatedAt" to FieldValue.serverTimestamp()
             )
-            db.collection("admins").document(cleanEmail).set(payload).await()
+            database.collection("admins").document(cleanEmail).set(payload).await()
             Result.success(Unit)
         } catch (e: Exception) {
             handleFirestoreError(e, OperationType.CREATE, path)
@@ -105,6 +121,7 @@ class AdminRepository(
     }
 
     suspend fun removeAdmin(rawEmail: String): Result<Unit> {
+        val database = db ?: return Result.failure(IllegalStateException("قاعدة البيانات السحابية غير متوفرة حالياً"))
         val cleanEmail = rawEmail.trim().lowercase()
         val path = "admins/$cleanEmail"
 
@@ -113,7 +130,7 @@ class AdminRepository(
         }
 
         return try {
-            db.collection("admins").document(cleanEmail).delete().await()
+            database.collection("admins").document(cleanEmail).delete().await()
             Result.success(Unit)
         } catch (e: Exception) {
             handleFirestoreError(e, OperationType.DELETE, path)
@@ -122,11 +139,12 @@ class AdminRepository(
     }
 
     suspend fun bootstrapSuperAdminsIfMissing() {
+        val database = db ?: return
         if (!isCurrentUserSuperAdmin()) return
 
         for (superEmail in SUPER_ADMIN_EMAILS) {
             try {
-                val doc = db.collection("admins").document(superEmail).get().await()
+                val doc = database.collection("admins").document(superEmail).get().await()
                 if (!doc.exists()) {
                     val payload = mapOf(
                         "email" to superEmail,
@@ -135,7 +153,7 @@ class AdminRepository(
                         "createdAt" to FieldValue.serverTimestamp(),
                         "updatedAt" to FieldValue.serverTimestamp()
                     )
-                    db.collection("admins").document(superEmail).set(payload).await()
+                    database.collection("admins").document(superEmail).set(payload).await()
                 }
             } catch (_: Exception) {}
         }
