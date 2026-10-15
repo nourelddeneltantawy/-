@@ -7,14 +7,7 @@ import com.google.firebase.FirebaseApp
 class WasherMotorsApp : Application() {
     override fun onCreate() {
         super.onCreate()
-        try {
-            // Guarantee FirebaseApp is safely initialized before any component uses it
-            FirebaseApp.initializeApp(this)
-            Log.d("WasherMotorsApp", "FirebaseApp.initializeApp(this) executed")
-        } catch (e: Throwable) {
-            Log.e("WasherMotorsApp", "Firebase initialization caught error: ${e.message}", e)
-        }
-        com.example.data.FirebaseInitializer.ensureInitialized(this)
+        FirebaseApp.initializeApp(this)
 
         // Install safe uncaught exception handler to prevent hard crashes and log issues cleanly
         val defaultHandler = Thread.getDefaultUncaughtExceptionHandler()
