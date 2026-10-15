@@ -19,15 +19,14 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.ElectricBolt
-import androidx.compose.material.icons.filled.Memory
-import androidx.compose.material.icons.filled.VerifiedUser
+import androidx.compose.material.icons.filled.Hub
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -43,10 +42,11 @@ import androidx.compose.ui.unit.sp
 
 @Composable
 fun SplashScreen(
-    onReady: () -> Unit
+    onReady: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
     Box(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxSize()
             .background(
                 Brush.verticalGradient(
@@ -60,31 +60,30 @@ fun SplashScreen(
         contentAlignment = Alignment.Center
     ) {
         Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 28.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center
+            verticalArrangement = Arrangement.Center,
+            modifier = Modifier
+                .padding(28.dp)
+                .fillMaxWidth()
         ) {
-            // Main Tech Icon
-            Surface(
+            // App Branding Icon
+            Box(
                 modifier = Modifier
-                    .size(105.dp)
+                    .size(96.dp)
                     .clip(CircleShape)
+                    .background(Color(0xFF1E293B))
                     .border(2.dp, Color(0xFF38BDF8), CircleShape),
-                color = Color(0xFF1E293B)
+                contentAlignment = Alignment.Center
             ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Icon(
-                        imageVector = Icons.Default.Memory,
-                        contentDescription = "شعار مواتير الغسالات",
-                        tint = Color(0xFF38BDF8),
-                        modifier = Modifier.size(58.dp)
-                    )
-                }
+                Icon(
+                    imageVector = Icons.Default.Hub,
+                    contentDescription = "شعار التطبيق",
+                    tint = Color(0xFF38BDF8),
+                    modifier = Modifier.size(54.dp)
+                )
             }
 
-            Spacer(modifier = Modifier.height(24.dp))
+            Spacer(modifier = Modifier.height(20.dp))
 
             Text(
                 text = "دليل مواتير الغسالات",
@@ -96,55 +95,59 @@ fun SplashScreen(
                 textAlign = TextAlign.Center
             )
 
-            Spacer(modifier = Modifier.height(10.dp))
+            Spacer(modifier = Modifier.height(8.dp))
 
             Text(
-                text = "المنصة الهندسية المتكاملة لمخططات وأطراف وتوصيلات مواتير الغسالات للفنيين والمهندسين",
+                text = "المرجع الفني الشامل لمخططات وتوصيلات أطراف مواتير الغسالات",
                 style = MaterialTheme.typography.bodyMedium.copy(
                     color = Color(0xFF94A3B8),
                     lineHeight = 22.sp
                 ),
-                textAlign = TextAlign.Center
+                textAlign = TextAlign.Center,
+                modifier = Modifier.padding(horizontal = 12.dp)
             )
 
             Spacer(modifier = Modifier.height(28.dp))
 
+            // Tech highlight badge
             Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(
-                    containerColor = Color(0xFF1E293B).copy(alpha = 0.7f)
-                ),
-                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF334155))
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B).copy(alpha = 0.8f)),
+                shape = RoundedCornerShape(14.dp),
+                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF334155)),
+                modifier = Modifier.fillMaxWidth()
             ) {
-                Column(
-                    modifier = Modifier.padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                Row(
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        modifier = Modifier
+                            .size(38.dp)
+                            .clip(CircleShape)
+                            .background(Color(0xFF0369A1).copy(alpha = 0.35f)),
+                        contentAlignment = Alignment.Center
+                    ) {
                         Icon(
                             imageVector = Icons.Default.ElectricBolt,
                             contentDescription = null,
                             tint = Color(0xFF38BDF8),
-                            modifier = Modifier.size(20.dp)
-                        )
-                        Spacer(modifier = Modifier.width(10.dp))
-                        Text(
-                            text = "مخططات ألوان الأسلاك ووظائف الأطراف بدقة",
-                            style = MaterialTheme.typography.bodySmall.copy(color = Color(0xFFE2E8F0))
+                            modifier = Modifier.size(22.dp)
                         )
                     }
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            imageVector = Icons.Default.VerifiedUser,
-                            contentDescription = null,
-                            tint = Color(0xFF22C55E),
-                            modifier = Modifier.size(20.dp)
-                        )
-                        Spacer(modifier = Modifier.width(10.dp))
+                    Spacer(modifier = Modifier.width(14.dp))
+                    Column {
                         Text(
-                            text = "صلاحيات المشرف للتعديل والإضافة والحذف السحابي",
-                            style = MaterialTheme.typography.bodySmall.copy(color = Color(0xFFE2E8F0))
+                            text = "كتالوج هندسي مباشر",
+                            style = MaterialTheme.typography.titleSmall.copy(
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White
+                            )
+                        )
+                        Text(
+                            text = "تصفح جداول الأطراف، ألوان الأسلاك والمقاومات",
+                            style = MaterialTheme.typography.bodySmall.copy(
+                                color = Color(0xFF94A3B8)
+                            )
                         )
                     }
                 }
@@ -152,40 +155,42 @@ fun SplashScreen(
 
             Spacer(modifier = Modifier.height(36.dp))
 
+            // Explicit and Protected Enter Button
             Button(
                 onClick = {
                     try {
                         onReady()
-                    } catch (t: Throwable) {
-                        Log.e("SplashScreen", "Safe navigation caught error", t)
+                    } catch (e: Throwable) {
+                        Log.e("SplashScreen", "Safe navigation caught error: ${e.message}", e)
                     }
                 },
                 modifier = Modifier
-                    .testTag("enter_app_button")
                     .fillMaxWidth()
-                    .height(54.dp),
+                    .height(56.dp)
+                    .testTag("enter_app_button"),
                 shape = RoundedCornerShape(14.dp),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = Color(0xFF0284C7),
                     contentColor = Color.White
-                )
+                ),
+                elevation = ButtonDefaults.buttonElevation(defaultElevation = 6.dp)
             ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.Center
                 ) {
+                    Icon(
+                        imageVector = Icons.Default.PlayArrow,
+                        contentDescription = null,
+                        modifier = Modifier.size(24.dp)
+                    )
+                    Spacer(modifier = Modifier.width(10.dp))
                     Text(
                         text = "الدخول إلى التطبيق",
                         style = MaterialTheme.typography.titleMedium.copy(
                             fontWeight = FontWeight.Bold,
-                            fontSize = 16.sp
+                            fontSize = 17.sp
                         )
-                    )
-                    Spacer(modifier = Modifier.width(10.dp))
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                        contentDescription = null,
-                        modifier = Modifier.size(20.dp)
                     )
                 }
             }

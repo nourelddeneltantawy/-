@@ -15,12 +15,8 @@ enum class OperationType(val value: String) {
 }
 
 fun handleFirestoreError(exception: Exception, operationType: OperationType, path: String?): String {
-    val auth = try {
-        FirebaseAuth.getInstance()
-    } catch (_: Throwable) {
-        null
-    }
-    val currentUser = auth?.currentUser
+    val auth = FirebaseAuth.getInstance()
+    val currentUser = auth.currentUser
 
     val providerInfoList = currentUser?.providerData?.map { provider ->
         JSONObject().apply {

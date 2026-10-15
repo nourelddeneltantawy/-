@@ -397,14 +397,7 @@ fun attemptSilentAutoSignIn(
     onAuthSuccess: () -> Unit,
     scope: CoroutineScope
 ) {
-    val app = com.example.data.FirebaseInitializer.ensureFirebaseInitialized(context) ?: return
-    val auth = try {
-        com.google.firebase.auth.FirebaseAuth.getInstance(app)
-    } catch (_: Throwable) {
-        null
-    } ?: return
-
-    if (auth.currentUser != null) {
+    if (Firebase.auth.currentUser != null) {
         onAuthSuccess()
         return
     }
@@ -431,7 +424,7 @@ fun attemptSilentAutoSignIn(
             if (credential is CustomCredential && credential.type == TYPE_GOOGLE_ID_TOKEN_CREDENTIAL) {
                 val googleIdToken = GoogleIdTokenCredential.createFrom(credential.data).idToken
                 val authCredential = GoogleAuthProvider.getCredential(googleIdToken, null)
-                auth.signInWithCredential(authCredential).await()
+                Firebase.auth.signInWithCredential(authCredential).await()
                 onAuthSuccess()
             }
         } catch (_: Exception) {
@@ -519,25 +512,9 @@ fun handleInteractiveGoogleSignIn(
                 }
 
                 if (googleIdToken != null) {
-                    val app = com.example.data.FirebaseInitializer.ensureFirebaseInitialized(targetActivity)
-                    if (app == null) {
-                        onAuthError("تعذر تهيئة خدمات Firebase للمصادقة. يرجى التحقق من اتصال الإنترنت وإعادة المحاولة.")
-                        return@launch
-                    }
-                    val auth = try {
-                        com.google.firebase.auth.FirebaseAuth.getInstance(app)
-                    } catch (t: Throwable) {
-                        Log.e("Auth", "Failed getting FirebaseAuth instance", t)
-                        null
-                    }
-                    if (auth == null) {
-                        onAuthError("خدمات المصادقة غير متوفرة حالياً على هذا الجهاز.")
-                        return@launch
-                    }
-
                     val authCredential = GoogleAuthProvider.getCredential(googleIdToken, null)
-                    val authResult = auth.signInWithCredential(authCredential).await()
-                    val email = authResult.user?.email ?: auth.currentUser?.email
+                    val authResult = Firebase.auth.signInWithCredential(authCredential).await()
+                    val email = authResult.user?.email ?: Firebase.auth.currentUser?.email
                     Log.i("Auth", "Google sign in completed successfully. User email: $email, uid: ${authResult.user?.uid}")
                     onAuthSuccess(email)
                 } else {
