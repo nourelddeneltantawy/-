@@ -37,6 +37,7 @@ import com.example.ui.screens.CatalogScreen
 import com.example.ui.screens.ManageAdminsScreen
 import com.example.ui.screens.MotorDetailScreen
 import com.example.ui.screens.SplashScreen
+import com.example.data.FirebaseInitializer
 import com.example.ui.theme.MyApplicationTheme
 import com.example.ui.viewmodel.AiStudioViewModel
 import com.example.ui.viewmodel.MotorViewModel
@@ -61,13 +62,8 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         try {
             FirebaseApp.initializeApp(this)
-        } catch (_: Throwable) {
-            try {
-                FirebaseInitializer.ensureInitialized(this)
-            } catch (e: Throwable) {
-                android.util.Log.e("MainActivity", "Firebase initialization error: ${e.message}")
-            }
-        }
+        } catch (_: Throwable) {}
+        FirebaseInitializer.ensureInitialized(this)
         enableEdgeToEdge()
         setContent {
             MyApplicationTheme {
@@ -98,9 +94,7 @@ fun AppRoot() {
 
 @Composable
 fun SafeAppContainer() {
-    val context = LocalContext.current
     val initialUser = try {
-        FirebaseInitializer.ensureInitialized(context)
         Firebase.auth.currentUser
     } catch (_: Throwable) {
         null
