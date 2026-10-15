@@ -73,6 +73,7 @@ import com.google.android.libraries.identity.googleid.GetSignInWithGoogleOption
 import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
 import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential.Companion.TYPE_GOOGLE_ID_TOKEN_CREDENTIAL
 import com.google.firebase.Firebase
+import com.google.firebase.FirebaseApp
 import com.google.firebase.auth.GoogleAuthProvider
 import com.google.firebase.auth.auth
 import kotlinx.coroutines.CoroutineScope
@@ -87,9 +88,6 @@ fun AuthScreen(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
-    androidx.compose.runtime.LaunchedEffect(Unit) {
-        com.example.data.FirebaseInitializer.ensureInitialized(context)
-    }
     val coroutineScope = rememberCoroutineScope()
     val credentialManager = remember {
         try {
@@ -221,25 +219,39 @@ fun AuthScreen(
             // Interactive Google Sign-In Button
             Button(
                 onClick = {
-                    isLoading = true
-                    handleInteractiveGoogleSignIn(
-                        context = context,
-                        credentialManager = credentialManager,
-                        onAuthSuccess = { signedInEmail ->
-                            isLoading = false
-                            onAuthSuccess(signedInEmail)
-                        },
-                        onAuthError = { errorMsg ->
-                            isLoading = false
+                    try {
+                        if (!FirebaseApp.getApps(context).isNotEmpty()) {
                             coroutineScope.launch {
-                                snackbarHostState.showSnackbar(errorMsg)
+                                snackbarHostState.showSnackbar("خدمات Firebase غير متوفرة أو لم يتم تهيئتها بعد، يمكنك المتابعة كضيف.")
                             }
-                        },
-                        onCancelled = {
-                            isLoading = false
-                        },
-                        scope = coroutineScope
-                    )
+                            return@Button
+                        }
+                        isLoading = true
+                        handleInteractiveGoogleSignIn(
+                            context = context,
+                            credentialManager = credentialManager,
+                            onAuthSuccess = { signedInEmail ->
+                                isLoading = false
+                                onAuthSuccess(signedInEmail)
+                            },
+                            onAuthError = { errorMsg ->
+                                isLoading = false
+                                coroutineScope.launch {
+                                    snackbarHostState.showSnackbar(errorMsg)
+                                }
+                            },
+                            onCancelled = {
+                                isLoading = false
+                            },
+                            scope = coroutineScope
+                        )
+                    } catch (e: Throwable) {
+                        isLoading = false
+                        Log.e("Auth", "Failed to initiate Google Sign-In", e)
+                        coroutineScope.launch {
+                            snackbarHostState.showSnackbar("تعذر بدء تسجيل الدخول: ${e.localizedMessage ?: "حدث خطأ غير متوقع"}")
+                        }
+                    }
                 },
                 modifier = Modifier
                     .testTag("google_sign_in_button")
@@ -400,39 +412,48 @@ fun attemptSilentAutoSignIn(
     onAuthSuccess: () -> Unit,
     scope: CoroutineScope
 ) {
-    if (Firebase.auth.currentUser != null) {
-        onAuthSuccess()
-        return
-    }
-
-    val clientId = getGoogleWebClientId(context)
-    if (clientId.isBlank()) {
-        return
-    }
-
-    val googleIdOption = GetGoogleIdOption.Builder()
-        .setFilterByAuthorizedAccounts(true)
-        .setServerClientId(clientId)
-        .setAutoSelectEnabled(true)
-        .build()
-
-    val request = GetCredentialRequest.Builder()
-        .addCredentialOption(googleIdOption)
-        .build()
-
-    scope.launch {
-        try {
-            val result = credentialManager.getCredential(context, request)
-            val credential = result.credential
-            if (credential is CustomCredential && credential.type == TYPE_GOOGLE_ID_TOKEN_CREDENTIAL) {
-                val googleIdToken = GoogleIdTokenCredential.createFrom(credential.data).idToken
-                val authCredential = GoogleAuthProvider.getCredential(googleIdToken, null)
-                Firebase.auth.signInWithCredential(authCredential).await()
-                onAuthSuccess()
-            }
-        } catch (_: Exception) {
-            // Fallback gracefully to interactive sign in
+    try {
+        if (!FirebaseApp.getApps(context).isNotEmpty()) {
+            return
         }
+        if (Firebase.auth.currentUser != null) {
+            onAuthSuccess()
+            return
+        }
+
+        val clientId = getGoogleWebClientId(context)
+        if (clientId.isBlank()) {
+            return
+        }
+
+        val googleIdOption = GetGoogleIdOption.Builder()
+            .setFilterByAuthorizedAccounts(true)
+            .setServerClientId(clientId)
+            .setAutoSelectEnabled(true)
+            .build()
+
+        val request = GetCredentialRequest.Builder()
+            .addCredentialOption(googleIdOption)
+            .build()
+
+        scope.launch {
+            try {
+                val result = credentialManager.getCredential(context, request)
+                val credential = result.credential
+                if (credential is CustomCredential && credential.type == TYPE_GOOGLE_ID_TOKEN_CREDENTIAL) {
+                    val googleIdToken = GoogleIdTokenCredential.createFrom(credential.data).idToken
+                    val authCredential = GoogleAuthProvider.getCredential(googleIdToken, null)
+                    if (FirebaseApp.getApps(context).isNotEmpty()) {
+                        Firebase.auth.signInWithCredential(authCredential).await()
+                        onAuthSuccess()
+                    }
+                }
+            } catch (_: Exception) {
+                // Fallback gracefully to interactive sign in
+            }
+        }
+    } catch (_: Throwable) {
+        // Ignore silent sign in errors
     }
 }
 
@@ -451,7 +472,10 @@ fun handleInteractiveGoogleSignIn(
     scope: CoroutineScope
 ) {
     try {
-        com.example.data.FirebaseInitializer.ensureInitialized(context)
+        if (!FirebaseApp.getApps(context).isNotEmpty()) {
+            onAuthError("خدمات Firebase غير متوفرة أو لم يتم تهيئتها بعد، يمكنك المتابعة كضيف.")
+            return
+        }
         if (credentialManager == null) {
             onAuthError("خدمات تسجيل الدخول غير متوفرة على هذا الجهاز")
             return
@@ -516,7 +540,10 @@ fun handleInteractiveGoogleSignIn(
                 }
 
                 if (googleIdToken != null) {
-                    com.example.data.FirebaseInitializer.ensureInitialized(context)
+                    if (!FirebaseApp.getApps(context).isNotEmpty()) {
+                        onAuthError("خدمات Firebase غير متوفرة أو لم يتم تهيئتها بعد، يمكنك المتابعة كضيف.")
+                        return@launch
+                    }
                     val authCredential = GoogleAuthProvider.getCredential(googleIdToken, null)
                     val authResult = Firebase.auth.signInWithCredential(authCredential).await()
                     val email = authResult.user?.email ?: Firebase.auth.currentUser?.email
