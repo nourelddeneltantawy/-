@@ -134,8 +134,6 @@ class MotorViewModel(application: Application) : AndroidViewModel(application) {
             val cleanEmail = targetEmail.trim().lowercase()
             if (AdminRepository.isSuperAdminEmail(cleanEmail)) {
                 _userRole.value = UserRole.SUPER_ADMIN
-            } else {
-                _userRole.value = UserRole.ADMIN
             }
         }
         checkUserRoleAndInitialize(emailOverride)
@@ -157,10 +155,19 @@ class MotorViewModel(application: Application) : AndroidViewModel(application) {
                             repository?.seedDefaultMotorsIfEmpty()
                         } catch (_: Throwable) {}
                     } else {
-                        _userRole.value = UserRole.ADMIN
-                        try {
-                            repository?.seedDefaultMotorsIfEmpty()
-                        } catch (_: Throwable) {}
+                        val isDynamic = try {
+                            adminRepository?.checkIsAdmin(cleanEmail) ?: false
+                        } catch (_: Throwable) {
+                            false
+                        }
+                        if (isDynamic) {
+                            _userRole.value = UserRole.ADMIN
+                            try {
+                                repository?.seedDefaultMotorsIfEmpty()
+                            } catch (_: Throwable) {}
+                        } else {
+                            _userRole.value = UserRole.REGULAR
+                        }
                     }
                 } else {
                     _userRole.value = UserRole.REGULAR

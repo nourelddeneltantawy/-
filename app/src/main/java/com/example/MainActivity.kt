@@ -37,13 +37,11 @@ import com.example.ui.screens.CatalogScreen
 import com.example.ui.screens.ManageAdminsScreen
 import com.example.ui.screens.MotorDetailScreen
 import com.example.ui.screens.SplashScreen
-import com.example.data.FirebaseInitializer
 import com.example.ui.theme.MyApplicationTheme
 import com.example.ui.viewmodel.AiStudioViewModel
 import com.example.ui.viewmodel.MotorViewModel
 import com.example.ui.viewmodel.MotorsUiState
 import com.google.firebase.Firebase
-import com.google.firebase.FirebaseApp
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.auth
 import kotlinx.coroutines.launch
@@ -60,10 +58,6 @@ enum class Screen {
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        try {
-            FirebaseApp.initializeApp(this)
-        } catch (_: Throwable) {}
-        FirebaseInitializer.ensureInitialized(this)
         enableEdgeToEdge()
         setContent {
             MyApplicationTheme {
