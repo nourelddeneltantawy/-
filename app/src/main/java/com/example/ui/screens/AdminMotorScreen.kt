@@ -23,8 +23,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -37,18 +35,19 @@ import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Cable
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.CreateNewFolder
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.Save
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
@@ -61,12 +60,15 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -88,27 +90,106 @@ import com.example.data.model.Motor
 import com.example.data.model.MotorCategory
 import com.example.data.model.Pinout
 import com.example.ui.components.InteractiveMotorConnector
-import com.example.ui.components.parseWireColorToComposeColor
+import com.example.ui.components.getWireBrush
+import com.example.ui.components.resolveWireColors
+import com.example.util.ImageHelper
 import kotlinx.coroutines.launch
 
-data class WireColorPreset(
+data class WireColorPresetItem(
     val name: String,
-    val hex: String
+    val primaryHex: String,
+    val secondaryHex: String? = null,
+    val secondaryName: String? = null,
+    val hint: String = ""
 )
 
-val commonWireColorPresets = listOf(
-    WireColorPreset("أحمر", "#EF4444"),
-    WireColorPreset("أزرق", "#3B82F6"),
-    WireColorPreset("أصفر", "#EAB308"),
-    WireColorPreset("أسود", "#1E293B"),
-    WireColorPreset("أبيض", "#F8FAFC"),
-    WireColorPreset("بني", "#854D0E"),
-    WireColorPreset("برتقالي", "#F97316"),
-    WireColorPreset("رمادي", "#64748B"),
-    WireColorPreset("أخضر", "#22C55E"),
-    WireColorPreset("بنفسجي", "#A855F7"),
-    WireColorPreset("أصفر/أخضر", "#84CC16"),
-    WireColorPreset("سماوي", "#06B6D4")
+val singleColorPresets = listOf(
+    WireColorPresetItem("أحمر", "#EF4444"),
+    WireColorPresetItem("أزرق", "#2563EB"),
+    WireColorPresetItem("أصفر", "#EAB308"),
+    WireColorPresetItem("أسود", "#1E293B"),
+    WireColorPresetItem("أبيض", "#F8FAFC"),
+    WireColorPresetItem("بني", "#854D0E"),
+    WireColorPresetItem("برتقالي", "#F97316"),
+    WireColorPresetItem("رمادي", "#64748B"),
+    WireColorPresetItem("أخضر", "#16A34A"),
+    WireColorPresetItem("بنفسجي", "#9333EA"),
+    WireColorPresetItem("وردي", "#EC4899"),
+    WireColorPresetItem("سماوي", "#06B6D4"),
+    WireColorPresetItem("كحلي", "#1E3A8A")
+)
+
+val dualStripedColorPresets = listOf(
+    WireColorPresetItem(
+        name = "أصفر / أخضر",
+        primaryHex = "#EAB308",
+        secondaryHex = "#16A34A",
+        secondaryName = "أخضر",
+        hint = "أرضي / شاسيه الحماية"
+    ),
+    WireColorPresetItem(
+        name = "أخضر / أصفر",
+        primaryHex = "#16A34A",
+        secondaryHex = "#EAB308",
+        secondaryName = "أصفر",
+        hint = "أرضي الماتور"
+    ),
+    WireColorPresetItem(
+        name = "أزرق / أبيض",
+        primaryHex = "#2563EB",
+        secondaryHex = "#F8FAFC",
+        secondaryName = "أبيض",
+        hint = "حساس تاكوجينيراتور"
+    ),
+    WireColorPresetItem(
+        name = "أحمر / أسود",
+        primaryHex = "#EF4444",
+        secondaryHex = "#1E293B",
+        secondaryName = "أسود",
+        hint = "ملف العضو الدوار / الثابت"
+    ),
+    WireColorPresetItem(
+        name = "أبيض / أسود",
+        primaryHex = "#F8FAFC",
+        secondaryHex = "#1E293B",
+        secondaryName = "أسود",
+        hint = "شربون / نيوترال"
+    ),
+    WireColorPresetItem(
+        name = "أصفر / أحمر",
+        primaryHex = "#EAB308",
+        secondaryHex = "#EF4444",
+        secondaryName = "أحمر",
+        hint = "تفريعة سرعة الدوران"
+    ),
+    WireColorPresetItem(
+        name = "برتقالي / أبيض",
+        primaryHex = "#F97316",
+        secondaryHex = "#F8FAFC",
+        secondaryName = "أبيض",
+        hint = "تغذية الحساسات"
+    ),
+    WireColorPresetItem(
+        name = "بني / أبيض",
+        primaryHex = "#854D0E",
+        secondaryHex = "#F8FAFC",
+        secondaryName = "أبيض",
+        hint = "ملف السرعة العالية"
+    ),
+    WireColorPresetItem(
+        name = "رمادي / أبيض",
+        primaryHex = "#64748B",
+        secondaryHex = "#F8FAFC",
+        secondaryName = "أبيض",
+        hint = "ملف السرعة الهادئة"
+    ),
+    WireColorPresetItem(
+        name = "أزرق / أحمر",
+        primaryHex = "#2563EB",
+        secondaryHex = "#EF4444",
+        secondaryName = "أحمر",
+        hint = "أطراف الأوجه الإنفرتر"
+    )
 )
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
@@ -139,18 +220,28 @@ fun AdminMotorScreen(
     var motorType by remember { mutableStateOf(initialMotor?.motorType ?: "") }
     var notes by remember { mutableStateOf(initialMotor?.notes ?: "") }
     var imageUrl by remember { mutableStateOf(initialMotor?.imageUrl ?: "") }
+    var isSaving by remember { mutableStateOf(false) }
+
     var showDeleteConfirmDialog by remember { mutableStateOf(false) }
     var showAddCategoryDialog by remember { mutableStateOf(false) }
     var newCategoryInput by remember { mutableStateOf("") }
 
-    // Photo picker for selecting image from device storage
+    // Photo picker for selecting image from device storage.
+    // We copy the image to internal app storage so that Coil can permanently access it
+    // without permission revocation, preventing SecurityException and missing images!
     val photoPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
     ) { uri: Uri? ->
         if (uri != null) {
-            imageUrl = uri.toString()
             coroutineScope.launch {
-                snackbarHostState.showSnackbar("تم تحديد الصورة بنجاح")
+                try {
+                    val localPath = ImageHelper.copyUriToLocalStorage(context, uri)
+                    imageUrl = localPath
+                    snackbarHostState.showSnackbar("تم حفظ وتحديد صورة الماتور بنجاح")
+                } catch (e: Exception) {
+                    imageUrl = uri.toString()
+                    snackbarHostState.showSnackbar("تم تحديد الصورة")
+                }
             }
         }
     }
@@ -265,7 +356,7 @@ fun AdminMotorScreen(
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
             // Section 1: User's Custom Lists / Categories
-            item {
+            item(key = "section_category") {
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(14.dp),
@@ -338,7 +429,7 @@ fun AdminMotorScreen(
             }
 
             // Section 2: Basic Motor Information
-            item {
+            item(key = "section_basic_info") {
                 OutlinedTextField(
                     value = name,
                     onValueChange = { name = it },
@@ -348,54 +439,53 @@ fun AdminMotorScreen(
                 )
             }
 
-            item {
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            item(key = "section_brand_model") {
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     OutlinedTextField(
                         value = brand,
                         onValueChange = { brand = it },
-                        label = { Text("الماركة (Brand) *") },
+                        label = { Text("الماركة * (مثال: Unionaire)") },
                         modifier = Modifier.weight(1f),
                         shape = RoundedCornerShape(12.dp)
                     )
                     OutlinedTextField(
                         value = model,
                         onValueChange = { model = it },
-                        label = { Text("الموديل (Model)") },
+                        label = { Text("الموديل (مثال: UW-800)") },
                         modifier = Modifier.weight(1f),
                         shape = RoundedCornerShape(12.dp)
                     )
                 }
             }
 
-            item {
+            item(key = "section_motor_type") {
                 OutlinedTextField(
                     value = motorType,
                     onValueChange = { motorType = it },
-                    label = { Text("نوع الماتور (مثال: Universal، Inverter BLDC، Direct Drive)") },
+                    label = { Text("نوع الماتور (مثال: Universal شربون، إنفرتر BLDC)") },
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(12.dp)
                 )
             }
 
-            item {
+            item(key = "section_notes") {
                 OutlinedTextField(
                     value = notes,
                     onValueChange = { notes = it },
-                    label = { Text("ملاحظات فنية وتوصيات التوصيل وقياس الأوم") },
+                    label = { Text("ملاحظات فنية، تفاصيل القياس أو التوصيل") },
                     modifier = Modifier.fillMaxWidth(),
-                    minLines = 3,
+                    minLines = 2,
+                    maxLines = 4,
                     shape = RoundedCornerShape(12.dp)
                 )
             }
 
-            // Image Section: Picker + URL + AI Studio
-            item {
+            // Section 3: Motor Image / Wiring Diagram with Permanent Storage
+            item(key = "section_image") {
                 Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .animateContentSize(),
-                    shape = RoundedCornerShape(16.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(14.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f))
                 ) {
                     Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         Row(
@@ -426,7 +516,7 @@ fun AdminMotorScreen(
                             ) {
                                 AsyncImage(
                                     model = ImageRequest.Builder(context)
-                                        .data(imageUrl)
+                                        .data(ImageHelper.getCoilData(imageUrl))
                                         .crossfade(true)
                                         .build(),
                                     contentDescription = "معاينة صورة الماتور",
@@ -490,11 +580,11 @@ fun AdminMotorScreen(
                             }
                         }
 
-                        // Direct URL input fallback
+                        // Direct URL / local file input fallback
                         OutlinedTextField(
                             value = imageUrl,
                             onValueChange = { imageUrl = it },
-                            label = { Text("أو أدخل رابط الصورة مباشرة (URL)") },
+                            label = { Text("أو مسار الصورة / رابط مباشر (URL)") },
                             modifier = Modifier.fillMaxWidth(),
                             singleLine = true,
                             shape = RoundedCornerShape(10.dp)
@@ -504,7 +594,7 @@ fun AdminMotorScreen(
             }
 
             // Pinouts section header (Step-by-step pin addition)
-            item {
+            item(key = "section_pinouts_header") {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -534,7 +624,7 @@ fun AdminMotorScreen(
                     Button(
                         onClick = {
                             val nextNum = pinouts.size + 1
-                            pinouts.add(Pinout(nextNum, "طرف $nextNum", "أزرق", "#3B82F6", ""))
+                            pinouts.add(Pinout(nextNum, "طرف $nextNum", "أزرق", "#2563EB", null, null, ""))
                         },
                         shape = RoundedCornerShape(10.dp),
                         colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
@@ -547,7 +637,7 @@ fun AdminMotorScreen(
             }
 
             if (pinouts.isEmpty()) {
-                item {
+                item(key = "section_empty_pinouts") {
                     Surface(
                         shape = RoundedCornerShape(12.dp),
                         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
@@ -582,10 +672,17 @@ fun AdminMotorScreen(
             // Pinouts list with interactive wire color swatches and smooth reordering
             itemsIndexed(
                 items = pinouts,
-                key = { index, _ -> "pinout_$index" }
+                key = { index, pin -> "pin_${pin.pinNumber}_$index" }
             ) { index, pin ->
-                val pinColor = parseWireColorToComposeColor(pin.colorHex, pin.wireColor)
+                val (primaryColor, secondaryColor) = resolveWireColors(
+                    colorHex = pin.colorHex,
+                    wireColorName = pin.wireColor,
+                    secondaryColorHex = pin.secondaryColorHex,
+                    secondaryColorName = pin.secondaryColorName
+                )
+                val wireBrush = getWireBrush(primaryColor, secondaryColor)
                 var showColorPalette by remember { mutableStateOf(false) }
+                var colorTabSelected by remember { mutableIntStateOf(if (pin.secondaryColorHex != null) 1 else 0) }
 
                 Card(
                     modifier = Modifier
@@ -607,7 +704,7 @@ fun AdminMotorScreen(
                                     modifier = Modifier
                                         .size(24.dp)
                                         .clip(CircleShape)
-                                        .background(pinColor)
+                                        .background(wireBrush)
                                         .border(2.dp, Color.White.copy(alpha = 0.8f), CircleShape)
                                 )
                                 Spacer(modifier = Modifier.width(8.dp))
@@ -615,6 +712,23 @@ fun AdminMotorScreen(
                                     text = "الطرف رقم ${pin.pinNumber}",
                                     style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
                                 )
+                                if (secondaryColor != null) {
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Surface(
+                                        shape = RoundedCornerShape(6.dp),
+                                        color = MaterialTheme.colorScheme.secondaryContainer
+                                    ) {
+                                        Text(
+                                            text = "مخطط",
+                                            style = MaterialTheme.typography.labelSmall.copy(
+                                                fontSize = 10.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                color = MaterialTheme.colorScheme.onSecondaryContainer
+                                            ),
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                        )
+                                    }
+                                }
                             }
 
                             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -624,7 +738,6 @@ fun AdminMotorScreen(
                                         onClick = {
                                             val current = pinouts.removeAt(index)
                                             pinouts.add(index - 1, current)
-                                            // Re-number pins sequentially
                                             pinouts.forEachIndexed { i, p ->
                                                 pinouts[i] = p.copy(pinNumber = i + 1)
                                             }
@@ -641,7 +754,6 @@ fun AdminMotorScreen(
                                         onClick = {
                                             val current = pinouts.removeAt(index)
                                             pinouts.add(index + 1, current)
-                                            // Re-number pins sequentially
                                             pinouts.forEachIndexed { i, p ->
                                                 pinouts[i] = p.copy(pinNumber = i + 1)
                                             }
@@ -660,7 +772,7 @@ fun AdminMotorScreen(
                                     Icon(
                                         imageVector = Icons.Default.Palette,
                                         contentDescription = "اختيار لون السلك",
-                                        tint = pinColor,
+                                        tint = primaryColor,
                                         modifier = Modifier.size(18.dp)
                                     )
                                 }
@@ -685,51 +797,132 @@ fun AdminMotorScreen(
                             }
                         }
 
-                        // Wire Color Palette
+                        // Wire Color Comprehensive Palette (Single + Dual Striped Colors)
                         AnimatedVisibility(visible = showColorPalette) {
                             Surface(
                                 shape = RoundedCornerShape(12.dp),
-                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
                                 modifier = Modifier.fillMaxWidth()
                             ) {
                                 Column(modifier = Modifier.padding(10.dp)) {
-                                    Text(
-                                        text = "اختر لون السلك النموذجي:",
-                                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold)
-                                    )
-                                    Spacer(modifier = Modifier.height(8.dp))
-                                    FlowRow(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                                    TabRow(
+                                        selectedTabIndex = colorTabSelected,
+                                        containerColor = Color.Transparent,
+                                        modifier = Modifier.fillMaxWidth()
                                     ) {
-                                        commonWireColorPresets.forEach { preset ->
-                                            val presetColor = parseWireColorToComposeColor(preset.hex, preset.name)
-                                            Surface(
-                                                shape = RoundedCornerShape(8.dp),
-                                                color = if (pin.colorHex.equals(preset.hex, ignoreCase = true) || pin.wireColor.equals(preset.name, ignoreCase = true)) {
-                                                    MaterialTheme.colorScheme.primaryContainer
-                                                } else {
-                                                    MaterialTheme.colorScheme.surface
-                                                },
-                                                modifier = Modifier.clickable {
-                                                    pinouts[index] = pin.copy(wireColor = preset.name, colorHex = preset.hex)
-                                                    showColorPalette = false
-                                                }
-                                            ) {
-                                                Row(
-                                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
-                                                    verticalAlignment = Alignment.CenterVertically
+                                        Tab(
+                                            selected = colorTabSelected == 0,
+                                            onClick = { colorTabSelected = 0 },
+                                            text = { Text("ألوان فردية أساسية", fontSize = 12.sp, fontWeight = FontWeight.Bold) }
+                                        )
+                                        Tab(
+                                            selected = colorTabSelected == 1,
+                                            onClick = { colorTabSelected = 1 },
+                                            text = { Text("ألوان مزدوجة ومخططة (أصفر/أخضر)", fontSize = 12.sp, fontWeight = FontWeight.Bold) }
+                                        )
+                                    }
+
+                                    Spacer(modifier = Modifier.height(10.dp))
+
+                                    if (colorTabSelected == 0) {
+                                        // Single Colors
+                                        FlowRow(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
+                                            singleColorPresets.forEach { preset ->
+                                                val (pCol, _) = resolveWireColors(preset.primaryHex, preset.name)
+                                                val isSelected = pin.colorHex.equals(preset.primaryHex, ignoreCase = true) && pin.secondaryColorHex == null
+                                                Surface(
+                                                    shape = RoundedCornerShape(8.dp),
+                                                    color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface,
+                                                    border = if (isSelected) androidx.compose.foundation.BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary) else null,
+                                                    modifier = Modifier.clickable {
+                                                        pinouts[index] = pin.copy(
+                                                            wireColor = preset.name,
+                                                            colorHex = preset.primaryHex,
+                                                            secondaryColorHex = null,
+                                                            secondaryColorName = null
+                                                        )
+                                                        showColorPalette = false
+                                                    }
                                                 ) {
-                                                    Box(
-                                                        modifier = Modifier
-                                                            .size(12.dp)
-                                                            .clip(CircleShape)
-                                                            .background(presetColor)
-                                                            .border(1.dp, Color.White.copy(alpha = 0.6f), CircleShape)
+                                                    Row(
+                                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                                                        verticalAlignment = Alignment.CenterVertically
+                                                    ) {
+                                                        Box(
+                                                            modifier = Modifier
+                                                                .size(14.dp)
+                                                                .clip(CircleShape)
+                                                                .background(pCol)
+                                                                .border(1.dp, Color.White.copy(alpha = 0.6f), CircleShape)
+                                                        )
+                                                        Spacer(modifier = Modifier.width(6.dp))
+                                                        Text(text = preset.name, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    } else {
+                                        // Dual / Striped Colors
+                                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                            Text(
+                                                text = "اختر توليفة الألوان المخططة الشائعة في مواتير الغسالات:",
+                                                style = MaterialTheme.typography.labelSmall.copy(color = MaterialTheme.colorScheme.outline)
+                                            )
+                                            Spacer(modifier = Modifier.height(4.dp))
+                                            FlowRow(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                                            ) {
+                                                dualStripedColorPresets.forEach { preset ->
+                                                    val (pCol, sCol) = resolveWireColors(
+                                                        colorHex = preset.primaryHex,
+                                                        wireColorName = preset.name,
+                                                        secondaryColorHex = preset.secondaryHex,
+                                                        secondaryColorName = preset.secondaryName
                                                     )
-                                                    Spacer(modifier = Modifier.width(6.dp))
-                                                    Text(text = preset.name, fontSize = 11.sp, fontWeight = FontWeight.Medium)
+                                                    val brush = getWireBrush(pCol, sCol)
+                                                    val isSelected = pin.colorHex.equals(preset.primaryHex, ignoreCase = true) &&
+                                                            pin.secondaryColorHex.equals(preset.secondaryHex, ignoreCase = true)
+
+                                                    Surface(
+                                                        shape = RoundedCornerShape(8.dp),
+                                                        color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface,
+                                                        border = if (isSelected) androidx.compose.foundation.BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary) else null,
+                                                        modifier = Modifier.clickable {
+                                                            pinouts[index] = pin.copy(
+                                                                wireColor = preset.name,
+                                                                colorHex = preset.primaryHex,
+                                                                secondaryColorHex = preset.secondaryHex,
+                                                                secondaryColorName = preset.secondaryName
+                                                            )
+                                                            showColorPalette = false
+                                                        }
+                                                    ) {
+                                                        Row(
+                                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                                                            verticalAlignment = Alignment.CenterVertically
+                                                        ) {
+                                                            Box(
+                                                                modifier = Modifier
+                                                                    .size(16.dp)
+                                                                    .clip(CircleShape)
+                                                                    .background(brush)
+                                                                    .border(1.dp, Color.White.copy(alpha = 0.7f), CircleShape)
+                                                            )
+                                                            Spacer(modifier = Modifier.width(6.dp))
+                                                            Column {
+                                                                Text(text = preset.name, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                                                if (preset.hint.isNotBlank()) {
+                                                                    Text(text = preset.hint, fontSize = 10.sp, color = MaterialTheme.colorScheme.outline)
+                                                                }
+                                                            }
+                                                        }
+                                                    }
                                                 }
                                             }
                                         }
@@ -775,7 +968,7 @@ fun AdminMotorScreen(
 
             // Live Virtual Connector Preview when pins exist
             if (pinouts.isNotEmpty()) {
-                item {
+                item(key = "section_live_connector_preview") {
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
                         text = "معاينة الفيشة التفاعلية الناتجة:",
@@ -790,10 +983,11 @@ fun AdminMotorScreen(
             }
 
             // Save Action
-            item {
+            item(key = "section_save_button") {
                 Spacer(modifier = Modifier.height(16.dp))
                 Button(
                     onClick = {
+                        if (isSaving) return@Button
                         if (name.isBlank() || brand.isBlank()) {
                             coroutineScope.launch {
                                 snackbarHostState.showSnackbar("يرجى إدخال اسم الماتور والماركة على الأقل")
@@ -801,6 +995,7 @@ fun AdminMotorScreen(
                             return@Button
                         }
 
+                        isSaving = true
                         val updatedMotor = Motor(
                             id = initialMotor?.id ?: "",
                             userId = initialMotor?.userId ?: currentUserId,
@@ -818,15 +1013,26 @@ fun AdminMotorScreen(
                         )
                         onSaveSuccess(updatedMotor)
                     },
+                    enabled = !isSaving,
                     modifier = Modifier
                         .testTag("save_motor_button")
                         .fillMaxWidth()
                         .height(52.dp),
                     shape = RoundedCornerShape(12.dp)
                 ) {
-                    Icon(imageVector = Icons.Default.Save, contentDescription = null)
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("حفظ ونشر الماتور", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                    if (isSaving) {
+                        CircularProgressIndicator(
+                            color = MaterialTheme.colorScheme.onPrimary,
+                            modifier = Modifier.size(24.dp),
+                            strokeWidth = 2.dp
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("جاري الحفظ...", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                    } else {
+                        Icon(imageVector = Icons.Default.Save, contentDescription = null)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("حفظ ونشر الماتور", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                    }
                 }
                 Spacer(modifier = Modifier.height(32.dp))
             }

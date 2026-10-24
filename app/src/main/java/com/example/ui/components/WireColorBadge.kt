@@ -17,12 +17,13 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
-fun parseWireColorToComposeColor(colorHex: String, wireColorName: String): Color {
-    val cleanHex = colorHex.trim()
+fun parseHexToColor(hex: String, fallback: Color = Color(0xFF3B82F6)): Color {
+    val cleanHex = hex.trim()
     if (cleanHex.startsWith("#")) {
         try {
             val hexStr = cleanHex.substring(1)
@@ -35,34 +36,153 @@ fun parseWireColorToComposeColor(colorHex: String, wireColorName: String): Color
                     val b = hexStr[2]
                     ("FF$r$r$g$g$b$b").toLong(16)
                 }
-                else -> 0xFF3B82F6
+                else -> fallback.value.toLong()
             }
             return Color(colorLong)
         } catch (_: Exception) {}
     }
+    return fallback
+}
 
+fun parseWireColorNameToColor(name: String, fallback: Color = Color(0xFF3B82F6)): Color {
+    val lower = name.lowercase().trim()
     return when {
-        wireColorName.contains("أحمر") || wireColorName.contains("Red", true) -> Color(0xFFEF4444)
-        wireColorName.contains("أزرق") || wireColorName.contains("Blue", true) -> Color(0xFF3B82F6)
-        wireColorName.contains("أصفر") || wireColorName.contains("Yellow", true) -> Color(0xFFEAB308)
-        wireColorName.contains("أخضر") || wireColorName.contains("Green", true) -> Color(0xFF22C55E)
-        wireColorName.contains("برتقالي") || wireColorName.contains("Orange", true) -> Color(0xFFF97316)
-        wireColorName.contains("أبيض") || wireColorName.contains("White", true) -> Color(0xFFE2E8F0)
-        wireColorName.contains("أسود") || wireColorName.contains("Black", true) -> Color(0xFF1F2937)
-        wireColorName.contains("رمادي") || wireColorName.contains("Gray", true) -> Color(0xFF6B7280)
-        wireColorName.contains("بني") || wireColorName.contains("Brown", true) -> Color(0xFF854D0E)
-        wireColorName.contains("بنفسجي") || wireColorName.contains("Purple", true) -> Color(0xFFA855F7)
-        else -> Color(0xFF3B82F6)
+        lower.contains("أحمر") || lower.contains("red") -> Color(0xFFEF4444)
+        lower.contains("أزرق") || lower.contains("كحلي") || lower.contains("blue") -> {
+            if (lower.contains("كحلي") || lower.contains("داكن")) Color(0xFF1E3A8A) else Color(0xFF2563EB)
+        }
+        lower.contains("سماوي") || lower.contains("cyan") -> Color(0xFF06B6D4)
+        lower.contains("أصفر") || lower.contains("yellow") -> Color(0xFFEAB308)
+        lower.contains("أخضر") || lower.contains("green") -> Color(0xFF16A34A)
+        lower.contains("برتقالي") || lower.contains("orange") -> Color(0xFFF97316)
+        lower.contains("أبيض") || lower.contains("white") -> Color(0xFFF8FAFC)
+        lower.contains("أسود") || lower.contains("black") -> Color(0xFF1E293B)
+        lower.contains("رمادي") || lower.contains("رصاصي") || lower.contains("gray") || lower.contains("grey") -> Color(0xFF64748B)
+        lower.contains("بني") || lower.contains("brown") -> Color(0xFF854D0E)
+        lower.contains("بنفسجي") || lower.contains("purple") -> Color(0xFF9333EA)
+        lower.contains("وردي") || lower.contains("بمبي") || lower.contains("pink") -> Color(0xFFEC4899)
+        lower.contains("بيج") || lower.contains("beige") -> Color(0xFFD97706)
+        else -> fallback
     }
+}
+
+/**
+ * Resolves both primary and optional secondary (striped) colors for a wire.
+ * Handles both explicit secondary hex and compound names like "أصفر مع أخضر" or "أصفر/أخضر".
+ */
+fun resolveWireColors(
+    colorHex: String,
+    wireColorName: String,
+    secondaryColorHex: String? = null,
+    secondaryColorName: String? = null
+): Pair<Color, Color?> {
+    val primaryColor = parseHexToColor(colorHex, parseWireColorNameToColor(wireColorName))
+
+    // 1. Explicit secondary color provided
+    if (!secondaryColorHex.isNullOrBlank()) {
+        val sec = parseHexToColor(secondaryColorHex, parseWireColorNameToColor(secondaryColorName ?: ""))
+        return Pair(primaryColor, sec)
+    }
+
+    // 2. Compound text detection (e.g. "أصفر مع أخضر", "أصفر / أخضر", "أزرق مع أبيض")
+    val text = (wireColorName + " " + (secondaryColorName ?: "")).trim()
+    val isYellowGreen = (text.contains("أصفر") || text.contains("yellow", true)) &&
+            (text.contains("أخضر") || text.contains("green", true))
+    if (isYellowGreen) {
+        return Pair(Color(0xFFEAB308), Color(0xFF16A34A))
+    }
+
+    val isBlueWhite = (text.contains("أزرق") || text.contains("blue", true)) &&
+            (text.contains("أبيض") || text.contains("white", true))
+    if (isBlueWhite) {
+        return Pair(Color(0xFF2563EB), Color(0xFFF8FAFC))
+    }
+
+    val isRedBlack = (text.contains("أحمر") || text.contains("red", true)) &&
+            (text.contains("أسود") || text.contains("black", true))
+    if (isRedBlack) {
+        return Pair(Color(0xFFEF4444), Color(0xFF1E293B))
+    }
+
+    val isWhiteBlack = (text.contains("أبيض") || text.contains("white", true)) &&
+            (text.contains("أسود") || text.contains("black", true))
+    if (isWhiteBlack) {
+        return Pair(Color(0xFFF8FAFC), Color(0xFF1E293B))
+    }
+
+    val isYellowRed = (text.contains("أصفر") || text.contains("yellow", true)) &&
+            (text.contains("أحمر") || text.contains("red", true))
+    if (isYellowRed) {
+        return Pair(Color(0xFFEAB308), Color(0xFFEF4444))
+    }
+
+    val isOrangeWhite = (text.contains("برتقالي") || text.contains("orange", true)) &&
+            (text.contains("أبيض") || text.contains("white", true))
+    if (isOrangeWhite) {
+        return Pair(Color(0xFFF97316), Color(0xFFF8FAFC))
+    }
+
+    val isBrownWhite = (text.contains("بني") || text.contains("brown", true)) &&
+            (text.contains("أبيض") || text.contains("white", true))
+    if (isBrownWhite) {
+        return Pair(Color(0xFF854D0E), Color(0xFFF8FAFC))
+    }
+
+    val isGrayWhite = (text.contains("رمادي") || text.contains("gray", true)) &&
+            (text.contains("أبيض") || text.contains("white", true))
+    if (isGrayWhite) {
+        return Pair(Color(0xFF64748B), Color(0xFFF8FAFC))
+    }
+
+    val isBlueRed = (text.contains("أزرق") || text.contains("blue", true)) &&
+            (text.contains("أحمر") || text.contains("red", true))
+    if (isBlueRed) {
+        return Pair(Color(0xFF2563EB), Color(0xFFEF4444))
+    }
+
+    return Pair(primaryColor, null)
+}
+
+/**
+ * Creates an authentic diagonal striped brush for wires with 2 colors (e.g. Ground yellow/green).
+ */
+fun getWireBrush(primaryColor: Color, secondaryColor: Color?): Brush {
+    if (secondaryColor == null || secondaryColor == primaryColor) {
+        return Brush.linearGradient(listOf(primaryColor, primaryColor))
+    }
+    // Repeating diagonal stripes: Primary - Secondary - Primary - Secondary
+    return Brush.linearGradient(
+        0.0f to primaryColor,
+        0.28f to primaryColor,
+        0.28f to secondaryColor,
+        0.52f to secondaryColor,
+        0.52f to primaryColor,
+        0.78f to primaryColor,
+        0.78f to secondaryColor,
+        1.0f to secondaryColor
+    )
+}
+
+fun parseWireColorToComposeColor(colorHex: String, wireColorName: String): Color {
+    val (primary, _) = resolveWireColors(colorHex, wireColorName)
+    return primary
 }
 
 @Composable
 fun WireColorBadge(
     wireColor: String,
     colorHex: String,
+    secondaryColorHex: String? = null,
+    secondaryColorName: String? = null,
     modifier: Modifier = Modifier
 ) {
-    val primaryColor = parseWireColorToComposeColor(colorHex, wireColor)
+    val (primaryColor, secondaryColor) = resolveWireColors(
+        colorHex = colorHex,
+        wireColorName = wireColor,
+        secondaryColorHex = secondaryColorHex,
+        secondaryColorName = secondaryColorName
+    )
+    val wireBrush = getWireBrush(primaryColor, secondaryColor)
 
     Surface(
         modifier = modifier,
@@ -75,10 +195,10 @@ fun WireColorBadge(
         ) {
             Box(
                 modifier = Modifier
-                    .size(10.dp)
+                    .size(11.dp)
                     .clip(CircleShape)
-                    .background(primaryColor)
-                    .border(1.dp, Color.White.copy(alpha = 0.5f), CircleShape)
+                    .background(wireBrush)
+                    .border(1.dp, Color.White.copy(alpha = 0.6f), CircleShape)
             )
             Spacer(modifier = Modifier.width(6.dp))
             Text(

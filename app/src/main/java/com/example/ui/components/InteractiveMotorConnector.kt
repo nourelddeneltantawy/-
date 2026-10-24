@@ -1,7 +1,6 @@
 package com.example.ui.components
 
 import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.Spring
@@ -105,7 +104,13 @@ fun InteractiveMotorConnector(
     }
 
     val selectedPin = pinouts.getOrNull(selectedIndex) ?: pinouts.first()
-    val selectedColor = parseWireColorToComposeColor(selectedPin.colorHex, selectedPin.wireColor)
+    val (selectedPrimary, selectedSecondary) = resolveWireColors(
+        colorHex = selectedPin.colorHex,
+        wireColorName = selectedPin.wireColor,
+        secondaryColorHex = selectedPin.secondaryColorHex,
+        secondaryColorName = selectedPin.secondaryColorName
+    )
+    val selectedBrush = getWireBrush(selectedPrimary, selectedSecondary)
 
     Card(
         modifier = modifier
@@ -123,7 +128,7 @@ fun InteractiveMotorConnector(
                 .fillMaxWidth()
                 .padding(16.dp)
         ) {
-            // Header: Title & Hint
+            // Header: Title & Interactive Hint
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -205,14 +210,21 @@ fun InteractiveMotorConnector(
                 ) {
                     pinouts.forEachIndexed { index, pin ->
                         val isSelected = index == selectedIndex
-                        val pinWireColor = parseWireColorToComposeColor(pin.colorHex, pin.wireColor)
+                        val (pColor, sColor) = resolveWireColors(
+                            colorHex = pin.colorHex,
+                            wireColorName = pin.wireColor,
+                            secondaryColorHex = pin.secondaryColorHex,
+                            secondaryColorName = pin.secondaryColorName
+                        )
+                        val wireBrush = getWireBrush(pColor, sColor)
+
                         val scale by animateFloatAsState(
                             targetValue = if (isSelected) 1.12f else 1.0f,
                             animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
                             label = "pin_scale"
                         )
                         val glowColor by animateColorAsState(
-                            targetValue = if (isSelected) pinWireColor else Color.Transparent,
+                            targetValue = if (isSelected) pColor else Color.Transparent,
                             label = "pin_glow"
                         )
 
@@ -228,13 +240,13 @@ fun InteractiveMotorConnector(
                                     selectedIndex = index
                                 }
                         ) {
-                            // Wire stub extending into socket
+                            // Wire stub extending into socket (supports striped pattern)
                             Box(
                                 modifier = Modifier
                                     .width(8.dp)
                                     .height(14.dp)
                                     .clip(RoundedCornerShape(topStart = 4.dp, topEnd = 4.dp))
-                                    .background(pinWireColor)
+                                    .background(wireBrush)
                             )
 
                             // Pin Terminal Head (Metallic / Plastic Socket)
@@ -252,7 +264,7 @@ fun InteractiveMotorConnector(
                                         Brush.verticalGradient(
                                             colors = if (isSelected) {
                                                 listOf(
-                                                    pinWireColor.copy(alpha = 0.35f),
+                                                    pColor.copy(alpha = 0.35f),
                                                     Color(0xFF1E293B)
                                                 )
                                             } else {
@@ -265,7 +277,7 @@ fun InteractiveMotorConnector(
                                     )
                                     .border(
                                         width = if (isSelected) 2.dp else 1.dp,
-                                        color = if (isSelected) pinWireColor else Color(0xFF4A5568),
+                                        color = if (isSelected) pColor else Color(0xFF4A5568),
                                         shape = RoundedCornerShape(8.dp)
                                     ),
                                 contentAlignment = Alignment.Center
@@ -285,12 +297,12 @@ fun InteractiveMotorConnector(
 
                                     Spacer(modifier = Modifier.height(2.dp))
 
-                                    // Color Dot indicator
+                                    // Color Dot indicator (Striped brush if dual color)
                                     Box(
                                         modifier = Modifier
-                                            .size(8.dp)
+                                            .size(9.dp)
                                             .clip(CircleShape)
-                                            .background(pinWireColor)
+                                            .background(wireBrush)
                                             .border(1.dp, Color.White.copy(alpha = 0.7f), CircleShape)
                                     )
                                 }
@@ -304,7 +316,7 @@ fun InteractiveMotorConnector(
                                 style = MaterialTheme.typography.labelSmall.copy(
                                     fontSize = 10.sp,
                                     fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                                    color = if (isSelected) pinWireColor else Color(0xFF94A3B8)
+                                    color = if (isSelected) pColor else Color(0xFF94A3B8)
                                 ),
                                 textAlign = TextAlign.Center,
                                 maxLines = 1
@@ -322,7 +334,13 @@ fun InteractiveMotorConnector(
                 transitionSpec = { fadeIn() togetherWith fadeOut() },
                 label = "pin_details_content"
             ) { pin ->
-                val activePinColor = parseWireColorToComposeColor(pin.colorHex, pin.wireColor)
+                val (pColor, sColor) = resolveWireColors(
+                    colorHex = pin.colorHex,
+                    wireColorName = pin.wireColor,
+                    secondaryColorHex = pin.secondaryColorHex,
+                    secondaryColorName = pin.secondaryColorName
+                )
+                val wireBrush = getWireBrush(pColor, sColor)
 
                 Surface(
                     shape = RoundedCornerShape(14.dp),
@@ -339,77 +357,101 @@ fun InteractiveMotorConnector(
                                 // Pin badge
                                 Surface(
                                     shape = RoundedCornerShape(8.dp),
-                                    color = activePinColor.copy(alpha = 0.2f),
-                                    border = androidx.compose.foundation.BorderStroke(1.dp, activePinColor)
+                                    color = pColor.copy(alpha = 0.2f),
+                                    border = androidx.compose.foundation.BorderStroke(1.dp, pColor)
                                 ) {
                                     Text(
                                         text = "الطرف #${pin.pinNumber}",
                                         style = MaterialTheme.typography.labelMedium.copy(
                                             fontWeight = FontWeight.Bold,
-                                            color = activePinColor
+                                            color = pColor
                                         ),
                                         modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                                     )
                                 }
 
-                                Spacer(modifier = Modifier.width(10.dp))
+                                Spacer(modifier = Modifier.width(8.dp))
 
+                                // Wire color swatch & name
+                                Box(
+                                    modifier = Modifier
+                                        .size(14.dp)
+                                        .clip(CircleShape)
+                                        .background(wireBrush)
+                                        .border(1.dp, Color.White.copy(alpha = 0.8f), CircleShape)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
                                 Text(
-                                    text = pin.name,
-                                    style = MaterialTheme.typography.bodyLarge.copy(
+                                    text = pin.wireColor,
+                                    style = MaterialTheme.typography.bodyMedium.copy(
                                         fontWeight = FontWeight.Bold,
                                         color = Color.White
                                     )
                                 )
+                                if (sColor != null) {
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Surface(
+                                        shape = RoundedCornerShape(6.dp),
+                                        color = Color(0xFF334155)
+                                    ) {
+                                        Text(
+                                            text = "سلك مخطط",
+                                            style = MaterialTheme.typography.labelSmall.copy(
+                                                fontSize = 10.sp,
+                                                color = Color(0xFF38BDF8)
+                                            ),
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                        )
+                                    }
+                                }
                             }
 
-                            // Wire Color Pill
-                            Surface(
-                                shape = RoundedCornerShape(20.dp),
-                                color = Color(0xFF0F172A)
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(10.dp)
-                                            .clip(CircleShape)
-                                            .background(activePinColor)
-                                            .border(1.dp, Color.White.copy(alpha = 0.6f), CircleShape)
+                            // Role / Function indicator
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = Icons.Default.CheckCircle,
+                                    contentDescription = null,
+                                    tint = pColor,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(
+                                    text = pin.name.ifBlank { "طرف توصيل" },
+                                    style = MaterialTheme.typography.labelMedium.copy(
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color(0xFFE2E8F0)
                                     )
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text(
-                                        text = pin.wireColor,
-                                        style = MaterialTheme.typography.labelSmall.copy(
-                                            fontWeight = FontWeight.SemiBold,
-                                            color = Color.White
-                                        )
-                                    )
-                                }
+                                )
                             }
                         }
 
+                        // Detailed Description / Ohm resistance specifications
                         if (pin.functionDesc.isNotBlank()) {
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Row(verticalAlignment = Alignment.Top) {
-                                Icon(
-                                    imageVector = Icons.Default.Info,
-                                    contentDescription = null,
-                                    tint = activePinColor,
-                                    modifier = Modifier
-                                        .size(16.dp)
-                                        .padding(top = 2.dp)
-                                )
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text(
-                                    text = pin.functionDesc,
-                                    style = MaterialTheme.typography.bodySmall.copy(
-                                        color = Color(0xFFCBD5E1),
-                                        lineHeight = 18.sp
+                            Spacer(modifier = Modifier.height(10.dp))
+                            Surface(
+                                shape = RoundedCornerShape(10.dp),
+                                color = Color(0xFF0F172A),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(10.dp),
+                                    verticalAlignment = Alignment.Top
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Info,
+                                        contentDescription = null,
+                                        tint = Color(0xFF38BDF8),
+                                        modifier = Modifier.size(16.dp).padding(top = 2.dp)
                                     )
-                                )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(
+                                        text = pin.functionDesc,
+                                        style = MaterialTheme.typography.bodySmall.copy(
+                                            color = Color(0xFFCBD5E1),
+                                            lineHeight = 18.sp
+                                        )
+                                    )
+                                }
                             }
                         }
                     }

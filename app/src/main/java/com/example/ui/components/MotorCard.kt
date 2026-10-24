@@ -291,18 +291,18 @@ fun MotorCard(
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(130.dp)
+                        .height(140.dp)
                         .clip(RoundedCornerShape(12.dp))
                         .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
                 ) {
                     AsyncImage(
                         model = ImageRequest.Builder(context)
-                            .data(motor.imageUrl)
+                            .data(com.example.util.ImageHelper.getCoilData(motor.imageUrl))
                             .crossfade(true)
                             .build(),
                         contentDescription = motor.name,
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier.fillMaxWidth().height(130.dp)
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier.fillMaxWidth().height(140.dp)
                     )
                 }
             }
@@ -318,7 +318,9 @@ fun MotorCard(
                     motor.pinouts.take(6).forEach { pin ->
                         WireColorBadge(
                             wireColor = pin.wireColor,
-                            colorHex = pin.colorHex
+                            colorHex = pin.colorHex,
+                            secondaryColorHex = pin.secondaryColorHex,
+                            secondaryColorName = pin.secondaryColorName
                         )
                     }
                     if (motor.pinouts.size > 6) {

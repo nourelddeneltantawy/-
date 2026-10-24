@@ -273,8 +273,9 @@ fun AppContent(
                             currentScreen = if (selectedMotor != null) Screen.DETAIL else Screen.CATALOG
                         },
                         onSaveSuccess = { savedMotor ->
-                            motorViewModel.saveMotor(savedMotor) {
-                                motorViewModel.selectMotor(savedMotor)
+                            motorViewModel.saveMotor(savedMotor) { newId ->
+                                val motorWithId = if (savedMotor.id.isNotBlank()) savedMotor else savedMotor.copy(id = newId)
+                                motorViewModel.selectMotor(motorWithId)
                                 currentScreen = Screen.CATALOG
                             }
                         },

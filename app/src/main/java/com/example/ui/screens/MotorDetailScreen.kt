@@ -119,7 +119,7 @@ fun MotorDetailScreen(
                         if (motor.imageUrl.isNotBlank()) {
                             AsyncImage(
                                 model = ImageRequest.Builder(context)
-                                    .data(motor.imageUrl)
+                                    .data(com.example.util.ImageHelper.getCoilData(motor.imageUrl))
                                     .crossfade(true)
                                     .build(),
                                 contentDescription = motor.name,
@@ -271,7 +271,13 @@ fun MotorDetailScreen(
 
             // Pinouts list
             itemsIndexed(motor.pinouts) { _, pin ->
-                val pinColor = parseWireColorToComposeColor(pin.colorHex, pin.wireColor)
+                val (primaryColor, secondaryColor) = com.example.ui.components.resolveWireColors(
+                    colorHex = pin.colorHex,
+                    wireColorName = pin.wireColor,
+                    secondaryColorHex = pin.secondaryColorHex,
+                    secondaryColorName = pin.secondaryColorName
+                )
+                val wireBrush = com.example.ui.components.getWireBrush(primaryColor, secondaryColor)
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(12.dp),
@@ -324,10 +330,10 @@ fun MotorDetailScreen(
                             ) {
                                 Box(
                                     modifier = Modifier
-                                        .size(12.dp)
+                                        .size(13.dp)
                                         .clip(CircleShape)
-                                        .background(pinColor)
-                                        .border(1.dp, Color.White.copy(alpha = 0.5f), CircleShape)
+                                        .background(wireBrush)
+                                        .border(1.dp, Color.White.copy(alpha = 0.6f), CircleShape)
                                 )
                                 Spacer(modifier = Modifier.width(6.dp))
                                 Text(

@@ -353,20 +353,24 @@ class MotorViewModel(application: Application) : AndroidViewModel(application) {
                     addCategory(motor.category)
                 }
 
+                val assignedId = result.getOrThrow()
+                val finalMotor = if (motor.id.isNotBlank()) motor else motor.copy(id = assignedId)
+                _selectedMotor.value = finalMotor
+
                 // Optimistically update list
                 val current = _motorsState.value
                 if (current is MotorsUiState.Success) {
                     val updatedList = current.motors.toMutableList()
-                    val idx = updatedList.indexOfFirst { it.id == motor.id }
+                    val idx = if (motor.id.isNotBlank()) updatedList.indexOfFirst { it.id == motor.id } else -1
                     if (idx >= 0) {
-                        updatedList[idx] = motor
+                        updatedList[idx] = finalMotor
                     } else {
-                        updatedList.add(0, motor.copy(id = result.getOrThrow()))
+                        updatedList.add(0, finalMotor)
                     }
                     _motorsState.value = MotorsUiState.Success(updatedList)
                 }
 
-                onSuccess(result.getOrThrow())
+                onSuccess(assignedId)
             } else {
                 _actionMessage.value = "خطأ في الحفظ: ${result.exceptionOrNull()?.message}"
             }

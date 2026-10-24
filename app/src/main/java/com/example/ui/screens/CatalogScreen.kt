@@ -494,7 +494,7 @@ fun CatalogScreen(
                         ) {
                             itemsIndexed(
                                 items = filteredMotors,
-                                key = { _, motor -> motor.id }
+                                key = { index, motor -> if (motor.id.isNotBlank()) motor.id else "motor_idx_$index" }
                             ) { index, motor ->
                                 MotorCard(
                                     motor = motor,
