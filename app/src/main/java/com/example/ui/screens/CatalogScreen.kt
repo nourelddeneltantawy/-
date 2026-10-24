@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Login
@@ -26,6 +27,7 @@ import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
@@ -38,11 +40,15 @@ import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -74,8 +80,12 @@ fun CatalogScreen(
     isSuperAdmin: Boolean,
     isGuest: Boolean,
     onManageAdminsClick: () -> Unit,
+    onEditMotorClick: (Motor) -> Unit = {},
+    onDeleteMotorClick: (Motor) -> Unit = {},
+    onMoveMotor: (String, Boolean) -> Unit = { _, _ -> },
     modifier: Modifier = Modifier
 ) {
+    var motorToDelete by remember { mutableStateOf<Motor?>(null) }
     val allMotors = (motorsState as? MotorsUiState.Success)?.motors ?: emptyList()
 
     val dynamicBrands = remember(allMotors) {
@@ -372,13 +382,21 @@ fun CatalogScreen(
                             contentPadding = PaddingValues(top = 4.dp, bottom = 80.dp),
                             verticalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
-                            items(
+                            itemsIndexed(
                                 items = filteredMotors,
-                                key = { it.id }
-                            ) { motor ->
+                                key = { _, motor -> motor.id }
+                            ) { index, motor ->
                                 MotorCard(
                                     motor = motor,
-                                    onClick = { onMotorClick(motor) }
+                                    onClick = { onMotorClick(motor) },
+                                    onEditClick = if (isAdmin) { { onEditMotorClick(motor) } } else null,
+                                    onDeleteClick = if (isAdmin) { { motorToDelete = motor } } else null,
+                                    onMoveUp = if (isAdmin && index > 0) { { onMoveMotor(motor.id, true) } } else null,
+                                    onMoveDown = if (isAdmin && index < filteredMotors.size - 1) { { onMoveMotor(motor.id, false) } } else null,
+                                    canMoveUp = index > 0,
+                                    canMoveDown = index < filteredMotors.size - 1,
+                                    isAdmin = isAdmin,
+                                    modifier = Modifier.animateItem()
                                 )
                             }
                         }
@@ -386,5 +404,44 @@ fun CatalogScreen(
                 }
             }
         }
+    }
+
+    if (motorToDelete != null) {
+        val motor = motorToDelete!!
+        AlertDialog(
+            onDismissRequest = { motorToDelete = null },
+            title = {
+                Text(
+                    text = "حذف الماتور",
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.error
+                )
+            },
+            text = {
+                Text(
+                    text = "هل أنت متأكد من رغبتك في حذف \"${motor.name}\" (${motor.brand})؟ سيتم حذف جميع الأطراف والألوان الخاصة به نهائياً.",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        onDeleteMotorClick(motor)
+                        motorToDelete = null
+                    }
+                ) {
+                    Text(
+                        text = "حذف نهائي",
+                        color = MaterialTheme.colorScheme.error,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { motorToDelete = null }) {
+                    Text("إلغاء")
+                }
+            }
+        )
     }
 }

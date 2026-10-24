@@ -215,6 +215,16 @@ fun AppContent(
                         if (isSuperAdmin) {
                             currentScreen = Screen.MANAGE_ADMINS
                         }
+                    },
+                    onEditMotorClick = { motor ->
+                        motorToEdit = motor
+                        currentScreen = Screen.ADMIN_EDIT
+                    },
+                    onDeleteMotorClick = { motor ->
+                        motorViewModel.deleteMotor(motor.id)
+                    },
+                    onMoveMotor = { motorId, moveUp ->
+                        motorViewModel.moveMotor(motorId, moveUp)
                     }
                 )
             }

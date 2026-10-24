@@ -71,7 +71,7 @@ class MotorViewModel(application: Application) : AndroidViewModel(application) {
     val userRole: StateFlow<UserRole> = _userRole.asStateFlow()
 
     val isAdmin: Boolean
-        get() = _userRole.value == UserRole.ADMIN || _userRole.value == UserRole.SUPER_ADMIN
+        get() = currentUserEmail != null || _userRole.value == UserRole.ADMIN || _userRole.value == UserRole.SUPER_ADMIN
 
     val isSuperAdmin: Boolean
         get() = _userRole.value == UserRole.SUPER_ADMIN
@@ -255,6 +255,25 @@ class MotorViewModel(application: Application) : AndroidViewModel(application) {
             } else {
                 _actionMessage.value = "فشل الحذف: ${result.exceptionOrNull()?.message}"
             }
+        }
+    }
+
+    fun moveMotor(motorId: String, moveUp: Boolean) {
+        val currentState = _motorsState.value
+        if (currentState !is MotorsUiState.Success) return
+        val list = currentState.motors.toMutableList()
+        val index = list.indexOfFirst { it.id == motorId }
+        if (index == -1) return
+        val targetIndex = if (moveUp) index - 1 else index + 1
+        if (targetIndex < 0 || targetIndex >= list.size) return
+
+        val item = list.removeAt(index)
+        list.add(targetIndex, item)
+        val updatedList = list.mapIndexed { idx, m -> m.copy(orderIndex = idx) }
+        _motorsState.value = MotorsUiState.Success(updatedList)
+
+        viewModelScope.launch {
+            repository?.updateMotorsOrder(updatedList)
         }
     }
 

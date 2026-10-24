@@ -76,9 +76,12 @@ class MotorRepository(private val db: FirebaseFirestore) {
                             }
                         }
                         if (remoteMotors.isNotEmpty()) {
-                            remoteMotors.sortedByDescending { it.createdAt ?: it.updatedAt }
+                            remoteMotors.sortedWith(
+                                compareBy<Motor> { it.orderIndex }
+                                    .thenByDescending { it.createdAt ?: it.updatedAt }
+                            )
                         } else {
-                            DefaultMotorsData.getDefaultMotors(auth.currentUser?.uid ?: "guest")
+                            DefaultMotorsData.getDefaultMotors(auth?.currentUser?.uid ?: "guest")
                         }
                     }
                     .catch { error ->
@@ -136,6 +139,7 @@ class MotorRepository(private val db: FirebaseFirestore) {
                         "motorType" to motor.motorType,
                         "notes" to motor.notes,
                         "imageUrl" to motor.imageUrl,
+                        "orderIndex" to motor.orderIndex,
                         "pinouts" to motor.pinouts.map { it.toMap() },
                         "updatedAt" to FieldValue.serverTimestamp()
                     )
@@ -144,6 +148,24 @@ class MotorRepository(private val db: FirebaseFirestore) {
             Result.success(motorId)
         } catch (e: Exception) {
             handleFirestoreError(e, OperationType.WRITE, path)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun updateMotorsOrder(orderedMotors: List<Motor>): Result<Unit> {
+        val path = "motors"
+        return try {
+            val batch = db.batch()
+            orderedMotors.forEachIndexed { index, motor ->
+                if (motor.id.isNotBlank()) {
+                    val docRef = db.collection(path).document(motor.id)
+                    batch.update(docRef, "orderIndex", index)
+                }
+            }
+            batch.commit().await()
+            Result.success(Unit)
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.UPDATE, path)
             Result.failure(e)
         }
     }

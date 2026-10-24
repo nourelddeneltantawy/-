@@ -12,6 +12,7 @@ data class Motor(
     val notes: String = "",
     val imageUrl: String = "",
     val pinouts: List<Pinout> = emptyList(),
+    val orderIndex: Int = 0,
     val createdAt: Timestamp? = null,
     val updatedAt: Timestamp? = null
 ) {
@@ -25,6 +26,7 @@ data class Motor(
             "motorType" to motorType,
             "notes" to notes,
             "imageUrl" to imageUrl,
+            "orderIndex" to orderIndex,
             "pinouts" to pinouts.map { it.toMap() }
         )
         return map
