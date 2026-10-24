@@ -144,9 +144,12 @@ fun AppContent(
     motorViewModel: MotorViewModel = viewModel(),
     aiViewModel: AiStudioViewModel = viewModel()
 ) {
+    val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
     var currentScreen by remember { mutableStateOf(Screen.CATALOG) }
     var motorToEdit by remember { mutableStateOf<Motor?>(null) }
     var onAiImageReceivedCallback by remember { mutableStateOf<((String) -> Unit)?>(null) }
+    var activeUpdateInfo by remember { mutableStateOf<com.example.data.model.AppUpdateInfo?>(null) }
 
     val motorsState by motorViewModel.motorsState.collectAsState()
     val searchQuery by motorViewModel.searchQuery.collectAsState()
@@ -161,6 +164,56 @@ fun AppContent(
 
     androidx.compose.runtime.LaunchedEffect(userEmail) {
         motorViewModel.refreshUserRole(userEmail)
+    }
+
+    // 1. Startup In-App Update Check (runs on launch in background, non-blocking)
+    androidx.compose.runtime.LaunchedEffect(Unit) {
+        try {
+            val update = com.example.util.UpdateChecker.checkUpdate(context)
+            if (update != null && update.hasUpdate) {
+                activeUpdateInfo = update
+            }
+        } catch (_: Throwable) {}
+    }
+
+    // Manual update check handler
+    val handleManualUpdateCheck = {
+        coroutineScope.launch {
+            android.widget.Toast.makeText(context, "جاري التحقق من وجود تحديثات...", android.widget.Toast.LENGTH_SHORT).show()
+            try {
+                val update = com.example.util.UpdateChecker.checkUpdate(context)
+                if (update != null && update.hasUpdate) {
+                    activeUpdateInfo = update
+                } else if (update != null) {
+                    android.widget.Toast.makeText(
+                        context,
+                        "أنت تستخدم أحدث إصدار من التطبيق (v${BuildConfig.VERSION_NAME}) 🎉",
+                        android.widget.Toast.LENGTH_LONG
+                    ).show()
+                } else {
+                    android.widget.Toast.makeText(
+                        context,
+                        "تعذر الاتصال بملف التحديثات، يرجى التحقق من اتصال الإنترنت.",
+                        android.widget.Toast.LENGTH_SHORT
+                    ).show()
+                }
+            } catch (_: Throwable) {
+                android.widget.Toast.makeText(
+                    context,
+                    "حدث خطأ أثناء فحص التحديثات",
+                    android.widget.Toast.LENGTH_SHORT
+                ).show()
+            }
+        }
+    }
+
+    // Display In-App Update Dialog when update is found
+    activeUpdateInfo?.let { updateInfo ->
+        com.example.ui.components.UpdateDialog(
+            updateInfo = updateInfo,
+            onDismiss = { activeUpdateInfo = null },
+            isAdmin = isAdmin
+        )
     }
 
     AnimatedContent(
@@ -196,6 +249,7 @@ fun AppContent(
                             currentScreen = Screen.AI_STUDIO
                         }
                     },
+                    onCheckForUpdates = { handleManualUpdateCheck() },
                     onSignOutClick = {
                         if (isGuest) {
                             currentScreen = Screen.AUTH

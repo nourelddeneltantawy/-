@@ -996,13 +996,18 @@ fun AdminMotorScreen(
                         }
 
                         isSaving = true
+                        val trimmedCategory = category.trim()
+                        if (trimmedCategory.isNotBlank() && availableCategories.none { it.name.equals(trimmedCategory, ignoreCase = true) }) {
+                            onAddNewCategory(trimmedCategory)
+                        }
+
                         val updatedMotor = Motor(
                             id = initialMotor?.id ?: "",
                             userId = initialMotor?.userId ?: currentUserId,
                             name = name.trim(),
                             brand = brand.trim(),
                             model = model.trim(),
-                            category = category.trim(),
+                            category = trimmedCategory,
                             motorType = motorType.trim(),
                             notes = notes.trim(),
                             imageUrl = imageUrl.trim(),

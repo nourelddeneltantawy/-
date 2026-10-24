@@ -196,10 +196,8 @@ class MotorViewModel(application: Application) : AndroidViewModel(application) {
         observeCategoriesJob = viewModelScope.launch {
             try {
                 repository?.observeCategories()?.collect { catList ->
-                    if (catList.isNotEmpty()) {
-                        _categories.value = catList
-                        saveCachedCategories(catList)
-                    }
+                    _categories.value = catList
+                    saveCachedCategories(catList)
                 }
             } catch (e: Throwable) {
                 android.util.Log.e("MotorViewModel", "observeCategories error", e)

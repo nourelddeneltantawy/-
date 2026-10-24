@@ -39,6 +39,7 @@ import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FolderSpecial
 import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -100,6 +101,7 @@ fun CatalogScreen(
     isSuperAdmin: Boolean,
     isGuest: Boolean,
     onManageAdminsClick: () -> Unit,
+    onCheckForUpdates: () -> Unit = {},
     onEditMotorClick: (Motor) -> Unit = {},
     onDeleteMotorClick: (Motor) -> Unit = {},
     onMoveMotor: (String, Boolean) -> Unit = { _, _ -> },
@@ -178,6 +180,18 @@ fun CatalogScreen(
                                 tint = MaterialTheme.colorScheme.tertiary
                             )
                         }
+                    }
+
+                    // Check for Updates action
+                    IconButton(
+                        onClick = onCheckForUpdates,
+                        modifier = Modifier.testTag("check_updates_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.SystemUpdate,
+                            contentDescription = "التحقق من وجود تحديثات للتطبيق",
+                            tint = MaterialTheme.colorScheme.primary
+                        )
                     }
 
                     // Sign Out or Sign In
@@ -305,7 +319,11 @@ fun CatalogScreen(
                             .clip(RoundedCornerShape(8.dp))
                             .combinedClickable(
                                 onClick = { onCategorySelect(cat.name) },
-                                onLongClick = { categoryToDelete = cat }
+                                onLongClick = {
+                                    if (isAdmin) {
+                                        categoryToDelete = cat
+                                    }
+                                }
                             )
                     ) {
                         Row(
@@ -330,33 +348,35 @@ fun CatalogScreen(
                     }
                 }
 
-                // 4. "+ إضافة قائمة جديدة" Button
-                item {
-                    Surface(
-                        shape = RoundedCornerShape(8.dp),
-                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.1f),
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(8.dp))
-                            .clickable { showAddCategoryDialog = true }
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                            verticalAlignment = Alignment.CenterVertically
+                // 4. "+ إضافة قائمة جديدة" Button (Admins/Supervisors only)
+                if (isAdmin) {
+                    item {
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable { showAddCategoryDialog = true }
                         ) {
-                            Icon(
-                                imageVector = Icons.Default.Add,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(16.dp)
-                            )
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text(
-                                text = "قائمة جديدة",
-                                style = MaterialTheme.typography.labelMedium.copy(
-                                    fontWeight = FontWeight.Bold,
-                                    color = MaterialTheme.colorScheme.primary
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Add,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(16.dp)
                                 )
-                            )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(
+                                    text = "إضافة قائمة (مشرف)",
+                                    style = MaterialTheme.typography.labelMedium.copy(
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                )
+                            }
                         }
                     }
                 }
@@ -518,19 +538,19 @@ fun CatalogScreen(
         }
     }
 
-    // Add Category Dialog
-    if (showAddCategoryDialog) {
+    // Add Category Dialog (Admin only)
+    if (isAdmin && showAddCategoryDialog) {
         AlertDialog(
             onDismissRequest = { showAddCategoryDialog = false },
-            title = { Text("إضافة قائمة مخصصة جديدة", fontWeight = FontWeight.Bold) },
+            title = { Text("إضافة قائمة تشغيل جديدة (خاص بالمشرفين)", fontWeight = FontWeight.Bold) },
             text = {
                 Column {
-                    Text("أدخل اسم القائمة لتصنيف مواتيرك بداخلها كما تريد:")
+                    Text("أدخل اسم القائمة أو التصنيف الجديد. سيتم حفظه في السحابة ومزامنته فورياً مع جميع مستخدمي التطبيق:")
                     Spacer(modifier = Modifier.height(10.dp))
                     OutlinedTextField(
                         value = newCategoryName,
                         onValueChange = { newCategoryName = it },
-                        label = { Text("اسم القائمة (مثال: مواتير شربون، مواتير إل جي)") },
+                        label = { Text("اسم القائمة (مثال: مواتير يونيفرسال، دايو...)") },
                         modifier = Modifier.fillMaxWidth(),
                         singleLine = true,
                         shape = RoundedCornerShape(10.dp)
@@ -548,7 +568,7 @@ fun CatalogScreen(
                         }
                     }
                 ) {
-                    Text("إضافة القائمة")
+                    Text("إضافة ونشر للجميع")
                 }
             },
             dismissButton = {
@@ -559,21 +579,21 @@ fun CatalogScreen(
         )
     }
 
-    // Delete Category Confirmation Dialog
-    if (categoryToDelete != null) {
+    // Delete Category Confirmation Dialog (Admin only)
+    if (isAdmin && categoryToDelete != null) {
         val cat = categoryToDelete!!
         AlertDialog(
             onDismissRequest = { categoryToDelete = null },
             title = {
                 Text(
-                    text = "حذف القائمة",
+                    text = "حذف القائمة (خاص بالمشرفين)",
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.error
                 )
             },
             text = {
                 Text(
-                    text = "هل أنت متأكد من حذف قائمة \"${cat.name}\"؟ لن يتم حذف المواتير المسجلة بداخلها، بل سيتم إزالة تصنيفها فقط.",
+                    text = "هل أنت متأكد من حذف قائمة \"${cat.name}\"؟ سيتم حذف هذه القائمة وتحديثها فوراً لدى جميع المستخدمين. (لن يتم حذف المواتير المسجلة بداخلها).",
                     style = MaterialTheme.typography.bodyMedium
                 )
             },
@@ -585,7 +605,7 @@ fun CatalogScreen(
                     }
                 ) {
                     Text(
-                        text = "حذف القائمة",
+                        text = "حذف القائمة من السحابة",
                         color = MaterialTheme.colorScheme.error,
                         fontWeight = FontWeight.Bold
                     )
@@ -595,7 +615,6 @@ fun CatalogScreen(
                 TextButton(onClick = { categoryToDelete = null }) {
                     Text("إلغاء")
                 }
-            }
         )
     }
 
