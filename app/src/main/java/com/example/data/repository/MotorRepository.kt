@@ -81,20 +81,20 @@ class MotorRepository(private val db: FirebaseFirestore) {
                                     .thenByDescending { it.createdAt ?: it.updatedAt }
                             )
                         } else {
-                            DefaultMotorsData.getDefaultMotors(auth?.currentUser?.uid ?: "guest")
+                            emptyList()
                         }
                     }
                     .catch { error ->
-                        android.util.Log.w("MotorRepository", "Firestore observeMotors error, using fallback: ${error.message}")
+                        android.util.Log.w("MotorRepository", "Firestore observeMotors error: ${error.message}")
                         if (error is Exception) {
                             handleFirestoreError(error, OperationType.LIST, path)
                         }
-                        emit(DefaultMotorsData.getDefaultMotors(auth.currentUser?.uid ?: "guest"))
+                        emit(emptyList())
                     }
             )
         } catch (e: Throwable) {
             android.util.Log.e("MotorRepository", "observeMotors exception", e)
-            emit(DefaultMotorsData.getDefaultMotors(auth.currentUser?.uid ?: "guest"))
+            emit(emptyList())
         }
     }
 
@@ -137,6 +137,7 @@ class MotorRepository(private val db: FirebaseFirestore) {
                         "brand" to motor.brand,
                         "model" to motor.model,
                         "motorType" to motor.motorType,
+                        "category" to motor.category,
                         "notes" to motor.notes,
                         "imageUrl" to motor.imageUrl,
                         "orderIndex" to motor.orderIndex,
@@ -177,6 +178,56 @@ class MotorRepository(private val db: FirebaseFirestore) {
             Result.success(Unit)
         } catch (e: Exception) {
             handleFirestoreError(e, OperationType.DELETE, path)
+            Result.failure(e)
+        }
+    }
+
+    // Categories Management
+    fun observeCategories(): Flow<List<com.example.data.model.MotorCategory>> = flow {
+        val path = "categories"
+        try {
+            emitAll(
+                db.collection(path)
+                    .snapshots()
+                    .map { snapshot ->
+                        snapshot.documents.mapNotNull { doc ->
+                            try {
+                                val cat = doc.toObject(com.example.data.model.MotorCategory::class.java)
+                                cat?.copy(id = doc.id)
+                            } catch (_: Throwable) {
+                                null
+                            }
+                        }.sortedWith(compareBy<com.example.data.model.MotorCategory> { it.orderIndex }.thenBy { it.name })
+                    }
+                    .catch { error ->
+                        android.util.Log.w("MotorRepository", "Categories observe error: ${error.message}")
+                        emit(emptyList())
+                    }
+            )
+        } catch (e: Throwable) {
+            emit(emptyList())
+        }
+    }
+
+    suspend fun saveCategory(category: com.example.data.model.MotorCategory): Result<String> {
+        val catId = if (category.id.isNotBlank()) category.id else UUID.randomUUID().toString()
+        val docRef = db.collection("categories").document(catId)
+        return try {
+            val payload = category.toMap().toMutableMap()
+            payload["id"] = catId
+            payload["createdAt"] = FieldValue.serverTimestamp()
+            docRef.set(payload).await()
+            Result.success(catId)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun deleteCategory(categoryId: String): Result<Unit> {
+        return try {
+            db.collection("categories").document(categoryId).delete().await()
+            Result.success(Unit)
+        } catch (e: Exception) {
             Result.failure(e)
         }
     }

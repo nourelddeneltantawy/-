@@ -1,11 +1,12 @@
 package com.example.ui.viewmodel
 
 import android.app.Application
+import android.content.Context
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import com.example.data.DefaultMotorsData
 import com.example.data.model.AdminRecord
 import com.example.data.model.Motor
+import com.example.data.model.MotorCategory
 import com.example.data.model.Pinout
 import com.example.data.repository.AdminRepository
 import com.example.data.repository.MotorRepository
@@ -19,6 +20,7 @@ import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import java.util.UUID
 
 enum class UserRole {
     REGULAR,
@@ -61,6 +63,10 @@ class MotorViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private val sharedPrefs by lazy {
+        application.getSharedPreferences("washer_motor_prefs", Context.MODE_PRIVATE)
+    }
+
     val currentUserId: String?
         get() = try { auth?.currentUser?.uid } catch (_: Throwable) { null }
 
@@ -76,10 +82,22 @@ class MotorViewModel(application: Application) : AndroidViewModel(application) {
     val isSuperAdmin: Boolean
         get() = _userRole.value == UserRole.SUPER_ADMIN
 
+    // Clean initial state - user creates from scratch!
     private val _motorsState = MutableStateFlow<MotorsUiState>(
-        MotorsUiState.Success(DefaultMotorsData.getDefaultMotors("guest"))
+        MotorsUiState.Success(emptyList())
     )
     val motorsState: StateFlow<MotorsUiState> = _motorsState.asStateFlow()
+
+    // User-defined Custom Categories / Lists
+    private val _categories = MutableStateFlow<List<MotorCategory>>(loadCachedCategories())
+    val categories: StateFlow<List<MotorCategory>> = _categories.asStateFlow()
+
+    private val _selectedCategory = MutableStateFlow("الكل")
+    val selectedCategory: StateFlow<String> = _selectedCategory.asStateFlow()
+
+    // Favorites List
+    private val _favorites = MutableStateFlow<Set<String>>(loadFavorites())
+    val favorites: StateFlow<Set<String>> = _favorites.asStateFlow()
 
     private val _adminsList = MutableStateFlow<List<AdminRecord>>(emptyList())
     val adminsList: StateFlow<List<AdminRecord>> = _adminsList.asStateFlow()
@@ -103,9 +121,11 @@ class MotorViewModel(application: Application) : AndroidViewModel(application) {
     val isSaving = _isSaving.asStateFlow()
 
     private var observeJob: kotlinx.coroutines.Job? = null
+    private var observeCategoriesJob: kotlinx.coroutines.Job? = null
 
     init {
         startObservingMotors()
+        startObservingCategories()
 
         viewModelScope.launch {
             try {
@@ -116,6 +136,121 @@ class MotorViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         checkUserRoleAndInitialize()
+    }
+
+    private fun loadFavorites(): Set<String> {
+        return try {
+            sharedPrefs.getStringSet("favorite_motors", emptySet()) ?: emptySet()
+        } catch (_: Throwable) {
+            emptySet()
+        }
+    }
+
+    private fun saveFavorites(set: Set<String>) {
+        try {
+            sharedPrefs.edit().putStringSet("favorite_motors", set).apply()
+        } catch (_: Throwable) {}
+    }
+
+    fun isFavorite(motorId: String): Boolean {
+        return _favorites.value.contains(motorId)
+    }
+
+    fun toggleFavorite(motorId: String) {
+        val current = _favorites.value.toMutableSet()
+        if (current.contains(motorId)) {
+            current.remove(motorId)
+            _actionMessage.value = "تمت الإزالة من المفضلة"
+        } else {
+            current.add(motorId)
+            _actionMessage.value = "تمت الإضافة إلى المفضلة ❤️"
+        }
+        _favorites.value = current
+        saveFavorites(current)
+    }
+
+    private fun loadCachedCategories(): List<MotorCategory> {
+        return try {
+            val raw = sharedPrefs.getString("cached_categories", null)
+            if (raw.isNullOrBlank()) {
+                emptyList()
+            } else {
+                raw.split(";;;").filter { it.isNotBlank() }.map { name ->
+                    MotorCategory(id = name, name = name)
+                }
+            }
+        } catch (_: Throwable) {
+            emptyList()
+        }
+    }
+
+    private fun saveCachedCategories(cats: List<MotorCategory>) {
+        try {
+            val serialized = cats.joinToString(";;;") { it.name }
+            sharedPrefs.edit().putString("cached_categories", serialized).apply()
+        } catch (_: Throwable) {}
+    }
+
+    fun startObservingCategories() {
+        observeCategoriesJob?.cancel()
+        observeCategoriesJob = viewModelScope.launch {
+            try {
+                repository?.observeCategories()?.collect { catList ->
+                    if (catList.isNotEmpty()) {
+                        _categories.value = catList
+                        saveCachedCategories(catList)
+                    }
+                }
+            } catch (e: Throwable) {
+                android.util.Log.e("MotorViewModel", "observeCategories error", e)
+            }
+        }
+    }
+
+    fun addCategory(name: String, onSuccess: () -> Unit = {}) {
+        val cleanName = name.trim()
+        if (cleanName.isBlank()) return
+
+        val existing = _categories.value
+        if (existing.any { it.name.equals(cleanName, ignoreCase = true) }) {
+            _actionMessage.value = "هذه القائمة موجودة بالفعل"
+            return
+        }
+
+        val newCat = MotorCategory(
+            id = UUID.randomUUID().toString(),
+            name = cleanName,
+            orderIndex = existing.size
+        )
+        val updated = existing + newCat
+        _categories.value = updated
+        saveCachedCategories(updated)
+        _selectedCategory.value = cleanName
+        _actionMessage.value = "تمت إضافة قائمة \"$cleanName\" بنجاح"
+
+        viewModelScope.launch {
+            repository?.saveCategory(newCat)
+            onSuccess()
+        }
+    }
+
+    fun deleteCategory(categoryId: String) {
+        val cat = _categories.value.find { it.id == categoryId || it.name == categoryId } ?: return
+        val updated = _categories.value.filter { it.id != cat.id && it.name != cat.name }
+        _categories.value = updated
+        saveCachedCategories(updated)
+        if (_selectedCategory.value == cat.name) {
+            _selectedCategory.value = "الكل"
+        }
+        _actionMessage.value = "تم حذف القائمة \"${cat.name}\""
+
+        viewModelScope.launch {
+            repository?.deleteCategory(cat.id)
+        }
+    }
+
+    fun onCategorySelected(category: String) {
+        _selectedCategory.value = category
     }
 
     fun startObservingMotors() {
@@ -154,9 +289,6 @@ class MotorViewModel(application: Application) : AndroidViewModel(application) {
                         try {
                             adminRepository?.bootstrapSuperAdminsIfMissing()
                         } catch (_: Throwable) {}
-                        try {
-                            repository?.seedDefaultMotorsIfEmpty()
-                        } catch (_: Throwable) {}
                     } else {
                         val isDynamic = try {
                             adminRepository?.checkIsAdmin(cleanEmail) ?: false
@@ -165,9 +297,6 @@ class MotorViewModel(application: Application) : AndroidViewModel(application) {
                         }
                         if (isDynamic) {
                             _userRole.value = UserRole.ADMIN
-                            try {
-                                repository?.seedDefaultMotorsIfEmpty()
-                            } catch (_: Throwable) {}
                         } else {
                             _userRole.value = UserRole.REGULAR
                         }
@@ -205,11 +334,6 @@ class MotorViewModel(application: Application) : AndroidViewModel(application) {
         motor: Motor,
         onSuccess: (String) -> Unit = {}
     ) {
-        if (!isAdmin) {
-            _actionMessage.value = "عفواً، لا تملك صلاحية المشرف للتعديل أو الإضافة"
-            return
-        }
-
         viewModelScope.launch {
             _isSaving.value = true
             val repo = repository
@@ -221,8 +345,27 @@ class MotorViewModel(application: Application) : AndroidViewModel(application) {
             val result = repo.saveMotor(motor)
             _isSaving.value = false
             if (result.isSuccess) {
-                _actionMessage.value = "تم حفظ ونشر الماتور بنجاح!"
+                _actionMessage.value = "تم حفظ الماتور بنجاح!"
                 _selectedMotor.value = motor
+
+                // Auto add motor category to user categories if not present
+                if (motor.category.isNotBlank() && _categories.value.none { it.name.equals(motor.category, ignoreCase = true) }) {
+                    addCategory(motor.category)
+                }
+
+                // Optimistically update list
+                val current = _motorsState.value
+                if (current is MotorsUiState.Success) {
+                    val updatedList = current.motors.toMutableList()
+                    val idx = updatedList.indexOfFirst { it.id == motor.id }
+                    if (idx >= 0) {
+                        updatedList[idx] = motor
+                    } else {
+                        updatedList.add(0, motor.copy(id = result.getOrThrow()))
+                    }
+                    _motorsState.value = MotorsUiState.Success(updatedList)
+                }
+
                 onSuccess(result.getOrThrow())
             } else {
                 _actionMessage.value = "خطأ في الحفظ: ${result.exceptionOrNull()?.message}"
@@ -234,26 +377,33 @@ class MotorViewModel(application: Application) : AndroidViewModel(application) {
         motorId: String,
         onSuccess: () -> Unit = {}
     ) {
-        if (!isAdmin) {
-            _actionMessage.value = "عفواً، لا تملك صلاحية المشرف للحذف"
-            return
+        // Immediate optimistic UI removal so motor vanishes instantly without delay!
+        val current = _motorsState.value
+        if (current is MotorsUiState.Success) {
+            val updated = current.motors.filter { it.id != motorId }
+            _motorsState.value = MotorsUiState.Success(updated)
         }
+
+        if (_selectedMotor.value?.id == motorId) {
+            _selectedMotor.value = null
+        }
+
+        if (_favorites.value.contains(motorId)) {
+            val newFavs = _favorites.value.filter { it != motorId }.toSet()
+            _favorites.value = newFavs
+            saveFavorites(newFavs)
+        }
+
+        _actionMessage.value = "تم حذف الماتور بنجاح"
+        onSuccess()
 
         viewModelScope.launch {
             val repo = repository
-            if (repo == null) {
-                _actionMessage.value = "خدمة التخزين السحابي غير متصلة حالياً"
-                return@launch
-            }
-            val result = repo.deleteMotor(motorId)
-            if (result.isSuccess) {
-                _actionMessage.value = "تم حذف الماتور بنجاح"
-                if (_selectedMotor.value?.id == motorId) {
-                    _selectedMotor.value = null
+            if (repo != null) {
+                val result = repo.deleteMotor(motorId)
+                if (result.isFailure) {
+                    android.util.Log.e("MotorViewModel", "Remote delete failed: ${result.exceptionOrNull()?.message}")
                 }
-                onSuccess()
-            } else {
-                _actionMessage.value = "فشل الحذف: ${result.exceptionOrNull()?.message}"
             }
         }
     }

@@ -150,8 +150,9 @@ fun AppContent(
 
     val motorsState by motorViewModel.motorsState.collectAsState()
     val searchQuery by motorViewModel.searchQuery.collectAsState()
-    val selectedBrand by motorViewModel.selectedBrand.collectAsState()
-    val selectedMotorType by motorViewModel.selectedMotorType.collectAsState()
+    val categories by motorViewModel.categories.collectAsState()
+    val selectedCategory by motorViewModel.selectedCategory.collectAsState()
+    val favorites by motorViewModel.favorites.collectAsState()
     val selectedMotor by motorViewModel.selectedMotor.collectAsState()
     val adminsList by motorViewModel.adminsList.collectAsState()
     val userRole by motorViewModel.userRole.collectAsState()
@@ -160,14 +161,6 @@ fun AppContent(
 
     androidx.compose.runtime.LaunchedEffect(userEmail) {
         motorViewModel.refreshUserRole(userEmail)
-    }
-
-    val allMotors = (motorsState as? MotorsUiState.Success)?.motors ?: emptyList()
-    val existingBrands = remember(allMotors) {
-        allMotors.map { it.brand.trim() }.filter { it.isNotBlank() }.distinct().sorted()
-    }
-    val existingMotorTypes = remember(allMotors) {
-        allMotors.map { it.motorType.trim() }.filter { it.isNotBlank() }.distinct().sorted()
     }
 
     AnimatedContent(
@@ -181,10 +174,13 @@ fun AppContent(
                     motorsState = motorsState,
                     searchQuery = searchQuery,
                     onSearchQueryChange = motorViewModel::onSearchQueryChanged,
-                    selectedBrand = selectedBrand,
-                    onBrandSelect = motorViewModel::onBrandSelected,
-                    selectedMotorType = selectedMotorType,
-                    onMotorTypeSelect = motorViewModel::onMotorTypeSelected,
+                    categories = categories,
+                    selectedCategory = selectedCategory,
+                    onCategorySelect = motorViewModel::onCategorySelected,
+                    onAddNewCategory = { motorViewModel.addCategory(it) },
+                    onDeleteCategory = { motorViewModel.deleteCategory(it) },
+                    favoriteMotorIds = favorites,
+                    onToggleFavorite = motorViewModel::toggleFavorite,
                     onMotorClick = { motor ->
                         motorViewModel.selectMotor(motor)
                         currentScreen = Screen.DETAIL
@@ -254,7 +250,9 @@ fun AppContent(
                                 currentScreen = Screen.AI_STUDIO
                             }
                         },
-                        isAdmin = isAdmin
+                        isAdmin = isAdmin,
+                        isFavorite = motorViewModel.isFavorite(motor.id),
+                        onToggleFavorite = { motorViewModel.toggleFavorite(motor.id) }
                     )
                 } ?: run {
                     currentScreen = Screen.CATALOG
@@ -277,6 +275,7 @@ fun AppContent(
                         onSaveSuccess = { savedMotor ->
                             motorViewModel.saveMotor(savedMotor) {
                                 motorViewModel.selectMotor(savedMotor)
+                                currentScreen = Screen.CATALOG
                             }
                         },
                         onDeleteSuccess = {
@@ -290,8 +289,8 @@ fun AppContent(
                             onAiImageReceivedCallback = onImageReady
                             currentScreen = Screen.AI_STUDIO
                         },
-                        existingBrands = existingBrands,
-                        existingMotorTypes = existingMotorTypes,
+                        availableCategories = categories,
+                        onAddNewCategory = { motorViewModel.addCategory(it) },
                         isSuperAdmin = isSuperAdmin,
                         onManageAdminsClick = {
                             currentScreen = Screen.MANAGE_ADMINS

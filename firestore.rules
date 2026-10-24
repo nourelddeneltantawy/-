@@ -55,12 +55,14 @@ service cloud.firestore {
       return data.id is string && data.id.size() > 0 && data.id.size() <= 128 &&
         data.userId is string && data.userId.size() > 0 && data.userId.size() <= 128 &&
         data.name is string && data.name.size() > 0 && data.name.size() <= 200 &&
-        data.brand is string && data.brand.size() > 0 && data.brand.size() <= 100 &&
-        data.model is string && data.model.size() > 0 && data.model.size() <= 100 &&
+        (!('brand' in data) || (data.brand is string && data.brand.size() <= 100)) &&
+        (!('model' in data) || (data.model is string && data.model.size() <= 100)) &&
+        (!('category' in data) || (data.category is string && data.category.size() <= 100)) &&
+        (!('orderIndex' in data) || (data.orderIndex is int || data.orderIndex is number)) &&
         (!('motorType' in data) || (data.motorType is string && data.motorType.size() <= 100)) &&
         (!('notes' in data) || (data.notes is string && data.notes.size() <= 2000)) &&
         (!('imageUrl' in data) || (data.imageUrl is string && data.imageUrl.size() <= 2000000)) &&
-        data.pinouts is list && data.pinouts.size() <= 30 &&
+        data.pinouts is list && data.pinouts.size() <= 50 &&
         data.createdAt is timestamp && data.createdAt <= request.time &&
         data.updatedAt is timestamp && data.updatedAt <= request.time;
     }
@@ -73,25 +75,24 @@ service cloud.firestore {
         data.updatedAt is timestamp && data.updatedAt <= request.time;
     }
 
-    // Motors collection: Public read for all users and guests, Write restricted strictly to Admins
+    // Motors collection: Public read, Write/Delete for signed-in users
     match /motors/{motorId} {
       allow get, list: if true;
-
-      allow create: if isAdmin() &&
+      allow create: if isSignedIn() &&
         isValidId(motorId) &&
         incoming().userId == request.auth.uid &&
         incoming().id == motorId &&
-        incoming().keys().hasAll(['id', 'userId', 'name', 'brand', 'model', 'pinouts', 'createdAt', 'updatedAt']) &&
-        incoming().keys().hasOnly(['id', 'userId', 'name', 'brand', 'model', 'motorType', 'notes', 'imageUrl', 'pinouts', 'createdAt', 'updatedAt']) &&
         isValidMotor(incoming());
-
-      allow update: if isAdmin() &&
+      allow update: if isSignedIn() &&
         incoming().id == existing().id &&
-        incoming().createdAt == existing().createdAt &&
-        isValidMotor(incoming()) &&
-        incoming().userId == existing().userId;
+        isValidMotor(incoming());
+      allow delete: if isSignedIn();
+    }
 
-      allow delete: if isAdmin();
+    // Categories collection: Public read, Write/Delete for signed-in users
+    match /categories/{categoryId} {
+      allow get, list: if true;
+      allow create, update, delete: if isSignedIn();
     }
 
     // Admins management: Strictly Super Admins can list, write and delete admin records

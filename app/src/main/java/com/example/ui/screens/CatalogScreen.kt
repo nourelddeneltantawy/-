@@ -1,6 +1,12 @@
 package com.example.ui.screens
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -17,6 +23,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Login
@@ -25,9 +32,15 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AdminPanelSettings
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.filled.CreateNewFolder
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.FolderSpecial
 import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
@@ -35,6 +48,7 @@ import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
@@ -44,33 +58,39 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.example.data.model.Motor
+import com.example.data.model.MotorCategory
 import com.example.ui.components.MotorCard
 import com.example.ui.components.MotorCardSkeleton
 import com.example.ui.viewmodel.MotorsUiState
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun CatalogScreen(
     motorsState: MotorsUiState,
     searchQuery: String,
     onSearchQueryChange: (String) -> Unit,
-    selectedBrand: String,
-    onBrandSelect: (String) -> Unit,
-    selectedMotorType: String,
-    onMotorTypeSelect: (String) -> Unit,
+    categories: List<MotorCategory>,
+    selectedCategory: String,
+    onCategorySelect: (String) -> Unit,
+    onAddNewCategory: (String) -> Unit,
+    onDeleteCategory: (String) -> Unit,
+    favoriteMotorIds: Set<String>,
+    onToggleFavorite: (String) -> Unit,
     onMotorClick: (Motor) -> Unit,
     onAddNewMotorClick: () -> Unit,
     onAiStudioClick: () -> Unit,
@@ -86,35 +106,11 @@ fun CatalogScreen(
     modifier: Modifier = Modifier
 ) {
     var motorToDelete by remember { mutableStateOf<Motor?>(null) }
+    var categoryToDelete by remember { mutableStateOf<MotorCategory?>(null) }
+    var showAddCategoryDialog by remember { mutableStateOf(false) }
+    var newCategoryName by remember { mutableStateOf("") }
+
     val allMotors = (motorsState as? MotorsUiState.Success)?.motors ?: emptyList()
-
-    val dynamicBrands = remember(allMotors) {
-        val brands = allMotors.map { it.brand.trim() }
-            .filter { it.isNotBlank() }
-            .distinct()
-            .sorted()
-        if (brands.isNotEmpty()) listOf("الكل") + brands else emptyList()
-    }
-
-    val dynamicMotorTypes = remember(allMotors) {
-        val types = allMotors.map { it.motorType.trim() }
-            .filter { it.isNotBlank() }
-            .distinct()
-            .sorted()
-        if (types.isNotEmpty()) listOf("الكل") + types else emptyList()
-    }
-
-    LaunchedEffect(dynamicBrands) {
-        if (selectedBrand != "الكل" && selectedBrand !in dynamicBrands) {
-            onBrandSelect("الكل")
-        }
-    }
-
-    LaunchedEffect(dynamicMotorTypes) {
-        if (selectedMotorType != "الكل" && selectedMotorType !in dynamicMotorTypes) {
-            onMotorTypeSelect("الكل")
-        }
-    }
 
     Scaffold(
         modifier = modifier.testTag("catalog_screen"),
@@ -145,7 +141,7 @@ fun CatalogScreen(
                                 )
                             )
                             Text(
-                                text = if (isSuperAdmin) "المشرف العام (Super Admin)" else if (isAdmin) "وضع المهندس المشرف (Admin)" else if (isGuest) "وضع الزائر (قراءة فقط)" else (userEmail ?: "دليل الفنيين"),
+                                text = if (isSuperAdmin) "المشرف العام (Super Admin)" else if (isAdmin) "وضع التحكم والمشرف (Admin)" else if (isGuest) "وضع الزائر" else (userEmail ?: "دليل الفنيين"),
                                 style = MaterialTheme.typography.labelSmall.copy(
                                     color = if (isAdmin) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.onSurfaceVariant
                                 ),
@@ -229,7 +225,7 @@ fun CatalogScreen(
                 modifier = Modifier
                     .testTag("search_motors_input")
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                    .padding(horizontal = 16.dp, vertical = 6.dp),
                 placeholder = { Text("ابحث باسم الماتور، الموديل، لون السلك أو الوظيفة...") },
                 leadingIcon = {
                     Icon(
@@ -253,51 +249,120 @@ fun CatalogScreen(
                 )
             )
 
-            // Brands Filter Chips
-            if (dynamicBrands.isNotEmpty()) {
-                LazyRow(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 4.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    items(dynamicBrands) { brand ->
-                        FilterChip(
-                            selected = selectedBrand == brand,
-                            onClick = { onBrandSelect(brand) },
-                            label = { Text(brand) },
-                            colors = FilterChipDefaults.filterChipColors(
-                                selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
-                                selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
-                            )
+            // User's Custom Categories / Lists Bar
+            LazyRow(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                // 1. "الكل" (All) Chip
+                item {
+                    FilterChip(
+                        selected = selectedCategory == "الكل",
+                        onClick = { onCategorySelect("الكل") },
+                        label = { Text("الكل (${allMotors.size})") },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                            selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
                         )
+                    )
+                }
+
+                // 2. "المفضلة" (Favorites) Chip
+                item {
+                    val favCount = allMotors.count { favoriteMotorIds.contains(it.id) }
+                    FilterChip(
+                        selected = selectedCategory == "المفضلة",
+                        onClick = { onCategorySelect("المفضلة") },
+                        label = {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = Icons.Default.Favorite,
+                                    contentDescription = null,
+                                    tint = if (selectedCategory == "المفضلة") Color(0xFFEF4444) else MaterialTheme.colorScheme.outline,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("المفضلة ($favCount)")
+                            }
+                        },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = Color(0xFFEF4444).copy(alpha = 0.15f),
+                            selectedLabelColor = Color(0xFFEF4444)
+                        )
+                    )
+                }
+
+                // 3. User-created Custom Lists / Categories
+                items(categories, key = { it.id }) { cat ->
+                    val motorCount = allMotors.count { it.category.equals(cat.name, ignoreCase = true) }
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = if (selectedCategory == cat.name) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .combinedClickable(
+                                onClick = { onCategorySelect(cat.name) },
+                                onLongClick = { categoryToDelete = cat }
+                            )
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Folder,
+                                contentDescription = null,
+                                tint = if (selectedCategory == cat.name) MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "${cat.name} ($motorCount)",
+                                style = MaterialTheme.typography.labelMedium.copy(
+                                    fontWeight = if (selectedCategory == cat.name) FontWeight.Bold else FontWeight.Medium,
+                                    color = if (selectedCategory == cat.name) MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            )
+                        }
+                    }
+                }
+
+                // 4. "+ إضافة قائمة جديدة" Button
+                item {
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.1f),
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable { showAddCategoryDialog = true }
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Add,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = "قائمة جديدة",
+                                style = MaterialTheme.typography.labelMedium.copy(
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            )
+                        }
                     }
                 }
             }
 
-            // Motor Types Filter Chips
-            if (dynamicMotorTypes.isNotEmpty()) {
-                LazyRow(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 2.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    items(dynamicMotorTypes) { type ->
-                        FilterChip(
-                            selected = selectedMotorType == type,
-                            onClick = { onMotorTypeSelect(type) },
-                            label = { Text(type) },
-                            colors = FilterChipDefaults.filterChipColors(
-                                selectedContainerColor = MaterialTheme.colorScheme.secondaryContainer,
-                                selectedLabelColor = MaterialTheme.colorScheme.onSecondaryContainer
-                            )
-                        )
-                    }
-                }
-            }
-
-            Spacer(modifier = Modifier.height(6.dp))
+            Spacer(modifier = Modifier.height(4.dp))
 
             when (motorsState) {
                 is MotorsUiState.Loading -> {
@@ -307,7 +372,7 @@ fun CatalogScreen(
                             .padding(horizontal = 16.dp),
                         contentPadding = PaddingValues(bottom = 80.dp)
                     ) {
-                        items(5) {
+                        items(4) {
                             MotorCardSkeleton()
                         }
                     }
@@ -327,30 +392,29 @@ fun CatalogScreen(
                     }
                 }
                 is MotorsUiState.Success -> {
+                    // Filter according to category, search, and favorites
                     val filteredMotors = motorsState.motors.filter { motor ->
                         val matchesSearch = if (searchQuery.isBlank()) true else {
                             motor.name.contains(searchQuery, ignoreCase = true) ||
                             motor.brand.contains(searchQuery, ignoreCase = true) ||
                             motor.model.contains(searchQuery, ignoreCase = true) ||
+                            motor.category.contains(searchQuery, ignoreCase = true) ||
                             motor.motorType.contains(searchQuery, ignoreCase = true) ||
                             motor.notes.contains(searchQuery, ignoreCase = true) ||
                             motor.pinouts.any { pin ->
                                 pin.name.contains(searchQuery, ignoreCase = true) ||
-                                pin.wireColor.contains(searchQuery, ignoreCase = true)
+                                pin.wireColor.contains(searchQuery, ignoreCase = true) ||
+                                pin.functionDesc.contains(searchQuery, ignoreCase = true)
                             }
                         }
 
-                        val matchesBrand = if (selectedBrand == "الكل" || selectedBrand.isBlank()) true else {
-                            motor.brand.equals(selectedBrand, ignoreCase = true) ||
-                            motor.brand.contains(selectedBrand, ignoreCase = true)
+                        val matchesCategory = when (selectedCategory) {
+                            "الكل" -> true
+                            "المفضلة" -> favoriteMotorIds.contains(motor.id)
+                            else -> motor.category.equals(selectedCategory, ignoreCase = true)
                         }
 
-                        val matchesType = if (selectedMotorType == "الكل" || selectedMotorType.isBlank()) true else {
-                            motor.motorType.equals(selectedMotorType, ignoreCase = true) ||
-                            motor.motorType.contains(selectedMotorType, ignoreCase = true)
-                        }
-
-                        matchesSearch && matchesBrand && matchesType
+                        matchesSearch && matchesCategory
                     }
 
                     if (filteredMotors.isEmpty()) {
@@ -361,17 +425,63 @@ fun CatalogScreen(
                             contentAlignment = Alignment.Center
                         ) {
                             Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                Icon(
-                                    imageVector = Icons.Default.Search,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.outline,
-                                    modifier = Modifier.size(64.dp)
-                                )
-                                Spacer(modifier = Modifier.height(12.dp))
-                                Text(
-                                    text = "لا توجد مواتير مطابقة للبحث",
-                                    style = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.outline)
-                                )
+                                if (selectedCategory == "المفضلة") {
+                                    Icon(
+                                        imageVector = Icons.Default.Favorite,
+                                        contentDescription = null,
+                                        tint = Color(0xFFEF4444).copy(alpha = 0.5f),
+                                        modifier = Modifier.size(64.dp)
+                                    )
+                                    Spacer(modifier = Modifier.height(12.dp))
+                                    Text(
+                                        text = "قائمة المفضلة فارغة حالياً",
+                                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                                    )
+                                    Spacer(modifier = Modifier.height(6.dp))
+                                    Text(
+                                        text = "اضغط على أيقونة القلب على أي موتور لإضافته إلى قائمة المفضلة والرجوع إليه بسرعة.",
+                                        style = MaterialTheme.typography.bodySmall.copy(color = MaterialTheme.colorScheme.outline),
+                                        textAlign = TextAlign.Center
+                                    )
+                                } else if (allMotors.isEmpty()) {
+                                    Icon(
+                                        imageVector = Icons.Default.Memory,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.5f),
+                                        modifier = Modifier.size(64.dp)
+                                    )
+                                    Spacer(modifier = Modifier.height(12.dp))
+                                    Text(
+                                        text = "الدليل فارغ تماماً",
+                                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                                    )
+                                    Spacer(modifier = Modifier.height(6.dp))
+                                    Text(
+                                        text = "أنت الآن تتحكم بالدليل من الصفر! أنشئ قوائمك المخصصة وأضف أول ماتور مع أطرافه طرفاً طرفاً.",
+                                        style = MaterialTheme.typography.bodySmall.copy(color = MaterialTheme.colorScheme.outline),
+                                        textAlign = TextAlign.Center
+                                    )
+                                    if (isAdmin) {
+                                        Spacer(modifier = Modifier.height(16.dp))
+                                        Button(onClick = onAddNewMotorClick) {
+                                            Icon(imageVector = Icons.Default.Add, contentDescription = null)
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text("إضافة أول ماتور الآن")
+                                        }
+                                    }
+                                } else {
+                                    Icon(
+                                        imageVector = Icons.Default.Search,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.outline,
+                                        modifier = Modifier.size(64.dp)
+                                    )
+                                    Spacer(modifier = Modifier.height(12.dp))
+                                    Text(
+                                        text = if (selectedCategory != "الكل") "لا توجد مواتير في قائمة \"$selectedCategory\"" else "لا توجد مواتير مطابقة للبحث",
+                                        style = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.outline)
+                                    )
+                                }
                             }
                         }
                     } else {
@@ -396,6 +506,8 @@ fun CatalogScreen(
                                     canMoveUp = index > 0,
                                     canMoveDown = index < filteredMotors.size - 1,
                                     isAdmin = isAdmin,
+                                    isFavorite = favoriteMotorIds.contains(motor.id),
+                                    onToggleFavorite = { onToggleFavorite(motor.id) },
                                     modifier = Modifier.animateItem()
                                 )
                             }
@@ -406,13 +518,95 @@ fun CatalogScreen(
         }
     }
 
+    // Add Category Dialog
+    if (showAddCategoryDialog) {
+        AlertDialog(
+            onDismissRequest = { showAddCategoryDialog = false },
+            title = { Text("إضافة قائمة مخصصة جديدة", fontWeight = FontWeight.Bold) },
+            text = {
+                Column {
+                    Text("أدخل اسم القائمة لتصنيف مواتيرك بداخلها كما تريد:")
+                    Spacer(modifier = Modifier.height(10.dp))
+                    OutlinedTextField(
+                        value = newCategoryName,
+                        onValueChange = { newCategoryName = it },
+                        label = { Text("اسم القائمة (مثال: مواتير شربون، مواتير إل جي)") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        shape = RoundedCornerShape(10.dp)
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val trimmed = newCategoryName.trim()
+                        if (trimmed.isNotBlank()) {
+                            onAddNewCategory(trimmed)
+                            newCategoryName = ""
+                            showAddCategoryDialog = false
+                        }
+                    }
+                ) {
+                    Text("إضافة القائمة")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showAddCategoryDialog = false }) {
+                    Text("إلغاء")
+                }
+            }
+        )
+    }
+
+    // Delete Category Confirmation Dialog
+    if (categoryToDelete != null) {
+        val cat = categoryToDelete!!
+        AlertDialog(
+            onDismissRequest = { categoryToDelete = null },
+            title = {
+                Text(
+                    text = "حذف القائمة",
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.error
+                )
+            },
+            text = {
+                Text(
+                    text = "هل أنت متأكد من حذف قائمة \"${cat.name}\"؟ لن يتم حذف المواتير المسجلة بداخلها، بل سيتم إزالة تصنيفها فقط.",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        onDeleteCategory(cat.id)
+                        categoryToDelete = null
+                    }
+                ) {
+                    Text(
+                        text = "حذف القائمة",
+                        color = MaterialTheme.colorScheme.error,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { categoryToDelete = null }) {
+                    Text("إلغاء")
+                }
+            }
+        )
+    }
+
+    // Delete Motor Confirmation Dialog
     if (motorToDelete != null) {
         val motor = motorToDelete!!
         AlertDialog(
             onDismissRequest = { motorToDelete = null },
             title = {
                 Text(
-                    text = "حذف الماتور",
+                    text = "حذف الماتور نهائياً",
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.error
                 )

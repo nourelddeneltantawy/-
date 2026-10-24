@@ -23,6 +23,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -32,9 +34,12 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Cable
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.CreateNewFolder
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.PhotoLibrary
@@ -45,6 +50,8 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -78,7 +85,9 @@ import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.example.data.model.Motor
+import com.example.data.model.MotorCategory
 import com.example.data.model.Pinout
+import com.example.ui.components.InteractiveMotorConnector
 import com.example.ui.components.parseWireColorToComposeColor
 import kotlinx.coroutines.launch
 
@@ -111,10 +120,12 @@ fun AdminMotorScreen(
     onSaveSuccess: (Motor) -> Unit,
     onDeleteSuccess: () -> Unit,
     onOpenAiStudioForImage: ((String) -> Unit) -> Unit,
-    existingBrands: List<String>,
-    existingMotorTypes: List<String>,
-    isSuperAdmin: Boolean,
-    onManageAdminsClick: () -> Unit,
+    availableCategories: List<MotorCategory> = emptyList(),
+    onAddNewCategory: (String) -> Unit = {},
+    existingBrands: List<String> = emptyList(),
+    existingMotorTypes: List<String> = emptyList(),
+    isSuperAdmin: Boolean = false,
+    onManageAdminsClick: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -124,10 +135,13 @@ fun AdminMotorScreen(
     var name by remember { mutableStateOf(initialMotor?.name ?: "") }
     var brand by remember { mutableStateOf(initialMotor?.brand ?: "") }
     var model by remember { mutableStateOf(initialMotor?.model ?: "") }
-    var motorType by remember { mutableStateOf(initialMotor?.motorType ?: "Universal") }
+    var category by remember { mutableStateOf(initialMotor?.category ?: "") }
+    var motorType by remember { mutableStateOf(initialMotor?.motorType ?: "") }
     var notes by remember { mutableStateOf(initialMotor?.notes ?: "") }
     var imageUrl by remember { mutableStateOf(initialMotor?.imageUrl ?: "") }
     var showDeleteConfirmDialog by remember { mutableStateOf(false) }
+    var showAddCategoryDialog by remember { mutableStateOf(false) }
+    var newCategoryInput by remember { mutableStateOf("") }
 
     // Photo picker for selecting image from device storage
     val photoPickerLauncher = rememberLauncherForActivityResult(
@@ -141,16 +155,11 @@ fun AdminMotorScreen(
         }
     }
 
+    // Pinouts: Starts strictly EMPTY if creating a new motor! User adds pin-by-pin ("طرف طرف")
     val pinouts = remember {
         mutableStateListOf<Pinout>().apply {
             if (initialMotor != null && initialMotor.pinouts.isNotEmpty()) {
                 addAll(initialMotor.pinouts)
-            } else {
-                add(Pinout(1, "تاكو 1", "أصفر", "#EAB308", "حساس سرعة الدوران"))
-                add(Pinout(2, "تاكو 2", "أصفر", "#EAB308", "حساس سرعة الدوران"))
-                add(Pinout(3, "شربون 1", "أحمر", "#EF4444", "الفرشاة الكربونية 1"))
-                add(Pinout(4, "شربون 2", "رمادي", "#64748B", "الفرشاة الكربونية 2"))
-                add(Pinout(5, "ملف التشغيل", "أزرق", "#3B82F6", "الملف الثابت الأساسي"))
             }
         }
     }
@@ -173,6 +182,46 @@ fun AdminMotorScreen(
             },
             dismissButton = {
                 TextButton(onClick = { showDeleteConfirmDialog = false }) {
+                    Text("إلغاء")
+                }
+            }
+        )
+    }
+
+    if (showAddCategoryDialog) {
+        AlertDialog(
+            onDismissRequest = { showAddCategoryDialog = false },
+            title = { Text("إضافة قائمة / تصنيف جديد") },
+            text = {
+                Column {
+                    Text("أدخل اسم القائمة لتصنيف مواتيرك بداخلها:")
+                    Spacer(modifier = Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = newCategoryInput,
+                        onValueChange = { newCategoryInput = it },
+                        label = { Text("اسم القائمة (مثال: مواتير شربون، مواتير إل جي)") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val trimmed = newCategoryInput.trim()
+                        if (trimmed.isNotBlank()) {
+                            onAddNewCategory(trimmed)
+                            category = trimmed
+                            newCategoryInput = ""
+                            showAddCategoryDialog = false
+                        }
+                    }
+                ) {
+                    Text("إضافة واختيار")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showAddCategoryDialog = false }) {
                     Text("إلغاء")
                 }
             }
@@ -215,7 +264,80 @@ fun AdminMotorScreen(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
-            // Basic Information
+            // Section 1: User's Custom Lists / Categories
+            item {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(14.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f))
+                ) {
+                    Column(modifier = Modifier.padding(14.dp)) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = Icons.Default.Folder,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = "القائمة / التصنيف التابع له الماتور",
+                                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
+                                )
+                            }
+
+                            TextButton(onClick = { showAddCategoryDialog = true }) {
+                                Icon(imageVector = Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("قائمة جديدة")
+                            }
+                        }
+
+                        if (availableCategories.isNotEmpty()) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            FlowRow(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                availableCategories.forEach { cat ->
+                                    FilterChip(
+                                        selected = category == cat.name,
+                                        onClick = {
+                                            category = if (category == cat.name) "" else cat.name
+                                        },
+                                        label = { Text(cat.name) },
+                                        leadingIcon = if (category == cat.name) {
+                                            { Icon(imageVector = Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp)) }
+                                        } else null,
+                                        colors = FilterChipDefaults.filterChipColors(
+                                            selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                                            selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
+                                        )
+                                    )
+                                }
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(10.dp))
+                        OutlinedTextField(
+                            value = category,
+                            onValueChange = { category = it },
+                            label = { Text("أو اكتب اسم القائمة يدوياً هنا") },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                            shape = RoundedCornerShape(10.dp)
+                        )
+                    }
+                }
+            }
+
+            // Section 2: Basic Motor Information
             item {
                 OutlinedTextField(
                     value = name,
@@ -238,7 +360,7 @@ fun AdminMotorScreen(
                     OutlinedTextField(
                         value = model,
                         onValueChange = { model = it },
-                        label = { Text("الموديل (Model) *") },
+                        label = { Text("الموديل (Model)") },
                         modifier = Modifier.weight(1f),
                         shape = RoundedCornerShape(12.dp)
                     )
@@ -249,7 +371,7 @@ fun AdminMotorScreen(
                 OutlinedTextField(
                     value = motorType,
                     onValueChange = { motorType = it },
-                    label = { Text("نوع الماتور (Universal, BLDC Inverter, Induction)") },
+                    label = { Text("نوع الماتور (مثال: Universal، Inverter BLDC، Direct Drive)") },
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(12.dp)
                 )
@@ -259,7 +381,7 @@ fun AdminMotorScreen(
                 OutlinedTextField(
                     value = notes,
                     onValueChange = { notes = it },
-                    label = { Text("ملاحظات هندسية وفنية وتوصيات التوصيل") },
+                    label = { Text("ملاحظات فنية وتوصيات التوصيل وقياس الأوم") },
                     modifier = Modifier.fillMaxWidth(),
                     minLines = 3,
                     shape = RoundedCornerShape(12.dp)
@@ -381,7 +503,7 @@ fun AdminMotorScreen(
                 }
             }
 
-            // Pinouts section header
+            // Pinouts section header (Step-by-step pin addition)
             item {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -419,7 +541,40 @@ fun AdminMotorScreen(
                     ) {
                         Icon(imageVector = Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(modifier = Modifier.width(4.dp))
-                        Text("إضافة طرف")
+                        Text("إضافة طرف +")
+                    }
+                }
+            }
+
+            if (pinouts.isEmpty()) {
+                item {
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(20.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Cable,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.outline,
+                                modifier = Modifier.size(32.dp)
+                            )
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Text(
+                                text = "لم تقم بإضافة أي أطراف بعد",
+                                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold)
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = "اضغط على زر \"إضافة طرف +\" بالأعلى لإضافة أطراف الماتور طرفاً طرفاً وتحديد ألوانها ووظائفها بدقة.",
+                                style = MaterialTheme.typography.bodySmall.copy(color = MaterialTheme.colorScheme.outline),
+                                textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                            )
+                        }
                     }
                 }
             }
@@ -430,6 +585,8 @@ fun AdminMotorScreen(
                 key = { index, _ -> "pinout_$index" }
             ) { index, pin ->
                 val pinColor = parseWireColorToComposeColor(pin.colorHex, pin.wireColor)
+                var showColorPalette by remember { mutableStateOf(false) }
+
                 Card(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -440,149 +597,140 @@ fun AdminMotorScreen(
                 ) {
                     Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         // Pinout Header: Number, Color dot, and Reorder/Delete actions
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Box(
-                                modifier = Modifier
-                                    .size(22.dp)
-                                    .clip(CircleShape)
-                                    .background(pinColor)
-                                    .border(2.dp, Color.White.copy(alpha = 0.8f), CircleShape)
-                            )
-                            Spacer(modifier = Modifier.width(10.dp))
-                            Text(
-                                text = "الطرف رقم ${index + 1} (${pin.wireColor})",
-                                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
-                            )
-                            Spacer(modifier = Modifier.weight(1f))
-
-                            // Move Up with smooth animation
-                            IconButton(
-                                onClick = {
-                                    if (index > 0) {
-                                        val item = pinouts.removeAt(index)
-                                        pinouts.add(index - 1, item)
-                                        for (i in pinouts.indices) {
-                                            pinouts[i] = pinouts[i].copy(pinNumber = i + 1)
-                                        }
-                                    }
-                                },
-                                enabled = index > 0,
-                                modifier = Modifier.size(32.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.ArrowUpward,
-                                    contentDescription = "تحريك لأعلى",
-                                    tint = if (index > 0) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.4f),
-                                    modifier = Modifier.size(18.dp)
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(24.dp)
+                                        .clip(CircleShape)
+                                        .background(pinColor)
+                                        .border(2.dp, Color.White.copy(alpha = 0.8f), CircleShape)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = "الطرف رقم ${pin.pinNumber}",
+                                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
                                 )
                             }
 
-                            // Move Down with smooth animation
-                            IconButton(
-                                onClick = {
-                                    if (index < pinouts.size - 1) {
-                                        val item = pinouts.removeAt(index)
-                                        pinouts.add(index + 1, item)
-                                        for (i in pinouts.indices) {
-                                            pinouts[i] = pinouts[i].copy(pinNumber = i + 1)
-                                        }
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                // Move Up
+                                if (index > 0) {
+                                    IconButton(
+                                        onClick = {
+                                            val current = pinouts.removeAt(index)
+                                            pinouts.add(index - 1, current)
+                                            // Re-number pins sequentially
+                                            pinouts.forEachIndexed { i, p ->
+                                                pinouts[i] = p.copy(pinNumber = i + 1)
+                                            }
+                                        },
+                                        modifier = Modifier.size(32.dp)
+                                    ) {
+                                        Icon(imageVector = Icons.Default.ArrowUpward, contentDescription = "تحريك لأعلى", modifier = Modifier.size(18.dp))
                                     }
-                                },
-                                enabled = index < pinouts.size - 1,
-                                modifier = Modifier.size(32.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.ArrowDownward,
-                                    contentDescription = "تحريك لأسفل",
-                                    tint = if (index < pinouts.size - 1) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.4f),
-                                    modifier = Modifier.size(18.dp)
-                                )
-                            }
+                                }
 
-                            // Delete pinout
-                            IconButton(
-                                onClick = {
-                                    pinouts.removeAt(index)
-                                    for (i in pinouts.indices) {
-                                        pinouts[i] = pinouts[i].copy(pinNumber = i + 1)
+                                // Move Down
+                                if (index < pinouts.size - 1) {
+                                    IconButton(
+                                        onClick = {
+                                            val current = pinouts.removeAt(index)
+                                            pinouts.add(index + 1, current)
+                                            // Re-number pins sequentially
+                                            pinouts.forEachIndexed { i, p ->
+                                                pinouts[i] = p.copy(pinNumber = i + 1)
+                                            }
+                                        },
+                                        modifier = Modifier.size(32.dp)
+                                    ) {
+                                        Icon(imageVector = Icons.Default.ArrowDownward, contentDescription = "تحريك لأسفل", modifier = Modifier.size(18.dp))
                                     }
-                                },
-                                modifier = Modifier.size(32.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.Delete,
-                                    contentDescription = "حذف الطرف",
-                                    tint = MaterialTheme.colorScheme.error,
-                                    modifier = Modifier.size(18.dp)
-                                )
+                                }
+
+                                // Color Palette toggle
+                                IconButton(
+                                    onClick = { showColorPalette = !showColorPalette },
+                                    modifier = Modifier.size(32.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Palette,
+                                        contentDescription = "اختيار لون السلك",
+                                        tint = pinColor,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+
+                                // Delete pin
+                                IconButton(
+                                    onClick = {
+                                        pinouts.removeAt(index)
+                                        pinouts.forEachIndexed { i, p ->
+                                            pinouts[i] = p.copy(pinNumber = i + 1)
+                                        }
+                                    },
+                                    modifier = Modifier.size(32.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Delete,
+                                        contentDescription = "حذف الطرف",
+                                        tint = MaterialTheme.colorScheme.error,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
                             }
                         }
 
-                        // Wire Color Selector: Visual Palettes (User taps and it automatically sets the color & name!)
-                        Column {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(
-                                    imageVector = Icons.Default.Palette,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.secondary,
-                                    modifier = Modifier.size(16.dp)
-                                )
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text(
-                                    text = "اختر لون السلك مباشرة بنقرة واحدة:",
-                                    style = MaterialTheme.typography.labelMedium.copy(
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        fontWeight = FontWeight.Medium
-                                    )
-                                )
-                            }
-
-                            Spacer(modifier = Modifier.height(6.dp))
-
-                            FlowRow(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                        // Wire Color Palette
+                        AnimatedVisibility(visible = showColorPalette) {
+                            Surface(
+                                shape = RoundedCornerShape(12.dp),
+                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                                modifier = Modifier.fillMaxWidth()
                             ) {
-                                commonWireColorPresets.forEach { preset ->
-                                    val isSelected = pin.wireColor == preset.name || pin.colorHex.equals(preset.hex, ignoreCase = true)
-                                    val presetColor = parseWireColorToComposeColor(preset.hex, preset.name)
-
-                                    Surface(
-                                        shape = RoundedCornerShape(10.dp),
-                                        color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                                        border = if (isSelected) androidx.compose.foundation.BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary) else null,
-                                        modifier = Modifier.clickable {
-                                            // Automatically sets both color name and hex!
-                                            pinouts[index] = pin.copy(wireColor = preset.name, colorHex = preset.hex)
-                                        }
+                                Column(modifier = Modifier.padding(10.dp)) {
+                                    Text(
+                                        text = "اختر لون السلك النموذجي:",
+                                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold)
+                                    )
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    FlowRow(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                        verticalArrangement = Arrangement.spacedBy(8.dp)
                                     ) {
-                                        Row(
-                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            Box(
-                                                modifier = Modifier
-                                                    .size(12.dp)
-                                                    .clip(CircleShape)
-                                                    .background(presetColor)
-                                                    .border(1.dp, Color.White.copy(alpha = 0.8f), CircleShape)
-                                            )
-                                            Spacer(modifier = Modifier.width(5.dp))
-                                            Text(
-                                                text = preset.name,
-                                                fontSize = 11.sp,
-                                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                                                color = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
-                                            )
-                                            if (isSelected) {
-                                                Spacer(modifier = Modifier.width(3.dp))
-                                                Icon(
-                                                    imageVector = Icons.Default.Check,
-                                                    contentDescription = null,
-                                                    tint = MaterialTheme.colorScheme.primary,
-                                                    modifier = Modifier.size(12.dp)
-                                                )
+                                        commonWireColorPresets.forEach { preset ->
+                                            val presetColor = parseWireColorToComposeColor(preset.hex, preset.name)
+                                            Surface(
+                                                shape = RoundedCornerShape(8.dp),
+                                                color = if (pin.colorHex.equals(preset.hex, ignoreCase = true) || pin.wireColor.equals(preset.name, ignoreCase = true)) {
+                                                    MaterialTheme.colorScheme.primaryContainer
+                                                } else {
+                                                    MaterialTheme.colorScheme.surface
+                                                },
+                                                modifier = Modifier.clickable {
+                                                    pinouts[index] = pin.copy(wireColor = preset.name, colorHex = preset.hex)
+                                                    showColorPalette = false
+                                                }
+                                            ) {
+                                                Row(
+                                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                                                    verticalAlignment = Alignment.CenterVertically
+                                                ) {
+                                                    Box(
+                                                        modifier = Modifier
+                                                            .size(12.dp)
+                                                            .clip(CircleShape)
+                                                            .background(presetColor)
+                                                            .border(1.dp, Color.White.copy(alpha = 0.6f), CircleShape)
+                                                    )
+                                                    Spacer(modifier = Modifier.width(6.dp))
+                                                    Text(text = preset.name, fontSize = 11.sp, fontWeight = FontWeight.Medium)
+                                                }
                                             }
                                         }
                                     }
@@ -590,8 +738,8 @@ fun AdminMotorScreen(
                             }
                         }
 
-                        // Inputs: Name, Color text & Description
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        // Input fields for this pin
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             OutlinedTextField(
                                 value = pin.name,
                                 onValueChange = { newName ->
@@ -625,14 +773,30 @@ fun AdminMotorScreen(
                 }
             }
 
+            // Live Virtual Connector Preview when pins exist
+            if (pinouts.isNotEmpty()) {
+                item {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = "معاينة الفيشة التفاعلية الناتجة:",
+                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    InteractiveMotorConnector(
+                        pinouts = pinouts.toList(),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            }
+
             // Save Action
             item {
                 Spacer(modifier = Modifier.height(16.dp))
                 Button(
                     onClick = {
-                        if (name.isBlank() || brand.isBlank() || model.isBlank()) {
+                        if (name.isBlank() || brand.isBlank()) {
                             coroutineScope.launch {
-                                snackbarHostState.showSnackbar("يرجى ملء جميع الحقول الإلزامية (الاسم، الماركة، الموديل)")
+                                snackbarHostState.showSnackbar("يرجى إدخال اسم الماتور والماركة على الأقل")
                             }
                             return@Button
                         }
@@ -643,6 +807,7 @@ fun AdminMotorScreen(
                             name = name.trim(),
                             brand = brand.trim(),
                             model = model.trim(),
+                            category = category.trim(),
                             motorType = motorType.trim(),
                             notes = notes.trim(),
                             imageUrl = imageUrl.trim(),
