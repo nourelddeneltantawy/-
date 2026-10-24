@@ -25,15 +25,20 @@ class MotorRepository(private val db: FirebaseFirestore) {
 
     companion object {
         fun createFirestore(context: Context): FirebaseFirestore {
+            val app = com.example.util.FirebaseInitializer.ensureInitialized(context)
+            val dbId = try {
+                context.applicationContext.getString(R.string.firestore_database_id)
+            } catch (_: Throwable) {
+                ""
+            }
             return try {
-                val dbId = context.applicationContext.getString(R.string.firestore_database_id)
-                if (dbId.isNotBlank()) {
-                    FirebaseFirestore.getInstance(dbId)
+                if (app != null) {
+                    if (dbId.isNotBlank()) FirebaseFirestore.getInstance(app, dbId) else FirebaseFirestore.getInstance(app)
                 } else {
-                    FirebaseFirestore.getInstance()
+                    if (dbId.isNotBlank()) FirebaseFirestore.getInstance(dbId) else FirebaseFirestore.getInstance()
                 }
             } catch (_: Throwable) {
-                FirebaseFirestore.getInstance()
+                if (app != null) FirebaseFirestore.getInstance(app) else FirebaseFirestore.getInstance()
             }
         }
     }

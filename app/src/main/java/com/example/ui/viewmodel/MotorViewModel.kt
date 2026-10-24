@@ -51,18 +51,21 @@ class MotorViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private val auth by lazy {
-        try {
-            Firebase.auth
-        } catch (_: Throwable) {
-            com.google.firebase.auth.FirebaseAuth.getInstance()
+        val app = com.example.util.FirebaseInitializer.ensureInitialized(getApplication())
+        if (app != null) {
+            try { com.google.firebase.auth.FirebaseAuth.getInstance(app) } catch (_: Throwable) { null }
+        } else {
+            try { Firebase.auth } catch (_: Throwable) {
+                try { com.google.firebase.auth.FirebaseAuth.getInstance() } catch (_: Throwable) { null }
+            }
         }
     }
 
     val currentUserId: String?
-        get() = try { auth.currentUser?.uid } catch (_: Throwable) { null }
+        get() = try { auth?.currentUser?.uid } catch (_: Throwable) { null }
 
     val currentUserEmail: String?
-        get() = try { auth.currentUser?.email } catch (_: Throwable) { null }
+        get() = try { auth?.currentUser?.email } catch (_: Throwable) { null }
 
     private val _userRole = MutableStateFlow(UserRole.REGULAR)
     val userRole: StateFlow<UserRole> = _userRole.asStateFlow()

@@ -58,6 +58,7 @@ enum class Screen {
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        com.example.util.FirebaseInitializer.ensureInitialized(this)
         enableEdgeToEdge()
         setContent {
             MyApplicationTheme {
@@ -88,7 +89,9 @@ fun AppRoot() {
 
 @Composable
 fun SafeAppContainer() {
+    val context = LocalContext.current
     val initialUser = try {
+        com.example.util.FirebaseInitializer.ensureInitialized(context)
         Firebase.auth.currentUser
     } catch (_: Throwable) {
         null
@@ -96,6 +99,7 @@ fun SafeAppContainer() {
     var currentUser by remember { mutableStateOf(initialUser) }
 
     DisposableEffect(Unit) {
+        com.example.util.FirebaseInitializer.ensureInitialized(context)
         val listener = FirebaseAuth.AuthStateListener { auth ->
             try {
                 currentUser = auth.currentUser
