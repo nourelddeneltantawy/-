@@ -320,10 +320,22 @@ fun AppContent(
                     ManageAdminsScreen(
                         admins = adminsList,
                         onAddAdmin = { email, onResult ->
-                            motorViewModel.addAdmin(email, onResult)
+                            motorViewModel.addAdmin(email) { result ->
+                                if (result.isSuccess) {
+                                    onResult(true, "تمت إضافة المشرف بنجاح")
+                                } else {
+                                    onResult(false, result.exceptionOrNull()?.message ?: "فشلت الإضافة")
+                                }
+                            }
                         },
                         onRemoveAdmin = { email, onResult ->
-                            motorViewModel.removeAdmin(email, onResult)
+                            motorViewModel.removeAdmin(email) { result ->
+                                if (result.isSuccess) {
+                                    onResult(true, "تم سحب صلاحيات الإشراف بنجاح")
+                                } else {
+                                    onResult(false, result.exceptionOrNull()?.message ?: "فشل الحذف")
+                                }
+                            }
                         },
                         onBackClick = {
                             currentScreen = Screen.CATALOG

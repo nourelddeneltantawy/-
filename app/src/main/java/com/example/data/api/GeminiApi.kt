@@ -1,104 +1,119 @@
 package com.example.data.api
 
+import android.util.Log
 import com.example.BuildConfig
-import com.squareup.moshi.JsonClass
-import com.squareup.moshi.Moshi
-import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
-import okhttp3.OkHttpClient
-import okhttp3.logging.HttpLoggingInterceptor
-import retrofit2.Retrofit
-import retrofit2.converter.moshi.MoshiConverterFactory
-import retrofit2.http.Body
-import retrofit2.http.POST
-import retrofit2.http.Path
-import retrofit2.http.Query
-import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import org.json.JSONArray
+import org.json.JSONObject
+import java.io.OutputStreamWriter
+import java.net.HttpURLConnection
+import java.net.URL
 
-@JsonClass(generateAdapter = true)
 data class GenerateContentRequest(
     val contents: List<Content>,
     val generationConfig: GenerationConfig? = null
 )
 
-@JsonClass(generateAdapter = true)
 data class Content(
     val parts: List<Part>
 )
 
-@JsonClass(generateAdapter = true)
 data class Part(
     val text: String? = null,
     val inlineData: InlineData? = null
 )
 
-@JsonClass(generateAdapter = true)
 data class InlineData(
     val mimeType: String,
     val data: String
 )
 
-@JsonClass(generateAdapter = true)
 data class GenerationConfig(
     val responseModalities: List<String>? = null,
     val imageConfig: ImageConfig? = null
 )
 
-@JsonClass(generateAdapter = true)
 data class ImageConfig(
     val aspectRatio: String = "1:1",
     val imageSize: String = "1K"
 )
 
-@JsonClass(generateAdapter = true)
 data class GenerateContentResponse(
     val candidates: List<Candidate>? = null
 )
 
-@JsonClass(generateAdapter = true)
 data class Candidate(
     val content: Content? = null
 )
 
-interface GeminiApiService {
-    @POST("v1beta/models/{model}:generateContent")
-    suspend fun generateContent(
-        @Path("model") model: String,
-        @Query("key") apiKey: String,
-        @Body request: GenerateContentRequest
-    ): GenerateContentResponse
-}
-
 object GeminiClient {
-    private const val BASE_URL = "https://generativelanguage.googleapis.com/"
-
-    private val okHttpClient: OkHttpClient by lazy {
-        val logging = HttpLoggingInterceptor().apply {
-            level = HttpLoggingInterceptor.Level.BASIC
-        }
-        OkHttpClient.Builder()
-            .connectTimeout(60, TimeUnit.SECONDS)
-            .readTimeout(60, TimeUnit.SECONDS)
-            .writeTimeout(60, TimeUnit.SECONDS)
-            .addInterceptor(logging)
-            .build()
-    }
-
-    private val moshi: Moshi by lazy {
-        Moshi.Builder()
-            .add(KotlinJsonAdapterFactory())
-            .build()
-    }
-
-    val service: GeminiApiService by lazy {
-        Retrofit.Builder()
-            .baseUrl(BASE_URL)
-            .client(okHttpClient)
-            .addConverterFactory(MoshiConverterFactory.create(moshi))
-            .build()
-            .create(GeminiApiService::class.java)
-    }
+    private const val TAG = "GeminiClient"
+    private const val BASE_URL = "https://generativelanguage.googleapis.com"
 
     fun getApiKey(): String {
-        return BuildConfig.GEMINI_API_KEY
+        return try {
+            BuildConfig.GEMINI_API_KEY
+        } catch (_: Throwable) {
+            ""
+        }
+    }
+
+    suspend fun generateContent(
+        prompt: String,
+        model: String = "gemini-2.5-flash"
+    ): Result<String> = withContext(Dispatchers.IO) {
+        val apiKey = getApiKey()
+        if (apiKey.isBlank()) {
+            return@withContext Result.failure(IllegalStateException("GEMINI_API_KEY is not configured"))
+        }
+
+        var connection: HttpURLConnection? = null
+        try {
+            val url = URL("$BASE_URL/v1beta/models/$model:generateContent?key=$apiKey")
+            connection = (url.openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                setRequestProperty("Content-Type", "application/json")
+                connectTimeout = 30000
+                readTimeout = 30000
+                doOutput = true
+            }
+
+            val body = JSONObject().apply {
+                val partsArray = JSONArray().apply {
+                    put(JSONObject().apply { put("text", prompt) })
+                }
+                val contentsArray = JSONArray().apply {
+                    put(JSONObject().apply { put("parts", partsArray) })
+                }
+                put("contents", contentsArray)
+            }
+
+            OutputStreamWriter(connection.outputStream).use { writer ->
+                writer.write(body.toString())
+                writer.flush()
+            }
+
+            val responseCode = connection.responseCode
+            if (responseCode == HttpURLConnection.HTTP_OK) {
+                val responseText = connection.inputStream.bufferedReader().use { it.readText() }
+                val json = JSONObject(responseText)
+                val candidates = json.optJSONArray("candidates")
+                val firstCandidate = candidates?.optJSONObject(0)
+                val contentObj = firstCandidate?.optJSONObject("content")
+                val parts = contentObj?.optJSONArray("parts")
+                val firstPart = parts?.optJSONObject(0)
+                val text = firstPart?.optString("text") ?: ""
+                Result.success(text)
+            } else {
+                val errorStream = connection.errorStream?.bufferedReader()?.use { it.readText() } ?: ""
+                Result.failure(Exception("Gemini HTTP $responseCode: $errorStream"))
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Gemini API request failed", e)
+            Result.failure(e)
+        } finally {
+            connection?.disconnect()
+        }
     }
 }
