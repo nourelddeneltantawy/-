@@ -95,6 +95,24 @@ service cloud.firestore {
       allow create, update, delete: if isSignedIn();
     }
 
+    // Harnesses collection (ضفائر وتوصيلات الغسالة): Public read, Write/Delete for signed-in users
+    match /harnesses/{harnessId} {
+      allow get, list: if true;
+      allow create, update, delete: if isSignedIn();
+    }
+
+    // Appliance Parts collection (لوكات الباب، ليفلات، طلمبات): Public read, Write/Delete for signed-in users
+    match /appliance_parts/{partId} {
+      allow get, list: if true;
+      allow create, update, delete: if isSignedIn();
+    }
+
+    // App Settings (بيانات التواصل والعنوان والمركز): Public read, Write for signed-in users
+    match /app_settings/{settingId} {
+      allow get, list: if true;
+      allow create, update, delete: if isSignedIn();
+    }
+
     // Admins management: Strictly Super Admins can list, write and delete admin records
     match /admins/{email} {
       allow get: if isSignedIn();

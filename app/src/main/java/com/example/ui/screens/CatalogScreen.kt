@@ -104,7 +104,9 @@ fun CatalogScreen(
     onCheckForUpdates: () -> Unit = {},
     onEditMotorClick: (Motor) -> Unit = {},
     onDeleteMotorClick: (Motor) -> Unit = {},
+    onDuplicateMotor: (Motor) -> Unit = {},
     onMoveMotor: (String, Boolean) -> Unit = { _, _ -> },
+    onReorderMotors: (Int, Int) -> Unit = { _, _ -> },
     modifier: Modifier = Modifier
 ) {
     var motorToDelete by remember { mutableStateOf<Motor?>(null) }
@@ -514,15 +516,18 @@ fun CatalogScreen(
                         ) {
                             itemsIndexed(
                                 items = filteredMotors,
-                                key = { index, motor -> if (motor.id.isNotBlank()) motor.id else "motor_idx_$index" }
+                                key = { _, motor -> motor.id }
                             ) { index, motor ->
                                 MotorCard(
                                     motor = motor,
                                     onClick = { onMotorClick(motor) },
                                     onEditClick = if (isAdmin) { { onEditMotorClick(motor) } } else null,
                                     onDeleteClick = if (isAdmin) { { motorToDelete = motor } } else null,
-                                    onMoveUp = if (isAdmin && index > 0) { { onMoveMotor(motor.id, true) } } else null,
-                                    onMoveDown = if (isAdmin && index < filteredMotors.size - 1) { { onMoveMotor(motor.id, false) } } else null,
+                                    onDuplicateClick = if (isAdmin) { { onDuplicateMotor(motor) } } else null,
+                                    onMoveUp = if (isAdmin && index > 0) { { onReorderMotors(index, index - 1) } } else null,
+                                    onMoveDown = if (isAdmin && index < filteredMotors.size - 1) { { onReorderMotors(index, index + 1) } } else null,
+                                    onMoveToTop = if (isAdmin && index > 0) { { onReorderMotors(index, 0) } } else null,
+                                    onMoveToBottom = if (isAdmin && index < filteredMotors.size - 1) { { onReorderMotors(index, filteredMotors.size - 1) } } else null,
                                     canMoveUp = index > 0,
                                     canMoveDown = index < filteredMotors.size - 1,
                                     isAdmin = isAdmin,
@@ -615,6 +620,7 @@ fun CatalogScreen(
                 TextButton(onClick = { categoryToDelete = null }) {
                     Text("إلغاء")
                 }
+            }
         )
     }
 

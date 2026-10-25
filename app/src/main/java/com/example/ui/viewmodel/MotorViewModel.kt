@@ -4,7 +4,11 @@ import android.app.Application
 import android.content.Context
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.data.DefaultHarnessData
 import com.example.data.model.AdminRecord
+import com.example.data.model.AppliancePart
+import com.example.data.model.Harness
+import com.example.data.model.HarnessPin
 import com.example.data.model.Motor
 import com.example.data.model.MotorCategory
 import com.example.data.model.Pinout
@@ -114,6 +118,20 @@ class MotorViewModel(application: Application) : AndroidViewModel(application) {
     private val _selectedMotor = MutableStateFlow<Motor?>(null)
     val selectedMotor = _selectedMotor.asStateFlow()
 
+    // Harnesses (ضفائر الغسالة والكارتة)
+    private val _harnesses = MutableStateFlow<List<Harness>>(DefaultHarnessData.sampleHarnesses)
+    val harnesses: StateFlow<List<Harness>> = _harnesses.asStateFlow()
+
+    private val _selectedHarness = MutableStateFlow<Harness?>(null)
+    val selectedHarness: StateFlow<Harness?> = _selectedHarness.asStateFlow()
+
+    // Appliance Parts (لوكات الباب، ليفلات، طلمبات)
+    private val _parts = MutableStateFlow<List<AppliancePart>>(DefaultHarnessData.sampleParts)
+    val parts: StateFlow<List<AppliancePart>> = _parts.asStateFlow()
+
+    private val _selectedPart = MutableStateFlow<AppliancePart?>(null)
+    val selectedPart: StateFlow<AppliancePart?> = _selectedPart.asStateFlow()
+
     private val _actionMessage = MutableStateFlow<String?>(null)
     val actionMessage = _actionMessage.asStateFlow()
 
@@ -122,10 +140,14 @@ class MotorViewModel(application: Application) : AndroidViewModel(application) {
 
     private var observeJob: kotlinx.coroutines.Job? = null
     private var observeCategoriesJob: kotlinx.coroutines.Job? = null
+    private var observeHarnessesJob: kotlinx.coroutines.Job? = null
+    private var observePartsJob: kotlinx.coroutines.Job? = null
 
     init {
         startObservingMotors()
         startObservingCategories()
+        startObservingHarnesses()
+        startObservingParts()
 
         viewModelScope.launch {
             try {
@@ -429,6 +451,71 @@ class MotorViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /**
+     * Exact onReorder logic with boundary checking (prevents RangeError / IndexOutOfBoundsException)
+     * and immediate optimistic UI update + Firestore batch persistence.
+     */
+    fun reorderMotors(fromIndex: Int, toIndex: Int) {
+        val currentState = _motorsState.value
+        if (currentState !is MotorsUiState.Success) return
+        val list = currentState.motors.toMutableList()
+
+        // Deterministic guard against out of bounds / RangeError
+        if (fromIndex !in 0 until list.size || toIndex !in 0 until list.size || fromIndex == toIndex) {
+            return
+        }
+
+        val item = list.removeAt(fromIndex)
+        list.add(toIndex, item)
+        val updatedList = list.mapIndexed { idx, m -> m.copy(orderIndex = idx) }
+        _motorsState.value = MotorsUiState.Success(updatedList)
+
+        viewModelScope.launch {
+            repository?.updateMotorsOrder(updatedList)
+        }
+    }
+
+    /**
+     * Duplicate / Clone an existing motor card with all its pinouts and details,
+     * assigning a new unique ID, inserting it after the original, saving, and
+     * allowing immediate editing.
+     */
+    fun duplicateMotor(
+        originalMotor: Motor,
+        onDuplicated: (Motor) -> Unit = {}
+    ) {
+        val newId = UUID.randomUUID().toString()
+        val clonedPinouts = originalMotor.pinouts.map { pin ->
+            pin.copy()
+        }
+        val duplicated = originalMotor.copy(
+            id = newId,
+            name = "${originalMotor.name} (نسخة)",
+            pinouts = clonedPinouts,
+            createdAt = null,
+            updatedAt = null
+        )
+
+        val current = _motorsState.value
+        if (current is MotorsUiState.Success) {
+            val list = current.motors.toMutableList()
+            val origIndex = list.indexOfFirst { it.id == originalMotor.id }
+            val insertIndex = if (origIndex >= 0) origIndex + 1 else 0
+            list.add(insertIndex, duplicated)
+            val reindexed = list.mapIndexed { idx, m -> m.copy(orderIndex = idx) }
+            _motorsState.value = MotorsUiState.Success(reindexed)
+        }
+
+        _actionMessage.value = "تم نسخ الماتور بنجاح! جاري فتح شاشة التعديل..."
+
+        viewModelScope.launch {
+            val saveResult = repository?.saveMotor(duplicated)
+            val assignedId = saveResult?.getOrNull() ?: newId
+            val finalMotor = duplicated.copy(id = assignedId)
+            onDuplicated(finalMotor)
+        }
+    }
+
     // Dynamic Admin Management (Super Admin Only)
     fun addAdmin(
         email: String,
@@ -476,6 +563,208 @@ class MotorViewModel(application: Application) : AndroidViewModel(application) {
                 _actionMessage.value = "تم سحب صلاحيات الإشراف من $email"
             }
             onComplete(result)
+        }
+    }
+
+    // --- Harnesses Logic (ضفائر الغسالة) ---
+
+    fun startObservingHarnesses() {
+        observeHarnessesJob?.cancel()
+        observeHarnessesJob = viewModelScope.launch {
+            try {
+                repository?.observeHarnesses()?.collect { list ->
+                    _harnesses.value = list
+                }
+            } catch (e: Throwable) {
+                android.util.Log.e("MotorViewModel", "observeHarnesses error", e)
+            }
+        }
+    }
+
+    fun selectHarness(harness: Harness?) {
+        _selectedHarness.value = harness
+    }
+
+    fun saveHarness(harness: Harness, onSuccess: (String) -> Unit = {}) {
+        viewModelScope.launch {
+            _isSaving.value = true
+            val repo = repository
+            if (repo == null) {
+                _isSaving.value = false
+                _actionMessage.value = "خدمة التخزين السحابي غير متصلة"
+                return@launch
+            }
+            val result = repo.saveHarness(harness)
+            _isSaving.value = false
+            if (result.isSuccess) {
+                val assignedId = result.getOrThrow()
+                val finalHarness = if (harness.id.isNotBlank()) harness else harness.copy(id = assignedId)
+                _selectedHarness.value = finalHarness
+
+                val current = _harnesses.value.toMutableList()
+                val idx = current.indexOfFirst { it.id == finalHarness.id }
+                if (idx >= 0) {
+                    current[idx] = finalHarness
+                } else {
+                    current.add(0, finalHarness)
+                }
+                _harnesses.value = current
+                _actionMessage.value = "تم حفظ خريطة الضفيرة بنجاح!"
+                onSuccess(assignedId)
+            } else {
+                _actionMessage.value = "خطأ في حفظ الضفيرة: ${result.exceptionOrNull()?.message}"
+            }
+        }
+    }
+
+    fun deleteHarness(harnessId: String, onSuccess: () -> Unit = {}) {
+        val updated = _harnesses.value.filter { it.id != harnessId }
+        _harnesses.value = updated
+        if (_selectedHarness.value?.id == harnessId) {
+            _selectedHarness.value = null
+        }
+        _actionMessage.value = "تم حذف الضفيرة بنجاح"
+        onSuccess()
+
+        viewModelScope.launch {
+            repository?.deleteHarness(harnessId)
+        }
+    }
+
+    fun duplicateHarness(original: Harness, onDuplicated: (Harness) -> Unit = {}) {
+        val newId = UUID.randomUUID().toString()
+        val duplicated = original.copy(
+            id = newId,
+            name = "${original.name} (نسخة)",
+            createdAt = null,
+            updatedAt = null
+        )
+        val current = _harnesses.value.toMutableList()
+        val idx = current.indexOfFirst { it.id == original.id }
+        val insertIdx = if (idx >= 0) idx + 1 else 0
+        current.add(insertIdx, duplicated)
+        _harnesses.value = current
+        _actionMessage.value = "تم نسخ الضفيرة بنجاح!"
+
+        viewModelScope.launch {
+            repository?.saveHarness(duplicated)
+            onDuplicated(duplicated)
+        }
+    }
+
+    fun reorderHarnesses(fromIndex: Int, toIndex: Int) {
+        val list = _harnesses.value.toMutableList()
+        if (fromIndex !in 0 until list.size || toIndex !in 0 until list.size || fromIndex == toIndex) return
+        val item = list.removeAt(fromIndex)
+        list.add(toIndex, item)
+        val reindexed = list.mapIndexed { idx, h -> h.copy(orderIndex = idx) }
+        _harnesses.value = reindexed
+
+        viewModelScope.launch {
+            reindexed.forEach { h ->
+                repository?.saveHarness(h)
+            }
+        }
+    }
+
+    // --- Appliance Parts Logic (لوكات الباب، ليفلات، طلمبات) ---
+
+    fun startObservingParts() {
+        observePartsJob?.cancel()
+        observePartsJob = viewModelScope.launch {
+            try {
+                repository?.observeParts()?.collect { list ->
+                    _parts.value = list
+                }
+            } catch (e: Throwable) {
+                android.util.Log.e("MotorViewModel", "observeParts error", e)
+            }
+        }
+    }
+
+    fun selectPart(part: AppliancePart?) {
+        _selectedPart.value = part
+    }
+
+    fun savePart(part: AppliancePart, onSuccess: (String) -> Unit = {}) {
+        viewModelScope.launch {
+            _isSaving.value = true
+            val repo = repository
+            if (repo == null) {
+                _isSaving.value = false
+                _actionMessage.value = "خدمة التخزين السحابي غير متصلة"
+                return@launch
+            }
+            val result = repo.savePart(part)
+            _isSaving.value = false
+            if (result.isSuccess) {
+                val assignedId = result.getOrThrow()
+                val finalPart = if (part.id.isNotBlank()) part else part.copy(id = assignedId)
+                _selectedPart.value = finalPart
+
+                val current = _parts.value.toMutableList()
+                val idx = current.indexOfFirst { it.id == finalPart.id }
+                if (idx >= 0) {
+                    current[idx] = finalPart
+                } else {
+                    current.add(0, finalPart)
+                }
+                _parts.value = current
+                _actionMessage.value = "تم حفظ القطعة بنجاح!"
+                onSuccess(assignedId)
+            } else {
+                _actionMessage.value = "خطأ في حفظ القطعة: ${result.exceptionOrNull()?.message}"
+            }
+        }
+    }
+
+    fun deletePart(partId: String, onSuccess: () -> Unit = {}) {
+        val updated = _parts.value.filter { it.id != partId }
+        _parts.value = updated
+        if (_selectedPart.value?.id == partId) {
+            _selectedPart.value = null
+        }
+        _actionMessage.value = "تم حذف القطعة بنجاح"
+        onSuccess()
+
+        viewModelScope.launch {
+            repository?.deletePart(partId)
+        }
+    }
+
+    fun duplicatePart(original: AppliancePart, onDuplicated: (AppliancePart) -> Unit = {}) {
+        val newId = UUID.randomUUID().toString()
+        val duplicated = original.copy(
+            id = newId,
+            name = "${original.name} (نسخة)",
+            createdAt = null,
+            updatedAt = null
+        )
+        val current = _parts.value.toMutableList()
+        val idx = current.indexOfFirst { it.id == original.id }
+        val insertIdx = if (idx >= 0) idx + 1 else 0
+        current.add(insertIdx, duplicated)
+        _parts.value = current
+        _actionMessage.value = "تم نسخ القطعة بنجاح!"
+
+        viewModelScope.launch {
+            repository?.savePart(duplicated)
+            onDuplicated(duplicated)
+        }
+    }
+
+    fun reorderParts(fromIndex: Int, toIndex: Int) {
+        val list = _parts.value.toMutableList()
+        if (fromIndex !in 0 until list.size || toIndex !in 0 until list.size || fromIndex == toIndex) return
+        val item = list.removeAt(fromIndex)
+        list.add(toIndex, item)
+        val reindexed = list.mapIndexed { idx, p -> p.copy(orderIndex = idx) }
+        _parts.value = reindexed
+
+        viewModelScope.launch {
+            reindexed.forEach { p ->
+                repository?.savePart(p)
+            }
         }
     }
 }

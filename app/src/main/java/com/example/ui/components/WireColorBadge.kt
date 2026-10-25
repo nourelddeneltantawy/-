@@ -163,17 +163,18 @@ fun getWireBrush(primaryColor: Color, secondaryColor: Color?): Brush {
     )
 }
 
-fun parseWireColorToComposeColor(colorHex: String, wireColorName: String): Color {
+fun parseWireColorToComposeColor(colorHex: String, wireColorName: String = ""): Color {
     val (primary, _) = resolveWireColors(colorHex, wireColorName)
     return primary
 }
 
 @Composable
 fun WireColorBadge(
-    wireColor: String,
-    colorHex: String,
+    wireColor: String = "",
+    colorHex: String = "#3B82F6",
     secondaryColorHex: String? = null,
     secondaryColorName: String? = null,
+    size: androidx.compose.ui.unit.Dp = 12.dp,
     modifier: Modifier = Modifier
 ) {
     val (primaryColor, secondaryColor) = resolveWireColors(
@@ -184,28 +185,38 @@ fun WireColorBadge(
     )
     val wireBrush = getWireBrush(primaryColor, secondaryColor)
 
-    Surface(
-        modifier = modifier,
-        shape = RoundedCornerShape(12.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
-    ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-            verticalAlignment = Alignment.CenterVertically
+    if (wireColor.isBlank()) {
+        Box(
+            modifier = modifier
+                .size(size)
+                .clip(CircleShape)
+                .background(wireBrush)
+                .border(1.dp, Color.White.copy(alpha = 0.6f), CircleShape)
+        )
+    } else {
+        Surface(
+            modifier = modifier,
+            shape = RoundedCornerShape(12.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
         ) {
-            Box(
-                modifier = Modifier
-                    .size(11.dp)
-                    .clip(CircleShape)
-                    .background(wireBrush)
-                    .border(1.dp, Color.White.copy(alpha = 0.6f), CircleShape)
-            )
-            Spacer(modifier = Modifier.width(6.dp))
-            Text(
-                text = wireColor,
-                style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp),
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+            Row(
+                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(size)
+                        .clip(CircleShape)
+                        .background(wireBrush)
+                        .border(1.dp, Color.White.copy(alpha = 0.6f), CircleShape)
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(
+                    text = wireColor,
+                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
         }
     }
 }

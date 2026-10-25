@@ -22,10 +22,13 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForwardIos
 import androidx.compose.material.icons.filled.Cable
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.DeleteOutline
+import androidx.compose.material.icons.filled.DragHandle
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.ElectricBolt
 import androidx.compose.material.icons.filled.Favorite
@@ -36,6 +39,8 @@ import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -52,6 +57,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
@@ -70,8 +76,11 @@ fun MotorCard(
     onClick: () -> Unit,
     onEditClick: (() -> Unit)? = null,
     onDeleteClick: (() -> Unit)? = null,
+    onDuplicateClick: (() -> Unit)? = null,
     onMoveUp: (() -> Unit)? = null,
     onMoveDown: (() -> Unit)? = null,
+    onMoveToTop: (() -> Unit)? = null,
+    onMoveToBottom: (() -> Unit)? = null,
     canMoveUp: Boolean = false,
     canMoveDown: Boolean = false,
     isAdmin: Boolean = true,
@@ -104,12 +113,103 @@ fun MotorCard(
                 .fillMaxWidth()
                 .padding(16.dp)
         ) {
-            // Top Section: Title, Badges, Favorite & Corner Action Icons
+            // Top Section: Drag Handle, Title, Badges, Favorite & Corner Action Icons
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.Top
             ) {
+                // Drag Handle for Admins (with tactile icon, drag gestures, and quick reorder menu)
+                if (isAdmin) {
+                    var accumulatedDrag by remember { mutableStateOf(0f) }
+                    var showOrderMenu by remember { mutableStateOf(false) }
+
+                    Box {
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.85f),
+                            modifier = Modifier
+                                .size(36.dp)
+                                .testTag("drag_handle_${motor.id}")
+                                .pointerInput(motor.id) {
+                                    detectVerticalDragGestures(
+                                        onDragEnd = { accumulatedDrag = 0f },
+                                        onDragCancel = { accumulatedDrag = 0f },
+                                        onVerticalDrag = { change, dragAmount ->
+                                            change.consume()
+                                            accumulatedDrag += dragAmount
+                                            if (accumulatedDrag > 40f) {
+                                                if (canMoveDown) onMoveDown?.invoke()
+                                                accumulatedDrag = 0f
+                                            } else if (accumulatedDrag < -40f) {
+                                                if (canMoveUp) onMoveUp?.invoke()
+                                                accumulatedDrag = 0f
+                                            }
+                                        }
+                                    )
+                                }
+                                .combinedClickable(
+                                    onClick = { showOrderMenu = true },
+                                    onLongClick = { showOrderMenu = true }
+                                )
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    imageVector = Icons.Default.DragHandle,
+                                    contentDescription = "مؤشر سحب وتحريك الشريحة",
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                        }
+
+                        DropdownMenu(
+                            expanded = showOrderMenu,
+                            onDismissRequest = { showOrderMenu = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("تحريك خطوة لأعلى ⬆️") },
+                                onClick = {
+                                    showOrderMenu = false
+                                    onMoveUp?.invoke()
+                                },
+                                enabled = canMoveUp,
+                                leadingIcon = { Icon(Icons.Default.KeyboardArrowUp, contentDescription = null) }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("تحريك خطوة لأسفل ⬇️") },
+                                onClick = {
+                                    showOrderMenu = false
+                                    onMoveDown?.invoke()
+                                },
+                                enabled = canMoveDown,
+                                leadingIcon = { Icon(Icons.Default.KeyboardArrowDown, contentDescription = null) }
+                            )
+                            if (onMoveToTop != null) {
+                                DropdownMenuItem(
+                                    text = { Text("نقل إلى أول القائمة (البداية) 🔝") },
+                                    onClick = {
+                                        showOrderMenu = false
+                                        onMoveToTop.invoke()
+                                    },
+                                    enabled = canMoveUp
+                                )
+                            }
+                            if (onMoveToBottom != null) {
+                                DropdownMenuItem(
+                                    text = { Text("نقل إلى آخر القائمة (النهاية) 🔚") },
+                                    onClick = {
+                                        showOrderMenu = false
+                                        onMoveToBottom.invoke()
+                                    },
+                                    enabled = canMoveDown
+                                )
+                            }
+                        }
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                }
+
                 // Motor Title & Subtitle
                 Column(modifier = Modifier.weight(1f)) {
                     Row(
@@ -181,7 +281,7 @@ fun MotorCard(
                     )
                 }
 
-                // Action Bar: Favorite, Reorder, Edit, Delete
+                // Action Bar: Favorite, Reorder, Copy, Edit, Delete
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(4.dp)
@@ -234,6 +334,29 @@ fun MotorCard(
                                 tint = MaterialTheme.colorScheme.primary,
                                 modifier = Modifier.size(20.dp)
                             )
+                        }
+                    }
+
+                    // Duplicate / Clone Motor Action
+                    if (isAdmin && onDuplicateClick != null) {
+                        Surface(
+                            shape = CircleShape,
+                            color = MaterialTheme.colorScheme.secondary.copy(alpha = 0.12f),
+                            modifier = Modifier.size(32.dp)
+                        ) {
+                            IconButton(
+                                onClick = onDuplicateClick,
+                                modifier = Modifier
+                                    .size(32.dp)
+                                    .testTag("duplicate_motor_btn_${motor.id}")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.ContentCopy,
+                                    contentDescription = "نسخ وتكرار الماتور",
+                                    tint = MaterialTheme.colorScheme.secondary,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
                         }
                     }
 

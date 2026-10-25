@@ -293,5 +293,217 @@ class MotorRepository(private val db: FirebaseFirestore) {
             Result.failure(e)
         }
     }
+
+    // --- Harness Management (ضفائر وتوصيلات الغسالة) ---
+
+    private fun parseHarnessFromSnapshot(doc: DocumentSnapshot): com.example.data.model.Harness? {
+        val data = doc.data ?: return null
+        val id = doc.id
+        val name = data["name"] as? String ?: ""
+        val brand = data["brand"] as? String ?: ""
+        val model = data["model"] as? String ?: ""
+        val notes = data["notes"] as? String ?: ""
+        val orderIndex = (data["orderIndex"] as? Number)?.toInt() ?: 0
+        val createdAt = data["createdAt"] as? Timestamp
+        val updatedAt = data["updatedAt"] as? Timestamp
+
+        fun parsePin(item: Any?): com.example.data.model.HarnessPin? {
+            if (item !is Map<*, *>) return null
+            return com.example.data.model.HarnessPin(
+                pinNumber = (item["pinNumber"] as? Number)?.toInt() ?: 1,
+                label = item["label"] as? String ?: "",
+                wireColor = item["wireColor"] as? String ?: "",
+                colorHex = item["colorHex"] as? String ?: "#3B82F6",
+                secondaryColorHex = item["secondaryColorHex"] as? String,
+                secondaryColorName = item["secondaryColorName"] as? String,
+                connectedComponent = item["connectedComponent"] as? String ?: "ماتور",
+                targetPinNumber = (item["targetPinNumber"] as? Number)?.toInt(),
+                signalType = item["signalType"] as? String ?: ""
+            )
+        }
+
+        val rawBoardPins = data["boardPins"] as? List<*> ?: emptyList<Any>()
+        val boardPins = rawBoardPins.mapNotNull { parsePin(it) }
+
+        val rawBottomPins = data["bottomPins"] as? List<*> ?: emptyList<Any>()
+        val bottomPins = rawBottomPins.mapNotNull { parsePin(it) }
+
+        return com.example.data.model.Harness(
+            id = id,
+            name = name,
+            brand = brand,
+            model = model,
+            notes = notes,
+            boardPins = boardPins,
+            bottomPins = bottomPins,
+            orderIndex = orderIndex,
+            createdAt = createdAt,
+            updatedAt = updatedAt
+        )
+    }
+
+    fun observeHarnesses(): Flow<List<com.example.data.model.Harness>> = flow {
+        val path = "harnesses"
+        try {
+            emitAll(
+                db.collection(path)
+                    .snapshots()
+                    .map { snapshot ->
+                        val remoteList = snapshot.documents.mapNotNull { doc ->
+                            try {
+                                parseHarnessFromSnapshot(doc)
+                            } catch (_: Throwable) {
+                                null
+                            }
+                        }
+                        if (remoteList.isNotEmpty()) {
+                            remoteList.sortedBy { it.orderIndex }
+                        } else {
+                            com.example.data.DefaultHarnessData.sampleHarnesses
+                        }
+                    }
+                    .catch {
+                        emit(com.example.data.DefaultHarnessData.sampleHarnesses)
+                    }
+            )
+        } catch (_: Throwable) {
+            emit(com.example.data.DefaultHarnessData.sampleHarnesses)
+        }
+    }
+
+    suspend fun saveHarness(harness: com.example.data.model.Harness): Result<String> {
+        val id = if (harness.id.isNotBlank()) harness.id else UUID.randomUUID().toString()
+        val path = "harnesses/$id"
+        return try {
+            val payload = harness.toMap().toMutableMap()
+            payload["id"] = id
+            payload["updatedAt"] = FieldValue.serverTimestamp()
+            if (harness.createdAt == null) {
+                payload["createdAt"] = FieldValue.serverTimestamp()
+            }
+            db.collection("harnesses").document(id).set(payload).await()
+            Result.success(id)
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.WRITE, path)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun deleteHarness(harnessId: String): Result<Unit> {
+        val path = "harnesses/$harnessId"
+        return try {
+            db.collection("harnesses").document(harnessId).delete().await()
+            Result.success(Unit)
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.DELETE, path)
+            Result.failure(e)
+        }
+    }
+
+    // --- Appliance Parts Management (لوكات الباب، ليفلات الماء، طلمبات) ---
+
+    private fun parsePartFromSnapshot(doc: DocumentSnapshot): com.example.data.model.AppliancePart? {
+        val data = doc.data ?: return null
+        val id = doc.id
+        val name = data["name"] as? String ?: ""
+        val partType = data["partType"] as? String ?: "لوك باب"
+        val brand = data["brand"] as? String ?: ""
+        val model = data["model"] as? String ?: ""
+        val resistanceValue = data["resistanceValue"] as? String ?: ""
+        val operatingVoltage = data["operatingVoltage"] as? String ?: "220V AC"
+        val testMethod = data["testMethod"] as? String ?: ""
+        val notes = data["notes"] as? String ?: ""
+        val orderIndex = (data["orderIndex"] as? Number)?.toInt() ?: 0
+        val createdAt = data["createdAt"] as? Timestamp
+        val updatedAt = data["updatedAt"] as? Timestamp
+
+        val rawPinouts = data["pinouts"] as? List<*> ?: emptyList<Any>()
+        val pinoutsList = rawPinouts.mapNotNull { item ->
+            if (item !is Map<*, *>) return@mapNotNull null
+            Pinout(
+                pinNumber = (item["pinNumber"] as? Number)?.toInt() ?: 1,
+                name = item["name"] as? String ?: "",
+                wireColor = item["wireColor"] as? String ?: "",
+                colorHex = item["colorHex"] as? String ?: "#3B82F6",
+                secondaryColorHex = item["secondaryColorHex"] as? String,
+                secondaryColorName = item["secondaryColorName"] as? String,
+                functionDesc = item["functionDesc"] as? String ?: ""
+            )
+        }
+
+        return com.example.data.model.AppliancePart(
+            id = id,
+            name = name,
+            partType = partType,
+            brand = brand,
+            model = model,
+            pinouts = pinoutsList,
+            resistanceValue = resistanceValue,
+            operatingVoltage = operatingVoltage,
+            testMethod = testMethod,
+            notes = notes,
+            orderIndex = orderIndex,
+            createdAt = createdAt,
+            updatedAt = updatedAt
+        )
+    }
+
+    fun observeParts(): Flow<List<com.example.data.model.AppliancePart>> = flow {
+        val path = "appliance_parts"
+        try {
+            emitAll(
+                db.collection(path)
+                    .snapshots()
+                    .map { snapshot ->
+                        val remoteList = snapshot.documents.mapNotNull { doc ->
+                            try {
+                                parsePartFromSnapshot(doc)
+                            } catch (_: Throwable) {
+                                null
+                            }
+                        }
+                        if (remoteList.isNotEmpty()) {
+                            remoteList.sortedBy { it.orderIndex }
+                        } else {
+                            com.example.data.DefaultHarnessData.sampleParts
+                        }
+                    }
+                    .catch {
+                        emit(com.example.data.DefaultHarnessData.sampleParts)
+                    }
+            )
+        } catch (_: Throwable) {
+            emit(com.example.data.DefaultHarnessData.sampleParts)
+        }
+    }
+
+    suspend fun savePart(part: com.example.data.model.AppliancePart): Result<String> {
+        val id = if (part.id.isNotBlank()) part.id else UUID.randomUUID().toString()
+        val path = "appliance_parts/$id"
+        return try {
+            val payload = part.toMap().toMutableMap()
+            payload["id"] = id
+            payload["updatedAt"] = FieldValue.serverTimestamp()
+            if (part.createdAt == null) {
+                payload["createdAt"] = FieldValue.serverTimestamp()
+            }
+            db.collection("appliance_parts").document(id).set(payload).await()
+            Result.success(id)
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.WRITE, path)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun deletePart(partId: String): Result<Unit> {
+        val path = "appliance_parts/$partId"
+        return try {
+            db.collection("appliance_parts").document(partId).delete().await()
+            Result.success(Unit)
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.DELETE, path)
+            Result.failure(e)
+        }
+    }
 }
 

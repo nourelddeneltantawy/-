@@ -21,6 +21,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.ElectricBolt
 import androidx.compose.material.icons.filled.Favorite
@@ -67,6 +68,7 @@ fun MotorDetailScreen(
     isAdmin: Boolean,
     isFavorite: Boolean = false,
     onToggleFavorite: () -> Unit = {},
+    onDuplicateClick: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -89,6 +91,12 @@ fun MotorDetailScreen(
                             contentDescription = if (isFavorite) "إزالة من المفضلة" else "إضافة إلى المفضلة",
                             tint = if (isFavorite) Color(0xFFEF4444) else MaterialTheme.colorScheme.onSurface
                         )
+                    }
+
+                    if (isAdmin && onDuplicateClick != null) {
+                        IconButton(onClick = onDuplicateClick) {
+                            Icon(imageVector = Icons.Default.ContentCopy, contentDescription = "نسخ وتكرار الماتور")
+                        }
                     }
 
                     if (isAdmin) {
