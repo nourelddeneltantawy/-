@@ -7,53 +7,91 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Cable
+import androidx.compose.material.icons.filled.CleaningServices
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ElectricBolt
+import androidx.compose.material.icons.filled.Fullscreen
+import androidx.compose.material.icons.filled.FullscreenExit
+import androidx.compose.material.icons.filled.Hub
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Memory
+import androidx.compose.material.icons.filled.Pin
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Remove
+import androidx.compose.material.icons.filled.Sensors
+import androidx.compose.material.icons.filled.TableChart
+import androidx.compose.material.icons.filled.Thermostat
 import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material.icons.filled.WaterDamage
+import androidx.compose.material.icons.filled.ZoomIn
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Divider
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import coil.compose.AsyncImage
+import coil.request.ImageRequest
 import com.example.data.model.Harness
 import com.example.data.model.HarnessPin
+import com.example.util.ImageHelper
 
 @Composable
 fun InteractiveHarnessMap(
@@ -61,10 +99,64 @@ fun InteractiveHarnessMap(
     modifier: Modifier = Modifier
 ) {
     var selectedPinNumber by remember { mutableStateOf<Int?>(null) }
+    var isFullscreen by remember { mutableStateOf(false) }
+    var viewMode by remember { mutableStateOf("visual") } // "visual" or "table"
 
     val activeBoardPin = harness.boardPins.find { it.pinNumber == selectedPinNumber }
-    val activeBottomPin = harness.bottomPins.find { 
+    val activeBottomPin = harness.bottomPins.find {
         activeBoardPin != null && it.connectedComponent == activeBoardPin.connectedComponent && it.pinNumber == activeBoardPin.targetPinNumber
+    }
+
+    if (isFullscreen) {
+        Dialog(
+            onDismissRequest = { isFullscreen = false },
+            properties = DialogProperties(usePlatformDefaultWidth = false)
+        ) {
+            Surface(
+                modifier = Modifier.fillMaxSize(),
+                color = MaterialTheme.colorScheme.background
+            ) {
+                Column(modifier = Modifier.fillMaxSize()) {
+                    // Fullscreen Top Bar
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(MaterialTheme.colorScheme.surface)
+                            .padding(12.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column {
+                            Text(
+                                text = harness.name,
+                                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                            )
+                            Text(
+                                text = "مخطط الضفيرة التفاعلي الكامل - يمكنك التحريك والتكبير باللمس",
+                                style = MaterialTheme.typography.labelSmall.copy(color = MaterialTheme.colorScheme.outline)
+                            )
+                        }
+
+                        IconButton(onClick = { isFullscreen = false }) {
+                            Icon(imageVector = Icons.Default.FullscreenExit, contentDescription = "خروج من ملء الشاشة")
+                        }
+                    }
+
+                    Box(modifier = Modifier.weight(1f)) {
+                        HarnessInteractiveCanvas(
+                            harness = harness,
+                            selectedPinNumber = selectedPinNumber,
+                            onSelectPin = { selectedPinNumber = if (selectedPinNumber == it) null else it }
+                        )
+                    }
+
+                    // Bottom info bar in fullscreen
+                    activeBoardPin?.let { pin ->
+                        HarnessPinInspectorBanner(boardPin = pin, bottomPin = activeBottomPin)
+                    }
+                }
+            }
+        }
     }
 
     Card(
@@ -76,9 +168,9 @@ fun InteractiveHarnessMap(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(16.dp)
+                .padding(14.dp)
         ) {
-            // Header
+            // Header with toggle & fullscreen
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -106,387 +198,601 @@ fun InteractiveHarnessMap(
                             style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
                         )
                         Text(
-                            text = "اضغط على أي طرف في الكارتة أو القطعة لإظهار مسار السلك المتصل",
+                            text = "تقريب وتحريك وتتبع مسارات الأسلاك بالصورة",
                             style = MaterialTheme.typography.labelSmall.copy(color = MaterialTheme.colorScheme.outline)
                         )
                     }
                 }
-            }
 
-            Spacer(modifier = Modifier.height(16.dp))
-
-            // TOP SECTION: Control Board Header & Pins
-            Surface(
-                shape = RoundedCornerShape(14.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(modifier = Modifier.padding(12.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                imageVector = Icons.Default.Memory,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(18.dp)
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(
-                                text = "سوكت كارتة التحكم (Control Board)",
-                                style = MaterialTheme.typography.labelLarge.copy(
-                                    fontWeight = FontWeight.Bold,
-                                    color = MaterialTheme.colorScheme.primary
-                                )
-                            )
-                        }
-                        Text(
-                            text = "${harness.boardPins.size} أطراف",
-                            style = MaterialTheme.typography.labelSmall.copy(color = MaterialTheme.colorScheme.outline)
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    // Horizontal scrollable Board Pins row
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        harness.boardPins.forEach { pin ->
-                            val isSelected = selectedPinNumber == pin.pinNumber
-                            val pinColor = parseWireColorToComposeColor(pin.colorHex)
-
-                            Surface(
-                                shape = RoundedCornerShape(10.dp),
-                                color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface,
-                                border = if (isSelected) androidx.compose.foundation.BorderStroke(2.dp, MaterialTheme.colorScheme.primary) else androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(10.dp))
-                                    .clickable {
-                                        selectedPinNumber = if (isSelected) null else pin.pinNumber
-                                    }
-                            ) {
-                                Column(
-                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
-                                    horizontalAlignment = Alignment.CenterHorizontally
-                                ) {
-                                    // Pin Number badge
-                                    Surface(
-                                        shape = CircleShape,
-                                        color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
-                                        modifier = Modifier.size(24.dp)
-                                    ) {
-                                        Box(contentAlignment = Alignment.Center) {
-                                            Text(
-                                                text = "${pin.pinNumber}",
-                                                style = MaterialTheme.typography.labelSmall.copy(
-                                                    fontWeight = FontWeight.Bold,
-                                                    color = if (isSelected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
-                                                )
-                                            )
-                                        }
-                                    }
-
-                                    Spacer(modifier = Modifier.height(4.dp))
-
-                                    // Wire color indicator dot/striped
-                                    WireColorBadge(
-                                        colorHex = pin.colorHex,
-                                        secondaryColorHex = pin.secondaryColorHex,
-                                        size = 14.dp
-                                    )
-
-                                    Spacer(modifier = Modifier.height(4.dp))
-
-                                    Text(
-                                        text = pin.label.take(12),
-                                        style = MaterialTheme.typography.labelSmall.copy(
-                                            fontSize = 11.sp,
-                                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
-                                        ),
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                }
-                            }
-                        }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = { isFullscreen = true }) {
+                        Icon(imageVector = Icons.Default.Fullscreen, contentDescription = "عرض بملء الشاشة", tint = MaterialTheme.colorScheme.primary)
                     }
                 }
             }
 
-            Spacer(modifier = Modifier.height(12.dp))
+            Spacer(modifier = Modifier.height(8.dp))
 
-            // MIDDLE SECTION: Wire Harness Visualizer Canvas
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(90.dp)
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(Color(0xFF0F172A))
+            // View Mode Chips
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Canvas(modifier = Modifier.fillMaxWidth().height(90.dp)) {
-                    val width = size.width
-                    val height = size.height
-
-                    val boardCount = harness.boardPins.size.coerceAtLeast(1)
-                    val bottomCount = harness.bottomPins.size.coerceAtLeast(1)
-
-                    harness.boardPins.forEachIndexed { bIndex, bPin ->
-                        val isPinSelected = selectedPinNumber == bPin.pinNumber
-                        val startX = (bIndex + 0.5f) * (width / boardCount)
-                        val startY = 8f
-
-                        if (bPin.isBlankPin) {
-                            // Empty terminal slot with no wire connection
-                            drawCircle(
-                                color = Color(0xFF64748B),
-                                radius = if (isPinSelected) 5f else 3f,
-                                center = Offset(startX, startY),
-                                style = Stroke(width = 1.5f)
-                            )
-                            return@forEachIndexed
-                        }
-
-                        // Find matching bottom pin
-                        val targetIndex = harness.bottomPins.indexOfFirst {
-                            it.connectedComponent == bPin.connectedComponent && it.pinNumber == bPin.targetPinNumber
-                        }.takeIf { it >= 0 } ?: (bIndex % bottomCount)
-
-                        val endX = (targetIndex + 0.5f) * (width / bottomCount)
-                        val endY = height - 8f
-
-                        val wirePath = Path().apply {
-                            moveTo(startX, startY)
-                            cubicTo(
-                                startX, startY + (height * 0.45f),
-                                endX, endY - (height * 0.45f),
-                                endX, endY
-                            )
-                        }
-
-                        val primaryColor = parseWireColorToComposeColor(bPin.colorHex)
-                        val strokeWidth = if (isPinSelected) 5f else 2.5f
-                        val wireAlpha = if (selectedPinNumber == null || isPinSelected) 1f else 0.25f
-
-                        // Draw primary wire
-                        drawPath(
-                            path = wirePath,
-                            color = primaryColor.copy(alpha = wireAlpha),
-                            style = Stroke(width = strokeWidth, cap = StrokeCap.Round)
-                        )
-
-                        // If striped, overlay secondary dashed wire
-                        if (bPin.secondaryColorHex != null) {
-                            val secColor = parseWireColorToComposeColor(bPin.secondaryColorHex)
-                            drawPath(
-                                path = wirePath,
-                                color = secColor.copy(alpha = wireAlpha),
-                                style = Stroke(
-                                    width = strokeWidth,
-                                    cap = StrokeCap.Round,
-                                    pathEffect = PathEffect.dashPathEffect(floatArrayOf(12f, 12f), 0f)
-                                )
-                            )
-                        }
-
-                        // Terminal dots
-                        drawCircle(
-                            color = if (isPinSelected) Color.White else primaryColor,
-                            radius = if (isPinSelected) 6f else 3.5f,
-                            center = Offset(startX, startY)
-                        )
-                        drawCircle(
-                            color = if (isPinSelected) Color.White else primaryColor,
-                            radius = if (isPinSelected) 6f else 3.5f,
-                            center = Offset(endX, endY)
-                        )
-                    }
-                }
-
-                // Subtitle in canvas
-                Text(
-                    text = if (selectedPinNumber != null) "مسار السلك المحدد: الطرف $selectedPinNumber" else "خريطة مسارات الأسلاك والربط الداخلي",
-                    style = MaterialTheme.typography.labelSmall.copy(
-                        color = Color.White.copy(alpha = 0.7f),
-                        fontSize = 10.sp
-                    ),
-                    modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .padding(bottom = 4.dp)
+                FilterChip(
+                    selected = viewMode == "visual",
+                    onClick = { viewMode = "visual" },
+                    label = { Text("المخطط التفاعلي المصور (Zoom)", fontSize = 12.sp) },
+                    leadingIcon = { Icon(imageVector = Icons.Default.Hub, contentDescription = null, modifier = Modifier.size(16.dp)) }
+                )
+                FilterChip(
+                    selected = viewMode == "table",
+                    onClick = { viewMode = "table" },
+                    label = { Text("جدول بيانات الأطراف", fontSize = 12.sp) },
+                    leadingIcon = { Icon(imageVector = Icons.Default.TableChart, contentDescription = null, modifier = Modifier.size(16.dp)) }
                 )
             }
 
-            Spacer(modifier = Modifier.height(12.dp))
+            Spacer(modifier = Modifier.height(10.dp))
 
-            // BOTTOM SECTION: Connected Appliance Components & Pins
-            Surface(
-                shape = RoundedCornerShape(14.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                modifier = Modifier.fillMaxWidth()
+            if (viewMode == "visual") {
+                // Interactive Canvas with Zoom & Pan
+                HarnessInteractiveCanvas(
+                    harness = harness,
+                    selectedPinNumber = selectedPinNumber,
+                    onSelectPin = { selectedPinNumber = if (selectedPinNumber == it) null else it },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(420.dp)
+                        .clip(RoundedCornerShape(14.dp))
+                )
+            } else {
+                // Table View of All Wires & Terminals
+                HarnessTableView(
+                    harness = harness,
+                    selectedPinNumber = selectedPinNumber,
+                    onSelectPin = { selectedPinNumber = if (selectedPinNumber == it) null else it }
+                )
+            }
+
+            // Pin Inspector Details when a pin is selected
+            activeBoardPin?.let { pin ->
+                Spacer(modifier = Modifier.height(10.dp))
+                HarnessPinInspectorBanner(boardPin = pin, bottomPin = activeBottomPin)
+            }
+        }
+    }
+}
+
+/**
+ * Interactive Canvas featuring Pan, Pinch-to-Zoom, Board Image with Hotspot Pins,
+ * Connected Appliance Component Cards, and Smooth Physical Color Wires.
+ */
+@Composable
+fun HarnessInteractiveCanvas(
+    harness: Harness,
+    selectedPinNumber: Int?,
+    onSelectPin: (Int) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val context = LocalContext.current
+    var scale by remember { mutableFloatStateOf(1f) }
+    var offset by remember { mutableStateOf(Offset.Zero) }
+
+    // Group bottom pins by appliance component
+    val componentGroups = remember(harness.bottomPins) {
+        if (harness.bottomPins.isNotEmpty()) {
+            harness.bottomPins.groupBy { it.connectedComponent }
+        } else {
+            // Default groups from board pins target
+            harness.boardPins.filter { !it.isBlankPin }.groupBy { it.connectedComponent }
+        }
+    }
+
+    Box(
+        modifier = modifier
+            .background(Color(0xFF0A0F1D))
+            .border(1.dp, Color(0xFF1E293B), RoundedCornerShape(14.dp))
+            .pointerInput(Unit) {
+                detectTransformGestures { _, pan, zoom, _ ->
+                    scale = (scale * zoom).coerceIn(0.6f, 3.5f)
+                    offset = Offset(offset.x + pan.x, offset.y + pan.y)
+                }
+            }
+    ) {
+        // Zoom & Pan Contained Surface
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .graphicsLayer(
+                    scaleX = scale,
+                    scaleY = scale,
+                    translationX = offset.x,
+                    translationY = offset.y
+                )
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.SpaceBetween
             ) {
-                Column(modifier = Modifier.padding(12.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                imageVector = Icons.Default.Tune,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.secondary,
-                                modifier = Modifier.size(18.dp)
+                // TOP: The Control Board (الكارتة)
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(170.dp),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
+                    border = androidx.compose.foundation.BorderStroke(1.5.dp, Color(0xFF0284C7))
+                ) {
+                    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+                        val boardWidth = maxWidth
+                        val boardHeight = maxHeight
+
+                        // Board photo or PCB graphic
+                        if (harness.boardImageUrl.isNotBlank()) {
+                            AsyncImage(
+                                model = ImageRequest.Builder(context)
+                                    .data(ImageHelper.getCoilData(harness.boardImageUrl))
+                                    .crossfade(true)
+                                    .build(),
+                                contentDescription = "كارتة الغسالة",
+                                contentScale = ContentScale.Fit,
+                                modifier = Modifier.fillMaxSize()
                             )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(
-                                text = "أطراف الأجزاء السفلية (الماتور، اللوك، الليفل، الطلمبة)",
-                                style = MaterialTheme.typography.labelLarge.copy(
-                                    fontWeight = FontWeight.Bold,
-                                    color = MaterialTheme.colorScheme.secondary
-                                )
-                            )
-                        }
-                        Text(
-                            text = "${harness.bottomPins.size} أطراف",
-                            style = MaterialTheme.typography.labelSmall.copy(color = MaterialTheme.colorScheme.outline)
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    // Horizontal scrollable Bottom Pins row
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        harness.bottomPins.forEach { pin ->
-                            val isConnectedToSelected = activeBoardPin != null &&
-                                    (pin.connectedComponent == activeBoardPin.connectedComponent && pin.pinNumber == activeBoardPin.targetPinNumber)
-
-                            Surface(
-                                shape = RoundedCornerShape(10.dp),
-                                color = if (isConnectedToSelected) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surface,
-                                border = if (isConnectedToSelected) androidx.compose.foundation.BorderStroke(2.dp, MaterialTheme.colorScheme.secondary) else androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                                modifier = Modifier.clip(RoundedCornerShape(10.dp))
+                        } else {
+                            // High-tech PCB Graphic Background
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .background(
+                                        Brush.linearGradient(
+                                            colors = listOf(Color(0xFF0369A1).copy(alpha = 0.2f), Color(0xFF0F172A))
+                                        )
+                                    ),
+                                contentAlignment = Alignment.Center
                             ) {
-                                Column(
-                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
-                                    horizontalAlignment = Alignment.CenterHorizontally
-                                ) {
-                                    // Component name tag
-                                    Surface(
-                                        shape = RoundedCornerShape(4.dp),
-                                        color = if (isConnectedToSelected) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.surfaceVariant,
-                                        modifier = Modifier.padding(bottom = 4.dp)
-                                    ) {
-                                        Text(
-                                            text = pin.connectedComponent,
-                                            style = MaterialTheme.typography.labelSmall.copy(
-                                                fontSize = 9.sp,
-                                                fontWeight = FontWeight.Bold,
-                                                color = if (isConnectedToSelected) MaterialTheme.colorScheme.onSecondary else MaterialTheme.colorScheme.onSurfaceVariant
-                                            ),
-                                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
-                                        )
-                                    }
-
-                                    // Pin number
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(imageVector = Icons.Default.Memory, contentDescription = null, tint = Color(0xFF38BDF8), modifier = Modifier.size(28.dp))
+                                    Spacer(modifier = Modifier.width(8.dp))
                                     Text(
-                                        text = "طرف ${pin.pinNumber}",
-                                        style = MaterialTheme.typography.labelSmall.copy(
-                                            fontWeight = FontWeight.Bold
-                                        )
-                                    )
-
-                                    Spacer(modifier = Modifier.height(2.dp))
-
-                                    // Color badge
-                                    WireColorBadge(
-                                        colorHex = pin.colorHex,
-                                        secondaryColorHex = pin.secondaryColorHex,
-                                        size = 14.dp
-                                    )
-
-                                    Spacer(modifier = Modifier.height(2.dp))
-
-                                    Text(
-                                        text = pin.label.take(12),
-                                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp),
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
+                                        text = "كارتة التحكم الرئيسية (Main PCB Board)",
+                                        style = MaterialTheme.typography.titleSmall.copy(color = Color.White, fontWeight = FontWeight.Bold)
                                     )
                                 }
                             }
                         }
-                    }
-                }
-            }
 
-            // Pin Detail Inspector (shows when a pin is selected)
-            AnimatedVisibility(
-                visible = activeBoardPin != null,
-                enter = fadeIn(),
-                exit = fadeOut()
-            ) {
-                activeBoardPin?.let { bPin ->
-                    Spacer(modifier = Modifier.height(12.dp))
-                    Card(
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(12.dp),
-                        colors = CardDefaults.cardColors(
-                            containerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.08f)
-                        )
-                    ) {
-                        Column(modifier = Modifier.padding(12.dp)) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
+                        // Overlay Board Pins Hotspots
+                        harness.boardPins.forEachIndexed { idx, pin ->
+                            // If pinX/pinY set, use them; otherwise distribute evenly in socket row
+                            val posX = if (pin.pinX > 0f) (pin.pinX / 100f) * boardWidth.value else (12f + (idx * (boardWidth.value - 24f) / harness.boardPins.size.coerceAtLeast(1)))
+                            val posY = if (pin.pinY > 0f) (pin.pinY / 100f) * boardHeight.value else (boardHeight.value * 0.75f)
+
+                            val isPinSelected = selectedPinNumber == pin.pinNumber
+                            val pinColor = parseWireColorToComposeColor(pin.colorHex)
+
+                            Box(
+                                modifier = Modifier
+                                    .offset {
+                                        IntOffset(
+                                            (posX.dp.toPx() - 14.dp.toPx()).toInt(),
+                                            (posY.dp.toPx() - 14.dp.toPx()).toInt()
+                                        )
+                                    }
+                                    .size(28.dp)
+                                    .shadow(if (isPinSelected) 10.dp else 4.dp, CircleShape)
+                                    .background(if (isPinSelected) Color.White else pinColor, CircleShape)
+                                    .border(
+                                        width = if (isPinSelected) 2.5.dp else 1.5.dp,
+                                        color = if (isPinSelected) pinColor else Color.White,
+                                        shape = CircleShape
+                                    )
+                                    .clickable { onSelectPin(pin.pinNumber) },
+                                contentAlignment = Alignment.Center
                             ) {
                                 Text(
-                                    text = "بيانات الطرف المحدد (طرف الكارتة #${bPin.pinNumber})",
-                                    style = MaterialTheme.typography.labelLarge.copy(
+                                    text = "${pin.pinNumber}",
+                                    style = MaterialTheme.typography.labelSmall.copy(
                                         fontWeight = FontWeight.Bold,
-                                        color = MaterialTheme.colorScheme.primary
+                                        color = if (isPinSelected) pinColor else if (pin.colorHex == "#F8FAFC" || pin.colorHex == "#EAB308") Color.Black else Color.White,
+                                        fontSize = 11.sp
                                     )
-                                )
-                                WireColorBadge(
-                                    colorHex = bPin.colorHex,
-                                    secondaryColorHex = bPin.secondaryColorHex,
-                                    size = 16.dp
-                                )
-                            }
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Text(
-                                text = "• الوظيفة عند الكارتة: ${bPin.label}",
-                                style = MaterialTheme.typography.bodySmall
-                            )
-                            Text(
-                                text = "• لون السلك: ${bPin.wireColor}${if (bPin.secondaryColorName != null) " مع خط ${bPin.secondaryColorName}" else ""}",
-                                style = MaterialTheme.typography.bodySmall
-                            )
-                            Text(
-                                text = "• الطرف المقابل بالأسفل: يتصل بـ [${bPin.connectedComponent}] - الطرف رقم #${bPin.targetPinNumber ?: 1}",
-                                style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold)
-                            )
-                            if (bPin.signalType.isNotBlank()) {
-                                Text(
-                                    text = "• نوع الإشارة: ${bPin.signalType}",
-                                    style = MaterialTheme.typography.bodySmall.copy(color = MaterialTheme.colorScheme.outline)
                                 )
                             }
                         }
+                    }
+                }
+
+                // MIDDLE: Visual Wires Canvas with Smooth Curves
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(75.dp)
+                ) {
+                    Canvas(modifier = Modifier.fillMaxSize()) {
+                        val canvasWidth = size.width
+                        val canvasHeight = size.height
+
+                        val boardCount = harness.boardPins.size.coerceAtLeast(1)
+                        val bottomCount = harness.bottomPins.size.coerceAtLeast(1)
+
+                        harness.boardPins.forEachIndexed { bIndex, bPin ->
+                            val isPinSelected = selectedPinNumber == bPin.pinNumber
+
+                            // Calculate start position
+                            val startX = if (bPin.pinX > 0f) (bPin.pinX / 100f) * canvasWidth else (bIndex + 0.5f) * (canvasWidth / boardCount)
+                            val startY = 0f
+
+                            if (bPin.isBlankPin) {
+                                // Empty terminal dot
+                                drawCircle(
+                                    color = Color(0xFF64748B),
+                                    radius = if (isPinSelected) 5f else 2.5f,
+                                    center = Offset(startX, startY),
+                                    style = Stroke(width = 1.5f)
+                                )
+                                return@forEachIndexed
+                            }
+
+                            // Calculate end position on corresponding bottom module
+                            val targetIndex = harness.bottomPins.indexOfFirst {
+                                it.connectedComponent == bPin.connectedComponent && it.pinNumber == bPin.targetPinNumber
+                            }.takeIf { it >= 0 } ?: (bIndex % bottomCount)
+
+                            val endX = (targetIndex + 0.5f) * (canvasWidth / bottomCount)
+                            val endY = canvasHeight
+
+                            val wirePath = Path().apply {
+                                moveTo(startX, startY)
+                                cubicTo(
+                                    startX, startY + (canvasHeight * 0.5f),
+                                    endX, endY - (canvasHeight * 0.5f),
+                                    endX, endY
+                                )
+                            }
+
+                            val primaryColor = parseWireColorToComposeColor(bPin.colorHex)
+                            val wireWidth = if (isPinSelected) 6f else 2.8f
+                            val wireAlpha = if (selectedPinNumber == null || isPinSelected) 1f else 0.18f
+
+                            // Draw main wire
+                            drawPath(
+                                path = wirePath,
+                                color = primaryColor.copy(alpha = wireAlpha),
+                                style = Stroke(width = wireWidth, cap = StrokeCap.Round)
+                            )
+
+                            // Striped overlay if secondary color exists
+                            if (bPin.secondaryColorHex != null) {
+                                val secColor = parseWireColorToComposeColor(bPin.secondaryColorHex)
+                                drawPath(
+                                    path = wirePath,
+                                    color = secColor.copy(alpha = wireAlpha),
+                                    style = Stroke(
+                                        width = wireWidth,
+                                        cap = StrokeCap.Round,
+                                        pathEffect = PathEffect.dashPathEffect(floatArrayOf(14f, 14f), 0f)
+                                    )
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // BOTTOM: Connected Appliance Components (الماتور، لوك، ليفل، طلمبة، صمامات، سخان)
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    componentGroups.forEach { (compName, compPins) ->
+                        ApplianceModuleCard(
+                            componentName = compName,
+                            pins = compPins,
+                            selectedPinNumber = selectedPinNumber,
+                            onSelectPin = onSelectPin
+                        )
                     }
                 }
             }
         }
+
+        // Floating Zoom & Reset Controls in Top-End Corner
+        Column(
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(10.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Surface(
+                shape = CircleShape,
+                color = Color.Black.copy(alpha = 0.7f),
+                modifier = Modifier.size(34.dp)
+            ) {
+                IconButton(onClick = { scale = (scale + 0.25f).coerceAtMost(3.5f) }) {
+                    Icon(imageVector = Icons.Default.Add, contentDescription = "تكبير", tint = Color.White, modifier = Modifier.size(18.dp))
+                }
+            }
+
+            Surface(
+                shape = CircleShape,
+                color = Color.Black.copy(alpha = 0.7f),
+                modifier = Modifier.size(34.dp)
+            ) {
+                IconButton(onClick = { scale = (scale - 0.25f).coerceAtLeast(0.6f) }) {
+                    Icon(imageVector = Icons.Default.Remove, contentDescription = "تصغير", tint = Color.White, modifier = Modifier.size(18.dp))
+                }
+            }
+
+            Surface(
+                shape = CircleShape,
+                color = Color.Black.copy(alpha = 0.7f),
+                modifier = Modifier.size(34.dp)
+            ) {
+                IconButton(onClick = {
+                    scale = 1f
+                    offset = Offset.Zero
+                }) {
+                    Icon(imageVector = Icons.Default.Refresh, contentDescription = "إعادة ضبط", tint = Color.White, modifier = Modifier.size(16.dp))
+                }
+            }
+        }
+
+        // Zoom & Drag Hint in Bottom-Start Corner
+        Surface(
+            shape = RoundedCornerShape(8.dp),
+            color = Color.Black.copy(alpha = 0.65f),
+            modifier = Modifier
+                .align(Alignment.BottomStart)
+                .padding(8.dp)
+        ) {
+            Text(
+                text = "🔍 اسحب للتحرك • باعد بإصبعين للتكبير (${String.format("%.1f", scale)}x)",
+                style = MaterialTheme.typography.labelSmall.copy(color = Color.White.copy(alpha = 0.9f), fontSize = 10.sp),
+                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+            )
+        }
+    }
+}
+
+/**
+ * Module Card representing a physical washing machine component (Motor, Lock, Level Sensor, etc.)
+ */
+@Composable
+fun ApplianceModuleCard(
+    componentName: String,
+    pins: List<HarnessPin>,
+    selectedPinNumber: Int?,
+    onSelectPin: (Int) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val (icon, tint) = getComponentIconAndColor(componentName)
+
+    Card(
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B)),
+        border = androidx.compose.foundation.BorderStroke(1.dp, tint.copy(alpha = 0.4f)),
+        modifier = modifier.width(140.dp)
+    ) {
+        Column(modifier = Modifier.padding(8.dp)) {
+            // Module Header
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Icon(imageVector = icon, contentDescription = null, tint = tint, modifier = Modifier.size(16.dp))
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(
+                    text = componentName,
+                    style = MaterialTheme.typography.labelMedium.copy(
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White,
+                        fontSize = 11.sp
+                    ),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+
+            Spacer(modifier = Modifier.height(6.dp))
+            Divider(color = Color.White.copy(alpha = 0.1f), thickness = 0.5.dp)
+            Spacer(modifier = Modifier.height(6.dp))
+
+            // Pins of this component
+            pins.forEach { pin ->
+                val isSelected = selectedPinNumber == pin.pinNumber
+                val pinColor = parseWireColorToComposeColor(pin.colorHex)
+
+                Surface(
+                    shape = RoundedCornerShape(6.dp),
+                    color = if (isSelected) tint.copy(alpha = 0.25f) else Color.Transparent,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 2.dp)
+                        .clickable { onSelectPin(pin.pinNumber) }
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+                    ) {
+                        WireColorBadge(
+                            colorHex = pin.colorHex,
+                            secondaryColorHex = pin.secondaryColorHex,
+                            size = 10.dp
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = "#${pin.pinNumber} ${pin.label}",
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                color = if (isSelected) Color.White else Color.White.copy(alpha = 0.8f),
+                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                fontSize = 10.sp
+                            ),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Detailed Wire Table for Multimeter and Diagnostics.
+ */
+@Composable
+fun HarnessTableView(
+    harness: Harness,
+    selectedPinNumber: Int?,
+    onSelectPin: (Int) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Column(
+        modifier = modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        harness.boardPins.forEach { bPin ->
+            val isSelected = selectedPinNumber == bPin.pinNumber
+            val targetPin = harness.bottomPins.find {
+                it.connectedComponent == bPin.connectedComponent && it.pinNumber == bPin.targetPinNumber
+            }
+
+            Surface(
+                shape = RoundedCornerShape(10.dp),
+                color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                border = if (isSelected) androidx.compose.foundation.BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary) else null,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { onSelectPin(bPin.pinNumber) }
+            ) {
+                Row(
+                    modifier = Modifier.padding(10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                        Surface(
+                            shape = CircleShape,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(22.dp)
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Text(
+                                    text = "${bPin.pinNumber}",
+                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, color = Color.White)
+                                )
+                            }
+                        }
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Column {
+                            Text(
+                                text = bPin.label,
+                                style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold)
+                            )
+                            Text(
+                                text = "متصل بـ: ${bPin.connectedComponent} (طرف ${bPin.targetPinNumber ?: '-'})",
+                                style = MaterialTheme.typography.labelSmall.copy(color = MaterialTheme.colorScheme.outline)
+                            )
+                        }
+                    }
+
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        WireColorBadge(colorHex = bPin.colorHex, secondaryColorHex = bPin.secondaryColorHex, size = 14.dp)
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = bPin.wireColor,
+                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold)
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Inspector banner showing in-depth details of the selected pin connection.
+ */
+@Composable
+fun HarnessPinInspectorBanner(
+    boardPin: HarnessPin,
+    bottomPin: HarnessPin?,
+    modifier: Modifier = Modifier
+) {
+    Card(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.9f)
+        )
+    ) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    WireColorBadge(
+                        colorHex = boardPin.colorHex,
+                        secondaryColorHex = boardPin.secondaryColorHex,
+                        size = 18.dp
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "طرف الكارتة #${boardPin.pinNumber}: ${boardPin.label}",
+                        style = MaterialTheme.typography.titleSmall.copy(
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer
+                        )
+                    )
+                }
+
+                Surface(
+                    shape = RoundedCornerShape(6.dp),
+                    color = MaterialTheme.colorScheme.primary
+                ) {
+                    Text(
+                        text = boardPin.wireColor,
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            color = MaterialTheme.colorScheme.onPrimary,
+                            fontWeight = FontWeight.Bold
+                        ),
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(6.dp))
+
+            Text(
+                text = "📍 الوجهة: ${boardPin.connectedComponent} - الطرف المقابل #${boardPin.targetPinNumber ?: '1'}" +
+                        (if (bottomPin != null && bottomPin.label.isNotBlank()) " (${bottomPin.label})" else ""),
+                style = MaterialTheme.typography.bodySmall.copy(color = MaterialTheme.colorScheme.onPrimaryContainer)
+            )
+
+            if (boardPin.signalType.isNotBlank()) {
+                Text(
+                    text = "⚡ نوع الإشارة: ${boardPin.signalType}",
+                    style = MaterialTheme.typography.labelSmall.copy(color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f))
+                )
+            }
+        }
+    }
+}
+
+fun getComponentIconAndColor(name: String): Pair<ImageVector, Color> {
+    return when {
+        name.contains("ماتور") -> Pair(Icons.Default.Memory, Color(0xFFEF4444))
+        name.contains("لوك") -> Pair(Icons.Default.Lock, Color(0xFFD97706))
+        name.contains("ليفل") || name.contains("ميزان") -> Pair(Icons.Default.Sensors, Color(0xFF0284C7))
+        name.contains("سخان") || name.contains("حرارة") -> Pair(Icons.Default.Thermostat, Color(0xFFDC2626))
+        name.contains("طلمبة") -> Pair(Icons.Default.WaterDamage, Color(0xFF9333EA))
+        name.contains("صمام") -> Pair(Icons.Default.CleaningServices, Color(0xFF0D9488))
+        name.contains("شداد") || name.contains("كلتش") -> Pair(Icons.Default.Tune, Color(0xFFEA580C))
+        else -> Pair(Icons.Default.ElectricBolt, Color(0xFF64748B))
     }
 }

@@ -303,6 +303,8 @@ class MotorRepository(private val db: FirebaseFirestore) {
         val brand = data["brand"] as? String ?: ""
         val model = data["model"] as? String ?: ""
         val notes = data["notes"] as? String ?: ""
+        val boardImageUrl = data["boardImageUrl"] as? String ?: ""
+        val bottomImageUrl = data["bottomImageUrl"] as? String ?: ""
         val orderIndex = (data["orderIndex"] as? Number)?.toInt() ?: 0
         val createdAt = data["createdAt"] as? Timestamp
         val updatedAt = data["updatedAt"] as? Timestamp
@@ -318,7 +320,10 @@ class MotorRepository(private val db: FirebaseFirestore) {
                 secondaryColorName = item["secondaryColorName"] as? String,
                 connectedComponent = item["connectedComponent"] as? String ?: "ماتور",
                 targetPinNumber = (item["targetPinNumber"] as? Number)?.toInt(),
-                signalType = item["signalType"] as? String ?: ""
+                signalType = item["signalType"] as? String ?: "",
+                isBlank = (item["isBlank"] as? Boolean) ?: false,
+                pinX = (item["pinX"] as? Number)?.toFloat() ?: 0f,
+                pinY = (item["pinY"] as? Number)?.toFloat() ?: 0f
             )
         }
 
@@ -334,6 +339,8 @@ class MotorRepository(private val db: FirebaseFirestore) {
             brand = brand,
             model = model,
             notes = notes,
+            boardImageUrl = boardImageUrl,
+            bottomImageUrl = bottomImageUrl,
             boardPins = boardPins,
             bottomPins = bottomPins,
             orderIndex = orderIndex,

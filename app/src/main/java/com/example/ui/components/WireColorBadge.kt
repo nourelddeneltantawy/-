@@ -164,8 +164,8 @@ fun getWireBrush(primaryColor: Color, secondaryColor: Color?): Brush {
     )
 }
 
-fun parseWireColorToComposeColor(colorHex: String, wireColorName: String = ""): Color {
-    val (primary, _) = resolveWireColors(colorHex, wireColorName)
+fun parseWireColorToComposeColor(colorHex: String?, wireColorName: String = ""): Color {
+    val (primary, _) = resolveWireColors(colorHex ?: "#3B82F6", wireColorName)
     return primary
 }
 

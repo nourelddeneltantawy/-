@@ -43,6 +43,9 @@ object ImageHelper {
     fun getCoilData(pathOrUrl: String): Any {
         val trimmed = pathOrUrl.trim()
         if (trimmed.isBlank()) return ""
+        if (trimmed == "sample_lg_diagram") {
+            return com.example.R.drawable.sample_lg_diagram
+        }
         if (trimmed.startsWith("/") && File(trimmed).exists()) {
             return File(trimmed)
         }

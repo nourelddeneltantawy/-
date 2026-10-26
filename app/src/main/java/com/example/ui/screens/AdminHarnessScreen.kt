@@ -1,5 +1,8 @@
 package com.example.ui.screens
 
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -21,24 +24,31 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.Cable
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.Save
+import androidx.compose.material.icons.filled.TouchApp
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
@@ -47,18 +57,29 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import coil.compose.AsyncImage
+import coil.request.ImageRequest
 import com.example.data.model.Harness
 import com.example.data.model.HarnessPin
+import com.example.data.model.MotorPinPresets
+import com.example.ui.components.APPLIANCE_COMPONENTS
+import com.example.ui.components.STANDARD_WIRE_COLORS
+import com.example.ui.components.VisualBoardPinMarker
 import com.example.ui.components.WireColorBadge
+import com.example.util.ImageHelper
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -68,33 +89,39 @@ fun AdminHarnessScreen(
     onBackClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
+    val snackbarHostState = remember { SnackbarHostState() }
+
     var name by remember { mutableStateOf(initialHarness?.name ?: "") }
     var brand by remember { mutableStateOf(initialHarness?.brand ?: "") }
     var model by remember { mutableStateOf(initialHarness?.model ?: "") }
     var notes by remember { mutableStateOf(initialHarness?.notes ?: "") }
+    var boardImageUrl by remember { mutableStateOf(initialHarness?.boardImageUrl ?: "") }
 
     val boardPins = remember { mutableStateListOf<HarnessPin>().apply { addAll(initialHarness?.boardPins ?: emptyList()) } }
     val bottomPins = remember { mutableStateListOf<HarnessPin>().apply { addAll(initialHarness?.bottomPins ?: emptyList()) } }
 
-    val colorOptions = listOf(
-        Pair("أحمر", "#EF4444"),
-        Pair("أزرق", "#2563EB"),
-        Pair("أصفر", "#EAB308"),
-        Pair("أسود", "#1E293B"),
-        Pair("أبيض", "#F8FAFC"),
-        Pair("بني", "#854D0E"),
-        Pair("برتقالي", "#F97316"),
-        Pair("أخضر", "#16A34A"),
-        Pair("بنفسجي", "#9333EA"),
-        Pair("زهري", "#EC4899"),
-        Pair("أصفر / أخضر", "#EAB308"),
-        Pair("فارغ (بدون سلك)", "#94A3B8")
-    )
-
-    val componentTypes = listOf("ماتور", "لوك الباب", "ليفل الماء", "طلمبة الطرد", "صمام الدخول")
+    val photoPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            coroutineScope.launch {
+                try {
+                    val localPath = ImageHelper.copyUriToLocalStorage(context, uri)
+                    boardImageUrl = localPath
+                    snackbarHostState.showSnackbar("تم حفظ صورة الكارتة بنجاح")
+                } catch (e: Exception) {
+                    boardImageUrl = uri.toString()
+                    snackbarHostState.showSnackbar("تم تحديد الصورة")
+                }
+            }
+        }
+    }
 
     Scaffold(
         modifier = modifier.testTag("admin_harness_screen"),
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
                 title = { Text(if (initialHarness == null) "إضافة خريطة ضفيرة جديدة" else "تعديل خريطة الضفيرة", fontWeight = FontWeight.Bold) },
@@ -114,7 +141,7 @@ fun AdminHarnessScreen(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
-            // General Details Card
+            // Section 1: General Details Card
             item {
                 Card(
                     shape = RoundedCornerShape(16.dp),
@@ -153,7 +180,7 @@ fun AdminHarnessScreen(
                         OutlinedTextField(
                             value = notes,
                             onValueChange = { notes = it },
-                            label = { Text("ملاحظات فنية عن الضفيرة") },
+                            label = { Text("ملاحظات فنية عن الضفيرة وتوصيلاتها") },
                             modifier = Modifier.fillMaxWidth(),
                             shape = RoundedCornerShape(10.dp)
                         )
@@ -161,15 +188,116 @@ fun AdminHarnessScreen(
                 }
             }
 
-            // Board Pins Section (من 1 لـ 15)
+            // Section 2: Board Image Selector
+            item {
+                Card(
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(imageVector = Icons.Default.Image, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("صورة كارتة الغسالة (تكون السوكيتات باينة بوضوح)", style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold))
+                        }
+
+                        // Preview if set
+                        if (boardImageUrl.isNotBlank()) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(180.dp)
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(Color(0xFF0F172A))
+                            ) {
+                                AsyncImage(
+                                    model = ImageRequest.Builder(context)
+                                        .data(ImageHelper.getCoilData(boardImageUrl))
+                                        .crossfade(true)
+                                        .build(),
+                                    contentDescription = "معاينة صورة الكارتة",
+                                    contentScale = ContentScale.Fit,
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                            }
+                        }
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Button(
+                                onClick = {
+                                    photoPickerLauncher.launch(
+                                        androidx.activity.result.PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                                    )
+                                },
+                                modifier = Modifier.weight(1f),
+                                shape = RoundedCornerShape(10.dp)
+                            ) {
+                                Icon(imageVector = Icons.Default.PhotoLibrary, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("اختيار صورة الكارتة", fontSize = 13.sp)
+                            }
+
+                            if (boardImageUrl.isNotBlank()) {
+                                OutlinedButton(
+                                    onClick = { boardImageUrl = "" },
+                                    shape = RoundedCornerShape(10.dp)
+                                ) {
+                                    Text("حذف الصورة")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Section 3: Interactive Visual Pin Placement on Board Image
+            item {
+                VisualBoardPinMarker(
+                    boardImageUrl = boardImageUrl,
+                    pins = boardPins,
+                    onAddPinAtPosition = { xPercent, yPercent ->
+                        val nextNum = boardPins.size + 1
+                        val defaultPreset = MotorPinPresets.PRESETS.firstOrNull { !it.isBlank } ?: MotorPinPresets.PRESETS.first()
+                        boardPins.add(
+                            HarnessPin(
+                                pinNumber = nextNum,
+                                label = "طرف $nextNum",
+                                wireColor = defaultPreset.colorName,
+                                colorHex = defaultPreset.colorHex,
+                                secondaryColorHex = null,
+                                secondaryColorName = null,
+                                connectedComponent = "ماتور",
+                                targetPinNumber = nextNum,
+                                pinX = xPercent,
+                                pinY = yPercent
+                            )
+                        )
+                    },
+                    onUpdatePin = { index, updated ->
+                        if (index in boardPins.indices) {
+                            boardPins[index] = updated
+                        }
+                    },
+                    onDeletePin = { index ->
+                        if (index in boardPins.indices) {
+                            boardPins.removeAt(index)
+                        }
+                    }
+                )
+            }
+
+            // Section 4: Board Pins List Header & Fast Buttons
             item {
                 Column(modifier = Modifier.fillMaxWidth()) {
                     Text(
-                        text = "1. أطراف الكارتة من أعلى (${boardPins.size} أطراف)",
-                        fontWeight = FontWeight.Bold,
-                        style = MaterialTheme.typography.titleMedium
+                        text = "1. قائمة أطراف الكارتة (${boardPins.size} أطراف)",
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
                     )
-                    Spacer(modifier = Modifier.height(6.dp))
+                    Spacer(modifier = Modifier.height(8.dp))
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -177,14 +305,19 @@ fun AdminHarnessScreen(
                         Button(
                             onClick = {
                                 val nextPin = boardPins.size + 1
+                                val defaultPreset = MotorPinPresets.PRESETS.firstOrNull { !it.isBlank } ?: MotorPinPresets.PRESETS.first()
                                 boardPins.add(
                                     HarnessPin(
                                         pinNumber = nextPin,
                                         label = "طرف $nextPin",
-                                        wireColor = "أزرق",
-                                        colorHex = "#2563EB",
+                                        wireColor = defaultPreset.colorName,
+                                        colorHex = defaultPreset.colorHex,
+                                        secondaryColorHex = null,
+                                        secondaryColorName = null,
                                         connectedComponent = "ماتور",
-                                        targetPinNumber = nextPin
+                                        targetPinNumber = nextPin,
+                                        pinX = 50f,
+                                        pinY = 50f
                                     )
                                 )
                             },
@@ -207,7 +340,9 @@ fun AdminHarnessScreen(
                                         colorHex = "#94A3B8",
                                         connectedComponent = "فارغ",
                                         targetPinNumber = nextPin,
-                                        isBlank = true
+                                        isBlank = true,
+                                        pinX = 50f,
+                                        pinY = 50f
                                     )
                                 )
                             },
@@ -220,6 +355,7 @@ fun AdminHarnessScreen(
                 }
             }
 
+            // Board Pins Individual Cards
             itemsIndexed(boardPins) { index, pin ->
                 Card(
                     shape = RoundedCornerShape(12.dp),
@@ -236,17 +372,10 @@ fun AdminHarnessScreen(
                                 Text("طرف الكارتة #${pin.pinNumber}", fontWeight = FontWeight.Bold)
                                 if (pin.isBlankPin) {
                                     Spacer(modifier = Modifier.width(6.dp))
-                                    Surface(
-                                        shape = RoundedCornerShape(6.dp),
-                                        color = MaterialTheme.colorScheme.surface
-                                    ) {
+                                    Surface(shape = RoundedCornerShape(6.dp), color = MaterialTheme.colorScheme.surface) {
                                         Text(
                                             text = "طرف فارغ (NC)",
-                                            style = MaterialTheme.typography.labelSmall.copy(
-                                                fontSize = 10.sp,
-                                                fontWeight = FontWeight.Bold,
-                                                color = Color(0xFF64748B)
-                                            ),
+                                            style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color(0xFF64748B)),
                                             modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                                         )
                                     }
@@ -259,9 +388,7 @@ fun AdminHarnessScreen(
 
                         OutlinedTextField(
                             value = pin.label,
-                            onValueChange = { newLabel ->
-                                boardPins[index] = pin.copy(label = newLabel)
-                            },
+                            onValueChange = { newLabel -> boardPins[index] = pin.copy(label = newLabel) },
                             label = { Text("وظيفة الطرف في الكارتة (مثال: تغذية ماتور U / تاكو)") },
                             modifier = Modifier.fillMaxWidth(),
                             singleLine = true,
@@ -269,7 +396,7 @@ fun AdminHarnessScreen(
                         )
 
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            // Color Picker Selector
+                            // Wire color dropdown
                             var showColorDropdown by remember { mutableStateOf(false) }
                             Box(modifier = Modifier.weight(1f)) {
                                 OutlinedButton(
@@ -281,25 +408,22 @@ fun AdminHarnessScreen(
                                     Spacer(modifier = Modifier.width(6.dp))
                                     Text(pin.wireColor, maxLines = 1)
                                 }
-                                DropdownMenu(
-                                    expanded = showColorDropdown,
-                                    onDismissRequest = { showColorDropdown = false }
-                                ) {
-                                    colorOptions.forEach { (colorName, hex) ->
+                                DropdownMenu(expanded = showColorDropdown, onDismissRequest = { showColorDropdown = false }) {
+                                    STANDARD_WIRE_COLORS.forEach { (cName, hex) ->
                                         DropdownMenuItem(
                                             text = {
                                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                                     WireColorBadge(colorHex = hex, size = 16.dp)
                                                     Spacer(modifier = Modifier.width(8.dp))
-                                                    Text(colorName)
+                                                    Text(cName)
                                                 }
                                             },
                                             onClick = {
                                                 boardPins[index] = pin.copy(
-                                                    wireColor = colorName,
+                                                    wireColor = cName,
                                                     colorHex = hex,
-                                                    secondaryColorHex = if (colorName.contains("/")) "#16A34A" else null,
-                                                    secondaryColorName = if (colorName.contains("/")) "أخضر" else null
+                                                    secondaryColorHex = if (cName.contains("/")) "#16A34A" else null,
+                                                    secondaryColorName = if (cName.contains("/")) "أخضر" else null
                                                 )
                                                 showColorDropdown = false
                                             }
@@ -308,7 +432,7 @@ fun AdminHarnessScreen(
                                 }
                             }
 
-                            // Connected Component Selector
+                            // Component Selector
                             var showCompDropdown by remember { mutableStateOf(false) }
                             Box(modifier = Modifier.weight(1f)) {
                                 OutlinedButton(
@@ -318,11 +442,8 @@ fun AdminHarnessScreen(
                                 ) {
                                     Text(pin.connectedComponent, maxLines = 1)
                                 }
-                                DropdownMenu(
-                                    expanded = showCompDropdown,
-                                    onDismissRequest = { showCompDropdown = false }
-                                ) {
-                                    componentTypes.forEach { comp ->
+                                DropdownMenu(expanded = showCompDropdown, onDismissRequest = { showCompDropdown = false }) {
+                                    APPLIANCE_COMPONENTS.forEach { comp ->
                                         DropdownMenuItem(
                                             text = { Text(comp) },
                                             onClick = {
@@ -338,16 +459,15 @@ fun AdminHarnessScreen(
                 }
             }
 
-            // Bottom Pins Section (الماتور والقطع)
+            // Section 5: Bottom Appliance Components & Pins
             item {
                 Spacer(modifier = Modifier.height(10.dp))
                 Column(modifier = Modifier.fillMaxWidth()) {
                     Text(
-                        text = "2. أطراف الماتور والقطع بالأسفل (${bottomPins.size} أطراف)",
-                        fontWeight = FontWeight.Bold,
-                        style = MaterialTheme.typography.titleMedium
+                        text = "2. أطراف الماتور والأجزاء السفلية (الماتور، اللوك، الليفل، الطلمبة، السخان، الشداد)",
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
                     )
-                    Spacer(modifier = Modifier.height(6.dp))
+                    Spacer(modifier = Modifier.height(8.dp))
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -361,7 +481,8 @@ fun AdminHarnessScreen(
                                         label = "طرف $nextPin",
                                         wireColor = "أزرق",
                                         colorHex = "#2563EB",
-                                        connectedComponent = "ماتور"
+                                        connectedComponent = "ماتور",
+                                        targetPinNumber = nextPin
                                     )
                                 )
                             },
@@ -383,6 +504,7 @@ fun AdminHarnessScreen(
                                         wireColor = "فارغ (بدون سلك)",
                                         colorHex = "#94A3B8",
                                         connectedComponent = "فارغ",
+                                        targetPinNumber = nextPin,
                                         isBlank = true
                                     )
                                 )
@@ -396,6 +518,7 @@ fun AdminHarnessScreen(
                 }
             }
 
+            // Bottom Pins Individual Cards
             itemsIndexed(bottomPins) { index, pin ->
                 Card(
                     shape = RoundedCornerShape(12.dp),
@@ -412,17 +535,10 @@ fun AdminHarnessScreen(
                                 Text("${pin.connectedComponent} - الطرف #${pin.pinNumber}", fontWeight = FontWeight.Bold)
                                 if (pin.isBlankPin) {
                                     Spacer(modifier = Modifier.width(6.dp))
-                                    Surface(
-                                        shape = RoundedCornerShape(6.dp),
-                                        color = MaterialTheme.colorScheme.surface
-                                    ) {
+                                    Surface(shape = RoundedCornerShape(6.dp), color = MaterialTheme.colorScheme.surface) {
                                         Text(
                                             text = "طرف فارغ (NC)",
-                                            style = MaterialTheme.typography.labelSmall.copy(
-                                                fontSize = 10.sp,
-                                                fontWeight = FontWeight.Bold,
-                                                color = Color(0xFF64748B)
-                                            ),
+                                            style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color(0xFF64748B)),
                                             modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                                         )
                                     }
@@ -435,14 +551,68 @@ fun AdminHarnessScreen(
 
                         OutlinedTextField(
                             value = pin.label,
-                            onValueChange = { newLabel ->
-                                bottomPins[index] = pin.copy(label = newLabel)
-                            },
+                            onValueChange = { newLabel -> bottomPins[index] = pin.copy(label = newLabel) },
                             label = { Text("اسم الطرف بالقطعة (مثال: شربون / تاكوجينيراتور)") },
                             modifier = Modifier.fillMaxWidth(),
                             singleLine = true,
                             shape = RoundedCornerShape(8.dp)
                         )
+
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            // Component Selector
+                            var showCompDropdown by remember { mutableStateOf(false) }
+                            Box(modifier = Modifier.weight(1f)) {
+                                OutlinedButton(
+                                    onClick = { showCompDropdown = true },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    shape = RoundedCornerShape(8.dp)
+                                ) {
+                                    Text(pin.connectedComponent, maxLines = 1)
+                                }
+                                DropdownMenu(expanded = showCompDropdown, onDismissRequest = { showCompDropdown = false }) {
+                                    APPLIANCE_COMPONENTS.forEach { comp ->
+                                        DropdownMenuItem(
+                                            text = { Text(comp) },
+                                            onClick = {
+                                                bottomPins[index] = pin.copy(connectedComponent = comp)
+                                                showCompDropdown = false
+                                            }
+                                        )
+                                    }
+                                }
+                            }
+
+                            // Color Selector
+                            var showColorDropdown by remember { mutableStateOf(false) }
+                            Box(modifier = Modifier.weight(1f)) {
+                                OutlinedButton(
+                                    onClick = { showColorDropdown = true },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    shape = RoundedCornerShape(8.dp)
+                                ) {
+                                    WireColorBadge(colorHex = pin.colorHex, secondaryColorHex = pin.secondaryColorHex, size = 14.dp)
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(pin.wireColor, maxLines = 1)
+                                }
+                                DropdownMenu(expanded = showColorDropdown, onDismissRequest = { showColorDropdown = false }) {
+                                    STANDARD_WIRE_COLORS.forEach { (cName, hex) ->
+                                        DropdownMenuItem(
+                                            text = {
+                                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                                    WireColorBadge(colorHex = hex, size = 16.dp)
+                                                    Spacer(modifier = Modifier.width(8.dp))
+                                                    Text(cName)
+                                                }
+                                            },
+                                            onClick = {
+                                                bottomPins[index] = pin.copy(wireColor = cName, colorHex = hex)
+                                                showColorDropdown = false
+                                            }
+                                        )
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -458,6 +628,7 @@ fun AdminHarnessScreen(
                             brand = brand.trim(),
                             model = model.trim(),
                             notes = notes.trim(),
+                            boardImageUrl = boardImageUrl.trim(),
                             boardPins = boardPins.toList(),
                             bottomPins = bottomPins.toList(),
                             orderIndex = initialHarness?.orderIndex ?: 0,
@@ -466,7 +637,9 @@ fun AdminHarnessScreen(
                         )
                         onSaveSuccess(newHarness)
                     },
-                    modifier = Modifier.fillMaxWidth().height(52.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(52.dp),
                     shape = RoundedCornerShape(12.dp)
                 ) {
                     Icon(imageVector = Icons.Default.Save, contentDescription = null)
