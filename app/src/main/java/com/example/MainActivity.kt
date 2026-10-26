@@ -243,6 +243,7 @@ fun AppContent(
     var diagnosticsCategoryTitle by remember { mutableStateOf("أعطال الأوتوماتيك") }
     var onAiImageReceivedCallback by remember { mutableStateOf<((String) -> Unit)?>(null) }
     var activeUpdateInfo by remember { mutableStateOf<com.example.data.model.AppUpdateInfo?>(null) }
+    var showAdminPublishDialog by remember { mutableStateOf(false) }
 
     val motorsState by motorViewModel.motorsState.collectAsState()
     val searchQuery by motorViewModel.searchQuery.collectAsState()
@@ -297,7 +298,7 @@ fun AppContent(
                 } else {
                     android.widget.Toast.makeText(
                         context,
-                        "تعذر الاتصال بملف التحديثات، يرجى التحقق من اتصال الإنترنت.",
+                        "تعذر الاتصال بالخادم، يرجى التحقق من اتصال الإنترنت.",
                         android.widget.Toast.LENGTH_SHORT
                     ).show()
                 }
@@ -316,7 +317,22 @@ fun AppContent(
         com.example.ui.components.UpdateDialog(
             updateInfo = updateInfo,
             onDismiss = { activeUpdateInfo = null },
-            isAdmin = isAdmin
+            isAdmin = isAdmin,
+            userEmail = userEmail,
+            onOpenPublishDialog = { showAdminPublishDialog = true }
+        )
+    }
+
+    // Admin-only Update Publisher Dialog
+    if (showAdminPublishDialog) {
+        com.example.ui.components.PublishUpdateDialog(
+            currentInfo = activeUpdateInfo,
+            adminEmail = userEmail ?: "admin",
+            onDismiss = { showAdminPublishDialog = false },
+            onPublished = {
+                showAdminPublishDialog = false
+                handleManualUpdateCheck()
+            }
         )
     }
 
@@ -457,6 +473,7 @@ fun AppContent(
                                 currentScreen = Screen.DIAGNOSTICS
                             },
                             onCheckForUpdates = { handleManualUpdateCheck() },
+                            onPublishUpdate = { showAdminPublishDialog = true },
                             onManageAdmins = {
                                 if (isSuperAdmin) {
                                     currentScreen = Screen.MANAGE_ADMINS

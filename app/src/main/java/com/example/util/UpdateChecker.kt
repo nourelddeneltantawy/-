@@ -11,65 +11,35 @@ import android.util.Log
 import android.widget.Toast
 import com.example.BuildConfig
 import com.example.data.model.AppUpdateInfo
+import com.google.firebase.Firebase
+import com.google.firebase.firestore.firestore
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
-import org.json.JSONObject
-import java.io.BufferedReader
-import java.io.InputStreamReader
-import java.net.HttpURLConnection
-import java.net.URL
 
 object UpdateChecker {
     private const val TAG = "UpdateChecker"
-    private const val PREFS_NAME = "app_update_prefs"
-    private const val KEY_UPDATE_URL = "custom_update_url"
-
-    // Default raw GitHub JSON endpoint
-    const val DEFAULT_UPDATE_URL = "https://raw.githubusercontent.com/nouraldeenaltantawy/washer-motors-app/main/version.json"
-
-    fun getUpdateUrl(context: Context): String {
-        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        return prefs.getString(KEY_UPDATE_URL, DEFAULT_UPDATE_URL)?.takeIf { it.isNotBlank() } ?: DEFAULT_UPDATE_URL
-    }
-
-    fun setCustomUpdateUrl(context: Context, url: String) {
-        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        prefs.edit().putString(KEY_UPDATE_URL, url.trim()).apply()
-    }
-
-    fun resetUpdateUrl(context: Context) {
-        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        prefs.edit().remove(KEY_UPDATE_URL).apply()
-    }
+    private const val COLLECTION_SETTINGS = "app_settings"
+    private const val DOC_UPDATE = "app_update"
 
     suspend fun checkUpdate(context: Context): AppUpdateInfo? = withContext(Dispatchers.IO) {
-        val updateUrl = getUpdateUrl(context)
-        var connection: HttpURLConnection? = null
+        val currentCode = BuildConfig.VERSION_CODE
+        val currentName = BuildConfig.VERSION_NAME
+
         try {
-            val url = URL(updateUrl)
-            connection = (url.openConnection() as HttpURLConnection).apply {
-                connectTimeout = 6000
-                readTimeout = 6000
-                requestMethod = "GET"
-                setRequestProperty("Accept", "application/json")
-                setRequestProperty("User-Agent", "WasherMotorsApp/${BuildConfig.VERSION_NAME}")
-                useCaches = false
-            }
+            // 1. Primary source: Firebase Firestore (real-time sync across all devices)
+            val docSnapshot = Firebase.firestore
+                .collection(COLLECTION_SETTINGS)
+                .document(DOC_UPDATE)
+                .get()
+                .await()
 
-            val responseCode = connection.responseCode
-            if (responseCode in 200..299) {
-                val reader = BufferedReader(InputStreamReader(connection.inputStream))
-                val response = reader.use { it.readText() }
-                val json = JSONObject(response)
-
-                val remoteVersionCode = json.optInt("versionCode", 0)
-                val remoteVersionName = json.optString("versionName", "1.0")
-                val downloadUrl = json.optString("downloadUrl", "")
-                val releaseNotes = json.optString("releaseNotes", "")
-                val forceUpdate = json.optBoolean("forceUpdate", false)
-
-                val currentCode = BuildConfig.VERSION_CODE
-                val currentName = BuildConfig.VERSION_NAME
+            if (docSnapshot.exists()) {
+                val remoteVersionCode = (docSnapshot.getLong("versionCode") ?: (docSnapshot.get("versionCode") as? Number)?.toLong() ?: 1L).toInt()
+                val remoteVersionName = docSnapshot.getString("versionName") ?: currentName
+                val downloadUrl = docSnapshot.getString("downloadUrl") ?: ""
+                val releaseNotes = docSnapshot.getString("releaseNotes") ?: ""
+                val forceUpdate = docSnapshot.getBoolean("forceUpdate") ?: false
 
                 val hasUpdate = remoteVersionCode > currentCode
 
@@ -84,16 +54,53 @@ object UpdateChecker {
                     hasUpdate = hasUpdate
                 )
             } else {
-                Log.w(TAG, "Update check failed with HTTP code: $responseCode")
-                null
+                // No update document in Firestore yet: App is up to date!
+                AppUpdateInfo(
+                    currentVersionCode = currentCode,
+                    currentVersionName = currentName,
+                    remoteVersionCode = currentCode,
+                    remoteVersionName = currentName,
+                    downloadUrl = "",
+                    releaseNotes = "",
+                    forceUpdate = false,
+                    hasUpdate = false
+                )
             }
         } catch (e: Throwable) {
-            Log.e(TAG, "Failed to check for updates: ${e.message}", e)
+            Log.e(TAG, "Error checking updates from Firestore: ${e.message}", e)
             null
-        } finally {
-            try {
-                connection?.disconnect()
-            } catch (_: Throwable) {}
+        }
+    }
+
+    suspend fun publishUpdate(
+        versionCode: Int,
+        versionName: String,
+        downloadUrl: String,
+        releaseNotes: String,
+        forceUpdate: Boolean,
+        adminEmail: String
+    ): Result<Unit> = withContext(Dispatchers.IO) {
+        try {
+            val data = hashMapOf<String, Any>(
+                "versionCode" to versionCode,
+                "versionName" to versionName.trim(),
+                "downloadUrl" to downloadUrl.trim(),
+                "releaseNotes" to releaseNotes.trim(),
+                "forceUpdate" to forceUpdate,
+                "updatedAt" to System.currentTimeMillis(),
+                "updatedBy" to adminEmail
+            )
+
+            Firebase.firestore
+                .collection(COLLECTION_SETTINGS)
+                .document(DOC_UPDATE)
+                .set(data)
+                .await()
+
+            Result.success(Unit)
+        } catch (e: Throwable) {
+            Log.e(TAG, "Error publishing update to Firestore: ${e.message}", e)
+            Result.failure(e)
         }
     }
 
@@ -116,16 +123,16 @@ object UpdateChecker {
             Log.e(TAG, "Error opening download URL: ${e.message}", e)
         }
 
-        // 2. If it's a direct APK file link, also trigger Android DownloadManager for convenient direct notification download
+        // 2. If it's a direct APK file link, also trigger Android DownloadManager
         if (downloadUrl.endsWith(".apk", ignoreCase = true)) {
             try {
                 val request = DownloadManager.Request(Uri.parse(downloadUrl)).apply {
-                    setTitle("دليل مواتير الغسالات v${updateInfo.remoteVersionName}")
+                    setTitle("تحديث البراء إلكترونيك v${updateInfo.remoteVersionName}")
                     setDescription("جاري تحميل ملف التحديث APK...")
                     setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
                     setDestinationInExternalPublicDir(
                         Environment.DIRECTORY_DOWNLOADS,
-                        "WasherMotors_v${updateInfo.remoteVersionName}.apk"
+                        "AlbaraaElectronic_v${updateInfo.remoteVersionName}.apk"
                     )
                     setMimeType("application/vnd.android.package-archive")
                 }

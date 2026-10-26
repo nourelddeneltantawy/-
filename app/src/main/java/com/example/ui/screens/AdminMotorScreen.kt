@@ -596,22 +596,25 @@ fun AdminMotorScreen(
 
             // Pinouts section header (Step-by-step pin addition)
             item(key = "section_pinouts_header") {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                Column(
+                    modifier = Modifier.fillMaxWidth()
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
                         Surface(
                             shape = CircleShape,
                             color = MaterialTheme.colorScheme.primaryContainer,
-                            modifier = Modifier.size(28.dp)
+                            modifier = Modifier.size(32.dp)
                         ) {
                             Box(contentAlignment = Alignment.Center) {
                                 Text(
                                     text = "${pinouts.size}",
-                                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
-                                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                                    style = MaterialTheme.typography.labelMedium.copy(
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.onPrimaryContainer
+                                    )
                                 )
                             }
                         }
@@ -622,7 +625,39 @@ fun AdminMotorScreen(
                         )
                     }
 
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    // Action buttons in full-width row - both buttons always visible
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Button(
+                            onClick = {
+                                val nextNum = pinouts.size + 1
+                                val defaultPreset = MotorPinPresets.PRESETS.firstOrNull { !it.isBlank } ?: MotorPinPresets.PRESETS.first()
+                                pinouts.add(
+                                    Pinout(
+                                        pinNumber = nextNum,
+                                        name = defaultPreset.functionName,
+                                        wireColor = defaultPreset.colorName,
+                                        colorHex = defaultPreset.colorHex,
+                                        secondaryColorHex = null,
+                                        secondaryColorName = null,
+                                        functionDesc = defaultPreset.description,
+                                        isBlank = false
+                                    )
+                                )
+                            },
+                            modifier = Modifier.weight(1.2f),
+                            shape = RoundedCornerShape(10.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                        ) {
+                            Icon(imageVector = Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("إضافة طرف سلك +", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                        }
+
                         OutlinedButton(
                             onClick = {
                                 val nextNum = pinouts.size + 1
@@ -639,34 +674,10 @@ fun AdminMotorScreen(
                                     )
                                 )
                             },
+                            modifier = Modifier.weight(1f),
                             shape = RoundedCornerShape(10.dp)
                         ) {
-                            Text("طرف فارغ (فاضي) +", fontSize = 12.sp)
-                        }
-
-                        Button(
-                            onClick = {
-                                val nextNum = pinouts.size + 1
-                                val defaultPreset = MotorPinPresets.PRESETS.firstOrNull { !it.isBlank } ?: MotorPinPresets.PRESETS.first()
-                                pinouts.add(
-                                    Pinout(
-                                        pinNumber = nextNum,
-                                        name = defaultPreset.functionName,
-                                        wireColor = defaultPreset.colorName,
-                                        colorHex = defaultPreset.colorHex,
-                                        secondaryColorHex = null,
-                                        secondaryColorName = null,
-                                        functionDesc = defaultPreset.description,
-                                        isBlank = defaultPreset.isBlank
-                                    )
-                                )
-                            },
-                            shape = RoundedCornerShape(10.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
-                        ) {
-                            Icon(imageVector = Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("إضافة طرف +")
+                            Text("طرف فارغ (فاضي) +", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                         }
                     }
                 }

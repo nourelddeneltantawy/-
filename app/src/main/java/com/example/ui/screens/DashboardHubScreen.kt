@@ -29,6 +29,7 @@ import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Cable
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.CleaningServices
+import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.ContactPhone
 import androidx.compose.material.icons.filled.ElectricBolt
 import androidx.compose.material.icons.filled.GridView
@@ -89,6 +90,7 @@ fun DashboardHubScreen(
     onNavigateToIntegrator: () -> Unit,
     onNavigateToDiagnostics: (String) -> Unit,
     onCheckForUpdates: () -> Unit,
+    onPublishUpdate: () -> Unit = {},
     onManageAdmins: () -> Unit,
     onAuthClick: () -> Unit,
     onNavigateToProfile: () -> Unit = {},
@@ -256,6 +258,17 @@ fun DashboardHubScreen(
                                 contentDescription = "التحقق من وجود تحديثات",
                                 tint = Color.White
                             )
+                        }
+
+                        // Admin: Publish new update
+                        if (isAdmin) {
+                            IconButton(onClick = onPublishUpdate) {
+                                Icon(
+                                    imageVector = Icons.Default.CloudUpload,
+                                    contentDescription = "نشر تحديث جديد للتطبيق",
+                                    tint = Color.White
+                                )
+                            }
                         }
 
                         // Manage Admins for Super Admin

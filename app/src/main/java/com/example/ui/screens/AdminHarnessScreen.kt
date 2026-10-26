@@ -163,50 +163,58 @@ fun AdminHarnessScreen(
 
             // Board Pins Section (من 1 لـ 15)
             item {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
+                Column(modifier = Modifier.fillMaxWidth()) {
                     Text(
                         text = "1. أطراف الكارتة من أعلى (${boardPins.size} أطراف)",
                         fontWeight = FontWeight.Bold,
                         style = MaterialTheme.typography.titleMedium
                     )
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        OutlinedButton(onClick = {
-                            val nextPin = boardPins.size + 1
-                            boardPins.add(
-                                HarnessPin(
-                                    pinNumber = nextPin,
-                                    label = "مكان فاضي بدون سلك (NC)",
-                                    wireColor = "فارغ (بدون سلك)",
-                                    colorHex = "#94A3B8",
-                                    connectedComponent = "فارغ",
-                                    targetPinNumber = nextPin,
-                                    isBlank = true
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Button(
+                            onClick = {
+                                val nextPin = boardPins.size + 1
+                                boardPins.add(
+                                    HarnessPin(
+                                        pinNumber = nextPin,
+                                        label = "طرف $nextPin",
+                                        wireColor = "أزرق",
+                                        colorHex = "#2563EB",
+                                        connectedComponent = "ماتور",
+                                        targetPinNumber = nextPin
+                                    )
                                 )
-                            )
-                        }) {
-                            Text("طرف فارغ +", fontSize = 12.sp)
-                        }
-
-                        Button(onClick = {
-                            val nextPin = boardPins.size + 1
-                            boardPins.add(
-                                HarnessPin(
-                                    pinNumber = nextPin,
-                                    label = "طرف $nextPin",
-                                    wireColor = "أزرق",
-                                    colorHex = "#2563EB",
-                                    connectedComponent = "ماتور",
-                                    targetPinNumber = nextPin
-                                )
-                            )
-                        }) {
+                            },
+                            modifier = Modifier.weight(1.2f),
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
                             Icon(imageVector = Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.width(4.dp))
-                            Text("إضافة طرف")
+                            Text("إضافة طرف سلك +", fontWeight = FontWeight.Bold)
+                        }
+
+                        OutlinedButton(
+                            onClick = {
+                                val nextPin = boardPins.size + 1
+                                boardPins.add(
+                                    HarnessPin(
+                                        pinNumber = nextPin,
+                                        label = "مكان فاضي بدون سلك (NC)",
+                                        wireColor = "فارغ (بدون سلك)",
+                                        colorHex = "#94A3B8",
+                                        connectedComponent = "فارغ",
+                                        targetPinNumber = nextPin,
+                                        isBlank = true
+                                    )
+                                )
+                            },
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            Text("طرف فارغ (فاضي) +", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                         }
                     }
                 }
@@ -333,48 +341,56 @@ fun AdminHarnessScreen(
             // Bottom Pins Section (الماتور والقطع)
             item {
                 Spacer(modifier = Modifier.height(10.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
+                Column(modifier = Modifier.fillMaxWidth()) {
                     Text(
                         text = "2. أطراف الماتور والقطع بالأسفل (${bottomPins.size} أطراف)",
                         fontWeight = FontWeight.Bold,
                         style = MaterialTheme.typography.titleMedium
                     )
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        OutlinedButton(onClick = {
-                            val nextPin = bottomPins.size + 1
-                            bottomPins.add(
-                                HarnessPin(
-                                    pinNumber = nextPin,
-                                    label = "مكان فاضي بدون سلك (NC)",
-                                    wireColor = "فارغ (بدون سلك)",
-                                    colorHex = "#94A3B8",
-                                    connectedComponent = "فارغ",
-                                    isBlank = true
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Button(
+                            onClick = {
+                                val nextPin = bottomPins.size + 1
+                                bottomPins.add(
+                                    HarnessPin(
+                                        pinNumber = nextPin,
+                                        label = "طرف $nextPin",
+                                        wireColor = "أزرق",
+                                        colorHex = "#2563EB",
+                                        connectedComponent = "ماتور"
+                                    )
                                 )
-                            )
-                        }) {
-                            Text("طرف فارغ +", fontSize = 12.sp)
-                        }
-
-                        Button(onClick = {
-                            val nextPin = bottomPins.size + 1
-                            bottomPins.add(
-                                HarnessPin(
-                                    pinNumber = nextPin,
-                                    label = "طرف $nextPin",
-                                    wireColor = "أزرق",
-                                    colorHex = "#2563EB",
-                                    connectedComponent = "ماتور"
-                                )
-                            )
-                        }) {
+                            },
+                            modifier = Modifier.weight(1.2f),
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
                             Icon(imageVector = Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.width(4.dp))
-                            Text("إضافة طرف")
+                            Text("إضافة طرف سلك +", fontWeight = FontWeight.Bold)
+                        }
+
+                        OutlinedButton(
+                            onClick = {
+                                val nextPin = bottomPins.size + 1
+                                bottomPins.add(
+                                    HarnessPin(
+                                        pinNumber = nextPin,
+                                        label = "مكان فاضي بدون سلك (NC)",
+                                        wireColor = "فارغ (بدون سلك)",
+                                        colorHex = "#94A3B8",
+                                        connectedComponent = "فارغ",
+                                        isBlank = true
+                                    )
+                                )
+                            },
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            Text("طرف فارغ (فاضي) +", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                         }
                     }
                 }

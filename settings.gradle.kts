@@ -19,5 +19,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "Washer Motors"
+rootProject.name = "Albaraa Electronic"
 include(":app")
