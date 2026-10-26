@@ -242,6 +242,17 @@ fun InteractiveHarnessMap(
                         val startX = (bIndex + 0.5f) * (width / boardCount)
                         val startY = 8f
 
+                        if (bPin.isBlankPin) {
+                            // Empty terminal slot with no wire connection
+                            drawCircle(
+                                color = Color(0xFF64748B),
+                                radius = if (isPinSelected) 5f else 3f,
+                                center = Offset(startX, startY),
+                                style = Stroke(width = 1.5f)
+                            )
+                            return@forEachIndexed
+                        }
+
                         // Find matching bottom pin
                         val targetIndex = harness.bottomPins.indexOfFirst {
                             it.connectedComponent == bPin.connectedComponent && it.pinNumber == bPin.targetPinNumber

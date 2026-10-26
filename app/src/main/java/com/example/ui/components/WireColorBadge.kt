@@ -60,7 +60,8 @@ fun parseWireColorNameToColor(name: String, fallback: Color = Color(0xFF3B82F6))
         lower.contains("رمادي") || lower.contains("رصاصي") || lower.contains("gray") || lower.contains("grey") -> Color(0xFF64748B)
         lower.contains("بني") || lower.contains("brown") -> Color(0xFF854D0E)
         lower.contains("بنفسجي") || lower.contains("purple") -> Color(0xFF9333EA)
-        lower.contains("وردي") || lower.contains("بمبي") || lower.contains("pink") -> Color(0xFFEC4899)
+        lower.contains("زهري") || lower.contains("وردي") || lower.contains("بمبي") || lower.contains("pink") -> Color(0xFFEC4899)
+        lower.contains("فارغ") || lower.contains("فاضي") || lower.contains("بدون") || lower.contains("nc") -> Color(0xFF94A3B8)
         lower.contains("بيج") || lower.contains("beige") -> Color(0xFFD97706)
         else -> fallback
     }

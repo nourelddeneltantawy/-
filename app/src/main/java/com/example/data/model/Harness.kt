@@ -11,10 +11,19 @@ data class HarnessPin(
     val secondaryColorName: String? = null,
     val connectedComponent: String = "ماتور", // "ماتور", "لوك الباب", "ليفل الماء", "طلمبة الطرد", "صمام الدخول"
     val targetPinNumber: Int? = 1, // رقم الطرف في القطعة المقابلة
-    val signalType: String = "" // "تغذية 220V", "إشارة تاكو", "أرضي", "حساس"
+    val signalType: String = "", // "تغذية 220V", "إشارة تاكو", "أرضي", "حساس"
+    val isBlank: Boolean = false
 ) {
+    val isBlankPin: Boolean
+        get() = isBlank ||
+                wireColor.contains("فارغ") ||
+                wireColor.contains("بدون") ||
+                label.contains("فارغ") ||
+                label.contains("فاضي") ||
+                label.contains("NC", ignoreCase = true)
+
     fun toMap(): Map<String, Any?> {
-        return mapOf(
+        val map = mutableMapOf<String, Any?>(
             "pinNumber" to pinNumber,
             "label" to label,
             "wireColor" to wireColor,
@@ -25,6 +34,10 @@ data class HarnessPin(
             "targetPinNumber" to targetPinNumber,
             "signalType" to signalType
         )
+        if (isBlank) {
+            map["isBlank"] = true
+        }
+        return map
     }
 }
 

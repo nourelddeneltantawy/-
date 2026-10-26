@@ -113,103 +113,12 @@ fun MotorCard(
                 .fillMaxWidth()
                 .padding(16.dp)
         ) {
-            // Top Section: Drag Handle, Title, Badges, Favorite & Corner Action Icons
+            // Top Section: Title, Badges, Favorite & Corner Action Icons
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.Top
             ) {
-                // Drag Handle for Admins (with tactile icon, drag gestures, and quick reorder menu)
-                if (isAdmin) {
-                    var accumulatedDrag by remember { mutableStateOf(0f) }
-                    var showOrderMenu by remember { mutableStateOf(false) }
-
-                    Box {
-                        Surface(
-                            shape = RoundedCornerShape(8.dp),
-                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.85f),
-                            modifier = Modifier
-                                .size(36.dp)
-                                .testTag("drag_handle_${motor.id}")
-                                .pointerInput(motor.id) {
-                                    detectVerticalDragGestures(
-                                        onDragEnd = { accumulatedDrag = 0f },
-                                        onDragCancel = { accumulatedDrag = 0f },
-                                        onVerticalDrag = { change, dragAmount ->
-                                            change.consume()
-                                            accumulatedDrag += dragAmount
-                                            if (accumulatedDrag > 40f) {
-                                                if (canMoveDown) onMoveDown?.invoke()
-                                                accumulatedDrag = 0f
-                                            } else if (accumulatedDrag < -40f) {
-                                                if (canMoveUp) onMoveUp?.invoke()
-                                                accumulatedDrag = 0f
-                                            }
-                                        }
-                                    )
-                                }
-                                .combinedClickable(
-                                    onClick = { showOrderMenu = true },
-                                    onLongClick = { showOrderMenu = true }
-                                )
-                        ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Icon(
-                                    imageVector = Icons.Default.DragHandle,
-                                    contentDescription = "مؤشر سحب وتحريك الشريحة",
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                            }
-                        }
-
-                        DropdownMenu(
-                            expanded = showOrderMenu,
-                            onDismissRequest = { showOrderMenu = false }
-                        ) {
-                            DropdownMenuItem(
-                                text = { Text("تحريك خطوة لأعلى ⬆️") },
-                                onClick = {
-                                    showOrderMenu = false
-                                    onMoveUp?.invoke()
-                                },
-                                enabled = canMoveUp,
-                                leadingIcon = { Icon(Icons.Default.KeyboardArrowUp, contentDescription = null) }
-                            )
-                            DropdownMenuItem(
-                                text = { Text("تحريك خطوة لأسفل ⬇️") },
-                                onClick = {
-                                    showOrderMenu = false
-                                    onMoveDown?.invoke()
-                                },
-                                enabled = canMoveDown,
-                                leadingIcon = { Icon(Icons.Default.KeyboardArrowDown, contentDescription = null) }
-                            )
-                            if (onMoveToTop != null) {
-                                DropdownMenuItem(
-                                    text = { Text("نقل إلى أول القائمة (البداية) 🔝") },
-                                    onClick = {
-                                        showOrderMenu = false
-                                        onMoveToTop.invoke()
-                                    },
-                                    enabled = canMoveUp
-                                )
-                            }
-                            if (onMoveToBottom != null) {
-                                DropdownMenuItem(
-                                    text = { Text("نقل إلى آخر القائمة (النهاية) 🔚") },
-                                    onClick = {
-                                        showOrderMenu = false
-                                        onMoveToBottom.invoke()
-                                    },
-                                    enabled = canMoveDown
-                                )
-                            }
-                        }
-                    }
-                    Spacer(modifier = Modifier.width(8.dp))
-                }
-
                 // Motor Title & Subtitle
                 Column(modifier = Modifier.weight(1f)) {
                     Row(

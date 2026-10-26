@@ -230,23 +230,6 @@ fun HarnessListScreen(
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Row(verticalAlignment = Alignment.CenterVertically) {
-                                        if (isAdmin) {
-                                            Surface(
-                                                shape = RoundedCornerShape(6.dp),
-                                                color = MaterialTheme.colorScheme.surfaceVariant,
-                                                modifier = Modifier.size(30.dp)
-                                            ) {
-                                                Box(contentAlignment = Alignment.Center) {
-                                                    Icon(
-                                                        imageVector = Icons.Default.DragHandle,
-                                                        contentDescription = null,
-                                                        modifier = Modifier.size(18.dp)
-                                                    )
-                                                }
-                                            }
-                                            Spacer(modifier = Modifier.width(8.dp))
-                                        }
-
                                         Column {
                                             Text(
                                                 text = harness.name,

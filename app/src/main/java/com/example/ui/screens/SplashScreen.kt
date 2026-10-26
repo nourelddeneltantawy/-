@@ -74,6 +74,7 @@ import com.example.data.model.ContactInfo
 fun SplashScreen(
     onReady: () -> Unit,
     onBackClick: (() -> Unit)? = null,
+    isAdmin: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     if (onBackClick != null) {
@@ -119,7 +120,7 @@ fun SplashScreen(
                 .verticalScroll(rememberScrollState()),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            // Top Bar with Edit Profile Button
+            // Top Bar with Edit Profile Button (Strictly for Admins only)
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -127,21 +128,23 @@ fun SplashScreen(
                 horizontalArrangement = Arrangement.End,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Surface(
-                    shape = RoundedCornerShape(12.dp),
-                    color = Color.White.copy(alpha = 0.2f),
-                    modifier = Modifier.clip(RoundedCornerShape(12.dp))
-                ) {
-                    IconButton(
-                        onClick = { showEditDialog = true },
-                        modifier = Modifier.size(40.dp).testTag("edit_contact_button")
+                if (isAdmin) {
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = Color.White.copy(alpha = 0.2f),
+                        modifier = Modifier.clip(RoundedCornerShape(12.dp))
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.Edit,
-                            contentDescription = "تعديل بيانات التواصل",
-                            tint = Color.White,
-                            modifier = Modifier.size(20.dp)
-                        )
+                        IconButton(
+                            onClick = { showEditDialog = true },
+                            modifier = Modifier.size(40.dp).testTag("edit_contact_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Edit,
+                                contentDescription = "تعديل بيانات التواصل",
+                                tint = Color.White,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
                     }
                 }
             }
@@ -352,8 +355,8 @@ fun SplashScreen(
             Spacer(modifier = Modifier.height(32.dp))
         }
 
-        // Edit Contact Details Dialog
-        if (showEditDialog) {
+        // Edit Contact Details Dialog (Admins only)
+        if (isAdmin && showEditDialog) {
             EditContactDialog(
                 currentInfo = contactInfo,
                 onDismiss = { showEditDialog = false },

@@ -29,6 +29,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -47,6 +48,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.data.model.AppliancePart
 import com.example.data.model.Harness
 import com.example.data.model.Motor
+import com.example.data.repository.AdminRepository
 import com.example.ui.screens.AdminHarnessScreen
 import com.example.ui.screens.AdminMotorScreen
 import com.example.ui.screens.AdminPartScreen
@@ -105,8 +107,53 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 fun AppRoot() {
+    val context = LocalContext.current
     var isSplashFinished by remember { mutableStateOf(false) }
     var hasEnteredOnce by remember { mutableStateOf(false) }
+
+    val initialUser = try {
+        com.example.util.FirebaseInitializer.ensureInitialized(context)
+        Firebase.auth.currentUser
+    } catch (_: Throwable) {
+        null
+    }
+    var currentUser by remember { mutableStateOf(initialUser) }
+
+    DisposableEffect(Unit) {
+        com.example.util.FirebaseInitializer.ensureInitialized(context)
+        val listener = FirebaseAuth.AuthStateListener { auth ->
+            try {
+                currentUser = auth.currentUser
+            } catch (_: Throwable) {}
+        }
+        try {
+            Firebase.auth.addAuthStateListener(listener)
+        } catch (_: Throwable) {}
+
+        onDispose {
+            try {
+                Firebase.auth.removeAuthStateListener(listener)
+            } catch (_: Throwable) {}
+        }
+    }
+
+    var isCurrentUserAdmin by remember { mutableStateOf(AdminRepository.isSuperAdminEmail(currentUser?.email)) }
+
+    LaunchedEffect(currentUser?.email) {
+        val email = currentUser?.email
+        if (email == null) {
+            isCurrentUserAdmin = false
+        } else if (AdminRepository.isSuperAdminEmail(email)) {
+            isCurrentUserAdmin = true
+        } else {
+            try {
+                val adminRepo = AdminRepository(context)
+                isCurrentUserAdmin = adminRepo.checkIsAdmin(email)
+            } catch (_: Throwable) {
+                isCurrentUserAdmin = false
+            }
+        }
+    }
 
     if (!isSplashFinished) {
         SplashScreen(
@@ -114,7 +161,8 @@ fun AppRoot() {
                 isSplashFinished = true
                 hasEnteredOnce = true
             },
-            onBackClick = if (hasEnteredOnce) { { isSplashFinished = true } } else null
+            onBackClick = if (hasEnteredOnce) { { isSplashFinished = true } } else null,
+            isAdmin = isCurrentUserAdmin
         )
     } else {
         SafeAppContainer(

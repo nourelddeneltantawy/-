@@ -240,14 +240,22 @@ fun InteractiveMotorConnector(
                                     selectedIndex = index
                                 }
                         ) {
-                            // Wire stub extending into socket (supports striped pattern)
-                            Box(
-                                modifier = Modifier
-                                    .width(8.dp)
-                                    .height(14.dp)
-                                    .clip(RoundedCornerShape(topStart = 4.dp, topEnd = 4.dp))
-                                    .background(wireBrush)
-                            )
+                            // Wire stub extending into socket (supports striped pattern or empty blank slot)
+                            if (pin.isBlankPin) {
+                                Box(
+                                    modifier = Modifier
+                                        .width(8.dp)
+                                        .height(14.dp)
+                                )
+                            } else {
+                                Box(
+                                    modifier = Modifier
+                                        .width(8.dp)
+                                        .height(14.dp)
+                                        .clip(RoundedCornerShape(topStart = 4.dp, topEnd = 4.dp))
+                                        .background(wireBrush)
+                                )
+                            }
 
                             // Pin Terminal Head (Metallic / Plastic Socket)
                             Box(
@@ -297,14 +305,23 @@ fun InteractiveMotorConnector(
 
                                     Spacer(modifier = Modifier.height(2.dp))
 
-                                    // Color Dot indicator (Striped brush if dual color)
-                                    Box(
-                                        modifier = Modifier
-                                            .size(9.dp)
-                                            .clip(CircleShape)
-                                            .background(wireBrush)
-                                            .border(1.dp, Color.White.copy(alpha = 0.7f), CircleShape)
-                                    )
+                                    // Color Dot indicator or Empty slot symbol
+                                    if (pin.isBlankPin) {
+                                        Text(
+                                            text = "∅",
+                                            fontSize = 9.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = Color(0xFF94A3B8)
+                                        )
+                                    } else {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(9.dp)
+                                                .clip(CircleShape)
+                                                .background(wireBrush)
+                                                .border(1.dp, Color.White.copy(alpha = 0.7f), CircleShape)
+                                        )
+                                    }
                                 }
                             }
 
@@ -312,7 +329,7 @@ fun InteractiveMotorConnector(
 
                             // Wire color label under pin
                             Text(
-                                text = pin.wireColor,
+                                text = if (pin.isBlankPin) "فاضي" else pin.wireColor,
                                 style = MaterialTheme.typography.labelSmall.copy(
                                     fontSize = 10.sp,
                                     fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
@@ -357,14 +374,14 @@ fun InteractiveMotorConnector(
                                 // Pin badge
                                 Surface(
                                     shape = RoundedCornerShape(8.dp),
-                                    color = pColor.copy(alpha = 0.2f),
-                                    border = androidx.compose.foundation.BorderStroke(1.dp, pColor)
+                                    color = if (pin.isBlankPin) Color(0xFF334155) else pColor.copy(alpha = 0.2f),
+                                    border = androidx.compose.foundation.BorderStroke(1.dp, if (pin.isBlankPin) Color(0xFF64748B) else pColor)
                                 ) {
                                     Text(
                                         text = "الطرف #${pin.pinNumber}",
                                         style = MaterialTheme.typography.labelMedium.copy(
                                             fontWeight = FontWeight.Bold,
-                                            color = pColor
+                                            color = if (pin.isBlankPin) Color(0xFFE2E8F0) else pColor
                                         ),
                                         modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                                     )
@@ -372,22 +389,40 @@ fun InteractiveMotorConnector(
 
                                 Spacer(modifier = Modifier.width(8.dp))
 
-                                // Wire color swatch & name
-                                Box(
-                                    modifier = Modifier
-                                        .size(14.dp)
-                                        .clip(CircleShape)
-                                        .background(wireBrush)
-                                        .border(1.dp, Color.White.copy(alpha = 0.8f), CircleShape)
-                                )
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text(
-                                    text = pin.wireColor,
-                                    style = MaterialTheme.typography.bodyMedium.copy(
-                                        fontWeight = FontWeight.Bold,
-                                        color = Color.White
+                                // Wire color swatch & name or Blank badge
+                                if (pin.isBlankPin) {
+                                    Surface(
+                                        shape = RoundedCornerShape(6.dp),
+                                        color = Color(0xFF0F172A),
+                                        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF475569))
+                                    ) {
+                                        Text(
+                                            text = "مكان فاضي بدون سلك (NC)",
+                                            style = MaterialTheme.typography.labelSmall.copy(
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                color = Color(0xFF94A3B8)
+                                            ),
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                                        )
+                                    }
+                                } else {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(14.dp)
+                                            .clip(CircleShape)
+                                            .background(wireBrush)
+                                            .border(1.dp, Color.White.copy(alpha = 0.8f), CircleShape)
                                     )
-                                )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        text = pin.wireColor,
+                                        style = MaterialTheme.typography.bodyMedium.copy(
+                                            fontWeight = FontWeight.Bold,
+                                            color = Color.White
+                                        )
+                                    )
+                                }
                                 if (sColor != null) {
                                     Spacer(modifier = Modifier.width(6.dp))
                                     Surface(
