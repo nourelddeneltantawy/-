@@ -226,6 +226,45 @@ fun AdminHarnessScreen(
                         if (index in boardPins.indices) {
                             boardPins.removeAt(index)
                         }
+                    },
+                    onAddSocket = { socketName, pinCount, component ->
+                        val existingCount = boardPins.size
+                        val startX = 20f
+                        val stepX = (60f / pinCount.coerceAtLeast(1)).coerceAtMost(10f)
+                        for (i in 1..pinCount) {
+                            val nextNum = existingCount + i
+                            val isMotor = (component == "ماتور")
+                            val preset = if (isMotor && (i - 1) in MotorPinPresets.PRESETS.indices) {
+                                MotorPinPresets.PRESETS[i - 1]
+                            } else null
+
+                            boardPins.add(
+                                HarnessPin(
+                                    pinNumber = nextNum,
+                                    label = preset?.functionName ?: "طرف $i ($socketName)",
+                                    wireColor = preset?.colorName ?: "أزرق",
+                                    colorHex = preset?.colorHex ?: "#2563EB",
+                                    secondaryColorHex = null,
+                                    secondaryColorName = null,
+                                    connectedComponent = component,
+                                    targetPinNumber = nextNum,
+                                    socketName = socketName,
+                                    pinX = (startX + (i - 1) * stepX).coerceIn(4f, 96f),
+                                    pinY = 50f
+                                )
+                            )
+                        }
+                    },
+                    onMoveSocket = { socketName, deltaX, deltaY ->
+                        boardPins.indices.forEach { i ->
+                            val p = boardPins[i]
+                            if (p.socketName == socketName) {
+                                boardPins[i] = p.copy(
+                                    pinX = (p.pinX + deltaX).coerceIn(2f, 98f),
+                                    pinY = (p.pinY + deltaY).coerceIn(2f, 98f)
+                                )
+                            }
+                        }
                     }
                 )
             }
@@ -310,6 +349,14 @@ fun AdminHarnessScreen(
                         ) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Text("طرف الكارتة #${pin.pinNumber}", fontWeight = FontWeight.Bold)
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Surface(shape = RoundedCornerShape(6.dp), color = Color(0xFF0284C7).copy(alpha = 0.2f)) {
+                                    Text(
+                                        text = pin.socketName.ifBlank { "سوكيت 1" },
+                                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color(0xFF0284C7)),
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                    )
+                                }
                                 if (pin.isBlankPin) {
                                     Spacer(modifier = Modifier.width(6.dp))
                                     Surface(shape = RoundedCornerShape(6.dp), color = MaterialTheme.colorScheme.surface) {

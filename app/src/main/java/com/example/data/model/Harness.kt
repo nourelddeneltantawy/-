@@ -14,7 +14,8 @@ data class HarnessPin(
     val signalType: String = "", // "تغذية 220V", "إشارة تاكو", "أرضي", "حساس"
     val isBlank: Boolean = false,
     val pinX: Float = 0f, // موقع الطرف الأفقي على صورة الكارتة (0f..100f) كنسبة مئوية
-    val pinY: Float = 0f  // موقع الطرف الرأسي على صورة الكارتة (0f..100f) كنسبة مئوية
+    val pinY: Float = 0f, // موقع الطرف الرأسي على صورة الكارتة (0f..100f) كنسبة مئوية
+    val socketName: String = "سوكيت 1" // اسم السوكيت التابع له (مثال: سوكيت 1 (5 طرف) أو CN1)
 ) {
     val isBlankPin: Boolean
         get() = isBlank ||
@@ -28,6 +29,7 @@ data class HarnessPin(
         val map = mutableMapOf<String, Any?>(
             "pinNumber" to pinNumber,
             "label" to label,
+            "socketName" to socketName,
             "wireColor" to wireColor,
             "colorHex" to colorHex,
             "secondaryColorHex" to secondaryColorHex,

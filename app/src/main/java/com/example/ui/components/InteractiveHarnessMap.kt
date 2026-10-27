@@ -82,6 +82,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -310,99 +313,137 @@ fun HarnessInteractiveCanvas(
                     translationY = offset.y
                 )
         ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(16.dp),
-                verticalArrangement = Arrangement.SpaceBetween
-            ) {
-                // TOP: The Control Board (الكارتة)
-                Card(
+            CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+                Column(
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .height(170.dp),
-                    shape = RoundedCornerShape(12.dp),
-                    colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
-                    border = androidx.compose.foundation.BorderStroke(1.5.dp, Color(0xFF0284C7))
+                        .fillMaxSize()
+                        .padding(16.dp),
+                    verticalArrangement = Arrangement.SpaceBetween
                 ) {
-                    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
-                        val boardWidth = maxWidth
-                        val boardHeight = maxHeight
+                    // TOP: The Control Board (الكارتة)
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(170.dp),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
+                        border = androidx.compose.foundation.BorderStroke(1.5.dp, Color(0xFF0284C7))
+                    ) {
+                        BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+                            val boardWidth = maxWidth
+                            val boardHeight = maxHeight
 
-                        // Board photo or PCB graphic
-                        if (harness.boardImageUrl.isNotBlank()) {
-                            AsyncImage(
-                                model = ImageRequest.Builder(context)
-                                    .data(ImageHelper.getCoilData(harness.boardImageUrl))
-                                    .crossfade(true)
-                                    .build(),
-                                contentDescription = "كارتة الغسالة",
-                                contentScale = ContentScale.Fit,
-                                modifier = Modifier.fillMaxSize()
-                            )
-                        } else {
-                            // High-tech PCB Graphic Background
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .background(
-                                        Brush.linearGradient(
-                                            colors = listOf(Color(0xFF0369A1).copy(alpha = 0.2f), Color(0xFF0F172A))
+                            // Board photo or PCB graphic
+                            if (harness.boardImageUrl.isNotBlank()) {
+                                AsyncImage(
+                                    model = ImageRequest.Builder(context)
+                                        .data(ImageHelper.getCoilData(harness.boardImageUrl))
+                                        .crossfade(true)
+                                        .build(),
+                                    contentDescription = "كارتة الغسالة",
+                                    contentScale = ContentScale.Fit,
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                            } else {
+                                // High-tech PCB Graphic Background
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .background(
+                                            Brush.linearGradient(
+                                                colors = listOf(Color(0xFF0369A1).copy(alpha = 0.2f), Color(0xFF0F172A))
+                                            )
+                                        ),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(imageVector = Icons.Default.Memory, contentDescription = null, tint = Color(0xFF38BDF8), modifier = Modifier.size(28.dp))
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text(
+                                            text = "كارتة التحكم الرئيسية (Main PCB Board)",
+                                            style = MaterialTheme.typography.titleSmall.copy(color = Color.White, fontWeight = FontWeight.Bold)
                                         )
-                                    ),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(imageVector = Icons.Default.Memory, contentDescription = null, tint = Color(0xFF38BDF8), modifier = Modifier.size(28.dp))
-                                    Spacer(modifier = Modifier.width(8.dp))
+                                    }
+                                }
+                            }
+
+                            // Render Socket Outlines on the Board
+                            val distinctSockets = harness.boardPins.map { it.socketName.ifBlank { "سوكيت 1" } }.distinct()
+                            distinctSockets.forEach { sockName ->
+                                val sockPins = harness.boardPins.filter { (it.socketName.ifBlank { "سوكيت 1" }) == sockName }
+                                if (sockPins.size > 1) {
+                                    val minX = sockPins.minOf { if (it.pinX > 0f) it.pinX else 10f }
+                                    val maxX = sockPins.maxOf { if (it.pinX > 0f) it.pinX else 90f }
+                                    val minY = sockPins.minOf { if (it.pinY > 0f) it.pinY else 40f }
+                                    val maxY = sockPins.maxOf { if (it.pinY > 0f) it.pinY else 75f }
+
+                                    val sX = ((minX / 100f) * boardWidth.value) - 18
+                                    val sY = ((minY / 100f) * boardHeight.value) - 22
+                                    val sW = (((maxX - minX) / 100f) * boardWidth.value) + 36
+                                    val sH = (((maxY - minY) / 100f) * boardHeight.value) + 36
+
+                                    Box(
+                                        modifier = Modifier
+                                            .offset {
+                                                IntOffset(
+                                                    sX.coerceAtLeast(2f).dp.toPx().toInt(),
+                                                    sY.coerceAtLeast(2f).dp.toPx().toInt()
+                                                )
+                                            }
+                                            .width(sW.coerceAtLeast(50f).dp)
+                                            .height(sH.coerceAtLeast(34f).dp)
+                                            .background(Color(0xFF000000).copy(alpha = 0.35f), RoundedCornerShape(8.dp))
+                                            .border(1.dp, Color(0xFF38BDF8).copy(alpha = 0.5f), RoundedCornerShape(8.dp))
+                                    ) {
+                                        Text(
+                                            text = sockName,
+                                            style = MaterialTheme.typography.labelSmall.copy(color = Color(0xFF38BDF8), fontSize = 9.sp, fontWeight = FontWeight.Bold),
+                                            modifier = Modifier.padding(2.dp)
+                                        )
+                                    }
+                                }
+                            }
+
+                            // Overlay Board Pins Hotspots
+                            harness.boardPins.forEachIndexed { idx, pin ->
+                                // If pinX/pinY set, use them; otherwise distribute evenly in socket row
+                                val posX = if (pin.pinX > 0f) (pin.pinX / 100f) * boardWidth.value else (12f + (idx * (boardWidth.value - 24f) / harness.boardPins.size.coerceAtLeast(1)))
+                                val posY = if (pin.pinY > 0f) (pin.pinY / 100f) * boardHeight.value else (boardHeight.value * 0.75f)
+
+                                val isPinSelected = selectedPinNumber == pin.pinNumber
+                                val pinColor = parseWireColorToComposeColor(pin.colorHex)
+
+                                Box(
+                                    modifier = Modifier
+                                        .offset {
+                                            IntOffset(
+                                                (posX.dp.toPx() - 14.dp.toPx()).toInt(),
+                                                (posY.dp.toPx() - 14.dp.toPx()).toInt()
+                                            )
+                                        }
+                                        .size(28.dp)
+                                        .shadow(if (isPinSelected) 10.dp else 4.dp, CircleShape)
+                                        .background(if (isPinSelected) Color.White else pinColor, CircleShape)
+                                        .border(
+                                            width = if (isPinSelected) 2.5.dp else 1.5.dp,
+                                            color = if (isPinSelected) pinColor else Color.White,
+                                            shape = CircleShape
+                                        )
+                                        .clickable { onSelectPin(pin.pinNumber) },
+                                    contentAlignment = Alignment.Center
+                                ) {
                                     Text(
-                                        text = "كارتة التحكم الرئيسية (Main PCB Board)",
-                                        style = MaterialTheme.typography.titleSmall.copy(color = Color.White, fontWeight = FontWeight.Bold)
+                                        text = "${pin.pinNumber}",
+                                        style = MaterialTheme.typography.labelSmall.copy(
+                                            fontWeight = FontWeight.Bold,
+                                            color = if (isPinSelected) pinColor else if (pin.colorHex == "#F8FAFC" || pin.colorHex == "#EAB308") Color.Black else Color.White,
+                                            fontSize = 11.sp
+                                        )
                                     )
                                 }
                             }
                         }
-
-                        // Overlay Board Pins Hotspots
-                        harness.boardPins.forEachIndexed { idx, pin ->
-                            // If pinX/pinY set, use them; otherwise distribute evenly in socket row
-                            val posX = if (pin.pinX > 0f) (pin.pinX / 100f) * boardWidth.value else (12f + (idx * (boardWidth.value - 24f) / harness.boardPins.size.coerceAtLeast(1)))
-                            val posY = if (pin.pinY > 0f) (pin.pinY / 100f) * boardHeight.value else (boardHeight.value * 0.75f)
-
-                            val isPinSelected = selectedPinNumber == pin.pinNumber
-                            val pinColor = parseWireColorToComposeColor(pin.colorHex)
-
-                            Box(
-                                modifier = Modifier
-                                    .offset {
-                                        IntOffset(
-                                            (posX.dp.toPx() - 14.dp.toPx()).toInt(),
-                                            (posY.dp.toPx() - 14.dp.toPx()).toInt()
-                                        )
-                                    }
-                                    .size(28.dp)
-                                    .shadow(if (isPinSelected) 10.dp else 4.dp, CircleShape)
-                                    .background(if (isPinSelected) Color.White else pinColor, CircleShape)
-                                    .border(
-                                        width = if (isPinSelected) 2.5.dp else 1.5.dp,
-                                        color = if (isPinSelected) pinColor else Color.White,
-                                        shape = CircleShape
-                                    )
-                                    .clickable { onSelectPin(pin.pinNumber) },
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text(
-                                    text = "${pin.pinNumber}",
-                                    style = MaterialTheme.typography.labelSmall.copy(
-                                        fontWeight = FontWeight.Bold,
-                                        color = if (isPinSelected) pinColor else if (pin.colorHex == "#F8FAFC" || pin.colorHex == "#EAB308") Color.Black else Color.White,
-                                        fontSize = 11.sp
-                                    )
-                                )
-                            }
-                        }
                     }
-                }
 
                 // MIDDLE: Visual Wires Canvas with Smooth Curves
                 Box(
@@ -498,6 +539,7 @@ fun HarnessInteractiveCanvas(
                 }
             }
         }
+    }
 
         // Floating Zoom & Reset Controls in Top-End Corner
         Column(
