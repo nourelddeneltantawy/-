@@ -188,77 +188,17 @@ fun AdminHarnessScreen(
                 }
             }
 
-            // Section 2: Board Image Selector
-            item {
-                Card(
-                    shape = RoundedCornerShape(16.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(imageVector = Icons.Default.Image, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("صورة كارتة الغسالة (تكون السوكيتات باينة بوضوح)", style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold))
-                        }
-
-                        // Preview if set
-                        if (boardImageUrl.isNotBlank()) {
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(180.dp)
-                                    .clip(RoundedCornerShape(12.dp))
-                                    .background(Color(0xFF0F172A))
-                            ) {
-                                AsyncImage(
-                                    model = ImageRequest.Builder(context)
-                                        .data(ImageHelper.getCoilData(boardImageUrl))
-                                        .crossfade(true)
-                                        .build(),
-                                    contentDescription = "معاينة صورة الكارتة",
-                                    contentScale = ContentScale.Fit,
-                                    modifier = Modifier.fillMaxSize()
-                                )
-                            }
-                        }
-
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            Button(
-                                onClick = {
-                                    photoPickerLauncher.launch(
-                                        androidx.activity.result.PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
-                                    )
-                                },
-                                modifier = Modifier.weight(1f),
-                                shape = RoundedCornerShape(10.dp)
-                            ) {
-                                Icon(imageVector = Icons.Default.PhotoLibrary, contentDescription = null, modifier = Modifier.size(18.dp))
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text("اختيار صورة الكارتة", fontSize = 13.sp)
-                            }
-
-                            if (boardImageUrl.isNotBlank()) {
-                                OutlinedButton(
-                                    onClick = { boardImageUrl = "" },
-                                    shape = RoundedCornerShape(10.dp)
-                                ) {
-                                    Text("حذف الصورة")
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Section 3: Interactive Visual Pin Placement on Board Image
+            // Section 2: Interactive Visual Pin Placement on Board Image
             item {
                 VisualBoardPinMarker(
                     boardImageUrl = boardImageUrl,
                     pins = boardPins,
+                    onUpdateBoardImageUrl = { boardImageUrl = it },
+                    onPickImageClick = {
+                        photoPickerLauncher.launch(
+                            androidx.activity.result.PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                        )
+                    },
                     onAddPinAtPosition = { xPercent, yPercent ->
                         val nextNum = boardPins.size + 1
                         val defaultPreset = MotorPinPresets.PRESETS.firstOrNull { !it.isBlank } ?: MotorPinPresets.PRESETS.first()

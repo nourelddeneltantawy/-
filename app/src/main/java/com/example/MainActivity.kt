@@ -155,14 +155,41 @@ fun AppRoot() {
         }
     }
 
-    if (!isSplashFinished) {
+    var isAuthScreenVisibleFromSplash by remember { mutableStateOf(false) }
+
+    if (isAuthScreenVisibleFromSplash) {
+        AuthScreen(
+            onAuthSuccess = {
+                currentUser = try { Firebase.auth.currentUser } catch (_: Throwable) { null }
+                isAuthScreenVisibleFromSplash = false
+            },
+            onContinueAsGuest = {
+                isAuthScreenVisibleFromSplash = false
+            },
+            onBackClick = {
+                isAuthScreenVisibleFromSplash = false
+            }
+        )
+    } else if (!isSplashFinished) {
         SplashScreen(
             onReady = {
                 isSplashFinished = true
                 hasEnteredOnce = true
             },
             onBackClick = if (hasEnteredOnce) { { isSplashFinished = true } } else null,
-            isAdmin = isCurrentUserAdmin
+            isAdmin = isCurrentUserAdmin,
+            currentUserEmail = currentUser?.email,
+            onAuthClick = {
+                isAuthScreenVisibleFromSplash = true
+            },
+            onSignOutClick = {
+                try {
+                    Firebase.auth.signOut()
+                } catch (_: Throwable) {}
+                currentUser = null
+                isCurrentUserAdmin = false
+                android.widget.Toast.makeText(context, "تم تسجيل الخروج بنجاح", android.widget.Toast.LENGTH_SHORT).show()
+            }
         )
     } else {
         SafeAppContainer(

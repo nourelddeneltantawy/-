@@ -67,14 +67,27 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.R
+import androidx.compose.material.icons.automirrored.filled.Login
+import androidx.compose.material.icons.automirrored.filled.Logout
+import androidx.compose.runtime.rememberCoroutineScope
+import com.example.BuildConfig
 import com.example.data.ContactInfoManager
+import com.example.data.model.AppUpdateInfo
 import com.example.data.model.ContactInfo
+import com.example.ui.components.PhoneDownloadIcon
+import com.example.ui.components.PublishUpdateDialog
+import com.example.ui.components.UpdateDialog
+import com.example.util.UpdateChecker
+import kotlinx.coroutines.launch
 
 @Composable
 fun SplashScreen(
     onReady: () -> Unit,
     onBackClick: (() -> Unit)? = null,
     isAdmin: Boolean = false,
+    currentUserEmail: String? = null,
+    onAuthClick: () -> Unit = {},
+    onSignOutClick: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     if (onBackClick != null) {
@@ -83,13 +96,48 @@ fun SplashScreen(
         }
     }
     val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
     var showEditDialog by remember { mutableStateOf(false) }
+    var showLogoutConfirmDialog by remember { mutableStateOf(false) }
+    var showUpdateDialog by remember { mutableStateOf(false) }
+    var showAdminPublishDialog by remember { mutableStateOf(false) }
+    var activeUpdateInfo by remember { mutableStateOf<AppUpdateInfo?>(null) }
+    var hasCheckedUpdateOnLaunch by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         ContactInfoManager.init(context)
+        // Background check for update info
+        try {
+            val update = UpdateChecker.checkUpdate(context)
+            if (update != null) {
+                activeUpdateInfo = update
+            }
+            hasCheckedUpdateOnLaunch = true
+        } catch (_: Throwable) {}
     }
 
     val contactInfo by ContactInfoManager.contactInfo.collectAsState()
+
+    val handleUpdateIconClick = {
+        coroutineScope.launch {
+            if (isAdmin) {
+                showAdminPublishDialog = true
+            } else {
+                Toast.makeText(context, "جاري فحص بيانات التحديث...", Toast.LENGTH_SHORT).show()
+                val update = try { UpdateChecker.checkUpdate(context) } catch (_: Throwable) { null }
+                if (update != null) {
+                    activeUpdateInfo = update
+                    showUpdateDialog = true
+                } else {
+                    Toast.makeText(
+                        context,
+                        "أنت تستخدم أحدث إصدار من التطبيق (v${BuildConfig.VERSION_NAME}) 🎉",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            }
+        }
+    }
 
     Box(
         modifier = modifier
@@ -120,29 +168,140 @@ fun SplashScreen(
                 .verticalScroll(rememberScrollState()),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            // Top Bar with Edit Profile Button (Strictly for Admins only)
+            // Top Bar with Edit Profile Button (Start) & Quick Cyan Action Buttons (End)
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(top = 16.dp, start = 16.dp, end = 16.dp),
-                horizontalArrangement = Arrangement.End,
+                horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                if (isAdmin) {
-                    Surface(
-                        shape = RoundedCornerShape(12.dp),
-                        color = Color.White.copy(alpha = 0.2f),
-                        modifier = Modifier.clip(RoundedCornerShape(12.dp))
+                // Start side: Admin Edit Contact button & status badge
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    if (isAdmin) {
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = Color.White.copy(alpha = 0.2f),
+                            modifier = Modifier.clip(RoundedCornerShape(12.dp))
+                        ) {
+                            IconButton(
+                                onClick = { showEditDialog = true },
+                                modifier = Modifier.size(42.dp).testTag("edit_contact_button")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Edit,
+                                    contentDescription = "تعديل بيانات التواصل",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                        }
+
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = Color(0xFF0F172A).copy(alpha = 0.45f)
+                        ) {
+                            Text(
+                                text = "مشرف 🛡️",
+                                style = MaterialTheme.typography.labelSmall.copy(
+                                    color = Color(0xFF38BDF8),
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 11.sp
+                                ),
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                            )
+                        }
+                    } else if (currentUserEmail != null) {
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = Color(0xFF0F172A).copy(alpha = 0.4f)
+                        ) {
+                            Text(
+                                text = currentUserEmail.take(16),
+                                style = MaterialTheme.typography.labelSmall.copy(
+                                    color = Color.White,
+                                    fontSize = 10.sp
+                                ),
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                            )
+                        }
+                    } else {
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = Color(0xFF0F172A).copy(alpha = 0.35f)
+                        ) {
+                            Text(
+                                text = "وضع الزائر",
+                                style = MaterialTheme.typography.labelSmall.copy(
+                                    color = Color(0xFFE2E8F0),
+                                    fontSize = 10.sp
+                                ),
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                            )
+                        }
+                    }
+                }
+
+                // End side: Custom Sleek Navy Container with 2 Cyan Action Icons (matching user reference image)
+                Surface(
+                    shape = RoundedCornerShape(16.dp),
+                    color = Color(0xFF0B1727).copy(alpha = 0.85f),
+                    border = androidx.compose.foundation.BorderStroke(1.2.dp, Color(0xFF38BDF8).copy(alpha = 0.35f)),
+                    shadowElevation = 6.dp
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 3.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
+                        // 1. Phone with Download Arrow (تنزيل / إدارة التحديث)
+                        Box(contentAlignment = Alignment.Center) {
+                            IconButton(
+                                onClick = { handleUpdateIconClick() },
+                                modifier = Modifier.size(42.dp).testTag("splash_download_update_button")
+                            ) {
+                                PhoneDownloadIcon(tint = Color(0xFF38BDF8))
+                            }
+
+                            if (activeUpdateInfo?.hasUpdate == true) {
+                                Box(
+                                    modifier = Modifier
+                                        .align(Alignment.TopEnd)
+                                        .padding(top = 4.dp, end = 4.dp)
+                                        .size(9.dp)
+                                        .background(Color(0xFFEF4444), CircleShape)
+                                        .border(1.5.dp, Color(0xFF0B1727), CircleShape)
+                                )
+                            }
+                        }
+
+                        // Small vertical separator
+                        Box(
+                            modifier = Modifier
+                                .width(1.dp)
+                                .height(22.dp)
+                                .background(Color.White.copy(alpha = 0.2f))
+                        )
+
+                        // 2. Door with Arrow (تسجيل الدخول / الخروج)
                         IconButton(
-                            onClick = { showEditDialog = true },
-                            modifier = Modifier.size(40.dp).testTag("edit_contact_button")
+                            onClick = {
+                                if (currentUserEmail != null) {
+                                    showLogoutConfirmDialog = true
+                                } else {
+                                    onAuthClick()
+                                }
+                            },
+                            modifier = Modifier.size(42.dp).testTag("splash_auth_button")
                         ) {
                             Icon(
-                                imageVector = Icons.Default.Edit,
-                                contentDescription = "تعديل بيانات التواصل",
-                                tint = Color.White,
-                                modifier = Modifier.size(20.dp)
+                                imageVector = if (currentUserEmail != null) Icons.AutoMirrored.Filled.Logout else Icons.AutoMirrored.Filled.Login,
+                                contentDescription = if (currentUserEmail != null) "تسجيل الخروج" else "تسجيل الدخول",
+                                tint = Color(0xFF38BDF8),
+                                modifier = Modifier.size(24.dp)
                             )
                         }
                     }
@@ -369,6 +528,61 @@ fun SplashScreen(
                         ).show()
                     }
                     showEditDialog = false
+                }
+            )
+        }
+
+        // Logout Confirmation Dialog
+        if (showLogoutConfirmDialog) {
+            AlertDialog(
+                onDismissRequest = { showLogoutConfirmDialog = false },
+                title = { Text("تسجيل الخروج", fontWeight = FontWeight.Bold) },
+                text = { Text("هل تود بالتأكيد تسجيل الخروج من الحساب (${currentUserEmail ?: ""})؟") },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            showLogoutConfirmDialog = false
+                            onSignOutClick()
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                    ) {
+                        Text("تسجيل الخروج")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showLogoutConfirmDialog = false }) {
+                        Text("إلغاء")
+                    }
+                },
+                shape = RoundedCornerShape(16.dp)
+            )
+        }
+
+        // Regular User Update Dialog
+        if (showUpdateDialog && activeUpdateInfo != null) {
+            UpdateDialog(
+                updateInfo = activeUpdateInfo!!,
+                onDismiss = { showUpdateDialog = false },
+                isAdmin = isAdmin,
+                userEmail = currentUserEmail,
+                onOpenPublishDialog = {
+                    showUpdateDialog = false
+                    showAdminPublishDialog = true
+                }
+            )
+        }
+
+        // Admin Publish Update Dialog
+        if (showAdminPublishDialog) {
+            PublishUpdateDialog(
+                currentInfo = activeUpdateInfo,
+                adminEmail = currentUserEmail ?: "admin",
+                onDismiss = { showAdminPublishDialog = false },
+                onPublished = {
+                    showAdminPublishDialog = false
+                    coroutineScope.launch {
+                        activeUpdateInfo = try { UpdateChecker.checkUpdate(context) } catch (_: Throwable) { null }
+                    }
                 }
             )
         }

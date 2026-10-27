@@ -1,6 +1,7 @@
 package com.example.ui.components
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -281,6 +282,35 @@ fun UpdateDialog(
 }
 
 /**
+ * Custom Phone with Download Arrow Icon matching user reference image.
+ */
+@Composable
+fun PhoneDownloadIcon(
+    modifier: Modifier = Modifier,
+    tint: Color = Color(0xFF38BDF8)
+) {
+    Box(
+        modifier = modifier.size(32.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Box(
+            modifier = Modifier
+                .size(width = 20.dp, height = 30.dp)
+                .border(2.2.dp, tint, RoundedCornerShape(5.dp))
+                .padding(2.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = Icons.Default.Download,
+                contentDescription = null,
+                tint = tint,
+                modifier = Modifier.size(16.dp)
+            )
+        }
+    }
+}
+
+/**
  * Dialog enabling Admins to broadcast an app update to all installed devices via Firestore.
  */
 @Composable
@@ -306,12 +336,23 @@ fun PublishUpdateDialog(
         mutableStateOf(currentInfo?.downloadUrl ?: "")
     }
     var releaseNotesInput by remember {
-        mutableStateOf(currentInfo?.releaseNotes ?: "• إضافة مواتير وضفائر جديدة\n• تحسين أداء وسرعة التطبيق")
+        mutableStateOf(currentInfo?.releaseNotes?.takeIf { it.isNotBlank() } ?: "• إضافة مواتير وضفائر غسالات جديدة\n• مخططات تفاعلية لسوكيتات الكارتة والموتور\n• تحسينات عامة وسرعة فائقة في المزامنة")
     }
     var forceUpdateInput by remember {
         mutableStateOf(currentInfo?.forceUpdate ?: false)
     }
     var isPublishing by remember { mutableStateOf(false) }
+    var selectedLocalApkName by remember { mutableStateOf<String?>(null) }
+
+    val apkFilePicker = androidx.activity.compose.rememberLauncherForActivityResult(
+        contract = androidx.activity.result.contract.ActivityResultContracts.GetContent()
+    ) { uri: android.net.Uri? ->
+        if (uri != null) {
+            val fileName = uri.lastPathSegment?.substringAfterLast('/') ?: "تطبيق_البراء_المحدث.apk"
+            selectedLocalApkName = fileName
+            android.widget.Toast.makeText(context, "تم تحديد ملف الـ APK: $fileName", android.widget.Toast.LENGTH_SHORT).show()
+        }
+    }
 
     AlertDialog(
         onDismissRequest = { if (!isPublishing) onDismiss() },
@@ -319,21 +360,16 @@ fun PublishUpdateDialog(
             Surface(
                 shape = CircleShape,
                 color = MaterialTheme.colorScheme.primaryContainer,
-                modifier = Modifier.size(52.dp)
+                modifier = Modifier.size(54.dp)
             ) {
                 Box(contentAlignment = Alignment.Center) {
-                    Icon(
-                        imageVector = Icons.Default.CloudUpload,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(28.dp)
-                    )
+                    PhoneDownloadIcon(tint = MaterialTheme.colorScheme.primary)
                 }
             }
         },
         title = {
             Text(
-                text = "نشر تحديث جديد للتطبيق",
+                text = "إدارة ونشر تحديث التطبيق (APK)",
                 style = MaterialTheme.typography.titleLarge.copy(
                     fontWeight = FontWeight.Bold,
                     textAlign = TextAlign.Center
@@ -349,13 +385,14 @@ fun PublishUpdateDialog(
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 Text(
-                    text = "عند نشر التحديث هنا، سيظهر إشعار التحديث تلقائياً في هواتف جميع الفنيين والمستخدمين فور فتح التطبيق.",
+                    text = "عند نشر التحديث هنا وتحديد رابط ملف الـ APK، سيظهر لجميع المستخدمين في شاشة البدء وعند الضغط على علامة التنزيل لتثبيته فوراً.",
                     style = MaterialTheme.typography.bodySmall.copy(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         lineHeight = 18.sp
                     )
                 )
 
+                // Version Code & Version Name
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -363,7 +400,7 @@ fun PublishUpdateDialog(
                     OutlinedTextField(
                         value = versionCodeInput,
                         onValueChange = { versionCodeInput = it.filter { ch -> ch.isDigit() } },
-                        label = { Text("رقم الإصدار (رقمي)") },
+                        label = { Text("رقم الإصدار (Code)") },
                         modifier = Modifier.weight(1f),
                         singleLine = true,
                         shape = RoundedCornerShape(10.dp)
@@ -371,21 +408,74 @@ fun PublishUpdateDialog(
                     OutlinedTextField(
                         value = versionNameInput,
                         onValueChange = { versionNameInput = it },
-                        label = { Text("اسم الإصدار (مثال 1.1)") },
+                        label = { Text("اسم الإصدار (مثال v1.1)") },
                         modifier = Modifier.weight(1f),
                         singleLine = true,
                         shape = RoundedCornerShape(10.dp)
                     )
                 }
 
-                OutlinedTextField(
-                    value = downloadUrlInput,
-                    onValueChange = { downloadUrlInput = it },
-                    label = { Text("رابط تحميل الـ APK (Google Drive, Mediafire, etc)") },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                    shape = RoundedCornerShape(10.dp)
-                )
+                // APK Download URL with quick paste button
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    OutlinedTextField(
+                        value = downloadUrlInput,
+                        onValueChange = { downloadUrlInput = it },
+                        label = { Text("رابط ملف التحديث APK المباشر") },
+                        placeholder = { Text("https://drive.google.com/... أو رابط مباشر") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        shape = RoundedCornerShape(10.dp)
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        TextButton(
+                            onClick = {
+                                try {
+                                    val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as? android.content.ClipboardManager
+                                    val clip = clipboard?.primaryClip?.getItemAt(0)?.text?.toString()
+                                    if (!clip.isNullOrBlank()) {
+                                        downloadUrlInput = clip.trim()
+                                        android.widget.Toast.makeText(context, "تم لصق الرابط من الحافظة!", android.widget.Toast.LENGTH_SHORT).show()
+                                    } else {
+                                        android.widget.Toast.makeText(context, "الحافظة فارغة", android.widget.Toast.LENGTH_SHORT).show()
+                                    }
+                                } catch (_: Throwable) {}
+                            }
+                        ) {
+                            Icon(imageVector = Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(14.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("📋 لصق من الحافظة", fontSize = 11.sp)
+                        }
+
+                        TextButton(
+                            onClick = {
+                                apkFilePicker.launch("application/vnd.android.package-archive")
+                            }
+                        ) {
+                            Icon(imageVector = Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(14.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("📁 تحديد ملف APK محلي", fontSize = 11.sp)
+                        }
+                    }
+                }
+
+                if (selectedLocalApkName != null) {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.5f)),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Text(
+                            text = "✓ تم اختيار: $selectedLocalApkName\n(يرجى رفع الملف إلى Google Drive أو الخادم ووضع رابطه بالأعلى)",
+                            style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp, color = MaterialTheme.colorScheme.onSecondaryContainer),
+                            modifier = Modifier.padding(8.dp)
+                        )
+                    }
+                }
 
                 OutlinedTextField(
                     value = releaseNotesInput,
@@ -411,6 +501,31 @@ fun PublishUpdateDialog(
                         onCheckedChange = { forceUpdateInput = it }
                     )
                 }
+
+                // Test download current APK button
+                if (downloadUrlInput.isNotBlank()) {
+                    OutlinedButton(
+                        onClick = {
+                            val dummyInfo = AppUpdateInfo(
+                                currentVersionCode = BuildConfig.VERSION_CODE,
+                                currentVersionName = BuildConfig.VERSION_NAME,
+                                remoteVersionCode = versionCodeInput.toIntOrNull() ?: (BuildConfig.VERSION_CODE + 1),
+                                remoteVersionName = versionNameInput,
+                                downloadUrl = downloadUrlInput,
+                                releaseNotes = releaseNotesInput,
+                                forceUpdate = forceUpdateInput,
+                                hasUpdate = true
+                            )
+                            UpdateChecker.downloadAndInstallUpdate(context, dummyInfo)
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        Icon(imageVector = Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("تجربة تنزيل ملف الـ APK الحالي 📥", fontSize = 12.sp)
+                    }
+                }
             }
         },
         confirmButton = {
@@ -435,7 +550,7 @@ fun PublishUpdateDialog(
                         if (result.isSuccess) {
                             android.widget.Toast.makeText(
                                 context,
-                                "تم نشر التحديث بنجاح! سيظهر لجميع المستخدمين الآن 🎉",
+                                "تم حفظ ونشر التحديث بنجاح! سيتمكن جميع المستخدمين من تنزيله وتثبيته الآن 🎉",
                                 android.widget.Toast.LENGTH_LONG
                             ).show()
                             onPublished()
