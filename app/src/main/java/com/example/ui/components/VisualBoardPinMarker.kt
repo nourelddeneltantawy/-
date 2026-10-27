@@ -29,7 +29,6 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.ArrowForward
 import androidx.compose.material.icons.filled.ArrowUpward
-import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Crop
 import androidx.compose.material.icons.filled.Delete
@@ -39,9 +38,9 @@ import androidx.compose.material.icons.filled.FormatSize
 import androidx.compose.material.icons.filled.Height
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Memory
-import androidx.compose.material.icons.filled.OpenWith
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.Power
+import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.TouchApp
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -119,20 +118,20 @@ val STANDARD_WIRE_COLORS = listOf(
     Pair("فارغ (بدون سلك)", "#94A3B8")
 )
 
-enum class CanvasTouchMode {
-    MOVE_SELECTED,
-    ADD_NEW,
-    MOVE_SOCKET
-}
-
 /**
  * Visual Board Pin Marker Composable.
  * Features:
- * 1. Image management: Upload from phone, sample diagram, URL, Crop vs Fit, and Canvas Height options.
- * 2. Directional Dragging without mirror inversion (Enforces LTR coordinates for 2D plane).
- * 3. Pin Marker Sizing: Compact (20dp), Standard (28dp), Large (36dp).
- * 4. Sockets System: Group pins by socket, add entire socket batches (e.g. 5 pins, 3 pins, 2 pins),
- *    visualize socket frames on canvas (with or without image), and move entire sockets together.
+ * 1. UNIFIED SOCKETS SYSTEM:
+ *    - Pins are housed inside solid physical socket rectangles (مستطيل السوكيت).
+ *    - Dragging the socket rectangle moves the ENTIRE socket and ALL its pins together as one unit!
+ *    - Pins never separate from each other.
+ *    - Each socket is independent and can be moved anywhere on the board.
+ * 2. In-socket customization:
+ *    - Change spacing between pins inside the socket (ضيق / وسط / واسع).
+ *    - Toggle any pin inside the socket to be "طرف فارغ (NC)" or wire pin.
+ *    - Click any pin to configure its color, motor preset, or label.
+ *    - Add or remove pins directly inside the socket.
+ * 3. Board Image controls: Fit vs Crop, canvas height, and custom pin sizing.
  */
 @Composable
 fun VisualBoardPinMarker(
@@ -145,32 +144,40 @@ fun VisualBoardPinMarker(
     onDeletePin: (index: Int) -> Unit,
     onAddSocket: (socketName: String, pinCount: Int, component: String) -> Unit = { _, _, _ -> },
     onMoveSocket: (socketName: String, deltaX: Float, deltaY: Float) -> Unit = { _, _, _ -> },
+    onAddPinToSocket: (socketName: String, component: String) -> Unit = { _, _ -> },
+    onDeleteSocket: (socketName: String) -> Unit = {},
+    onUpdateSocketSpacing: (socketName: String, spacingFactor: Float) -> Unit = { _, _ -> },
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
     var editingPinIndex by remember { mutableStateOf<Int?>(null) }
     var selectedPinIndex by remember { mutableStateOf<Int?>(pins.indices.firstOrNull()) }
+    var selectedSocketName by remember { mutableStateOf<String?>(null) }
     var showImageUrlField by remember { mutableStateOf(false) }
     var showAddSocketDialog by remember { mutableStateOf(false) }
-    var touchMode by remember { mutableStateOf(if (pins.isNotEmpty()) CanvasTouchMode.MOVE_SELECTED else CanvasTouchMode.ADD_NEW) }
 
     // Visual Customizations
-    var pinSizeDp by remember { mutableIntStateOf(28) } // 20, 28, 36
-    var canvasHeightDp by remember { mutableIntStateOf(340) } // 320, 440, 560
+    var pinSizeDp by remember { mutableIntStateOf(26) } // 20, 26, 34
+    var canvasHeightDp by remember { mutableIntStateOf(360) } // 320, 440, 560
     var isCropScale by remember { mutableStateOf(false) }
-    var selectedSocketFilter by remember { mutableStateOf<String?>(null) } // null = All sockets
 
-    // Keep selectedPinIndex valid
-    if (selectedPinIndex != null && selectedPinIndex !in pins.indices) {
-        selectedPinIndex = pins.indices.firstOrNull()
+    // Group pins into distinct sockets
+    val socketGroups = remember(pins) {
+        if (pins.isEmpty()) {
+            emptyMap()
+        } else {
+            pins.groupBy { it.socketName.ifBlank { "سوكيت 1" } }
+        }
+    }
+
+    val distinctSockets = remember(socketGroups) { socketGroups.keys.toList() }
+
+    // Auto select first socket if none selected
+    if (selectedSocketName == null || selectedSocketName !in distinctSockets) {
+        selectedSocketName = distinctSockets.firstOrNull()
     }
 
     val selectedPin = selectedPinIndex?.let { idx -> pins.getOrNull(idx) }
-
-    // Distinct sockets
-    val distinctSockets = remember(pins) {
-        pins.map { it.socketName.ifBlank { "سوكيت 1" } }.distinct()
-    }
 
     Card(
         shape = RoundedCornerShape(16.dp),
@@ -203,11 +210,11 @@ fun VisualBoardPinMarker(
                     Spacer(modifier = Modifier.width(8.dp))
                     Column {
                         Text(
-                            text = "مخطط وسوكيتات الكارتة التفاعلية",
+                            text = "مخطط سوكيتات الكارتة (تجميع الأطراف)",
                             style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
                         )
                         Text(
-                            text = "حدد أطراف وسوكيتات الكارتة بحرية مع إمكانية التكبير والتصغير والتحريك",
+                            text = "السوكيت مستطيل متماسك يجمع أطرافه معاً ويتحرك كقطعة واحدة",
                             style = MaterialTheme.typography.labelSmall.copy(color = MaterialTheme.colorScheme.outline)
                         )
                     }
@@ -216,14 +223,14 @@ fun VisualBoardPinMarker(
 
             Spacer(modifier = Modifier.height(10.dp))
 
-            // Action Buttons: Sockets + Board Image
+            // Primary Sockets Action Bar
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 Button(
                     onClick = { showAddSocketDialog = true },
-                    modifier = Modifier.weight(1.2f),
+                    modifier = Modifier.weight(1.3f),
                     shape = RoundedCornerShape(10.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0284C7))
                 ) {
@@ -234,7 +241,7 @@ fun VisualBoardPinMarker(
 
                 Button(
                     onClick = onPickImageClick,
-                    modifier = Modifier.weight(1.1f),
+                    modifier = Modifier.weight(1f),
                     shape = RoundedCornerShape(10.dp)
                 ) {
                     Icon(imageVector = Icons.Default.PhotoLibrary, contentDescription = null, modifier = Modifier.size(16.dp))
@@ -311,8 +318,8 @@ fun VisualBoardPinMarker(
                         Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                             listOf(
                                 Pair(20, "صغير 20"),
-                                Pair(28, "وسط 28"),
-                                Pair(36, "كبير 36")
+                                Pair(26, "وسط 26"),
+                                Pair(34, "كبير 34")
                             ).forEach { (size, label) ->
                                 Surface(
                                     shape = RoundedCornerShape(6.dp),
@@ -396,36 +403,10 @@ fun VisualBoardPinMarker(
                 }
             }
 
-            // Sockets Filter Bar (to filter pins or focus on a specific socket)
-            if (distinctSockets.size > 1) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState())
-                        .padding(vertical = 4.dp),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    FilterChip(
-                        selected = selectedSocketFilter == null,
-                        onClick = { selectedSocketFilter = null },
-                        label = { Text("جميع السوكيتات (${pins.size} طرف)", fontSize = 11.sp) }
-                    )
-                    distinctSockets.forEach { sockName ->
-                        val count = pins.count { it.socketName == sockName }
-                        FilterChip(
-                            selected = selectedSocketFilter == sockName,
-                            onClick = { selectedSocketFilter = sockName },
-                            label = { Text("$sockName ($count)", fontSize = 11.sp) }
-                        )
-                    }
-                }
-            }
-
-            // Pin Selection Quick Chips Bar
-            val displayedPins = if (selectedSocketFilter != null) pins.filter { it.socketName == selectedSocketFilter } else pins
-            if (displayedPins.isNotEmpty()) {
+            // Sockets Selector & Controls Bar
+            if (distinctSockets.isNotEmpty()) {
                 Text(
-                    text = "الأطراف (انقر لتحديد طرف وتحريكه):",
+                    text = "السوكيتات المتوفرة على الكارتة (انقر لاختيار السوكيت وتحريكه أو تعديل مسافاته):",
                     style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold)
                 )
                 Spacer(modifier = Modifier.height(4.dp))
@@ -435,30 +416,31 @@ fun VisualBoardPinMarker(
                         .horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    displayedPins.forEach { pin ->
-                        val realIndex = pins.indexOf(pin)
-                        val isSelected = selectedPinIndex == realIndex
+                    distinctSockets.forEach { sockName ->
+                        val sockPins = socketGroups[sockName] ?: emptyList()
+                        val isSelected = selectedSocketName == sockName
                         Surface(
                             shape = RoundedCornerShape(8.dp),
-                            color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
-                            border = if (isSelected) androidx.compose.foundation.BorderStroke(2.dp, MaterialTheme.colorScheme.primary) else null,
-                            modifier = Modifier.clickable {
-                                selectedPinIndex = realIndex
-                                touchMode = CanvasTouchMode.MOVE_SELECTED
-                            }
+                            color = if (isSelected) Color(0xFF0284C7) else MaterialTheme.colorScheme.surfaceVariant,
+                            border = if (isSelected) androidx.compose.foundation.BorderStroke(2.dp, Color(0xFF38BDF8)) else null,
+                            modifier = Modifier.clickable { selectedSocketName = sockName }
                         ) {
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp)
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
                             ) {
-                                WireColorBadge(colorHex = pin.colorHex, secondaryColorHex = pin.secondaryColorHex, size = 12.dp)
-                                Spacer(modifier = Modifier.width(4.dp))
+                                Icon(
+                                    imageVector = Icons.Default.Power,
+                                    contentDescription = null,
+                                    tint = if (isSelected) Color.White else Color(0xFF0284C7),
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
                                 Text(
-                                    text = "#${pin.pinNumber} ${pin.label.take(10)}",
+                                    text = "$sockName (${sockPins.size} طرف)",
                                     style = MaterialTheme.typography.labelSmall.copy(
-                                        fontSize = 11.sp,
-                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                                        color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+                                        color = if (isSelected) Color.White else MaterialTheme.colorScheme.onSurface,
+                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
                                     )
                                 )
                             }
@@ -468,55 +450,73 @@ fun VisualBoardPinMarker(
                 Spacer(modifier = Modifier.height(6.dp))
             }
 
-            // Touch Mode Bar
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                FilterChip(
-                    selected = touchMode == CanvasTouchMode.MOVE_SELECTED,
-                    onClick = { touchMode = CanvasTouchMode.MOVE_SELECTED },
-                    label = {
-                        Text(
-                            text = "🖐️ تحريك الطرف المحدد",
-                            fontWeight = if (touchMode == CanvasTouchMode.MOVE_SELECTED) FontWeight.Bold else FontWeight.Normal,
-                            fontSize = 11.sp
-                        )
-                    },
-                    modifier = Modifier.weight(1f)
-                )
+            // Selected Socket Quick Actions Bar (Spacing, Add Pin, Delete Socket)
+            selectedSocketName?.let { currentSocket ->
+                val socketPins = socketGroups[currentSocket] ?: emptyList()
+                val comp = socketPins.firstOrNull()?.connectedComponent ?: "ماتور"
 
-                FilterChip(
-                    selected = touchMode == CanvasTouchMode.ADD_NEW,
-                    onClick = { touchMode = CanvasTouchMode.ADD_NEW },
-                    label = {
-                        Text(
-                            text = "➕ إضافة باللمس",
-                            fontWeight = if (touchMode == CanvasTouchMode.ADD_NEW) FontWeight.Bold else FontWeight.Normal,
-                            fontSize = 11.sp
-                        )
-                    },
-                    modifier = Modifier.weight(0.9f)
-                )
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = Color(0xFF0F172A).copy(alpha = 0.8f),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF0284C7)),
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 10.dp, vertical = 6.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column {
+                            Text(
+                                text = "تحكم في: $currentSocket ($comp)",
+                                style = MaterialTheme.typography.labelSmall.copy(color = Color(0xFF38BDF8), fontWeight = FontWeight.Bold)
+                            )
+                            // Pin Spacing selector
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Text("مسافة الأطراف:", style = MaterialTheme.typography.labelSmall.copy(color = Color.White.copy(alpha = 0.7f), fontSize = 10.sp))
+                                listOf(Pair(4f, "ضيق"), Pair(7f, "وسط"), Pair(11f, "واسع")).forEach { (factor, label) ->
+                                    Surface(
+                                        shape = RoundedCornerShape(4.dp),
+                                        color = Color(0xFF1E293B),
+                                        modifier = Modifier.clickable { onUpdateSocketSpacing(currentSocket, factor) }
+                                    ) {
+                                        Text(label, color = Color.White, fontSize = 9.sp, modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp))
+                                    }
+                                }
+                            }
+                        }
 
-                FilterChip(
-                    selected = touchMode == CanvasTouchMode.MOVE_SOCKET,
-                    onClick = { touchMode = CanvasTouchMode.MOVE_SOCKET },
-                    label = {
-                        Text(
-                            text = "📦 نقل سوكيت كامل",
-                            fontWeight = if (touchMode == CanvasTouchMode.MOVE_SOCKET) FontWeight.Bold else FontWeight.Normal,
-                            fontSize = 11.sp
-                        )
-                    },
-                    modifier = Modifier.weight(1f)
-                )
+                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            // Add pin to this socket
+                            Button(
+                                onClick = { onAddPinToSocket(currentSocket, comp) },
+                                shape = RoundedCornerShape(6.dp),
+                                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0284C7))
+                            ) {
+                                Icon(Icons.Default.Add, null, modifier = Modifier.size(12.dp))
+                                Spacer(modifier = Modifier.width(2.dp))
+                                Text("+ طرف", fontSize = 10.sp)
+                            }
+
+                            // Delete socket
+                            IconButton(
+                                onClick = { onDeleteSocket(currentSocket) },
+                                modifier = Modifier.size(28.dp)
+                            ) {
+                                Icon(Icons.Default.Delete, contentDescription = "حذف السوكيت", tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(16.dp))
+                            }
+                        }
+                    }
+                }
             }
 
-            Spacer(modifier = Modifier.height(8.dp))
+            Spacer(modifier = Modifier.height(6.dp))
 
             // =========================================================================
-            // INTERACTIVE BOARD CANVAS (CRITICAL: Enforce LTR to permanently fix mirror drag)
+            // INTERACTIVE BOARD CANVAS WITH SOLID PHYSICAL SOCKETS HOUSING
             // =========================================================================
             CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
                 BoxWithConstraints(
@@ -526,20 +526,6 @@ fun VisualBoardPinMarker(
                         .clip(RoundedCornerShape(12.dp))
                         .background(Color(0xFF0F172A))
                         .border(1.5.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(12.dp))
-                        .pointerInput(touchMode, selectedPinIndex, pins.size) {
-                            detectTapGestures { offset ->
-                                val xPercent = ((offset.x / size.width) * 100f).coerceIn(2f, 98f)
-                                val yPercent = ((offset.y / size.height) * 100f).coerceIn(2f, 98f)
-                                if (touchMode == CanvasTouchMode.MOVE_SELECTED && selectedPinIndex != null && selectedPinIndex in pins.indices) {
-                                    val current = pins[selectedPinIndex!!]
-                                    onUpdatePin(selectedPinIndex!!, current.copy(pinX = xPercent, pinY = yPercent))
-                                } else if (touchMode == CanvasTouchMode.ADD_NEW) {
-                                    onAddPinAtPosition(xPercent, yPercent)
-                                    selectedPinIndex = pins.size
-                                    touchMode = CanvasTouchMode.MOVE_SELECTED
-                                }
-                            }
-                        }
                 ) {
                     val boxWidth = maxWidth
                     val boxHeight = maxHeight
@@ -566,7 +552,6 @@ fun VisualBoardPinMarker(
                                     )
                                 )
                         ) {
-                            // PCB Header inside canvas
                             Row(
                                 modifier = Modifier
                                     .align(Alignment.BottomEnd)
@@ -580,89 +565,16 @@ fun VisualBoardPinMarker(
                         }
                     }
 
-                    // 3. Render Socket Connector Boxes (صناديق وإطارات السوكيتات)
-                    distinctSockets.forEach { socketName ->
-                        val socketPins = pins.filter { it.socketName == socketName }
-                        if (socketPins.isNotEmpty()) {
-                            val minX = socketPins.minOf { it.pinX }
-                            val maxX = socketPins.maxOf { it.pinX }
-                            val minY = socketPins.minOf { it.pinY }
-                            val maxY = socketPins.maxOf { it.pinY }
-
-                            val startX = ((minX / 100f) * boxWidth.value) - (pinSizeDp / 2 + 8)
-                            val startY = ((minY / 100f) * boxHeight.value) - (pinSizeDp / 2 + 18)
-                            val frameWidth = (((maxX - minX) / 100f) * boxWidth.value) + (pinSizeDp + 16)
-                            val frameHeight = (((maxY - minY) / 100f) * boxHeight.value) + (pinSizeDp + 24)
-
-                            val isCurrentSocket = selectedPin?.socketName == socketName
-
-                            Box(
-                                modifier = Modifier
-                                    .offset {
-                                        IntOffset(
-                                            startX.coerceAtLeast(4f).dp.toPx().toInt(),
-                                            startY.coerceAtLeast(4f).dp.toPx().toInt()
-                                        )
-                                    }
-                                    .width(frameWidth.coerceAtLeast(60f).dp)
-                                    .height(frameHeight.coerceAtLeast(40f).dp)
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .background(
-                                        if (isCurrentSocket) Color(0xFF0284C7).copy(alpha = 0.22f)
-                                        else Color(0xFF000000).copy(alpha = 0.35f)
-                                    )
-                                    .border(
-                                        width = if (isCurrentSocket) 1.8.dp else 1.dp,
-                                        color = if (isCurrentSocket) Color(0xFF38BDF8) else Color(0xFF64748B).copy(alpha = 0.6f),
-                                        shape = RoundedCornerShape(8.dp)
-                                    )
-                                    .pointerInput(socketName) {
-                                        detectDragGestures { change, dragAmount ->
-                                            if (touchMode == CanvasTouchMode.MOVE_SOCKET) {
-                                                change.consume()
-                                                val parentWidthPx = boxWidth.toPx()
-                                                val parentHeightPx = boxHeight.toPx()
-                                                if (parentWidthPx > 0 && parentHeightPx > 0) {
-                                                    val deltaXPercent = (dragAmount.x / parentWidthPx) * 100f
-                                                    val deltaYPercent = (dragAmount.y / parentHeightPx) * 100f
-                                                    onMoveSocket(socketName, deltaXPercent, deltaYPercent)
-                                                }
-                                            }
-                                        }
-                                    }
-                            ) {
-                                // Socket badge header
-                                Text(
-                                    text = "$socketName (${socketPins.size} طرف)",
-                                    style = MaterialTheme.typography.labelSmall.copy(
-                                        color = if (isCurrentSocket) Color(0xFF38BDF8) else Color(0xFF94A3B8),
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 9.sp
-                                    ),
-                                    modifier = Modifier
-                                        .align(Alignment.TopStart)
-                                        .padding(horizontal = 4.dp, vertical = 2.dp)
-                                )
-                            }
-                        }
-                    }
-
-                    // 4. Instructions Overlay Chip (Top-Left in LTR)
+                    // Instructions Overlay Chip
                     Surface(
                         shape = RoundedCornerShape(8.dp),
-                        color = Color.Black.copy(alpha = 0.78f),
+                        color = Color.Black.copy(alpha = 0.8f),
                         modifier = Modifier
                             .align(Alignment.TopStart)
                             .padding(8.dp)
                     ) {
-                        val promptText = when {
-                            touchMode == CanvasTouchMode.MOVE_SOCKET -> "📦 اسحب أي سوكيت لنقله بجميع أطرافه معاً"
-                            touchMode == CanvasTouchMode.MOVE_SELECTED && selectedPin != null -> "🎯 انقر لنقل الطرف #${selectedPin.pinNumber} (${selectedPin.label}) أو اسحبه مباشرة"
-                            touchMode == CanvasTouchMode.ADD_NEW -> "➕ انقر في أي مكان لإضافة طرف جديد"
-                            else -> "👆 اسحب أي طرف لتحريكه بسهولة"
-                        }
                         Text(
-                            text = promptText,
+                            text = "💡 اسحب أي سوكيت لتحريكه بجميع أطرافه معاً • انقر على أي طرف لتعديله",
                             style = MaterialTheme.typography.labelSmall.copy(
                                 color = Color.White,
                                 fontSize = 11.sp,
@@ -672,75 +584,137 @@ fun VisualBoardPinMarker(
                         )
                     }
 
-                    // 5. Render Individual Pin Markers with Precise LTR Drag Gestures!
-                    pins.forEachIndexed { index, pin ->
-                        val posX = (pin.pinX / 100f) * boxWidth.value
-                        val posY = (pin.pinY / 100f) * boxHeight.value
-                        val pinColor = parseWireColorToComposeColor(pin.colorHex)
-                        val isSelected = selectedPinIndex == index
-                        val halfPin = (pinSizeDp / 2f)
+                    // 3. RENDER EACH SOCKET AS A UNIFIED PHYSICAL RECTANGLE HOUSING (مستطيل السوكيت المتماسك)
+                    socketGroups.forEach { (socketName, socketPins) ->
+                        if (socketPins.isNotEmpty()) {
+                            // Calculate socket bounding anchor on board
+                            val avgX = socketPins.map { it.pinX }.average().toFloat()
+                            val avgY = socketPins.map { it.pinY }.average().toFloat()
 
-                        Box(
-                            modifier = Modifier
-                                .offset {
-                                    IntOffset(
-                                        (posX.dp.toPx() - halfPin.dp.toPx()).toInt(),
-                                        (posY.dp.toPx() - halfPin.dp.toPx()).toInt()
+                            val posX = (avgX / 100f) * boxWidth.value
+                            val posY = (avgY / 100f) * boxHeight.value
+
+                            val isSocketSelected = selectedSocketName == socketName
+                            val comp = socketPins.firstOrNull()?.connectedComponent ?: "ماتور"
+
+                            // Unified Socket Housing Box (moves as ONE single solid component!)
+                            Box(
+                                modifier = Modifier
+                                    .offset {
+                                        IntOffset(
+                                            (posX.dp.toPx() - (socketPins.size * (pinSizeDp + 6) / 2).dp.toPx()).toInt(),
+                                            (posY.dp.toPx() - 32.dp.toPx()).toInt()
+                                        )
+                                    }
+                                    .shadow(if (isSocketSelected) 12.dp else 4.dp, RoundedCornerShape(10.dp))
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(Color(0xFF1E293B).copy(alpha = 0.94f))
+                                    .border(
+                                        width = if (isSocketSelected) 2.2.dp else 1.2.dp,
+                                        color = if (isSocketSelected) Color(0xFF38BDF8) else Color(0xFF94A3B8).copy(alpha = 0.6f),
+                                        shape = RoundedCornerShape(10.dp)
                                     )
-                                }
-                                .size(pinSizeDp.dp)
-                                .shadow(if (isSelected) 10.dp else 4.dp, CircleShape)
-                                .background(if (isSelected) Color.White else pinColor, CircleShape)
-                                .border(
-                                    width = if (isSelected) 3.dp else 1.8.dp,
-                                    color = if (isSelected) pinColor else Color.White,
-                                    shape = CircleShape
-                                )
-                                // Tap Gesture: Select or Edit
-                                .pointerInput(index, pin) {
-                                    detectTapGestures(
-                                        onTap = {
-                                            selectedPinIndex = index
-                                            touchMode = CanvasTouchMode.MOVE_SELECTED
-                                        },
-                                        onDoubleTap = {
-                                            selectedPinIndex = index
-                                            editingPinIndex = index
-                                        }
-                                    )
-                                }
-                                // Drag Gesture: Direct 1-to-1 movement in LTR
-                                .pointerInput(index, pins) {
-                                    detectDragGestures(
-                                        onDragStart = {
-                                            selectedPinIndex = index
-                                            touchMode = CanvasTouchMode.MOVE_SELECTED
-                                        },
-                                        onDrag = { change, dragAmount ->
-                                            change.consume()
-                                            val parentWidthPx = boxWidth.toPx()
-                                            val parentHeightPx = boxHeight.toPx()
-                                            if (parentWidthPx > 0 && parentHeightPx > 0) {
-                                                val deltaXPercent = (dragAmount.x / parentWidthPx) * 100f
-                                                val deltaYPercent = (dragAmount.y / parentHeightPx) * 100f
-                                                val current = pins.getOrNull(index) ?: pin
-                                                val newX = (current.pinX + deltaXPercent).coerceIn(2f, 98f)
-                                                val newY = (current.pinY + deltaYPercent).coerceIn(2f, 98f)
-                                                onUpdatePin(index, current.copy(pinX = newX, pinY = newY))
+                                    // DRAGGING MOVES ENTIRE SOCKET AND ALL ITS PINS TOGETHER!
+                                    .pointerInput(socketName, socketPins) {
+                                        detectDragGestures(
+                                            onDragStart = { selectedSocketName = socketName },
+                                            onDrag = { change, dragAmount ->
+                                                change.consume()
+                                                val parentWidthPx = boxWidth.toPx()
+                                                val parentHeightPx = boxHeight.toPx()
+                                                if (parentWidthPx > 0 && parentHeightPx > 0) {
+                                                    val deltaXPercent = (dragAmount.x / parentWidthPx) * 100f
+                                                    val deltaYPercent = (dragAmount.y / parentHeightPx) * 100f
+                                                    onMoveSocket(socketName, deltaXPercent, deltaYPercent)
+                                                }
+                                            }
+                                        )
+                                    }
+                                    .padding(horizontal = 8.dp, vertical = 6.dp)
+                            ) {
+                                Column(
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    // Socket Header Label
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.Center,
+                                        modifier = Modifier.clickable { selectedSocketName = socketName }
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Power,
+                                            contentDescription = null,
+                                            tint = if (isSocketSelected) Color(0xFF38BDF8) else Color(0xFF94A3B8),
+                                            modifier = Modifier.size(12.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text(
+                                            text = "$socketName (${socketPins.size}) - $comp",
+                                            style = MaterialTheme.typography.labelSmall.copy(
+                                                color = if (isSocketSelected) Color(0xFF38BDF8) else Color.White,
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 10.sp
+                                            )
+                                        )
+                                    }
+
+                                    // Locked Row of Pins inside the Socket Housing!
+                                    Row(
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        socketPins.forEach { pin ->
+                                            val realIndex = pins.indexOf(pin)
+                                            val isPinSelected = selectedPinIndex == realIndex
+                                            val pinColor = parseWireColorToComposeColor(pin.colorHex)
+
+                                            // Pin Slot inside Socket
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(pinSizeDp.dp)
+                                                    .clip(CircleShape)
+                                                    .background(
+                                                        if (pin.isBlankPin) Color(0xFF334155)
+                                                        else if (isPinSelected) Color.White
+                                                        else pinColor
+                                                    )
+                                                    .border(
+                                                        width = if (isPinSelected) 2.5.dp else 1.2.dp,
+                                                        color = if (pin.isBlankPin) Color(0xFF64748B) else if (isPinSelected) pinColor else Color.White,
+                                                        shape = CircleShape
+                                                    )
+                                                    .clickable {
+                                                        selectedPinIndex = realIndex
+                                                        selectedSocketName = socketName
+                                                        editingPinIndex = realIndex
+                                                    },
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                if (pin.isBlankPin) {
+                                                    Text(
+                                                        text = "NC",
+                                                        style = MaterialTheme.typography.labelSmall.copy(
+                                                            color = Color(0xFF94A3B8),
+                                                            fontSize = 9.sp,
+                                                            fontWeight = FontWeight.Bold
+                                                        )
+                                                    )
+                                                } else {
+                                                    Text(
+                                                        text = "${pin.pinNumber}",
+                                                        style = MaterialTheme.typography.labelSmall.copy(
+                                                            fontWeight = FontWeight.Bold,
+                                                            color = if (isPinSelected) pinColor else if (pin.colorHex == "#F8FAFC" || pin.colorHex == "#EAB308") Color.Black else Color.White,
+                                                            fontSize = if (pinSizeDp <= 20) 9.sp else 11.sp
+                                                        )
+                                                    )
+                                                }
                                             }
                                         }
-                                    )
-                                },
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                text = "${pin.pinNumber}",
-                                style = MaterialTheme.typography.labelSmall.copy(
-                                    fontWeight = FontWeight.Bold,
-                                    color = if (isSelected) pinColor else if (pin.colorHex == "#F8FAFC" || pin.colorHex == "#EAB308") Color.Black else Color.White,
-                                    fontSize = if (pinSizeDp <= 20) 9.sp else if (pinSizeDp >= 36) 13.sp else 11.sp
-                                )
-                            )
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -748,9 +722,10 @@ fun VisualBoardPinMarker(
 
             Spacer(modifier = Modifier.height(10.dp))
 
-            // Precision Directional Controls Card
+            // Selected Pin Inspector / D-Pad
             if (selectedPin != null && selectedPinIndex != null) {
                 val idx = selectedPinIndex!!
+                val sock = selectedPin.socketName.ifBlank { "سوكيت 1" }
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(10.dp),
@@ -768,58 +743,42 @@ fun VisualBoardPinMarker(
                                 WireColorBadge(colorHex = selectedPin.colorHex, secondaryColorHex = selectedPin.secondaryColorHex, size = 14.dp)
                                 Spacer(modifier = Modifier.width(6.dp))
                                 Text(
-                                    text = "الطرف #${selectedPin.pinNumber} (${selectedPin.label}) - ${selectedPin.socketName}",
+                                    text = "الطرف #${selectedPin.pinNumber} (${selectedPin.label}) • $sock",
                                     style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold)
                                 )
                             }
                             Text(
-                                text = "موقعه: X=${selectedPin.pinX.toInt()}% ، Y=${selectedPin.pinY.toInt()}% (اسحبه أو انقر لنقله)",
+                                text = if (selectedPin.isBlankPin) "طرف فارغ بدون سلك (NC)" else "لون السلك: ${selectedPin.wireColor}",
                                 style = MaterialTheme.typography.labelSmall.copy(color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
                             )
                         }
 
-                        // Precision Directional Buttons
+                        // Precision Directional Buttons for whole socket
                         Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
-                            // Up
                             Surface(shape = CircleShape, color = MaterialTheme.colorScheme.primary, modifier = Modifier.size(30.dp)) {
-                                IconButton(onClick = {
-                                    val newY = (selectedPin.pinY - 1.5f).coerceIn(2f, 98f)
-                                    onUpdatePin(idx, selectedPin.copy(pinY = newY))
-                                }) {
-                                    Icon(imageVector = Icons.Default.ArrowUpward, contentDescription = "أعلى", tint = Color.White, modifier = Modifier.size(16.dp))
+                                IconButton(onClick = { onMoveSocket(sock, 0f, -2f) }) {
+                                    Icon(Icons.Default.ArrowUpward, "أعلى", tint = Color.White, modifier = Modifier.size(16.dp))
                                 }
                             }
-                            // Down
                             Surface(shape = CircleShape, color = MaterialTheme.colorScheme.primary, modifier = Modifier.size(30.dp)) {
-                                IconButton(onClick = {
-                                    val newY = (selectedPin.pinY + 1.5f).coerceIn(2f, 98f)
-                                    onUpdatePin(idx, selectedPin.copy(pinY = newY))
-                                }) {
-                                    Icon(imageVector = Icons.Default.ArrowDownward, contentDescription = "أسفل", tint = Color.White, modifier = Modifier.size(16.dp))
+                                IconButton(onClick = { onMoveSocket(sock, 0f, 2f) }) {
+                                    Icon(Icons.Default.ArrowDownward, "أسفل", tint = Color.White, modifier = Modifier.size(16.dp))
                                 }
                             }
-                            // Left
                             Surface(shape = CircleShape, color = MaterialTheme.colorScheme.primary, modifier = Modifier.size(30.dp)) {
-                                IconButton(onClick = {
-                                    val newX = (selectedPin.pinX - 1.5f).coerceIn(2f, 98f)
-                                    onUpdatePin(idx, selectedPin.copy(pinX = newX))
-                                }) {
-                                    Icon(imageVector = Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "يسار", tint = Color.White, modifier = Modifier.size(16.dp))
+                                IconButton(onClick = { onMoveSocket(sock, -2f, 0f) }) {
+                                    Icon(Icons.AutoMirrored.Filled.ArrowBack, "يسار", tint = Color.White, modifier = Modifier.size(16.dp))
                                 }
                             }
-                            // Right
                             Surface(shape = CircleShape, color = MaterialTheme.colorScheme.primary, modifier = Modifier.size(30.dp)) {
-                                IconButton(onClick = {
-                                    val newX = (selectedPin.pinX + 1.5f).coerceIn(2f, 98f)
-                                    onUpdatePin(idx, selectedPin.copy(pinX = newX))
-                                }) {
-                                    Icon(imageVector = Icons.Default.ArrowForward, contentDescription = "يمين", tint = Color.White, modifier = Modifier.size(16.dp))
+                                IconButton(onClick = { onMoveSocket(sock, 2f, 0f) }) {
+                                    Icon(Icons.Default.ArrowForward, "يمين", tint = Color.White, modifier = Modifier.size(16.dp))
                                 }
                             }
 
                             // Edit pin button
                             IconButton(onClick = { editingPinIndex = idx }) {
-                                Icon(imageVector = Icons.Default.Edit, contentDescription = "تعديل", tint = MaterialTheme.colorScheme.primary)
+                                Icon(Icons.Default.Edit, contentDescription = "تعديل الطرف", tint = MaterialTheme.colorScheme.primary)
                             }
                         }
                     }
@@ -1011,7 +970,7 @@ fun EditBoardPinDialog(
     var colorHex by remember { mutableStateOf(pin.colorHex) }
     var secondaryColorHex by remember { mutableStateOf(pin.secondaryColorHex) }
     var secondaryColorName by remember { mutableStateOf(pin.secondaryColorName) }
-    var isBlank by remember { mutableStateOf(pin.isBlank) }
+    var isBlank by remember { mutableStateOf(pin.isBlankPin) }
     var pinX by remember { mutableFloatStateOf(pin.pinX) }
     var pinY by remember { mutableFloatStateOf(pin.pinY) }
 
@@ -1045,6 +1004,38 @@ fun EditBoardPinDialog(
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
+                // Blank pin toggle (PROMINENT AT TOP)
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = if (isBlank) Color(0xFF334155) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                    border = if (isBlank) androidx.compose.foundation.BorderStroke(1.5.dp, Color(0xFF94A3B8)) else null,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(10.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column {
+                            Text("طرف فارغ (مكان فاضي بدون سلك NC)", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                            Text("مكان بن فارغ في السوكيت ليس به سلك", fontSize = 10.sp, color = MaterialTheme.colorScheme.outline)
+                        }
+                        Switch(
+                            checked = isBlank,
+                            onCheckedChange = {
+                                isBlank = it
+                                if (it) {
+                                    wireColor = "فارغ (بدون سلك)"
+                                    colorHex = "#94A3B8"
+                                    label = "مكان فاضي بدون سلك (NC)"
+                                }
+                            }
+                        )
+                    }
+                }
+
                 // Pin Number & Target Pin
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -1119,47 +1110,6 @@ fun EditBoardPinDialog(
                     singleLine = true,
                     shape = RoundedCornerShape(10.dp)
                 )
-
-                // Location Sliders for X and Y positioning
-                Column(modifier = Modifier.fillMaxWidth()) {
-                    Text(
-                        text = "موقع الطرف على الكارتة: (أفقي: ${pinX.toInt()}%, رأسي: ${pinY.toInt()}%)",
-                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold)
-                    )
-                    Text("الموقع الأفقي X:", fontSize = 11.sp, color = MaterialTheme.colorScheme.outline)
-                    Slider(
-                        value = pinX,
-                        onValueChange = { pinX = it },
-                        valueRange = 2f..98f
-                    )
-                    Text("الموقع الرأسي Y:", fontSize = 11.sp, color = MaterialTheme.colorScheme.outline)
-                    Slider(
-                        value = pinY,
-                        onValueChange = { pinY = it },
-                        valueRange = 2f..98f
-                    )
-                }
-
-                // Blank pin toggle
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text("طرف فارغ (مكان فاضي بدون سلك NC)", style = MaterialTheme.typography.bodyMedium)
-                    Switch(
-                        checked = isBlank,
-                        onCheckedChange = {
-                            isBlank = it
-                            if (it) {
-                                wireColor = "فارغ (بدون سلك)"
-                                colorHex = "#94A3B8"
-                                secondaryColorHex = null
-                                secondaryColorName = null
-                            }
-                        }
-                    )
-                }
 
                 // If Connected Component is "ماتور" -> Show Fixed 9 Motor Presets
                 if (!isBlank && connectedComponent == "ماتور") {

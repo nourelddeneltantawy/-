@@ -411,7 +411,8 @@ fun HarnessInteractiveCanvas(
                                 val posY = if (pin.pinY > 0f) (pin.pinY / 100f) * boardHeight.value else (boardHeight.value * 0.75f)
 
                                 val isPinSelected = selectedPinNumber == pin.pinNumber
-                                val pinColor = parseWireColorToComposeColor(pin.colorHex)
+                                val isBlank = pin.isBlankPin
+                                val pinColor = if (isBlank) Color(0xFF334155) else parseWireColorToComposeColor(pin.colorHex)
 
                                 Box(
                                     modifier = Modifier
@@ -426,18 +427,18 @@ fun HarnessInteractiveCanvas(
                                         .background(if (isPinSelected) Color.White else pinColor, CircleShape)
                                         .border(
                                             width = if (isPinSelected) 2.5.dp else 1.5.dp,
-                                            color = if (isPinSelected) pinColor else Color.White,
+                                            color = if (isBlank) Color(0xFF94A3B8) else if (isPinSelected) pinColor else Color.White,
                                             shape = CircleShape
                                         )
                                         .clickable { onSelectPin(pin.pinNumber) },
                                     contentAlignment = Alignment.Center
                                 ) {
                                     Text(
-                                        text = "${pin.pinNumber}",
+                                        text = if (isBlank) "NC" else "${pin.pinNumber}",
                                         style = MaterialTheme.typography.labelSmall.copy(
                                             fontWeight = FontWeight.Bold,
-                                            color = if (isPinSelected) pinColor else if (pin.colorHex == "#F8FAFC" || pin.colorHex == "#EAB308") Color.Black else Color.White,
-                                            fontSize = 11.sp
+                                            color = if (isBlank) Color(0xFFCBD5E1) else if (isPinSelected) pinColor else if (pin.colorHex == "#F8FAFC" || pin.colorHex == "#EAB308") Color.Black else Color.White,
+                                            fontSize = if (isBlank) 9.sp else 11.sp
                                         )
                                     )
                                 }

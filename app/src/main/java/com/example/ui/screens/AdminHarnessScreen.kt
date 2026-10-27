@@ -265,6 +265,46 @@ fun AdminHarnessScreen(
                                 )
                             }
                         }
+                    },
+                    onAddPinToSocket = { socketName, component ->
+                        val socketPins = boardPins.filter { it.socketName == socketName }
+                        val nextNum = boardPins.size + 1
+                        val avgY = if (socketPins.isNotEmpty()) socketPins.map { it.pinY }.average().toFloat() else 50f
+                        val maxX = if (socketPins.isNotEmpty()) socketPins.maxOf { it.pinX } + 6f else 50f
+                        boardPins.add(
+                            HarnessPin(
+                                pinNumber = nextNum,
+                                label = "طرف ${socketPins.size + 1} ($socketName)",
+                                wireColor = "أزرق",
+                                colorHex = "#2563EB",
+                                connectedComponent = component,
+                                targetPinNumber = nextNum,
+                                socketName = socketName,
+                                pinX = maxX.coerceIn(4f, 96f),
+                                pinY = avgY
+                            )
+                        )
+                    },
+                    onDeleteSocket = { socketName ->
+                        boardPins.removeAll { it.socketName == socketName }
+                    },
+                    onUpdateSocketSpacing = { socketName, spacingFactor ->
+                        val socketPins = boardPins.filter { it.socketName == socketName }
+                        if (socketPins.size > 1) {
+                            val centerX = socketPins.map { it.pinX }.average().toFloat()
+                            val centerY = socketPins.map { it.pinY }.average().toFloat()
+                            val count = socketPins.size
+                            socketPins.forEachIndexed { idx, pin ->
+                                val offsetFromCenter = (idx - (count - 1) / 2f) * spacingFactor
+                                val realIndex = boardPins.indexOf(pin)
+                                if (realIndex >= 0) {
+                                    boardPins[realIndex] = pin.copy(
+                                        pinX = (centerX + offsetFromCenter).coerceIn(4f, 96f),
+                                        pinY = centerY
+                                    )
+                                }
+                            }
+                        }
                     }
                 )
             }

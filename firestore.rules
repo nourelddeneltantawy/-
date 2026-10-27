@@ -107,10 +107,9 @@ service cloud.firestore {
       allow create, update, delete: if isSignedIn();
     }
 
-    // App Settings (بيانات التواصل والعنوان والمركز): Public read, Write for signed-in users
+    // App Settings (بيانات التواصل والعنوان والمركز وتحديثات التطبيق): Public read and write
     match /app_settings/{settingId} {
-      allow get, list: if true;
-      allow create, update, delete: if isSignedIn();
+      allow read, write: if true;
     }
 
     // Admins management: Strictly Super Admins can list, write and delete admin records

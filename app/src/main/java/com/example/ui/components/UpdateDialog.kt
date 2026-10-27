@@ -82,6 +82,17 @@ fun UpdateDialog(
         )
     }
 
+    val localApkLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        contract = androidx.activity.result.contract.ActivityResultContracts.GetContent()
+    ) { uri ->
+        if (uri != null) {
+            val success = UpdateChecker.installLocalApk(context, uri)
+            if (!success) {
+                android.widget.Toast.makeText(context, "تعذر تثبيت الملف، تأكد من صحة ملف الـ APK", android.widget.Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
     AlertDialog(
         onDismissRequest = {
             if (!updateInfo.forceUpdate) {
@@ -106,7 +117,7 @@ fun UpdateDialog(
         },
         title = {
             Text(
-                text = "يتوفر تحديث جديد للتطبيق!",
+                text = if (updateInfo.hasUpdate) "يتوفر تحديث جديد للتطبيق!" else "أنت تستخدم أحدث إصدار 🎉",
                 style = MaterialTheme.typography.titleLarge.copy(
                     fontWeight = FontWeight.Bold,
                     textAlign = TextAlign.Center
@@ -136,33 +147,35 @@ fun UpdateDialog(
                         modifier = Modifier.padding(horizontal = 4.dp)
                     ) {
                         Text(
-                            text = "الحالي: v${updateInfo.currentVersionName}",
+                            text = "الإصدار الحالي: v${updateInfo.currentVersionName}",
                             style = MaterialTheme.typography.labelMedium.copy(color = MaterialTheme.colorScheme.onSurfaceVariant),
                             modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                         )
                     }
 
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.outline,
-                        modifier = Modifier.size(16.dp)
-                    )
-
-                    // New Version
-                    Surface(
-                        shape = RoundedCornerShape(8.dp),
-                        color = MaterialTheme.colorScheme.primaryContainer,
-                        modifier = Modifier.padding(horizontal = 4.dp)
-                    ) {
-                        Text(
-                            text = "الجديد: v${updateInfo.remoteVersionName}",
-                            style = MaterialTheme.typography.labelMedium.copy(
-                                color = MaterialTheme.colorScheme.onPrimaryContainer,
-                                fontWeight = FontWeight.Bold
-                            ),
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                    if (updateInfo.hasUpdate) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.outline,
+                            modifier = Modifier.size(16.dp)
                         )
+
+                        // New Version
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = MaterialTheme.colorScheme.primaryContainer,
+                            modifier = Modifier.padding(horizontal = 4.dp)
+                        ) {
+                            Text(
+                                text = "الجديد: v${updateInfo.remoteVersionName}",
+                                style = MaterialTheme.typography.labelMedium.copy(
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                    fontWeight = FontWeight.Bold
+                                ),
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                            )
+                        }
                     }
                 }
 
@@ -179,7 +192,7 @@ fun UpdateDialog(
                     ) {
                         Column(modifier = Modifier.padding(12.dp)) {
                             Text(
-                                text = "ما الجديد في هذا التحديث:",
+                                text = if (updateInfo.hasUpdate) "ما الجديد في هذا التحديث:" else "ملاحظات الإصدار:",
                                 style = MaterialTheme.typography.labelLarge.copy(
                                     fontWeight = FontWeight.Bold,
                                     color = MaterialTheme.colorScheme.primary
@@ -197,7 +210,7 @@ fun UpdateDialog(
                     }
                 }
 
-                if (updateInfo.forceUpdate) {
+                if (updateInfo.forceUpdate && updateInfo.hasUpdate) {
                     Spacer(modifier = Modifier.height(10.dp))
                     Text(
                         text = "⚠️ هذا التحديث ضروري للمتابعة وضمان استقرار البيانات.",
@@ -207,6 +220,16 @@ fun UpdateDialog(
                         ),
                         textAlign = TextAlign.Center
                     )
+                }
+
+                // Option to install local file received on phone (WhatsApp, Bluetooth, etc.)
+                Spacer(modifier = Modifier.height(10.dp))
+                OutlinedButton(
+                    onClick = { localApkLauncher.launch("application/vnd.android.package-archive") },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(10.dp)
+                ) {
+                    Text("📁 تثبيت ملف APK تم استلامه على الهاتف", fontSize = 11.sp, fontWeight = FontWeight.Bold)
                 }
 
                 // Admin Publish/Edit Update Button
@@ -225,26 +248,48 @@ fun UpdateDialog(
             }
         },
         confirmButton = {
-            Button(
-                onClick = {
-                    UpdateChecker.downloadAndInstallUpdate(context, updateInfo)
-                },
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(10.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = MaterialTheme.colorScheme.primary
-                )
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Download,
-                    contentDescription = null,
-                    modifier = Modifier.size(18.dp)
-                )
-                Spacer(modifier = Modifier.width(6.dp))
-                Text(
-                    text = "تحميل وتثبيت التحديث الآن",
-                    fontWeight = FontWeight.Bold
-                )
+            if (updateInfo.hasUpdate) {
+                Button(
+                    onClick = {
+                        UpdateChecker.downloadAndInstallUpdate(context, updateInfo)
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(10.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.primary
+                    )
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Download,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = if (updateInfo.downloadUrl.startsWith("http", ignoreCase = true)) "تحميل وتثبيت التحديث الآن" else "طلب ملف التحديث عبر واتساب 💬",
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            } else {
+                Button(
+                    onClick = { localApkLauncher.launch("application/vnd.android.package-archive") },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(10.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color(0xFF059669)
+                    )
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Download,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "اختيار وتثبيت ملف APK من الهاتف",
+                        fontWeight = FontWeight.Bold
+                    )
+                }
             }
         },
         dismissButton = {

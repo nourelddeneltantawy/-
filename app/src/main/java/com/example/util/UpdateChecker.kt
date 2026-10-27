@@ -41,7 +41,8 @@ object UpdateChecker {
                 val releaseNotes = docSnapshot.getString("releaseNotes") ?: ""
                 val forceUpdate = docSnapshot.getBoolean("forceUpdate") ?: false
 
-                val hasUpdate = remoteVersionCode > currentCode
+                val hasUpdate = remoteVersionCode > currentCode || 
+                    (remoteVersionCode == currentCode && downloadUrl.isNotBlank() && remoteVersionName != currentName && remoteVersionName.isNotBlank())
 
                 AppUpdateInfo(
                     currentVersionCode = currentCode,
@@ -72,6 +73,17 @@ object UpdateChecker {
         }
     }
 
+    fun normalizeDownloadUrl(url: String): String {
+        val trimmed = url.trim()
+        val driveRegex = Regex("""https?://drive\.google\.com/file/d/([a-zA-Z0-9_-]+)""")
+        val match = driveRegex.find(trimmed)
+        if (match != null) {
+            val fileId = match.groupValues[1]
+            return "https://drive.google.com/uc?export=download&id=$fileId"
+        }
+        return trimmed
+    }
+
     suspend fun publishUpdate(
         versionCode: Int,
         versionName: String,
@@ -81,21 +93,25 @@ object UpdateChecker {
         adminEmail: String
     ): Result<Unit> = withContext(Dispatchers.IO) {
         try {
+            val finalUrl = normalizeDownloadUrl(downloadUrl)
             val data = hashMapOf<String, Any>(
                 "versionCode" to versionCode,
                 "versionName" to versionName.trim(),
-                "downloadUrl" to downloadUrl.trim(),
+                "downloadUrl" to finalUrl,
                 "releaseNotes" to releaseNotes.trim(),
                 "forceUpdate" to forceUpdate,
                 "updatedAt" to System.currentTimeMillis(),
                 "updatedBy" to adminEmail
             )
 
-            Firebase.firestore
-                .collection(COLLECTION_SETTINGS)
-                .document(DOC_UPDATE)
-                .set(data)
-                .await()
+            // 8-second timeout prevents indefinite hanging
+            kotlinx.coroutines.withTimeout(8000L) {
+                Firebase.firestore
+                    .collection(COLLECTION_SETTINGS)
+                    .document(DOC_UPDATE)
+                    .set(data)
+                    .await()
+            }
 
             Result.success(Unit)
         } catch (e: Throwable) {
@@ -104,14 +120,42 @@ object UpdateChecker {
         }
     }
 
+    fun installLocalApk(context: Context, uri: Uri): Boolean {
+        return try {
+            val intent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, "application/vnd.android.package-archive")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(intent)
+            true
+        } catch (e: Throwable) {
+            Log.e(TAG, "Error installing local APK: ${e.message}", e)
+            false
+        }
+    }
+
     fun downloadAndInstallUpdate(context: Context, updateInfo: AppUpdateInfo) {
-        val downloadUrl = updateInfo.downloadUrl.trim()
-        if (downloadUrl.isBlank()) {
-            Toast.makeText(context, "رابط التحميل غير متوفر في بيانات التحديث", Toast.LENGTH_SHORT).show()
+        val rawUrl = updateInfo.downloadUrl.trim()
+        val isWebLink = rawUrl.startsWith("http://", ignoreCase = true) || rawUrl.startsWith("https://", ignoreCase = true)
+
+        if (!isWebLink) {
+            // Explain cleanly to user instead of copying text to clipboard
+            Toast.makeText(context, "ملف التحديث متوفر من الإدارة عبر واتساب", Toast.LENGTH_LONG).show()
+            try {
+                // Open WhatsApp to request the file from admin
+                val whatsappNumber = "+201015697669"
+                val text = "السلام عليكم م/ نور، يتوفر تحديث جديد للتطبيق (v${updateInfo.remoteVersionName})، برجاء إرسال ملف الـ APK لتثبيته."
+                val waIntent = Intent(Intent.ACTION_VIEW, Uri.parse("https://wa.me/$whatsappNumber?text=${Uri.encode(text)}")).apply {
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                }
+                context.startActivity(waIntent)
+            } catch (_: Throwable) {}
             return
         }
 
+        val downloadUrl = normalizeDownloadUrl(rawUrl)
         var intentOpened = false
+
         // 1. Try opening direct download/release page via system browser/installer
         try {
             val intent = Intent(Intent.ACTION_VIEW, Uri.parse(downloadUrl)).apply {
@@ -124,7 +168,7 @@ object UpdateChecker {
         }
 
         // 2. If it's a direct APK file link, also trigger Android DownloadManager
-        if (downloadUrl.endsWith(".apk", ignoreCase = true)) {
+        if (downloadUrl.endsWith(".apk", ignoreCase = true) || downloadUrl.contains("export=download")) {
             try {
                 val request = DownloadManager.Request(Uri.parse(downloadUrl)).apply {
                     setTitle("تحديث البراء إلكترونيك v${updateInfo.remoteVersionName}")
