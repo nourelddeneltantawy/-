@@ -104,8 +104,8 @@ object UpdateChecker {
                 "updatedBy" to adminEmail
             )
 
-            // 8-second timeout prevents indefinite hanging
-            kotlinx.coroutines.withTimeout(8000L) {
+            // 60-second timeout ensures slow mobile data connections have sufficient time to complete
+            kotlinx.coroutines.withTimeout(60000L) {
                 Firebase.firestore
                     .collection(COLLECTION_SETTINGS)
                     .document(DOC_UPDATE)
@@ -122,15 +122,90 @@ object UpdateChecker {
 
     fun installLocalApk(context: Context, uri: Uri): Boolean {
         return try {
+            val cacheFile = java.io.File(context.cacheDir, "install_pending.apk")
+            context.contentResolver.openInputStream(uri)?.use { input ->
+                java.io.FileOutputStream(cacheFile).use { output ->
+                    input.copyTo(output)
+                }
+            }
+            installDownloadedApkFile(context, cacheFile)
+        } catch (e: Throwable) {
+            Log.e(TAG, "Error installing local APK via cache copy: ${e.message}", e)
+            // Fallback to direct URI
+            try {
+                val intent = Intent(Intent.ACTION_VIEW).apply {
+                    setDataAndType(uri, "application/vnd.android.package-archive")
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                context.startActivity(intent)
+                true
+            } catch (e2: Throwable) {
+                false
+            }
+        }
+    }
+
+    fun installDownloadedApkFile(context: Context, file: java.io.File): Boolean {
+        return try {
+            val contentUri = androidx.core.content.FileProvider.getUriForFile(
+                context,
+                "${context.packageName}.fileprovider",
+                file
+            )
             val intent = Intent(Intent.ACTION_VIEW).apply {
-                setDataAndType(uri, "application/vnd.android.package-archive")
+                setDataAndType(contentUri, "application/vnd.android.package-archive")
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
             }
             context.startActivity(intent)
             true
         } catch (e: Throwable) {
-            Log.e(TAG, "Error installing local APK: ${e.message}", e)
+            Log.e(TAG, "Error installing APK via FileProvider: ${e.message}", e)
             false
+        }
+    }
+
+    suspend fun downloadApkToFile(
+        context: Context,
+        downloadUrl: String,
+        onProgress: (Int) -> Unit
+    ): Result<java.io.File> = withContext(Dispatchers.IO) {
+        try {
+            val url = java.net.URL(downloadUrl)
+            val connection = url.openConnection() as java.net.HttpURLConnection
+            connection.connectTimeout = 30000
+            connection.readTimeout = 60000
+            connection.instanceFollowRedirects = true
+            connection.connect()
+
+            if (connection.responseCode !in 200..299) {
+                return@withContext Result.failure(Exception("استجابة السيرفر: ${connection.responseCode}"))
+            }
+
+            val fileLength = connection.contentLength
+            val cacheFile = java.io.File(context.cacheDir, "update_downloaded.apk")
+            if (cacheFile.exists()) cacheFile.delete()
+
+            connection.inputStream.use { input ->
+                java.io.FileOutputStream(cacheFile).use { output ->
+                    val buffer = ByteArray(8192)
+                    var total: Long = 0
+                    var count: Int
+                    while (input.read(buffer).also { count = it } != -1) {
+                        total += count
+                        if (fileLength > 0) {
+                            val percent = ((total * 100) / fileLength).toInt()
+                            onProgress(percent.coerceIn(0, 100))
+                        }
+                        output.write(buffer, 0, count)
+                    }
+                    output.flush()
+                }
+            }
+            onProgress(100)
+            Result.success(cacheFile)
+        } catch (e: Throwable) {
+            Log.e(TAG, "Direct download failed: ${e.message}", e)
+            Result.failure(e)
         }
     }
 

@@ -30,6 +30,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -47,6 +48,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -55,6 +57,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.BuildConfig
 import com.example.data.model.AppUpdateInfo
+import com.example.util.ApkUploader
 import com.example.util.UpdateChecker
 import kotlinx.coroutines.launch
 
@@ -68,7 +71,10 @@ fun UpdateDialog(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
     var showPublishDialog by remember { mutableStateOf(false) }
+    var isDownloading by remember { mutableStateOf(false) }
+    var downloadPercent by remember { mutableIntStateOf(0) }
 
     if (showPublishDialog) {
         PublishUpdateDialog(
@@ -222,6 +228,44 @@ fun UpdateDialog(
                     )
                 }
 
+                // In-App Download Progress Banner
+                if (isDownloading) {
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = Color(0xFF0F172A).copy(alpha = 0.85f),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF38BDF8).copy(alpha = 0.4f)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(14.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "جاري تحميل التحديث وتجهيزه للتثبيت...",
+                                    style = MaterialTheme.typography.bodySmall.copy(color = Color.White, fontWeight = FontWeight.Bold)
+                                )
+                                Text(
+                                    text = "$downloadPercent%",
+                                    style = MaterialTheme.typography.labelMedium.copy(color = Color(0xFF38BDF8), fontWeight = FontWeight.Bold)
+                                )
+                            }
+                            LinearProgressIndicator(
+                                progress = { downloadPercent / 100f },
+                                modifier = Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(4.dp)),
+                                color = Color(0xFF38BDF8),
+                                trackColor = Color(0xFF1E293B)
+                            )
+                        }
+                    }
+                }
+
                 // Option to install local file received on phone (WhatsApp, Bluetooth, etc.)
                 Spacer(modifier = Modifier.height(10.dp))
                 OutlinedButton(
@@ -251,24 +295,57 @@ fun UpdateDialog(
             if (updateInfo.hasUpdate) {
                 Button(
                     onClick = {
-                        UpdateChecker.downloadAndInstallUpdate(context, updateInfo)
+                        val isDirectWeb = updateInfo.downloadUrl.startsWith("http://", ignoreCase = true) ||
+                                updateInfo.downloadUrl.startsWith("https://", ignoreCase = true)
+
+                        if (isDirectWeb) {
+                            isDownloading = true
+                            coroutineScope.launch {
+                                val result = UpdateChecker.downloadApkToFile(context, updateInfo.downloadUrl) { pct ->
+                                    downloadPercent = pct
+                                }
+                                isDownloading = false
+                                if (result.isSuccess) {
+                                    val apkFile = result.getOrNull()!!
+                                    val opened = UpdateChecker.installDownloadedApkFile(context, apkFile)
+                                    if (!opened) {
+                                        UpdateChecker.downloadAndInstallUpdate(context, updateInfo)
+                                    }
+                                } else {
+                                    UpdateChecker.downloadAndInstallUpdate(context, updateInfo)
+                                }
+                            }
+                        } else {
+                            UpdateChecker.downloadAndInstallUpdate(context, updateInfo)
+                        }
                     },
+                    enabled = !isDownloading,
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(10.dp),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = MaterialTheme.colorScheme.primary
                     )
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.Download,
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(
-                        text = if (updateInfo.downloadUrl.startsWith("http", ignoreCase = true)) "تحميل وتثبيت التحديث الآن" else "طلب ملف التحديث عبر واتساب 💬",
-                        fontWeight = FontWeight.Bold
-                    )
+                    if (isDownloading) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            strokeWidth = 2.dp,
+                            color = Color.White
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("جاري تنزيل التحديث ($downloadPercent%)...")
+                    } else {
+                        Icon(
+                            imageVector = Icons.Default.Download,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = if (updateInfo.downloadUrl.startsWith("http", ignoreCase = true)) "تحميل وتثبيت التحديث الآن 🚀" else "طلب ملف التحديث عبر واتساب 💬",
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
                 }
             } else {
                 Button(
@@ -388,6 +465,8 @@ fun PublishUpdateDialog(
         mutableStateOf(currentInfo?.forceUpdate ?: false)
     }
     var isPublishing by remember { mutableStateOf(false) }
+    var uploadStatusText by remember { mutableStateOf("جاري النشر لجميع الهواتف...") }
+    var uploadPercent by remember { mutableIntStateOf(0) }
     var selectedLocalApkUri by remember { mutableStateOf<android.net.Uri?>(null) }
     var selectedLocalApkName by remember { mutableStateOf<String?>(null) }
 
@@ -398,10 +477,7 @@ fun PublishUpdateDialog(
             selectedLocalApkUri = uri
             val fileName = uri.lastPathSegment?.substringAfterLast('/') ?: "AlbaraaElectronic.apk"
             selectedLocalApkName = fileName
-            if (downloadUrlInput.isBlank()) {
-                downloadUrlInput = "ملف APK محلي: $fileName"
-            }
-            android.widget.Toast.makeText(context, "تم تحديد ملف الـ APK: $fileName", android.widget.Toast.LENGTH_SHORT).show()
+            android.widget.Toast.makeText(context, "تم اختيار الملف: $fileName (سيتم رفعه وتوزيعه تلقائياً)", android.widget.Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -505,9 +581,25 @@ fun PublishUpdateDialog(
                                         style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold, color = Color(0xFF34D399))
                                     )
                                     Text(
-                                        text = "جاهز للنشر لجميع الهواتف بدون الحاجة لأي رابط خارجي!",
+                                        text = "سيتم رفع الملف مباشرة للسيرفر (مثل رفع PDF) ليقوم التطبيق بتثبيته تلقائياً على كل الهواتف!",
                                         style = MaterialTheme.typography.labelSmall.copy(color = Color.White.copy(alpha = 0.85f))
                                     )
+
+                                    if (isPublishing) {
+                                        Spacer(modifier = Modifier.height(4.dp))
+                                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                                Text(uploadStatusText, style = MaterialTheme.typography.labelSmall.copy(color = Color(0xFF38BDF8), fontWeight = FontWeight.Bold))
+                                                Text("$uploadPercent%", style = MaterialTheme.typography.labelSmall.copy(color = Color(0xFF38BDF8), fontWeight = FontWeight.Bold))
+                                            }
+                                            LinearProgressIndicator(
+                                                progress = { uploadPercent / 100f },
+                                                modifier = Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp)),
+                                                color = Color(0xFF10B981),
+                                                trackColor = Color(0xFF1E293B)
+                                            )
+                                        }
+                                    }
                                 }
                             }
 
@@ -699,16 +791,40 @@ fun PublishUpdateDialog(
             Button(
                 onClick = {
                     val code = versionCodeInput.toIntOrNull() ?: (BuildConfig.VERSION_CODE + 1)
-                    val finalUrl = when {
-                        downloadUrlInput.isNotBlank() -> downloadUrlInput.trim()
-                        selectedLocalApkName != null -> "ملف_APK_محلي: $selectedLocalApkName"
-                        else -> {
-                            android.widget.Toast.makeText(context, "يرجى تحديد ملف APK من هاتفك أو إدخال رابط", android.widget.Toast.LENGTH_SHORT).show()
-                            return@Button
-                        }
+                    val rawUrl = downloadUrlInput.trim()
+
+                    if (rawUrl.isBlank() && selectedLocalApkUri == null) {
+                        android.widget.Toast.makeText(context, "يرجى اختيار ملف APK من هاتفك أو إدخال رابط التحديث", android.widget.Toast.LENGTH_SHORT).show()
+                        return@Button
                     }
+
                     isPublishing = true
                     coroutineScope.launch {
+                        var finalUrl = rawUrl
+                        if (selectedLocalApkUri != null && (finalUrl.isBlank() || finalUrl.startsWith("ملف APK"))) {
+                            uploadStatusText = "جاري رفع ملف الـ APK إلى السيرفر (0%)..."
+                            uploadPercent = 0
+                            val uploadResult = ApkUploader.uploadApkToStorage(context, selectedLocalApkUri!!, code) { pct ->
+                                uploadPercent = pct
+                                uploadStatusText = "جاري رفع ملف الـ APK ($pct%)..."
+                            }
+
+                            if (uploadResult.isSuccess) {
+                                finalUrl = uploadResult.getOrNull()!!
+                                uploadStatusText = "تم رفع الملف بنجاح! جاري النشر..."
+                            } else {
+                                isPublishing = false
+                                val errMsg = uploadResult.exceptionOrNull()?.message ?: "خطأ في السيرفر"
+                                android.widget.Toast.makeText(
+                                    context,
+                                    "تعذر رفع ملف APK: $errMsg\nيمكنك بدلاً من ذلك رفع الملف على Google Drive ووضع الرابط في خانة الرابط.",
+                                    android.widget.Toast.LENGTH_LONG
+                                ).show()
+                                return@launch
+                            }
+                        }
+
+                        uploadStatusText = "جاري حفظ ونشر التحديث لجميع الهواتف..."
                         val result = UpdateChecker.publishUpdate(
                             versionCode = code,
                             versionName = versionNameInput.ifBlank { "1.1" },
@@ -721,7 +837,7 @@ fun PublishUpdateDialog(
                         if (result.isSuccess) {
                             android.widget.Toast.makeText(
                                 context,
-                                "تم حفظ ونشر التحديث بنجاح! سيتمكن جميع المستخدمين من تنزيله وتثبيته الآن 🎉",
+                                "تم رفع ونشر التحديث بنجاح! سيتمكن جميع المستخدمين من تنزيله وتثبيته مباشرة الآن 🎉",
                                 android.widget.Toast.LENGTH_LONG
                             ).show()
                             onPublished()
@@ -745,11 +861,14 @@ fun PublishUpdateDialog(
                         color = Color.White
                     )
                     Spacer(modifier = Modifier.width(8.dp))
-                    Text("جاري النشر لجميع الهواتف...")
+                    Text(uploadStatusText, fontSize = 12.sp)
                 } else {
                     Icon(imageVector = Icons.Default.CloudUpload, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(modifier = Modifier.width(6.dp))
-                    Text("نشر التحديث لجميع الهواتف 🚀", fontWeight = FontWeight.Bold)
+                    Text(
+                        text = if (selectedLocalApkUri != null) "رفع ونشر ملف الـ APK لجميع الهواتف 🚀" else "نشر التحديث لجميع الهواتف 🚀",
+                        fontWeight = FontWeight.Bold
+                    )
                 }
             }
         },
