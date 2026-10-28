@@ -16,33 +16,33 @@ object DefaultHarnessData {
             boardImageUrl = "sample_lg_diagram",
             boardPins = listOf(
                 // Sockets to Direct Drive Motor (أطراف الماتور وحساس الهال)
-                HarnessPin(1, "تغذية ماتور U", "أحمر", "#EF4444", null, null, "ماتور", 1, "3-Phase U", false, 38f, 52f),
-                HarnessPin(2, "تغذية ماتور V", "أصفر", "#EAB308", null, null, "ماتور", 2, "3-Phase V", false, 40f, 52f),
-                HarnessPin(3, "تغذية ماتور W", "أزرق", "#2563EB", null, null, "ماتور", 3, "3-Phase W", false, 42f, 52f),
-                HarnessPin(4, "أرضي حماية الماتور", "أصفر / أخضر", "#EAB308", "#16A34A", "أخضر", "ماتور", 4, "Ground", false, 28f, 48f),
-                HarnessPin(5, "حساس هال Vcc (+5V)", "أبيض", "#F8FAFC", null, null, "ماتور", 5, "Hall Power", false, 34f, 50f),
-                HarnessPin(6, "حساس هال إشارة A", "أزرق", "#2563EB", null, null, "ماتور", 6, "Hall Signal A", false, 36f, 50f),
-                HarnessPin(7, "حساس هال إشارة B", "أحمر", "#EF4444", null, null, "ماتور", 7, "Hall Signal B", false, 38f, 50f),
+                HarnessPin(1, "تغذية ماتور U", "أحمر", "#EF4444", null, null, "ماتور", 1, "3-Phase U", false, 38f, 52f, "سوكيت 1 (ماتور وحساس هال)"),
+                HarnessPin(2, "تغذية ماتور V", "أصفر", "#EAB308", null, null, "ماتور", 2, "3-Phase V", false, 40f, 52f, "سوكيت 1 (ماتور وحساس هال)"),
+                HarnessPin(3, "تغذية ماتور W", "أزرق", "#2563EB", null, null, "ماتور", 3, "3-Phase W", false, 42f, 52f, "سوكيت 1 (ماتور وحساس هال)"),
+                HarnessPin(4, "أرضي حماية الماتور", "أصفر / أخضر", "#EAB308", "#16A34A", "أخضر", "ماتور", 4, "Ground", false, 28f, 48f, "سوكيت 1 (ماتور وحساس هال)"),
+                HarnessPin(5, "حساس هال Vcc (+5V)", "أبيض", "#F8FAFC", null, null, "ماتور", 5, "Hall Power", false, 34f, 50f, "سوكيت 1 (ماتور وحساس هال)"),
+                HarnessPin(6, "حساس هال إشارة A", "أزرق", "#2563EB", null, null, "ماتور", 6, "Hall Signal A", false, 36f, 50f, "سوكيت 1 (ماتور وحساس هال)"),
+                HarnessPin(7, "حساس هال إشارة B", "أحمر", "#EF4444", null, null, "ماتور", 7, "Hall Signal B", false, 38f, 50f, "سوكيت 1 (ماتور وحساس هال)"),
                 // Door Lock (لوك الباب)
-                HarnessPin(8, "تغذية سخان اللوك L", "بني", "#854D0E", null, null, "لوك الباب", 1, "220V Live", false, 50f, 54f),
-                HarnessPin(9, "نيوترال اللوك N", "أزرق", "#2563EB", null, null, "لوك الباب", 2, "220V Neutral", false, 52f, 54f),
-                HarnessPin(10, "كونتاكت إغلاق الباب C", "وردي", "#EC4899", null, null, "لوك الباب", 3, "Door Switch", false, 54f, 54f),
+                HarnessPin(8, "تغذية سخان اللوك L", "بني", "#854D0E", null, null, "لوك الباب", 1, "220V Live", false, 50f, 54f, "سوكيت 2 (لوك الباب)"),
+                HarnessPin(9, "نيوترال اللوك N", "أزرق", "#2563EB", null, null, "لوك الباب", 2, "220V Neutral", false, 52f, 54f, "سوكيت 2 (لوك الباب)"),
+                HarnessPin(10, "كونتاكت إغلاق الباب C", "وردي", "#EC4899", null, null, "لوك الباب", 3, "Door Switch", false, 54f, 54f, "سوكيت 2 (لوك الباب)"),
                 // Water Level Sensor (حساس الليفل الإلكتروني)
-                HarnessPin(11, "حساس الليفل 5V (Vcc)", "برتقالي", "#F97316", null, null, "ليفل الماء", 1, "Sensor Vcc", false, 24f, 46f),
-                HarnessPin(12, "حساس الليفل إشارة تردد Out", "بنفسجي", "#9333EA", null, null, "ليفل الماء", 2, "Frequency", false, 26f, 46f),
-                HarnessPin(13, "حساس الليفل أرضي GND", "أزرق", "#2563EB", null, null, "ليفل الماء", 3, "Sensor GND", false, 28f, 46f),
+                HarnessPin(11, "حساس الليفل 5V (Vcc)", "برتقالي", "#F97316", null, null, "ليفل الماء", 1, "Sensor Vcc", false, 24f, 46f, "سوكيت 3 (ليفل الماء)"),
+                HarnessPin(12, "حساس الليفل إشارة تردد Out", "بنفسجي", "#9333EA", null, null, "ليفل الماء", 2, "Frequency", false, 26f, 46f, "سوكيت 3 (ليفل الماء)"),
+                HarnessPin(13, "حساس الليفل أرضي GND", "أزرق", "#2563EB", null, null, "ليفل الماء", 3, "Sensor GND", false, 28f, 46f, "سوكيت 3 (ليفل الماء)"),
                 // Drain Pump (طلمبة الطرد)
-                HarnessPin(14, "طلمبة الطرد كهرباء L", "أسود", "#1E293B", null, null, "طلمبة الطرد", 1, "Pump Live", false, 72f, 44f),
-                HarnessPin(15, "طلمبة الطرد محايد N", "أزرق", "#2563EB", null, null, "طلمبة الطرد", 2, "Pump Neutral", false, 74f, 44f),
+                HarnessPin(14, "طلمبة الطرد كهرباء L", "أسود", "#1E293B", null, null, "طلمبة الطرد", 1, "Pump Live", false, 72f, 44f, "سوكيت 4 (طلمبة الطرد)"),
+                HarnessPin(15, "طلمبة الطرد محايد N", "أزرق", "#2563EB", null, null, "طلمبة الطرد", 2, "Pump Neutral", false, 74f, 44f, "سوكيت 4 (طلمبة الطرد)"),
                 // Heater & Thermistor (السخان وحساس الحرارة)
-                HarnessPin(16, "سخان الغسالة كهرباء L", "أحمر", "#EF4444", null, null, "سخان وحساس حرارة", 1, "Heater L", false, 60f, 56f),
-                HarnessPin(17, "سخان الغسالة محايد N", "أزرق", "#2563EB", null, null, "سخان وحساس حرارة", 2, "Heater N", false, 62f, 56f),
-                HarnessPin(18, "حساس حرارة NTC 1", "أبيض", "#F8FAFC", null, null, "سخان وحساس حرارة", 3, "NTC Pin 1", false, 64f, 56f),
-                HarnessPin(19, "حساس حرارة NTC 2", "أبيض", "#F8FAFC", null, null, "سخان وحساس حرارة", 4, "NTC Pin 2", false, 66f, 56f),
+                HarnessPin(16, "سخان الغسالة كهرباء L", "أحمر", "#EF4444", null, null, "سخان وحساس حرارة", 1, "Heater L", false, 60f, 56f, "سوكيت 5 (السخان والحرارة)"),
+                HarnessPin(17, "سخان الغسالة محايد N", "أزرق", "#2563EB", null, null, "سخان وحساس حرارة", 2, "Heater N", false, 62f, 56f, "سوكيت 5 (السخان والحرارة)"),
+                HarnessPin(18, "حساس حرارة NTC 1", "أبيض", "#F8FAFC", null, null, "سخان وحساس حرارة", 3, "NTC Pin 1", false, 64f, 56f, "سوكيت 5 (السخان والحرارة)"),
+                HarnessPin(19, "حساس حرارة NTC 2", "أبيض", "#F8FAFC", null, null, "سخان وحساس حرارة", 4, "NTC Pin 2", false, 66f, 56f, "سوكيت 5 (السخان والحرارة)"),
                 // Water Inlet Valves (صمامات سحب المياه)
-                HarnessPin(20, "صمام المياه الرئيسي L", "بني", "#854D0E", null, null, "صمام الدخول", 1, "Valve 1", false, 78f, 48f),
-                HarnessPin(21, "صمام المياه الإضافي L", "برتقالي", "#F97316", null, null, "صمام الدخول", 2, "Valve 2", false, 80f, 48f),
-                HarnessPin(22, "صمامات المياه نيوترال مشترك N", "أزرق", "#2563EB", null, null, "صمام الدخول", 3, "Valves N", false, 82f, 48f)
+                HarnessPin(20, "صمام المياه الرئيسي L", "بني", "#854D0E", null, null, "صمام الدخول", 1, "Valve 1", false, 78f, 48f, "سوكيت 6 (صمامات المياه)"),
+                HarnessPin(21, "صمام المياه الإضافي L", "برتقالي", "#F97316", null, null, "صمام الدخول", 2, "Valve 2", false, 80f, 48f, "سوكيت 6 (صمامات المياه)"),
+                HarnessPin(22, "صمامات المياه نيوترال مشترك N", "أزرق", "#2563EB", null, null, "صمام الدخول", 3, "Valves N", false, 82f, 48f, "سوكيت 6 (صمامات المياه)")
             ),
             bottomPins = listOf(
                 // الماتور (Direct Drive Motor)
@@ -84,14 +84,14 @@ object DefaultHarnessData {
             notes = "مخطط الضفيرة لماتور شاربون عادي مستخدم في زانوسي، إيديال، يونيفرسال، وإندست مع تاكوجينيراتور وحماية حرارية ومكثف.",
             boardImageUrl = "",
             boardPins = listOf(
-                HarnessPin(1, "تاكوجينيراتور 1 (Tacho)", "أزرق / أبيض", "#2563EB", "#F8FAFC", "أبيض", "ماتور", 1, "Tacho Signal", false, 25f, 40f),
-                HarnessPin(2, "تاكوجينيراتور 2 (Tacho)", "أزرق / أبيض", "#2563EB", "#F8FAFC", "أبيض", "ماتور", 2, "Tacho Signal", false, 30f, 40f),
-                HarnessPin(3, "حساس حراري Overload 1", "أسود", "#1E293B", null, null, "ماتور", 3, "Thermal Switch", false, 35f, 40f),
-                HarnessPin(4, "حساس حراري Overload 2", "أسود", "#1E293B", null, null, "ماتور", 4, "Thermal Switch", false, 40f, 40f),
-                HarnessPin(5, "شربون يمين (Stator R)", "أحمر", "#EF4444", null, null, "ماتور", 5, "Brush Right", false, 45f, 40f),
-                HarnessPin(6, "شربون يسار (Stator L)", "أبيض", "#F8FAFC", null, null, "ماتور", 6, "Brush Left", false, 50f, 40f),
-                HarnessPin(7, "ملف العضو الثابت تفريعة 1", "بني", "#854D0E", null, null, "ماتور", 7, "Stator Coil 1", false, 55f, 40f),
-                HarnessPin(8, "ملف العضو الثابت تفريعة 2", "برتقالي", "#F97316", null, null, "ماتور", 8, "Stator Coil 2", false, 60f, 40f)
+                HarnessPin(1, "تاكوجينيراتور 1 (Tacho)", "أزرق / أبيض", "#2563EB", "#F8FAFC", "أبيض", "ماتور", 1, "Tacho Signal", false, 25f, 40f, "سوكيت 1 (الماتور والتاكو)"),
+                HarnessPin(2, "تاكوجينيراتور 2 (Tacho)", "أزرق / أبيض", "#2563EB", "#F8FAFC", "أبيض", "ماتور", 2, "Tacho Signal", false, 30f, 40f, "سوكيت 1 (الماتور والتاكو)"),
+                HarnessPin(3, "حساس حراري Overload 1", "أسود", "#1E293B", null, null, "ماتور", 3, "Thermal Switch", false, 35f, 40f, "سوكيت 1 (الماتور والتاكو)"),
+                HarnessPin(4, "حساس حراري Overload 2", "أسود", "#1E293B", null, null, "ماتور", 4, "Thermal Switch", false, 40f, 40f, "سوكيت 1 (الماتور والتاكو)"),
+                HarnessPin(5, "شربون يمين (Stator R)", "أحمر", "#EF4444", null, null, "ماتور", 5, "Brush Right", false, 45f, 40f, "سوكيت 1 (الماتور والتاكو)"),
+                HarnessPin(6, "شربون يسار (Stator L)", "أبيض", "#F8FAFC", null, null, "ماتور", 6, "Brush Left", false, 50f, 40f, "سوكيت 1 (الماتور والتاكو)"),
+                HarnessPin(7, "ملف العضو الثابت تفريعة 1", "بني", "#854D0E", null, null, "ماتور", 7, "Stator Coil 1", false, 55f, 40f, "سوكيت 1 (الماتور والتاكو)"),
+                HarnessPin(8, "ملف العضو الثابت تفريعة 2", "برتقالي", "#F97316", null, null, "ماتور", 8, "Stator Coil 2", false, 60f, 40f, "سوكيت 1 (الماتور والتاكو)")
             ),
             bottomPins = listOf(
                 HarnessPin(1, "طرف التاكو 1", "أزرق / أبيض", "#2563EB", "#F8FAFC", "أبيض", "ماتور", 1, "Tacho Pin 1"),

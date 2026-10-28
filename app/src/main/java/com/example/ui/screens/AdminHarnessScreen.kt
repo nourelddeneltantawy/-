@@ -99,7 +99,27 @@ fun AdminHarnessScreen(
     var notes by remember { mutableStateOf(initialHarness?.notes ?: "") }
     var boardImageUrl by remember { mutableStateOf(initialHarness?.boardImageUrl ?: "") }
 
-    val boardPins = remember { mutableStateListOf<HarnessPin>().apply { addAll(initialHarness?.boardPins ?: emptyList()) } }
+    val boardPins = remember {
+        mutableStateListOf<HarnessPin>().apply {
+            val loaded = initialHarness?.boardPins ?: emptyList()
+            val distinctSocketNames = loaded.map { it.socketName.trim() }.filter { it.isNotBlank() }.distinct()
+            if (loaded.size > 7 && distinctSocketNames.size <= 1) {
+                val compGroups = loaded.groupBy { it.connectedComponent.ifBlank { "ماتور" } }
+                var sIdx = 1
+                compGroups.forEach { (comp, groupPins) ->
+                    val sName = "سوكيت $sIdx ($comp)"
+                    sIdx++
+                    groupPins.forEach { p ->
+                        add(p.copy(socketName = sName))
+                    }
+                }
+            } else {
+                loaded.forEach { p ->
+                    add(if (p.socketName.isBlank()) p.copy(socketName = "سوكيت 1") else p)
+                }
+            }
+        }
+    }
     val bottomPins = remember { mutableStateListOf<HarnessPin>().apply { addAll(initialHarness?.bottomPins ?: emptyList()) } }
 
     val photoPickerLauncher = rememberLauncherForActivityResult(
@@ -227,39 +247,39 @@ fun AdminHarnessScreen(
                             boardPins.removeAt(index)
                         }
                     },
-                    onAddSocket = { socketName, pinCount, component ->
-                        val existingCount = boardPins.size
+                    onAddSocket = { socketName, pinCount ->
+                        val existingMaxPin = boardPins.maxOfOrNull { it.pinNumber } ?: 0
+                        val distinctSockets = boardPins.map { it.socketName.ifBlank { "سوكيت 1" }.trim() }.distinct()
+                        val distinctCount = distinctSockets.size
+                        val startY = (18f + (distinctCount * 20f)).coerceIn(12f, 75f)
                         val startX = 20f
-                        val stepX = (60f / pinCount.coerceAtLeast(1)).coerceAtMost(10f)
+                        val stepX = (50f / pinCount.coerceAtLeast(1)).coerceIn(4f, 8f)
                         for (i in 1..pinCount) {
-                            val nextNum = existingCount + i
-                            val isMotor = (component == "ماتور")
-                            val preset = if (isMotor && (i - 1) in MotorPinPresets.PRESETS.indices) {
-                                MotorPinPresets.PRESETS[i - 1]
-                            } else null
-
+                            val nextNum = existingMaxPin + i
                             boardPins.add(
                                 HarnessPin(
                                     pinNumber = nextNum,
-                                    label = preset?.functionName ?: "طرف $i ($socketName)",
-                                    wireColor = preset?.colorName ?: "أزرق",
-                                    colorHex = preset?.colorHex ?: "#2563EB",
+                                    label = "طرف $i",
+                                    wireColor = "أزرق",
+                                    colorHex = "#2563EB",
                                     secondaryColorHex = null,
                                     secondaryColorName = null,
-                                    connectedComponent = component,
+                                    connectedComponent = "ماتور",
                                     targetPinNumber = nextNum,
-                                    socketName = socketName,
+                                    socketName = socketName.ifBlank { "سوكيت ${distinctCount + 1}" },
                                     pinX = (startX + (i - 1) * stepX).coerceIn(4f, 96f),
-                                    pinY = 50f
+                                    pinY = startY
                                 )
                             )
                         }
                     },
                     onMoveSocket = { socketName, deltaX, deltaY ->
+                        val target = socketName.trim()
                         boardPins.indices.forEach { i ->
                             val p = boardPins[i]
-                            if (p.socketName == socketName) {
+                            if (p.socketName.ifBlank { "سوكيت 1" }.trim() == target) {
                                 boardPins[i] = p.copy(
+                                    socketName = socketName,
                                     pinX = (p.pinX + deltaX).coerceIn(2f, 98f),
                                     pinY = (p.pinY + deltaY).coerceIn(2f, 98f)
                                 )
@@ -267,17 +287,18 @@ fun AdminHarnessScreen(
                         }
                     },
                     onAddPinToSocket = { socketName, component ->
-                        val socketPins = boardPins.filter { it.socketName == socketName }
-                        val nextNum = boardPins.size + 1
+                        val target = socketName.trim()
+                        val socketPins = boardPins.filter { it.socketName.ifBlank { "سوكيت 1" }.trim() == target }
+                        val nextNum = (boardPins.maxOfOrNull { it.pinNumber } ?: 0) + 1
                         val avgY = if (socketPins.isNotEmpty()) socketPins.map { it.pinY }.average().toFloat() else 50f
                         val maxX = if (socketPins.isNotEmpty()) socketPins.maxOf { it.pinX } + 6f else 50f
                         boardPins.add(
                             HarnessPin(
                                 pinNumber = nextNum,
-                                label = "طرف ${socketPins.size + 1} ($socketName)",
+                                label = "طرف ${socketPins.size + 1}",
                                 wireColor = "أزرق",
                                 colorHex = "#2563EB",
-                                connectedComponent = component,
+                                connectedComponent = component.ifBlank { "ماتور" },
                                 targetPinNumber = nextNum,
                                 socketName = socketName,
                                 pinX = maxX.coerceIn(4f, 96f),
@@ -286,10 +307,11 @@ fun AdminHarnessScreen(
                         )
                     },
                     onDeleteSocket = { socketName ->
-                        boardPins.removeAll { it.socketName == socketName }
+                        val target = socketName.trim()
+                        boardPins.removeAll { it.socketName.ifBlank { "سوكيت 1" }.trim() == target }
                     },
                     onUpdateSocketSpacing = { socketName, spacingFactor ->
-                        val socketPins = boardPins.filter { it.socketName == socketName }
+                        val socketPins = boardPins.filter { it.socketName.ifBlank { "سوكيت 1" } == socketName }
                         if (socketPins.size > 1) {
                             val centerX = socketPins.map { it.pinX }.average().toFloat()
                             val centerY = socketPins.map { it.pinY }.average().toFloat()
@@ -299,6 +321,7 @@ fun AdminHarnessScreen(
                                 val realIndex = boardPins.indexOf(pin)
                                 if (realIndex >= 0) {
                                     boardPins[realIndex] = pin.copy(
+                                        socketName = socketName,
                                         pinX = (centerX + offsetFromCenter).coerceIn(4f, 96f),
                                         pinY = centerY
                                     )
