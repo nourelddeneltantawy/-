@@ -480,7 +480,9 @@ fun HarnessInteractiveCanvas(
 
                             // Calculate end position on corresponding bottom module
                             val targetIndex = harness.bottomPins.indexOfFirst {
-                                it.connectedComponent == bPin.connectedComponent && it.pinNumber == bPin.targetPinNumber
+                                (bPin.targetPinNumber != null && it.pinNumber == bPin.targetPinNumber) ||
+                                (it.targetPinNumber != null && it.targetPinNumber == bPin.pinNumber) ||
+                                (bPin.connectedComponent.isNotBlank() && it.connectedComponent == bPin.connectedComponent && it.pinNumber == bPin.targetPinNumber)
                             }.takeIf { it >= 0 } ?: (bIndex % bottomCount)
 
                             val endX = (targetIndex + 0.5f) * (canvasWidth / bottomCount)

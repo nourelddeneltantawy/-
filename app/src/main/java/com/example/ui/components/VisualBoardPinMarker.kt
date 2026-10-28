@@ -79,6 +79,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
@@ -972,7 +973,7 @@ fun AddSocketDialog(
     onConfirm: (socketName: String, pinCount: Int) -> Unit
 ) {
     var socketName by remember { mutableStateOf("سوكيت $nextSocketNumber") }
-    var pinCount by remember { mutableIntStateOf(4) }
+    var pinCountText by remember { mutableStateOf("4") }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -985,7 +986,7 @@ fun AddSocketDialog(
         },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text("حدد اسم السوكيت وعدد الأطراف الافتراضية:", fontSize = 13.sp)
+                Text("حدد اسم السوكيت وعدد الأطراف التي تريدها بكل حرية:", fontSize = 13.sp)
                 OutlinedTextField(
                     value = socketName,
                     onValueChange = { socketName = it },
@@ -993,15 +994,62 @@ fun AddSocketDialog(
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
-                Text("عدد الأطراف: $pinCount طرف", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+
+                // Editable Pin Count Input with Stepper Controls
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    IconButton(
+                        onClick = {
+                            val cur = pinCountText.toIntOrNull() ?: 4
+                            if (cur > 1) pinCountText = (cur - 1).toString()
+                        },
+                        modifier = Modifier
+                            .size(42.dp)
+                            .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(8.dp))
+                    ) {
+                        Text("-", fontSize = 22.sp, fontWeight = FontWeight.Bold)
+                    }
+
+                    OutlinedTextField(
+                        value = pinCountText,
+                        onValueChange = { input ->
+                            pinCountText = input.filter { it.isDigit() }.take(2)
+                        },
+                        label = { Text("عدد الأطراف (اكتب أي عدد)") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f),
+                        textStyle = androidx.compose.ui.text.TextStyle(
+                            textAlign = TextAlign.Center,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 16.sp
+                        )
+                    )
+
+                    IconButton(
+                        onClick = {
+                            val cur = pinCountText.toIntOrNull() ?: 4
+                            if (cur < 50) pinCountText = (cur + 1).toString()
+                        },
+                        modifier = Modifier
+                            .size(42.dp)
+                            .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(8.dp))
+                    ) {
+                        Text("+", fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+
+                Text("خيارات سريعة:", fontSize = 11.sp, color = MaterialTheme.colorScheme.outline)
                 Row(
                     modifier = Modifier.horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    listOf(2, 3, 4, 5, 6, 7, 8, 10, 12).forEach { count ->
-                        val isSelected = count == pinCount
+                    listOf(2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 14, 16, 20).forEach { count ->
+                        val isSelected = pinCountText == count.toString()
                         Button(
-                            onClick = { pinCount = count },
+                            onClick = { pinCountText = count.toString() },
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
                                 contentColor = if (isSelected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
@@ -1017,8 +1065,9 @@ fun AddSocketDialog(
         confirmButton = {
             Button(
                 onClick = {
+                    val count = pinCountText.toIntOrNull()?.coerceIn(1, 50) ?: 4
                     val finalName = socketName.trim().ifEmpty { "سوكيت $nextSocketNumber" }
-                    onConfirm(finalName, pinCount)
+                    onConfirm(finalName, count)
                 }
             ) {
                 Text("إضافة السوكيت")

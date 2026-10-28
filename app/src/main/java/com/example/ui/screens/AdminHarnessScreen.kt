@@ -77,6 +77,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
@@ -274,8 +275,8 @@ fun AdminHarnessScreen(
                                     colorHex = "#2563EB",
                                     secondaryColorHex = null,
                                     secondaryColorName = null,
-                                    connectedComponent = "ماتور",
-                                    targetPinNumber = nextNum,
+                                    connectedComponent = "",
+                                    targetPinNumber = null,
                                     socketName = sName,
                                     pinX = (startX + (i - 1) * stepX).coerceIn(4f, 96f),
                                     pinY = startY
@@ -467,8 +468,8 @@ fun AdminHarnessScreen(
                                                 label = "طرف ${socketPins.size + 1}",
                                                 wireColor = "أزرق",
                                                 colorHex = "#2563EB",
-                                                connectedComponent = "ماتور",
-                                                targetPinNumber = nextNum,
+                                                connectedComponent = "",
+                                                targetPinNumber = null,
                                                 socketName = socketName,
                                                 pinX = maxX.coerceIn(4f, 96f),
                                                 pinY = avgY
@@ -643,7 +644,7 @@ fun AdminHarnessScreen(
                                                 wireColor = "أزرق",
                                                 colorHex = "#2563EB",
                                                 connectedComponent = bottomSockName,
-                                                targetPinNumber = nextNum,
+                                                targetPinNumber = null,
                                                 socketName = bottomSockName
                                             )
                                         )
@@ -749,8 +750,8 @@ fun AdminHarnessScreen(
                                     label = "طرف $i",
                                     wireColor = "أزرق",
                                     colorHex = "#2563EB",
-                                    connectedComponent = "ماتور",
-                                    targetPinNumber = nextNum,
+                                    connectedComponent = "",
+                                    targetPinNumber = null,
                                     socketName = finalName,
                                     pinX = (startX + (i - 1) * stepX).coerceIn(4f, 96f),
                                     pinY = startY
@@ -807,7 +808,7 @@ fun AdminHarnessScreen(
             confirmButton = {
                 Button(
                     onClick = {
-                        val count = pinCount.toIntOrNull()?.coerceIn(1, 24) ?: 3
+                        val count = pinCount.toIntOrNull()?.coerceIn(1, 40) ?: 3
                         val finalName = sName.trim().ifBlank { "سوكيت سفلي ${bottomSocketNames.size + 1}" }
                         val existingMaxPin = bottomPins.maxOfOrNull { it.pinNumber } ?: 0
                         for (i in 1..count) {
@@ -819,7 +820,7 @@ fun AdminHarnessScreen(
                                     wireColor = "أزرق",
                                     colorHex = "#2563EB",
                                     connectedComponent = finalName,
-                                    targetPinNumber = nextNum,
+                                    targetPinNumber = null,
                                     socketName = finalName
                                 )
                             )
@@ -864,6 +865,30 @@ fun BoardPinItemCard(
                     WireColorBadge(colorHex = pin.colorHex, secondaryColorHex = pin.secondaryColorHex, size = 16.dp)
                     Spacer(modifier = Modifier.width(6.dp))
                     Text("طرف #${pin.pinNumber}", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Surface(
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        modifier = Modifier.size(22.dp).clickable {
+                            if (pin.pinNumber > 1) onUpdate(pin.copy(pinNumber = pin.pinNumber - 1))
+                        }
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Text("-", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                        }
+                    }
+                    Spacer(modifier = Modifier.width(3.dp))
+                    Surface(
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        modifier = Modifier.size(22.dp).clickable {
+                            onUpdate(pin.copy(pinNumber = pin.pinNumber + 1))
+                        }
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Text("+", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                        }
+                    }
                     if (pin.isBlankPin) {
                         Spacer(modifier = Modifier.width(6.dp))
                         Surface(shape = RoundedCornerShape(4.dp), color = Color(0xFF334155)) {
@@ -951,9 +976,7 @@ fun BoardPinItemCard(
 
             // Opposite Connection Dropdown (متصل بالطرف السفلي)
             var showOppositeDropdown by remember { mutableStateOf(false) }
-            val matchedBottomPin = bottomPins.find {
-                it.connectedComponent == pin.connectedComponent && it.pinNumber == pin.targetPinNumber
-            }
+            val matchedBottomPin = bottomPins.find { it.pinNumber == pin.targetPinNumber }
 
             Box(modifier = Modifier.fillMaxWidth()) {
                 Surface(
@@ -970,7 +993,7 @@ fun BoardPinItemCard(
                         Column {
                             Text("متصل بالطرف المقابل في الجزء السفلي:", fontSize = 10.sp, color = MaterialTheme.colorScheme.outline)
                             Text(
-                                text = if (matchedBottomPin != null) "${matchedBottomPin.connectedComponent} - طرف #${matchedBottomPin.pinNumber} (${matchedBottomPin.label})"
+                                text = if (matchedBottomPin != null) "${matchedBottomPin.socketName.ifBlank { matchedBottomPin.connectedComponent }} - طرف #${matchedBottomPin.pinNumber} (${matchedBottomPin.label})"
                                 else "غير متصل (اضغط للاختيار)",
                                 fontWeight = FontWeight.Bold,
                                 color = if (matchedBottomPin != null) Color(0xFF0284C7) else MaterialTheme.colorScheme.onSurface,
@@ -985,21 +1008,29 @@ fun BoardPinItemCard(
                     DropdownMenuItem(
                         text = { Text("غير متصل (فارغ)") },
                         onClick = {
-                            onUpdate(pin.copy(targetPinNumber = null))
+                            onUpdate(pin.copy(connectedComponent = "", targetPinNumber = null))
                             showOppositeDropdown = false
                         }
                     )
                     bottomPins.forEach { bPin ->
+                        val isCurSelected = pin.targetPinNumber == bPin.pinNumber
                         DropdownMenuItem(
                             text = {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     WireColorBadge(colorHex = bPin.colorHex, size = 12.dp)
                                     Spacer(modifier = Modifier.width(6.dp))
-                                    Text("${bPin.connectedComponent} - طرف #${bPin.pinNumber} (${bPin.label})")
+                                    Text(
+                                        text = "${bPin.socketName.ifBlank { bPin.connectedComponent }} - طرف #${bPin.pinNumber} (${bPin.label})",
+                                        fontWeight = if (isCurSelected) FontWeight.Bold else FontWeight.Normal,
+                                        color = if (isCurSelected) Color(0xFF0284C7) else Color.Unspecified
+                                    )
                                 }
                             },
                             onClick = {
-                                onUpdate(pin.copy(connectedComponent = bPin.connectedComponent, targetPinNumber = bPin.pinNumber))
+                                onUpdate(pin.copy(
+                                    connectedComponent = bPin.socketName.ifBlank { bPin.connectedComponent },
+                                    targetPinNumber = bPin.pinNumber
+                                ))
                                 showOppositeDropdown = false
                             }
                         )
@@ -1035,6 +1066,30 @@ fun BottomPinItemCard(
                     WireColorBadge(colorHex = pin.colorHex, secondaryColorHex = pin.secondaryColorHex, size = 16.dp)
                     Spacer(modifier = Modifier.width(6.dp))
                     Text("طرف #${pin.pinNumber}", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Surface(
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        modifier = Modifier.size(22.dp).clickable {
+                            if (pin.pinNumber > 1) onUpdate(pin.copy(pinNumber = pin.pinNumber - 1))
+                        }
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Text("-", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                        }
+                    }
+                    Spacer(modifier = Modifier.width(3.dp))
+                    Surface(
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        modifier = Modifier.size(22.dp).clickable {
+                            onUpdate(pin.copy(pinNumber = pin.pinNumber + 1))
+                        }
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Text("+", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                        }
+                    }
                 }
 
                 IconButton(onClick = onDelete) {
@@ -1093,9 +1148,7 @@ fun BottomPinItemCard(
 
             // Connection to Board Pin Dropdown
             var showBoardPinDropdown by remember { mutableStateOf(false) }
-            val matchedBoardPin = boardPins.find {
-                it.connectedComponent == pin.connectedComponent && it.targetPinNumber == pin.pinNumber
-            } ?: boardPins.find { it.pinNumber == pin.targetPinNumber }
+            val matchedBoardPin = boardPins.find { it.pinNumber == pin.targetPinNumber }
 
             Box(modifier = Modifier.fillMaxWidth()) {
                 Surface(
@@ -1132,12 +1185,17 @@ fun BottomPinItemCard(
                         }
                     )
                     boardPins.forEach { bPin ->
+                        val isCurSelected = pin.targetPinNumber == bPin.pinNumber
                         DropdownMenuItem(
                             text = {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     WireColorBadge(colorHex = bPin.colorHex, size = 12.dp)
                                     Spacer(modifier = Modifier.width(6.dp))
-                                    Text("${bPin.socketName} - طرف #${bPin.pinNumber} (${bPin.label})")
+                                    Text(
+                                        text = "${bPin.socketName} - طرف #${bPin.pinNumber} (${bPin.label})",
+                                        fontWeight = if (isCurSelected) FontWeight.Bold else FontWeight.Normal,
+                                        color = if (isCurSelected) Color(0xFF059669) else Color.Unspecified
+                                    )
                                 }
                             },
                             onClick = {

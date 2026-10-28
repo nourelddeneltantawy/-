@@ -21,8 +21,20 @@ object UpdateChecker {
     private const val TAG = "UpdateChecker"
     private const val COLLECTION_SETTINGS = "app_settings"
     private const val DOC_UPDATE = "app_update"
+    private const val PREFS_NAME = "albaraa_update_prefs"
+    private const val KEY_ACK_VERSION = "acknowledged_version_code"
 
-    suspend fun checkUpdate(context: Context): AppUpdateInfo? = withContext(Dispatchers.IO) {
+    fun getAcknowledgedVersionCode(context: Context): Int {
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        return prefs.getInt(KEY_ACK_VERSION, 0)
+    }
+
+    fun setAcknowledgedVersionCode(context: Context, versionCode: Int) {
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        prefs.edit().putInt(KEY_ACK_VERSION, versionCode).apply()
+    }
+
+    suspend fun checkUpdate(context: Context, ignoreAcknowledged: Boolean = false): AppUpdateInfo? = withContext(Dispatchers.IO) {
         val currentCode = BuildConfig.VERSION_CODE
         val currentName = BuildConfig.VERSION_NAME
 
@@ -41,8 +53,12 @@ object UpdateChecker {
                 val releaseNotes = docSnapshot.getString("releaseNotes") ?: ""
                 val forceUpdate = docSnapshot.getBoolean("forceUpdate") ?: false
 
-                val hasUpdate = remoteVersionCode > currentCode || 
-                    (remoteVersionCode == currentCode && downloadUrl.isNotBlank() && remoteVersionName != currentName && remoteVersionName.isNotBlank())
+                val ackVersion = getAcknowledgedVersionCode(context)
+                val isNewerCode = remoteVersionCode > currentCode
+                val isNewerName = remoteVersionCode == currentCode && downloadUrl.isNotBlank() && remoteVersionName != currentName && remoteVersionName.isNotBlank()
+
+                // If user already acknowledged this update and it's not a force-update, suppress auto popup
+                val hasUpdate = (isNewerCode || isNewerName) && (ignoreAcknowledged || forceUpdate || remoteVersionCode > ackVersion)
 
                 AppUpdateInfo(
                     currentVersionCode = currentCode,
@@ -90,7 +106,8 @@ object UpdateChecker {
         downloadUrl: String,
         releaseNotes: String,
         forceUpdate: Boolean,
-        adminEmail: String
+        adminEmail: String,
+        context: Context? = null
     ): Result<Unit> = withContext(Dispatchers.IO) {
         try {
             val finalUrl = normalizeDownloadUrl(downloadUrl)
@@ -104,13 +121,22 @@ object UpdateChecker {
                 "updatedBy" to adminEmail
             )
 
-            // 60-second timeout ensures slow mobile data connections have sufficient time to complete
-            kotlinx.coroutines.withTimeout(60000L) {
-                Firebase.firestore
-                    .collection(COLLECTION_SETTINGS)
-                    .document(DOC_UPDATE)
-                    .set(data)
-                    .await()
+            // Acknowledge this version for the current device so it doesn't prompt the admin
+            context?.let { ctx ->
+                setAcknowledgedVersionCode(ctx, versionCode)
+            }
+
+            // Quick network timeout (3.5s). Firestore persists to disk in <10ms and syncs in background.
+            try {
+                kotlinx.coroutines.withTimeout(3500L) {
+                    Firebase.firestore
+                        .collection(COLLECTION_SETTINGS)
+                        .document(DOC_UPDATE)
+                        .set(data)
+                        .await()
+                }
+            } catch (t: kotlinx.coroutines.TimeoutCancellationException) {
+                Log.w(TAG, "Server ack timeout, but Firestore persisted update locally and will sync.")
             }
 
             Result.success(Unit)
@@ -213,18 +239,11 @@ object UpdateChecker {
         val rawUrl = updateInfo.downloadUrl.trim()
         val isWebLink = rawUrl.startsWith("http://", ignoreCase = true) || rawUrl.startsWith("https://", ignoreCase = true)
 
+        // Mark as acknowledged on this device
+        setAcknowledgedVersionCode(context, updateInfo.remoteVersionCode)
+
         if (!isWebLink) {
-            // Explain cleanly to user instead of copying text to clipboard
-            Toast.makeText(context, "ملف التحديث متوفر من الإدارة عبر واتساب", Toast.LENGTH_LONG).show()
-            try {
-                // Open WhatsApp to request the file from admin
-                val whatsappNumber = "+201015697669"
-                val text = "السلام عليكم م/ نور، يتوفر تحديث جديد للتطبيق (v${updateInfo.remoteVersionName})، برجاء إرسال ملف الـ APK لتثبيته."
-                val waIntent = Intent(Intent.ACTION_VIEW, Uri.parse("https://wa.me/$whatsappNumber?text=${Uri.encode(text)}")).apply {
-                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                }
-                context.startActivity(waIntent)
-            } catch (_: Throwable) {}
+            Toast.makeText(context, "الرابط غير متاح حالياً", Toast.LENGTH_SHORT).show()
             return
         }
 

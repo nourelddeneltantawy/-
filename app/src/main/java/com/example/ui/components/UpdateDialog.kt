@@ -30,6 +30,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Edit
@@ -237,26 +238,20 @@ fun UpdateDialog(
                     }
                 }
 
-                // WhatsApp Action Button
+                // Acknowledge Button: Mark as updated so it never annoys the user again
                 OutlinedButton(
                     onClick = {
-                        try {
-                            val whatsappNumber = "+201015697669"
-                            val text = "السلام عليكم م/ نور الدين، يتوفر تحديث جديد للتطبيق (v${updateInfo.remoteVersionName})، برجاء إرسال رابط أو ملف التحديث."
-                            val waIntent = Intent(Intent.ACTION_VIEW, Uri.parse("https://wa.me/$whatsappNumber?text=${Uri.encode(text)}")).apply {
-                                flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                            }
-                            context.startActivity(waIntent)
-                        } catch (_: Throwable) {
-                            Toast.makeText(context, "تعذر فتح تطبيق واتساب", Toast.LENGTH_SHORT).show()
-                        }
+                        UpdateChecker.setAcknowledgedVersionCode(context, updateInfo.remoteVersionCode)
+                        Toast.makeText(context, "تم التأكيد! لن تظهر رسالة التحديث مجدداً على هذا الجهاز", Toast.LENGTH_SHORT).show()
+                        onDismiss()
                     },
                     modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(12.dp)
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFF10B981))
                 ) {
-                    Icon(imageVector = Icons.Default.Send, contentDescription = null, modifier = Modifier.size(16.dp), tint = Color(0xFF25D366))
+                    Icon(imageVector = Icons.Default.CheckCircle, contentDescription = null, modifier = Modifier.size(16.dp))
                     Spacer(modifier = Modifier.width(6.dp))
-                    Text("طلب ملف التحديث عبر واتساب 💬", fontWeight = FontWeight.Bold)
+                    Text("أنا على أحدث إصدار بالفعل (عدم الإظهار مجدداً) ✓", fontWeight = FontWeight.Bold, fontSize = 12.sp)
                 }
 
                 // Admin-only button to modify/publish updates
@@ -450,11 +445,12 @@ fun PublishUpdateDialog(
                             downloadUrl = url,
                             releaseNotes = releaseNotesInput,
                             forceUpdate = forceUpdateInput,
-                            adminEmail = adminEmail
+                            adminEmail = adminEmail,
+                            context = context
                         )
                         isPublishing = false
                         if (result.isSuccess) {
-                            Toast.makeText(context, "تم نشر التحديث بنجاح وسيظهر للمستخدمين الآن! 🎉", Toast.LENGTH_LONG).show()
+                            Toast.makeText(context, "تم نشر التحديث بنجاح! 🎉", Toast.LENGTH_SHORT).show()
                             onPublished()
                         } else {
                             Toast.makeText(context, "حدث خطأ: ${result.exceptionOrNull()?.message}", Toast.LENGTH_LONG).show()
