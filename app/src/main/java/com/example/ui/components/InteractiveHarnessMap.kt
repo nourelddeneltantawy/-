@@ -417,10 +417,11 @@ fun HarnessInteractiveCanvas(
                                 Box(
                                     modifier = Modifier
                                         .offset {
-                                            IntOffset(
-                                                (posX.dp.toPx() - 14.dp.toPx()).toInt(),
-                                                (posY.dp.toPx() - 14.dp.toPx()).toInt()
-                                            )
+                                            val bWidthPx = boardWidth.toPx()
+                                            val bHeightPx = boardHeight.toPx()
+                                            val pX = (posX.dp.toPx() - 14.dp.toPx()).coerceIn(4f, (bWidthPx - 32.dp.toPx()).coerceAtLeast(4f)).toInt()
+                                            val pY = (posY.dp.toPx() - 14.dp.toPx()).coerceIn(4f, (bHeightPx - 32.dp.toPx()).coerceAtLeast(4f)).toInt()
+                                            IntOffset(pX, pY)
                                         }
                                         .size(28.dp)
                                         .shadow(if (isPinSelected) 10.dp else 4.dp, CircleShape)
