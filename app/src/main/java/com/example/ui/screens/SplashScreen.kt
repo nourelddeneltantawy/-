@@ -29,7 +29,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material.icons.filled.Place
 import androidx.compose.material.icons.filled.Settings
 import com.example.ui.components.ThemeSettingsDialog
@@ -59,6 +58,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -104,8 +104,12 @@ fun SplashScreen(
     var showUpdateDialog by remember { mutableStateOf(false) }
     var showAdminPublishDialog by remember { mutableStateOf(false) }
     var showThemeDialog by remember { mutableStateOf(false) }
+    var showFacebookFollowDialog by remember { mutableStateOf(false) }
     var activeUpdateInfo by remember { mutableStateOf<AppUpdateInfo?>(null) }
     var hasCheckedUpdateOnLaunch by remember { mutableStateOf(false) }
+
+    val userPrefs = remember { context.getSharedPreferences("albaraa_user_prefs", Context.MODE_PRIVATE) }
+    var hasFollowedFacebook by remember { mutableStateOf(userPrefs.getBoolean("facebook_followed", false)) }
 
     LaunchedEffect(Unit) {
         ContactInfoManager.init(context)
@@ -128,14 +132,20 @@ fun SplashScreen(
                 showAdminPublishDialog = true
             } else {
                 Toast.makeText(context, "جاري فحص بيانات التحديث...", Toast.LENGTH_SHORT).show()
-                val update = try { UpdateChecker.checkUpdate(context) } catch (_: Throwable) { null }
-                if (update != null) {
+                val update = try { UpdateChecker.checkUpdate(context, ignoreAcknowledged = true) } catch (_: Throwable) { null }
+                val currentCode = BuildConfig.VERSION_CODE
+                val currentName = BuildConfig.VERSION_NAME.trim()
+
+                if (update != null && update.downloadUrl.isNotBlank() &&
+                    (update.remoteVersionCode != currentCode || update.remoteVersionName.trim() != currentName)) {
                     activeUpdateInfo = update
                     showUpdateDialog = true
+                    // Directly trigger update link/installer as requested by the user
+                    UpdateChecker.downloadAndInstallUpdate(context, update)
                 } else {
                     Toast.makeText(
                         context,
-                        "أنت تستخدم أحدث إصدار من التطبيق (v${BuildConfig.VERSION_NAME}) 🎉",
+                        "أنت تستخدم أحدث إصدار من التطبيق (v$currentName) 🎉",
                         Toast.LENGTH_LONG
                     ).show()
                 }
@@ -148,108 +158,83 @@ fun SplashScreen(
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
     ) {
-        // Curved top header dome with rich cyan-blue gradient
+        // TOP 48% DEEP ELECTRIC BLUE HERO CURVE
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(350.dp)
+                .fillMaxSize(0.48f)
                 .clip(RoundedCornerShape(bottomStart = 56.dp, bottomEnd = 56.dp))
                 .background(
                     Brush.verticalGradient(
                         colors = listOf(
-                            Color(0xFF006BA6),
-                            Color(0xFF0284C7),
-                            Color(0xFF0284C7)
+                            Color(0xFF0284C7), // Bright Cyan Blue
+                            Color(0xFF0369A1)  // Deep Blue
                         )
                     )
                 )
         )
 
-        // Main scrollable content
+        // MAIN CONTENT CONTAINER
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState()),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            // Top Bar with Edit Profile Button (Start) & Quick Cyan Action Buttons (End)
+            Spacer(modifier = Modifier.height(28.dp))
+
+            // Top Bar: Admin/Guest badge & Action Icons
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(top = 16.dp, start = 16.dp, end = 16.dp),
+                    .padding(horizontal = 18.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // Start side: Admin Edit Contact button & status badge
+                // Start side: Role Badge & Admin Edit Button
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
+                    Surface(
+                        shape = RoundedCornerShape(20.dp),
+                        color = if (isAdmin) Color(0xFF0284C7).copy(alpha = 0.85f) else Color.White.copy(alpha = 0.22f),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, Color.White.copy(alpha = 0.4f))
+                    ) {
+                        Text(
+                            text = if (isAdmin) "🛡️ مشرف" else "وضع الزائر",
+                            style = MaterialTheme.typography.labelMedium.copy(
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White,
+                                fontSize = 12.sp
+                            ),
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp)
+                        )
+                    }
+
                     if (isAdmin) {
                         Surface(
-                            shape = RoundedCornerShape(12.dp),
-                            color = Color.White.copy(alpha = 0.2f),
-                            modifier = Modifier.clip(RoundedCornerShape(12.dp))
+                            shape = CircleShape,
+                            color = Color.White.copy(alpha = 0.25f),
+                            modifier = Modifier
+                                .size(36.dp)
+                                .clip(CircleShape)
+                                .clickable { showEditDialog = true }
+                                .testTag("admin_edit_contact_button")
                         ) {
-                            IconButton(
-                                onClick = { showEditDialog = true },
-                                modifier = Modifier.size(42.dp).testTag("edit_contact_button")
-                            ) {
+                            Box(contentAlignment = Alignment.Center) {
                                 Icon(
                                     imageVector = Icons.Default.Edit,
                                     contentDescription = "تعديل بيانات التواصل",
                                     tint = Color.White,
-                                    modifier = Modifier.size(20.dp)
+                                    modifier = Modifier.size(18.dp)
                                 )
                             }
-                        }
-
-                        Surface(
-                            shape = RoundedCornerShape(10.dp),
-                            color = Color(0xFF0F172A).copy(alpha = 0.45f)
-                        ) {
-                            Text(
-                                text = "مشرف 🛡️",
-                                style = MaterialTheme.typography.labelSmall.copy(
-                                    color = Color(0xFF38BDF8),
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 11.sp
-                                ),
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                            )
-                        }
-                    } else if (currentUserEmail != null) {
-                        Surface(
-                            shape = RoundedCornerShape(10.dp),
-                            color = Color(0xFF0F172A).copy(alpha = 0.4f)
-                        ) {
-                            Text(
-                                text = currentUserEmail.take(16),
-                                style = MaterialTheme.typography.labelSmall.copy(
-                                    color = Color.White,
-                                    fontSize = 10.sp
-                                ),
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                            )
-                        }
-                    } else {
-                        Surface(
-                            shape = RoundedCornerShape(10.dp),
-                            color = Color(0xFF0F172A).copy(alpha = 0.35f)
-                        ) {
-                            Text(
-                                text = "وضع الزائر",
-                                style = MaterialTheme.typography.labelSmall.copy(
-                                    color = Color(0xFFE2E8F0),
-                                    fontSize = 10.sp
-                                ),
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                            )
                         }
                     }
                 }
 
-                // End side: Custom Sleek Navy Container with 2 Cyan Action Icons (matching user reference image)
+                // End side: Custom Sleek Navy Container with Action Icons
                 Surface(
                     shape = RoundedCornerShape(16.dp),
                     color = Color(0xFF0B1727).copy(alpha = 0.85f),
@@ -452,7 +437,13 @@ fun SplashScreen(
 
             // Primary Enter Button (الدخول إلى الدليل الشامل)
             Button(
-                onClick = onReady,
+                onClick = {
+                    if (!hasFollowedFacebook && !isAdmin) {
+                        showFacebookFollowDialog = true
+                    } else {
+                        onReady()
+                    }
+                },
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 22.dp)
@@ -501,7 +492,7 @@ fun SplashScreen(
 
             Spacer(modifier = Modifier.height(30.dp))
 
-            // Bottom 3 Quick Actions: واتس أب - الموقع - اتصال
+            // Bottom 3 Quick Actions: واتس أب - الموقع - فيسبوك (بدلاً من اتصال)
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -509,7 +500,7 @@ fun SplashScreen(
                 horizontalArrangement = Arrangement.SpaceEvenly,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // واتس أب (WhatsApp)
+                // 1. واتس أب (WhatsApp)
                 ContactActionCircle(
                     title = "واتس أب",
                     icon = Icons.AutoMirrored.Filled.Chat,
@@ -518,7 +509,7 @@ fun SplashScreen(
                     onClick = { openWhatsApp(context, contactInfo.whatsappNumber) }
                 )
 
-                // الموقع (Location / Maps)
+                // 2. الموقع (Location / Maps)
                 ContactActionCircle(
                     title = "الموقع",
                     icon = Icons.Default.Place,
@@ -527,13 +518,13 @@ fun SplashScreen(
                     onClick = { openMapLocation(context, contactInfo.locationUrl) }
                 )
 
-                // اتصال (Phone Call)
+                // 3. فيسبوك (Facebook Page - بدل اتصال تماماً)
                 ContactActionCircle(
-                    title = "اتصال",
-                    icon = Icons.Default.Phone,
-                    iconTint = Color(0xFF0284C7),
-                    circleBackground = Color(0xFFE0F2FE),
-                    onClick = { makePhoneCall(context, contactInfo.phoneNumber) }
+                    title = "فيسبوك",
+                    painter = painterResource(id = R.drawable.ic_facebook),
+                    iconTint = Color(0xFF1877F2),
+                    circleBackground = Color(0xFFE7F3FF),
+                    onClick = { openFacebookPage(context, contactInfo.facebookUrl) }
                 )
             }
 
@@ -607,7 +598,7 @@ fun SplashScreen(
                 onPublished = {
                     showAdminPublishDialog = false
                     coroutineScope.launch {
-                        activeUpdateInfo = try { UpdateChecker.checkUpdate(context) } catch (_: Throwable) { null }
+                        activeUpdateInfo = try { UpdateChecker.checkUpdate(context, ignoreAcknowledged = true) } catch (_: Throwable) { null }
                     }
                 }
             )
@@ -619,13 +610,112 @@ fun SplashScreen(
                 onDismiss = { showThemeDialog = false }
             )
         }
+
+        // First-Time Facebook Follow Requirement Dialog
+        if (showFacebookFollowDialog) {
+            AlertDialog(
+                onDismissRequest = { /* Require user interaction */ },
+                icon = {
+                    Surface(
+                        shape = CircleShape,
+                        color = Color(0xFFE7F3FF),
+                        modifier = Modifier.size(64.dp)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                painter = painterResource(id = R.drawable.ic_facebook),
+                                contentDescription = "فيسبوك",
+                                tint = Color(0xFF1877F2),
+                                modifier = Modifier.size(34.dp)
+                            )
+                        }
+                    }
+                },
+                title = {
+                    Text(
+                        text = "متابعة صفحة فيسبوك الرسمية",
+                        style = MaterialTheme.typography.titleLarge.copy(
+                            fontWeight = FontWeight.Bold,
+                            textAlign = TextAlign.Center
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                },
+                text = {
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Text(
+                            text = "أهلاً بك في تطبيق مركز البراء إلكترونيك للصيانة المتطورة!\n\nللدخول إلى الدليل الشامل لأول مرة، يرجى متابعة صفحتنا الرسمية على فيسبوك لتصلك كافة المخططات والتحديثات والشروحات الجديدة أولاً بأول.",
+                            style = MaterialTheme.typography.bodyMedium.copy(
+                                lineHeight = 22.sp,
+                                textAlign = TextAlign.Center
+                            ),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                },
+                confirmButton = {
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Button(
+                            onClick = {
+                                openFacebookPage(context, contactInfo.facebookUrl)
+                                userPrefs.edit().putBoolean("facebook_followed", true).apply()
+                                hasFollowedFacebook = true
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1877F2))
+                        ) {
+                            Icon(
+                                painter = painterResource(id = R.drawable.ic_facebook),
+                                contentDescription = null,
+                                tint = Color.White,
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "متابعة الصفحة على فيسبوك 👍",
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White
+                            )
+                        }
+
+                        if (hasFollowedFacebook) {
+                            Button(
+                                onClick = {
+                                    showFacebookFollowDialog = false
+                                    onReady()
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(12.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                            ) {
+                                Text(
+                                    text = "تمت المتابعة، الدخول إلى الدليل الشامل ➔",
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                    }
+                },
+                dismissButton = null,
+                shape = RoundedCornerShape(20.dp)
+            )
+        }
     }
 }
 
 @Composable
 private fun ContactActionCircle(
     title: String,
-    icon: ImageVector,
+    icon: ImageVector? = null,
+    painter: Painter? = null,
     iconTint: Color,
     circleBackground: Color,
     onClick: () -> Unit,
@@ -646,12 +736,21 @@ private fun ContactActionCircle(
                 .shadow(4.dp, CircleShape)
         ) {
             Box(contentAlignment = Alignment.Center) {
-                Icon(
-                    imageVector = icon,
-                    contentDescription = title,
-                    tint = iconTint,
-                    modifier = Modifier.size(28.dp)
-                )
+                if (icon != null) {
+                    Icon(
+                        imageVector = icon,
+                        contentDescription = title,
+                        tint = iconTint,
+                        modifier = Modifier.size(28.dp)
+                    )
+                } else if (painter != null) {
+                    Icon(
+                        painter = painter,
+                        contentDescription = title,
+                        tint = iconTint,
+                        modifier = Modifier.size(28.dp)
+                    )
+                }
             }
         }
         Spacer(modifier = Modifier.height(8.dp))
@@ -679,6 +778,7 @@ fun EditContactDialog(
     var phoneNumber by remember { mutableStateOf(currentInfo.phoneNumber) }
     var whatsappNumber by remember { mutableStateOf(currentInfo.whatsappNumber) }
     var locationUrl by remember { mutableStateOf(currentInfo.locationUrl) }
+    var facebookUrl by remember { mutableStateOf(currentInfo.facebookUrl) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -733,7 +833,7 @@ fun EditContactDialog(
                 OutlinedTextField(
                     value = phoneNumber,
                     onValueChange = { phoneNumber = it },
-                    label = { Text("رقم الهاتف للاتصال المباشر") },
+                    label = { Text("رقم الهاتف") },
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(12.dp)
                 )
@@ -742,6 +842,14 @@ fun EditContactDialog(
                     value = whatsappNumber,
                     onValueChange = { whatsappNumber = it },
                     label = { Text("رقم الواتساب (مثال: 201018717141)") },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp)
+                )
+
+                OutlinedTextField(
+                    value = facebookUrl,
+                    onValueChange = { facebookUrl = it },
+                    label = { Text("رابط صفحة الفيسبوك الرسمية") },
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(12.dp)
                 )
@@ -766,7 +874,8 @@ fun EditContactDialog(
                             address = address.trim(),
                             phoneNumber = phoneNumber.trim(),
                             whatsappNumber = whatsappNumber.trim(),
-                            locationUrl = locationUrl.trim()
+                            locationUrl = locationUrl.trim(),
+                            facebookUrl = facebookUrl.trim()
                         )
                     )
                 },
@@ -782,6 +891,18 @@ fun EditContactDialog(
         },
         shape = RoundedCornerShape(20.dp)
     )
+}
+
+private fun openFacebookPage(context: Context, rawUrl: String) {
+    try {
+        val target = if (rawUrl.isNotBlank()) rawUrl.trim() else "https://facebook.com/AlBaraa01018717141Electronic"
+        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(target)).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK
+        }
+        context.startActivity(intent)
+    } catch (_: Throwable) {
+        Toast.makeText(context, "تعذر فتح صفحة فيسبوك", Toast.LENGTH_SHORT).show()
+    }
 }
 
 private fun openWhatsApp(context: Context, rawNumber: String) {

@@ -94,6 +94,7 @@ class MainActivity : ComponentActivity() {
         com.example.util.FirebaseInitializer.ensureInitialized(this)
         com.example.util.ThemeManager.init(this)
         com.example.data.ContactInfoManager.init(this)
+        com.example.data.HubCategoryManager.init(this)
         enableEdgeToEdge()
         setContent {
             val themeMode by com.example.util.ThemeManager.themeMode.collectAsState()

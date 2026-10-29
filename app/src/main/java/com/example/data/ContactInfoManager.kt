@@ -24,6 +24,7 @@ object ContactInfoManager {
     private const val KEY_PHONE = "phone_number"
     private const val KEY_WHATSAPP = "whatsapp_number"
     private const val KEY_LOCATION = "location_url"
+    private const val KEY_FACEBOOK = "facebook_url"
 
     private val _contactInfo = MutableStateFlow(ContactInfo())
     val contactInfo: StateFlow<ContactInfo> = _contactInfo.asStateFlow()
@@ -43,7 +44,8 @@ object ContactInfoManager {
             address = prefs.getString(KEY_ADDRESS, "طنطا الكورنيش، شارع علي اللمعي - بجوار كافيه بلازا القديم") ?: "طنطا الكورنيش، شارع علي اللمعي - بجوار كافيه بلازا القديم",
             phoneNumber = prefs.getString(KEY_PHONE, "01018717141") ?: "01018717141",
             whatsappNumber = prefs.getString(KEY_WHATSAPP, "201018717141") ?: "201018717141",
-            locationUrl = prefs.getString(KEY_LOCATION, "https://maps.google.com/?q=30.7865,31.0004") ?: "https://maps.google.com/?q=30.7865,31.0004"
+            locationUrl = prefs.getString(KEY_LOCATION, "https://maps.google.com/?q=30.7865,31.0004") ?: "https://maps.google.com/?q=30.7865,31.0004",
+            facebookUrl = prefs.getString(KEY_FACEBOOK, "https://facebook.com/AlBaraa01018717141Electronic") ?: "https://facebook.com/AlBaraa01018717141Electronic"
         )
         _contactInfo.value = loaded
 
@@ -82,7 +84,6 @@ object ContactInfoManager {
         CoroutineScope(Dispatchers.IO).launch {
             try {
                 val db = FirebaseInitializer.getFirestore(appContext)
-                // First attempt server fetch, fallback to cache
                 val snapshot = try {
                     db.collection("app_settings").document("contact_info")
                         .get(Source.SERVER).await()
@@ -141,6 +142,7 @@ object ContactInfoManager {
             .putString(KEY_PHONE, info.phoneNumber)
             .putString(KEY_WHATSAPP, info.whatsappNumber)
             .putString(KEY_LOCATION, info.locationUrl)
+            .putString(KEY_FACEBOOK, info.facebookUrl)
             .apply()
     }
 }

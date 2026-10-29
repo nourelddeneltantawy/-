@@ -55,11 +55,13 @@ object UpdateChecker {
                 val forceUpdate = docSnapshot.getBoolean("forceUpdate") ?: false
 
                 val ackVersion = getAcknowledgedVersionCode(context)
+                val isVersionDifferent = (remoteVersionCode != currentCode || remoteVersionName.trim() != currentName.trim()) && downloadUrl.isNotBlank()
                 val isNewerCode = remoteVersionCode > currentCode
-                val isNewerName = remoteVersionCode == currentCode && downloadUrl.isNotBlank() && remoteVersionName != currentName && remoteVersionName.isNotBlank()
+                val isNewerName = remoteVersionName.trim() != currentName.trim()
 
-                // If user already acknowledged this update and it's not a force-update, suppress auto popup
-                val hasUpdate = (isNewerCode || isNewerName) && (ignoreAcknowledged || forceUpdate || remoteVersionCode > ackVersion)
+                // If user explicitly checked (ignoreAcknowledged = true), show update whenever version code or name differs
+                // For automatic startup checks, show if forceUpdate or newer than acknowledged
+                val hasUpdate = isVersionDifferent && (ignoreAcknowledged || forceUpdate || remoteVersionCode > ackVersion)
 
                 AppUpdateInfo(
                     currentVersionCode = currentCode,

@@ -1,5 +1,6 @@
 package com.example.ui.screens
 
+import android.widget.Toast
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -16,10 +17,14 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.automirrored.filled.Login
@@ -31,55 +36,92 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.CleaningServices
 import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.ContactPhone
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.ElectricBolt
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.Hub
+import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.LocalLaundryService
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.PrecisionManufacturing
+import androidx.compose.material.icons.filled.RestartAlt
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material.icons.filled.WaterDamage
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import com.example.ui.components.ThemeSettingsDialog
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import coil.compose.AsyncImage
 import com.example.R
+import com.example.data.HubCategoryManager
+import com.example.data.model.HubCategoryCustomization
+import com.example.ui.components.ThemeSettingsDialog
 
 data class HubCategoryItem(
     val id: String,
-    val title: String,
-    val subtitle: String,
-    val icon: ImageVector,
+    val defaultTitle: String,
+    val defaultSubtitle: String,
+    val defaultIcon: ImageVector,
     val iconTint: Color,
     val circleBackground: Color,
     val onClick: () -> Unit
 )
+
+fun resolveCategoryIcon(iconName: String, fallback: ImageVector): ImageVector {
+    return when (iconName.lowercase().trim()) {
+        "memory", "موتور", "مواتير" -> Icons.Default.Memory
+        "cable", "ضفيرة", "ضفائر" -> Icons.Default.Cable
+        "lock", "لوك", "حساس" -> Icons.Default.Lock
+        "hub", "تجميع", "مخطط" -> Icons.Default.Hub
+        "wash", "غسالة", "أوتوماتيك" -> Icons.Default.LocalLaundryService
+        "cleaning", "فوق أوتوماتيك" -> Icons.Default.CleaningServices
+        "settings", "تيست مود" -> Icons.Default.Settings
+        "build", "رولمان", "صيانة" -> Icons.Default.Build
+        "contact", "تواصل", "مركز" -> Icons.Default.ContactPhone
+        "electric", "كهرباء" -> Icons.Default.ElectricBolt
+        "manufacturing", "صناعي" -> Icons.Default.PrecisionManufacturing
+        "grid", "قائمة" -> Icons.Default.GridView
+        else -> fallback
+    }
+}
 
 @Composable
 fun DashboardHubScreen(
@@ -102,86 +144,90 @@ fun DashboardHubScreen(
     onNavigateToProfile: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
     var showThemeDialog by remember { mutableStateOf(false) }
+    var editingCategoryId by remember { mutableStateOf<String?>(null) }
 
-    val items = listOf(
+    val customizations by HubCategoryManager.customizations.collectAsState()
+
+    val rawItems = listOf(
         HubCategoryItem(
             id = "profile",
-            title = "مركز البراء والاتصال",
-            subtitle = "واتساب • هاتف • العنوان",
-            icon = Icons.Default.ContactPhone,
+            defaultTitle = "مركز البراء والاتصال",
+            defaultSubtitle = "واتساب • هاتف • العنوان",
+            defaultIcon = Icons.Default.ContactPhone,
             iconTint = Color(0xFF0284C7),
             circleBackground = Color(0xFFE0F2FE),
             onClick = onNavigateToProfile
         ),
         HubCategoryItem(
             id = "motors",
-            title = "أطراف وتوصيلات المواتير",
-            subtitle = "$motorsCount ماتور مسجل",
-            icon = Icons.Default.Memory,
+            defaultTitle = "أطراف وتوصيلات المواتير",
+            defaultSubtitle = "$motorsCount ماتور مسجل",
+            defaultIcon = Icons.Default.Memory,
             iconTint = Color(0xFFEF4444),
             circleBackground = Color(0xFFFFE4E6),
             onClick = onNavigateToMotors
         ),
         HubCategoryItem(
             id = "harnesses",
-            title = "خريطة ضفائر الغسالة",
-            subtitle = "$harnessesCount ضفائر كارتة",
-            icon = Icons.Default.Cable,
+            defaultTitle = "خريطة ضفائر الغسالة",
+            defaultSubtitle = "$harnessesCount ضفائر كارتة",
+            defaultIcon = Icons.Default.Cable,
             iconTint = Color(0xFF0284C7),
             circleBackground = Color(0xFFE0F2FE),
             onClick = onNavigateToHarnesses
         ),
         HubCategoryItem(
             id = "parts",
-            title = "لوكات الباب وليفلات الماء",
-            subtitle = "$partsCount قطع وحساسات",
-            icon = Icons.Default.Lock,
+            defaultTitle = "لوكات الباب وليفلات الماء",
+            defaultSubtitle = "$partsCount قطع وحساسات",
+            defaultIcon = Icons.Default.Lock,
             iconTint = Color(0xFFD97706),
             circleBackground = Color(0xFFFEF3C7),
             onClick = onNavigateToParts
         ),
         HubCategoryItem(
             id = "integrator",
-            title = "مخطط التجميع الشامل",
-            subtitle = "دمج الضفيرة + الماتور + اللوك",
-            icon = Icons.Default.Hub,
+            defaultTitle = "مخطط التجميع الشامل",
+            defaultSubtitle = "دمج الضفيرة + الماتور + اللوك",
+            defaultIcon = Icons.Default.Hub,
             iconTint = Color(0xFF8B5CF6),
             circleBackground = Color(0xFFEDE9FE),
             onClick = onNavigateToIntegrator
         ),
         HubCategoryItem(
             id = "auto_faults",
-            title = "أعطال الأوتوماتيك",
-            subtitle = "أكواد الأعطال والحلول",
-            icon = Icons.Default.LocalLaundryService,
+            defaultTitle = "أعطال الأوتوماتيك",
+            defaultSubtitle = "أكواد الأعطال والحلول",
+            defaultIcon = Icons.Default.LocalLaundryService,
             iconTint = Color(0xFF0D9488),
             circleBackground = Color(0xFFCCFBF1),
             onClick = { onNavigateToDiagnostics("أعطال الأوتوماتيك") }
         ),
         HubCategoryItem(
             id = "top_load_faults",
-            title = "الفوق أوتوماتيك",
-            subtitle = "الأعطال ومفاتيح الأمان",
-            icon = Icons.Default.CleaningServices,
+            defaultTitle = "الفوق أوتوماتيك",
+            defaultSubtitle = "الأعطال ومفاتيح الأمان",
+            defaultIcon = Icons.Default.CleaningServices,
             iconTint = Color(0xFFEA580C),
             circleBackground = Color(0xFFFFEDD5),
             onClick = { onNavigateToDiagnostics("الفوق أوتوماتيك") }
         ),
         HubCategoryItem(
             id = "test_mode",
-            title = "تيست مود (Test Mode)",
-            subtitle = "خطوات فحص البرامج",
-            icon = Icons.Default.Settings,
+            defaultTitle = "تيست مود (Test Mode)",
+            defaultSubtitle = "خطوات فحص البرامج",
+            defaultIcon = Icons.Default.Settings,
             iconTint = Color(0xFF7C3AED),
             circleBackground = Color(0xFFF3E8FF),
             onClick = { onNavigateToDiagnostics("تيست مود") }
         ),
         HubCategoryItem(
             id = "bearings",
-            title = "رولمان بلي وأولسيه",
-            subtitle = "جدول المقاسات والأبعاد",
-            icon = Icons.Default.Build,
+            defaultTitle = "رولمان بلي وأولسيه",
+            defaultSubtitle = "جدول المقاسات والأبعاد",
+            defaultIcon = Icons.Default.Build,
             iconTint = Color(0xFF059669),
             circleBackground = Color(0xFFD1FAE5),
             onClick = { onNavigateToDiagnostics("رولمان بلي وأولسيه") }
@@ -313,33 +359,64 @@ fun DashboardHubScreen(
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            // SECTION TITLE: "أقسام الدليل المتاحة" with vertical accent bar (matching screenshot!)
+            // SECTION TITLE: "أقسام الدليل المتاحة" with vertical accent bar + Admin Edit affordance
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 20.dp, vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Box(
-                    modifier = Modifier
-                        .width(4.dp)
-                        .height(20.dp)
-                        .clip(RoundedCornerShape(2.dp))
-                        .background(Color(0xFFD97706)) // Orange accent bar
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(
-                    text = "أقسام الدليل المتاحة",
-                    style = MaterialTheme.typography.titleMedium.copy(
-                        fontWeight = FontWeight.Bold,
-                        color = Color(0xFF0F172A)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        modifier = Modifier
+                            .width(4.dp)
+                            .height(20.dp)
+                            .clip(RoundedCornerShape(2.dp))
+                            .background(Color(0xFFD97706)) // Orange accent bar
                     )
-                )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "أقسام الدليل المتاحة",
+                        style = MaterialTheme.typography.titleMedium.copy(
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onBackground
+                        )
+                    )
+                }
+
+                if (isAdmin) {
+                    Surface(
+                        shape = RoundedCornerShape(14.dp),
+                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f),
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(14.dp))
+                            .clickable { editingCategoryId = rawItems.first().id }
+                            .padding(horizontal = 10.dp, vertical = 5.dp)
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Default.Edit,
+                                contentDescription = "تعديل أسماء وصور القوائم",
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = "تعديل القوائم",
+                                style = MaterialTheme.typography.labelSmall.copy(
+                                    color = MaterialTheme.colorScheme.primary,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            )
+                        }
+                    }
+                }
             }
 
             Spacer(modifier = Modifier.height(8.dp))
 
-            // GRID OF SECTION CARDS (matching screenshot aesthetic)
+            // GRID OF SECTION CARDS
             LazyVerticalGrid(
                 columns = GridCells.Fixed(2),
                 contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
@@ -347,68 +424,112 @@ fun DashboardHubScreen(
                 verticalArrangement = Arrangement.spacedBy(14.dp),
                 modifier = Modifier.fillMaxSize()
             ) {
-                items(items.size, key = { items[it].id }) { index ->
-                    val item = items[index]
-                    Card(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(165.dp)
-                            .clip(RoundedCornerShape(24.dp))
-                            .clickable { item.onClick() }
-                            .testTag("hub_card_${item.id}"),
-                        shape = RoundedCornerShape(24.dp),
-                        colors = CardDefaults.cardColors(
-                            containerColor = MaterialTheme.colorScheme.surface
-                        ),
-                        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
-                    ) {
-                        Column(
+                items(rawItems.size, key = { rawItems[it].id }) { index ->
+                    val item = rawItems[index]
+                    val cust = customizations[item.id]
+
+                    val finalTitle = cust?.customTitle?.takeIf { it.isNotBlank() } ?: item.defaultTitle
+                    val finalSubtitle = cust?.customSubtitle?.takeIf { it.isNotBlank() } ?: item.defaultSubtitle
+                    val finalImageUrl = cust?.customImageUrl ?: ""
+                    val finalIcon = resolveCategoryIcon(cust?.customIconName ?: "", item.defaultIcon)
+
+                    Box(modifier = Modifier.fillMaxWidth()) {
+                        Card(
                             modifier = Modifier
-                                .fillMaxSize()
-                                .padding(16.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.Center
+                                .fillMaxWidth()
+                                .height(165.dp)
+                                .clip(RoundedCornerShape(24.dp))
+                                .clickable { item.onClick() }
+                                .testTag("hub_card_${item.id}"),
+                            shape = RoundedCornerShape(24.dp),
+                            colors = CardDefaults.cardColors(
+                                containerColor = MaterialTheme.colorScheme.surface
+                            ),
+                            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
                         ) {
-                            // Circular Pastel Icon Container
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .padding(14.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.Center
+                            ) {
+                                // Circular Icon / Custom Image Container
+                                Surface(
+                                    shape = CircleShape,
+                                    color = item.circleBackground,
+                                    modifier = Modifier
+                                        .size(64.dp)
+                                        .shadow(4.dp, CircleShape)
+                                        .clip(CircleShape)
+                                ) {
+                                    Box(contentAlignment = Alignment.Center) {
+                                        if (finalImageUrl.isNotBlank()) {
+                                            AsyncImage(
+                                                model = finalImageUrl,
+                                                contentDescription = finalTitle,
+                                                modifier = Modifier.fillMaxSize(),
+                                                contentScale = ContentScale.Crop
+                                            )
+                                        } else {
+                                            Icon(
+                                                imageVector = finalIcon,
+                                                contentDescription = finalTitle,
+                                                tint = item.iconTint,
+                                                modifier = Modifier.size(32.dp)
+                                            )
+                                        }
+                                    }
+                                }
+
+                                Spacer(modifier = Modifier.height(12.dp))
+
+                                Text(
+                                    text = finalTitle,
+                                    style = MaterialTheme.typography.bodyMedium.copy(
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 14.sp
+                                    ),
+                                    textAlign = TextAlign.Center,
+                                    maxLines = 1,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+
+                                Spacer(modifier = Modifier.height(4.dp))
+
+                                Text(
+                                    text = finalSubtitle,
+                                    style = MaterialTheme.typography.labelSmall.copy(
+                                        color = MaterialTheme.colorScheme.outline,
+                                        fontSize = 11.sp
+                                    ),
+                                    textAlign = TextAlign.Center,
+                                    maxLines = 1
+                                )
+                            }
+                        }
+
+                        // Admin direct quick-edit badge on individual card
+                        if (isAdmin) {
                             Surface(
                                 shape = CircleShape,
-                                color = item.circleBackground,
-                                modifier = Modifier.size(64.dp)
+                                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.9f),
+                                modifier = Modifier
+                                    .align(Alignment.TopEnd)
+                                    .padding(8.dp)
+                                    .size(28.dp)
+                                    .clip(CircleShape)
+                                    .clickable { editingCategoryId = item.id }
                             ) {
                                 Box(contentAlignment = Alignment.Center) {
                                     Icon(
-                                        imageVector = item.icon,
-                                        contentDescription = item.title,
-                                        tint = item.iconTint,
-                                        modifier = Modifier.size(32.dp)
+                                        imageVector = Icons.Default.Edit,
+                                        contentDescription = "تعديل ${item.defaultTitle}",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(14.dp)
                                     )
                                 }
                             }
-
-                            Spacer(modifier = Modifier.height(12.dp))
-
-                            Text(
-                                text = item.title,
-                                style = MaterialTheme.typography.bodyMedium.copy(
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 14.sp
-                                ),
-                                textAlign = TextAlign.Center,
-                                maxLines = 1,
-                                color = MaterialTheme.colorScheme.onSurface
-                            )
-
-                            Spacer(modifier = Modifier.height(4.dp))
-
-                            Text(
-                                text = item.subtitle,
-                                style = MaterialTheme.typography.labelSmall.copy(
-                                    color = MaterialTheme.colorScheme.outline,
-                                    fontSize = 11.sp
-                                ),
-                                textAlign = TextAlign.Center,
-                                maxLines = 1
-                            )
                         }
                     }
                 }
@@ -419,4 +540,261 @@ fun DashboardHubScreen(
     if (showThemeDialog) {
         ThemeSettingsDialog(onDismiss = { showThemeDialog = false })
     }
+
+    // Admin Category Customizer Dialog
+    if (isAdmin && editingCategoryId != null) {
+        val selectedCat = rawItems.find { it.id == editingCategoryId } ?: rawItems.first()
+        val currentCust = customizations[selectedCat.id] ?: HubCategoryCustomization(id = selectedCat.id)
+
+        EditCategoryDialog(
+            categories = rawItems,
+            currentCategory = selectedCat,
+            currentCustomization = currentCust,
+            onSelectCategory = { newId -> editingCategoryId = newId },
+            onDismiss = { editingCategoryId = null },
+            onSave = { updatedTitle, updatedSubtitle, updatedImageUrl, updatedIconName ->
+                HubCategoryManager.updateCategory(
+                    context = context,
+                    id = selectedCat.id,
+                    customTitle = updatedTitle,
+                    customSubtitle = updatedSubtitle,
+                    customImageUrl = updatedImageUrl,
+                    customIconName = updatedIconName
+                ) { success ->
+                    Toast.makeText(
+                        context,
+                        if (success) "تم حفظ وتحديث القسم بنجاح في السيرفر!" else "تم الحفظ محلياً",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+                editingCategoryId = null
+            },
+            onReset = {
+                HubCategoryManager.resetCategory(context, selectedCat.id) {
+                    Toast.makeText(context, "تمت استعادة الإعدادات الافتراضية للقسم", Toast.LENGTH_SHORT).show()
+                }
+                editingCategoryId = null
+            }
+        )
+    }
+}
+
+@Composable
+fun EditCategoryDialog(
+    categories: List<HubCategoryItem>,
+    currentCategory: HubCategoryItem,
+    currentCustomization: HubCategoryCustomization,
+    onSelectCategory: (String) -> Unit,
+    onDismiss: () -> Unit,
+    onSave: (title: String, subtitle: String, imageUrl: String, iconName: String) -> Unit,
+    onReset: () -> Unit
+) {
+    var title by remember(currentCategory.id, currentCustomization) {
+        mutableStateOf(currentCustomization.customTitle.ifBlank { currentCategory.defaultTitle })
+    }
+    var subtitle by remember(currentCategory.id, currentCustomization) {
+        mutableStateOf(currentCustomization.customSubtitle.ifBlank { currentCategory.defaultSubtitle })
+    }
+    var imageUrl by remember(currentCategory.id, currentCustomization) {
+        mutableStateOf(currentCustomization.customImageUrl)
+    }
+    var selectedIconName by remember(currentCategory.id, currentCustomization) {
+        mutableStateOf(currentCustomization.customIconName)
+    }
+
+    val iconOptions = listOf(
+        "موتور" to Icons.Default.Memory,
+        "ضفيرة" to Icons.Default.Cable,
+        "لوك" to Icons.Default.Lock,
+        "تجميع" to Icons.Default.Hub,
+        "غسالة" to Icons.Default.LocalLaundryService,
+        "فوق أوتوماتيك" to Icons.Default.CleaningServices,
+        "تيست مود" to Icons.Default.Settings,
+        "رولمان بلي" to Icons.Default.Build,
+        "مركز" to Icons.Default.ContactPhone,
+        "كهرباء" to Icons.Default.ElectricBolt,
+        "صناعي" to Icons.Default.PrecisionManufacturing
+    )
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.Edit, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "تعديل اسم وصورة القسم",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 17.sp
+                )
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Text(
+                    text = "اختر القسم المراد تعديله:",
+                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold)
+                )
+
+                // Horizontal chips to quickly switch categories
+                LazyRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    items(categories) { cat ->
+                        FilterChip(
+                            selected = cat.id == currentCategory.id,
+                            onClick = { onSelectCategory(cat.id) },
+                            label = { Text(cat.defaultTitle, fontSize = 11.sp) }
+                        )
+                    }
+                }
+
+                HorizontalDivider()
+
+                OutlinedTextField(
+                    value = title,
+                    onValueChange = { title = it },
+                    label = { Text("اسم / عنوان القسم الرئيسي") },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                    singleLine = true
+                )
+
+                OutlinedTextField(
+                    value = subtitle,
+                    onValueChange = { subtitle = it },
+                    label = { Text("الوصف الفرعي للقسم") },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                    singleLine = true
+                )
+
+                OutlinedTextField(
+                    value = imageUrl,
+                    onValueChange = { imageUrl = it },
+                    label = { Text("رابط صورة مخصصة للقسم (URL مباشر)") },
+                    placeholder = { Text("https://example.com/icon.png") },
+                    leadingIcon = { Icon(Icons.Default.Link, contentDescription = null) },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                    singleLine = true
+                )
+
+                // Image / Icon Live Preview
+                Surface(
+                    shape = RoundedCornerShape(14.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier.padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Surface(
+                            shape = CircleShape,
+                            color = currentCategory.circleBackground,
+                            modifier = Modifier.size(54.dp).clip(CircleShape)
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                if (imageUrl.isNotBlank()) {
+                                    AsyncImage(
+                                        model = imageUrl.trim(),
+                                        contentDescription = "معاينة",
+                                        modifier = Modifier.fillMaxSize(),
+                                        contentScale = ContentScale.Crop
+                                    )
+                                } else {
+                                    Icon(
+                                        imageVector = resolveCategoryIcon(selectedIconName, currentCategory.defaultIcon),
+                                        contentDescription = "معاينة الأيقونة",
+                                        tint = currentCategory.iconTint,
+                                        modifier = Modifier.size(28.dp)
+                                    )
+                                }
+                            }
+                        }
+
+                        Column {
+                            Text("معاينة شكل القسم", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                            Text(
+                                if (imageUrl.isNotBlank()) "يتم استخدام صورة من الرابط" else "يتم استخدام الأيقونة المختارة",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.outline
+                            )
+                        }
+                    }
+                }
+
+                // Or Pick from Common Icons
+                Text(
+                    text = "أو اختر أيقونة بديلة (إذا لم تضع رابط صورة):",
+                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold)
+                )
+
+                LazyRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    items(iconOptions) { (name, icon) ->
+                        val isSelected = selectedIconName == name
+                        Surface(
+                            shape = CircleShape,
+                            color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+                            border = if (isSelected) androidx.compose.foundation.BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary) else null,
+                            modifier = Modifier
+                                .size(40.dp)
+                                .clip(CircleShape)
+                                .clickable {
+                                    selectedIconName = name
+                                    imageUrl = "" // Clear image URL if picking an icon
+                                }
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    imageVector = icon,
+                                    contentDescription = name,
+                                    tint = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    onSave(title, subtitle, imageUrl, selectedIconName)
+                },
+                shape = RoundedCornerShape(10.dp)
+            ) {
+                Text("حفظ التعديلات")
+            }
+        },
+        dismissButton = {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(
+                    onClick = onReset,
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                    shape = RoundedCornerShape(10.dp)
+                ) {
+                    Icon(Icons.Default.RestartAlt, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("استعادة الافتراضي")
+                }
+                TextButton(onClick = onDismiss) {
+                    Text("إلغاء")
+                }
+            }
+        },
+        shape = RoundedCornerShape(20.dp)
+    )
 }

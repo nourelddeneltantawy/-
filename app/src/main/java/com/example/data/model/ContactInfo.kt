@@ -7,7 +7,8 @@ data class ContactInfo(
     val address: String = "طنطا الكورنيش، شارع علي اللمعي - بجوار كافيه بلازا القديم",
     val phoneNumber: String = "01018717141",
     val whatsappNumber: String = "201018717141",
-    val locationUrl: String = "https://maps.google.com/?q=30.7865,31.0004"
+    val locationUrl: String = "https://maps.google.com/?q=30.7865,31.0004",
+    val facebookUrl: String = "https://facebook.com/AlBaraa01018717141Electronic"
 ) {
     fun toMap(): Map<String, Any> {
         return mapOf(
@@ -17,7 +18,8 @@ data class ContactInfo(
             "address" to address,
             "phoneNumber" to phoneNumber,
             "whatsappNumber" to whatsappNumber,
-            "locationUrl" to locationUrl
+            "locationUrl" to locationUrl,
+            "facebookUrl" to facebookUrl
         )
     }
 
@@ -30,7 +32,8 @@ data class ContactInfo(
                 address = map["address"] as? String ?: "طنطا الكورنيش، شارع علي اللمعي - بجوار كافيه بلازا القديم",
                 phoneNumber = map["phoneNumber"] as? String ?: "01018717141",
                 whatsappNumber = map["whatsappNumber"] as? String ?: "201018717141",
-                locationUrl = map["locationUrl"] as? String ?: "https://maps.google.com/?q=30.7865,31.0004"
+                locationUrl = map["locationUrl"] as? String ?: "https://maps.google.com/?q=30.7865,31.0004",
+                facebookUrl = map["facebookUrl"] as? String ?: "https://facebook.com/AlBaraa01018717141Electronic"
             )
         }
     }
