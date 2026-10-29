@@ -92,11 +92,24 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         com.example.util.FirebaseInitializer.ensureInitialized(this)
+        com.example.util.ThemeManager.init(this)
+        com.example.data.ContactInfoManager.init(this)
         enableEdgeToEdge()
         setContent {
-            MyApplicationTheme {
+            val themeMode by com.example.util.ThemeManager.themeMode.collectAsState()
+            val isSystemDark = androidx.compose.foundation.isSystemInDarkTheme()
+            val isDark = when (themeMode) {
+                com.example.util.AppThemeMode.SYSTEM -> isSystemDark
+                com.example.util.AppThemeMode.DARK -> true
+                com.example.util.AppThemeMode.LIGHT -> false
+            }
+
+            MyApplicationTheme(darkTheme = isDark) {
                 CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
-                    Surface(modifier = Modifier.fillMaxSize()) {
+                    Surface(
+                        modifier = Modifier.fillMaxSize(),
+                        color = MaterialTheme.colorScheme.background
+                    ) {
                         AppRoot()
                     }
                 }

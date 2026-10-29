@@ -5,9 +5,29 @@ import android.util.Log
 import com.example.R
 import com.google.firebase.FirebaseApp
 import com.google.firebase.FirebaseOptions
+import com.google.firebase.firestore.FirebaseFirestore
 
 object FirebaseInitializer {
     private const val TAG = "FirebaseInitializer"
+
+    fun getFirestore(context: Context): FirebaseFirestore {
+        val appContext = context.applicationContext ?: context
+        val app = ensureInitialized(appContext)
+        val dbId = try {
+            appContext.getString(R.string.firestore_database_id)
+        } catch (_: Throwable) {
+            ""
+        }
+        return try {
+            if (app != null) {
+                if (dbId.isNotBlank()) FirebaseFirestore.getInstance(app, dbId) else FirebaseFirestore.getInstance(app)
+            } else {
+                if (dbId.isNotBlank()) FirebaseFirestore.getInstance(dbId) else FirebaseFirestore.getInstance()
+            }
+        } catch (_: Throwable) {
+            if (app != null) FirebaseFirestore.getInstance(app) else FirebaseFirestore.getInstance()
+        }
+    }
 
     // Fallback credentials from google-services.json to guarantee Firebase initializes
     // even if resource resolution fails in process/namespace mismatch environments

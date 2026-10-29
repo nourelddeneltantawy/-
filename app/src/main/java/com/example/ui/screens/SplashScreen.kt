@@ -31,6 +31,8 @@ import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material.icons.filled.Place
+import androidx.compose.material.icons.filled.Settings
+import com.example.ui.components.ThemeSettingsDialog
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -101,11 +103,13 @@ fun SplashScreen(
     var showLogoutConfirmDialog by remember { mutableStateOf(false) }
     var showUpdateDialog by remember { mutableStateOf(false) }
     var showAdminPublishDialog by remember { mutableStateOf(false) }
+    var showThemeDialog by remember { mutableStateOf(false) }
     var activeUpdateInfo by remember { mutableStateOf<AppUpdateInfo?>(null) }
     var hasCheckedUpdateOnLaunch by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         ContactInfoManager.init(context)
+        ContactInfoManager.fetchRemote(context)
         // Background check for update info
         try {
             val update = UpdateChecker.checkUpdate(context)
@@ -142,7 +146,7 @@ fun SplashScreen(
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(Color(0xFFF8FAFC))
+            .background(MaterialTheme.colorScheme.background)
     ) {
         // Curved top header dome with rich cyan-blue gradient
         Box(
@@ -304,6 +308,27 @@ fun SplashScreen(
                                 modifier = Modifier.size(24.dp)
                             )
                         }
+
+                        // Small vertical separator
+                        Box(
+                            modifier = Modifier
+                                .width(1.dp)
+                                .height(22.dp)
+                                .background(Color.White.copy(alpha = 0.2f))
+                        )
+
+                        // 3. App Theme & Appearance Settings (السمة وإعدادات التطبيق)
+                        IconButton(
+                            onClick = { showThemeDialog = true },
+                            modifier = Modifier.size(42.dp).testTag("splash_theme_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Settings,
+                                contentDescription = "إعدادات المظهر والسمة",
+                                tint = Color(0xFF38BDF8),
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
                     }
                 }
             }
@@ -361,7 +386,8 @@ fun SplashScreen(
                     .padding(horizontal = 22.dp)
                     .shadow(10.dp, RoundedCornerShape(26.dp)),
                 shape = RoundedCornerShape(26.dp),
-                colors = CardDefaults.cardColors(containerColor = Color.White)
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
             ) {
                 Column(
                     modifier = Modifier.padding(vertical = 22.dp, horizontal = 20.dp),
@@ -372,7 +398,7 @@ fun SplashScreen(
                         text = contactInfo.centerName,
                         style = MaterialTheme.typography.titleMedium.copy(
                             fontWeight = FontWeight.Bold,
-                            color = Color(0xFF0F2B48),
+                            color = MaterialTheme.colorScheme.onSurface,
                             fontSize = 17.sp
                         ),
                         textAlign = TextAlign.Center
@@ -381,7 +407,7 @@ fun SplashScreen(
                     HorizontalDivider(
                         modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp),
                         thickness = 1.dp,
-                        color = Color(0xFFF1F5F9)
+                        color = MaterialTheme.colorScheme.outline.copy(alpha = 0.15f)
                     )
 
                     Row(
@@ -396,7 +422,7 @@ fun SplashScreen(
                         Text(
                             text = contactInfo.address,
                             style = MaterialTheme.typography.bodySmall.copy(
-                                color = Color(0xFF334155),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 fontSize = 13.sp,
                                 lineHeight = 21.sp,
                                 fontWeight = FontWeight.Medium
@@ -406,14 +432,14 @@ fun SplashScreen(
 
                         Surface(
                             shape = RoundedCornerShape(14.dp),
-                            color = Color(0xFFE0F2FE),
+                            color = MaterialTheme.colorScheme.primaryContainer,
                             modifier = Modifier.size(46.dp)
                         ) {
                             Box(contentAlignment = Alignment.Center) {
                                 Icon(
                                     imageVector = Icons.Default.Place,
                                     contentDescription = "الموقع الجغرافي",
-                                    tint = Color(0xFF0284C7),
+                                    tint = MaterialTheme.colorScheme.primary,
                                     modifier = Modifier.size(24.dp)
                                 )
                             }
@@ -586,6 +612,13 @@ fun SplashScreen(
                 }
             )
         }
+
+        // Theme & Appearance Settings Dialog (Available for All: Admin & Guest)
+        if (showThemeDialog) {
+            ThemeSettingsDialog(
+                onDismiss = { showThemeDialog = false }
+            )
+        }
     }
 }
 
@@ -626,7 +659,7 @@ private fun ContactActionCircle(
             text = title,
             style = MaterialTheme.typography.labelMedium.copy(
                 fontWeight = FontWeight.Bold,
-                color = Color(0xFF334155),
+                color = MaterialTheme.colorScheme.onBackground,
                 fontSize = 13.sp
             )
         )

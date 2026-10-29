@@ -28,10 +28,13 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.ArrowForward
 import androidx.compose.material.icons.filled.ArrowUpward
+import androidx.compose.material.icons.filled.Cable
 import androidx.compose.material.icons.filled.CenterFocusStrong
 import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.filled.CleaningServices
 import androidx.compose.material.icons.filled.Crop
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.FitScreen
 import androidx.compose.material.icons.filled.FormatSize
 import androidx.compose.material.icons.filled.Fullscreen
@@ -136,10 +139,12 @@ val STANDARD_WIRE_COLORS = listOf(
 fun VisualBoardPinMarker(
     boardImageUrl: String,
     pins: List<HarnessPin>,
+    bottomPins: List<HarnessPin> = emptyList(),
     onUpdateBoardImageUrl: (String) -> Unit,
     onPickImageClick: () -> Unit,
     onAddSocket: (socketName: String, pinCount: Int) -> Unit = { _, _ -> },
     onMoveSocket: (socketName: String, deltaX: Float, deltaY: Float) -> Unit = { _, _, _ -> },
+    onResizeSocket: (socketName: String, scaleFactor: Float) -> Unit = { _, _ -> },
     onDeleteSocket: (socketName: String) -> Unit = {},
     selectedSocketName: String?,
     onSelectSocket: (String?) -> Unit,
@@ -152,8 +157,12 @@ fun VisualBoardPinMarker(
 
     // Visual Customizations
     var pinSizeDp by remember { mutableIntStateOf(26) } // 20, 26, 34
-    var canvasHeightDp by remember { mutableIntStateOf(380) } // 320, 380, 520
+    var canvasHeightDp by remember { mutableIntStateOf(440) } // Height accommodating board + bottom
     var isCropScale by remember { mutableStateOf(false) }
+
+    // Touch Interaction Modes
+    var isDragSocketMode by remember { mutableStateOf(true) }
+    var showWires by remember { mutableStateOf(true) }
 
     // Zoom & Pan state
     var zoomScale by remember { mutableFloatStateOf(1.0f) }
@@ -471,7 +480,7 @@ fun VisualBoardPinMarker(
                 Spacer(modifier = Modifier.height(6.dp))
             }
 
-            // D-Pad Movement Arrows for Active Socket
+            // D-Pad Movement Arrows and Size Controls for Active Socket
             activeSocketName?.let { currentSocket ->
                 Surface(
                     shape = RoundedCornerShape(10.dp),
@@ -484,26 +493,59 @@ fun VisualBoardPinMarker(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text(
-                            text = "تحريك: $currentSocket",
-                            style = MaterialTheme.typography.labelSmall.copy(color = Color(0xFF38BDF8), fontWeight = FontWeight.Bold)
-                        )
+                        Column {
+                            Text(
+                                text = "تحريك وحجم: $currentSocket",
+                                style = MaterialTheme.typography.labelSmall.copy(color = Color(0xFF38BDF8), fontWeight = FontWeight.Bold)
+                            )
+                            Text(
+                                text = "اسحب بإصبعك على اللوحة أو استخدم الأزرار",
+                                style = MaterialTheme.typography.labelSmall.copy(color = Color.LightGray, fontSize = 9.sp)
+                            )
+                        }
 
-                        // Arrow Buttons
                         Row(
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            IconButton(onClick = { onMoveSocket(currentSocket, moveStepPercent, 0f) }, modifier = Modifier.size(30.dp)) {
-                                Icon(Icons.Default.ArrowForward, contentDescription = "يمين", tint = Color.White, modifier = Modifier.size(18.dp))
+                            // Resize buttons for socket
+                            Surface(
+                                shape = RoundedCornerShape(6.dp),
+                                color = Color(0xFF1E293B),
+                                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF38BDF8).copy(alpha = 0.6f)),
+                                modifier = Modifier.clickable { onResizeSocket(currentSocket, 1.15f) }
+                            ) {
+                                Row(modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(Icons.Default.Add, contentDescription = "تكبير السوكيت", tint = Color.White, modifier = Modifier.size(14.dp))
+                                    Text("تكبير", fontSize = 10.sp, color = Color.White)
+                                }
                             }
-                            IconButton(onClick = { onMoveSocket(currentSocket, 0f, -moveStepPercent) }, modifier = Modifier.size(30.dp)) {
-                                Icon(Icons.Default.ArrowUpward, contentDescription = "أعلى", tint = Color.White, modifier = Modifier.size(18.dp))
+
+                            Surface(
+                                shape = RoundedCornerShape(6.dp),
+                                color = Color(0xFF1E293B),
+                                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF38BDF8).copy(alpha = 0.6f)),
+                                modifier = Modifier.clickable { onResizeSocket(currentSocket, 0.85f) }
+                            ) {
+                                Row(modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(Icons.Default.Remove, contentDescription = "تصغير السوكيت", tint = Color.White, modifier = Modifier.size(14.dp))
+                                    Text("تصغير", fontSize = 10.sp, color = Color.White)
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.width(4.dp))
+
+                            // Arrow Buttons
+                            IconButton(onClick = { onMoveSocket(currentSocket, moveStepPercent, 0f) }, modifier = Modifier.size(28.dp)) {
+                                Icon(Icons.Default.ArrowForward, contentDescription = "يمين", tint = Color.White, modifier = Modifier.size(16.dp))
+                            }
+                            IconButton(onClick = { onMoveSocket(currentSocket, 0f, -moveStepPercent) }, modifier = Modifier.size(28.dp)) {
+                                Icon(Icons.Default.ArrowUpward, contentDescription = "أعلى", tint = Color.White, modifier = Modifier.size(16.dp))
                             }
                             Surface(
                                 shape = CircleShape,
                                 color = Color(0xFF0284C7),
-                                modifier = Modifier.size(28.dp).clickable {
+                                modifier = Modifier.size(26.dp).clickable {
                                     val sPins = socketGroups[currentSocket] ?: emptyList()
                                     if (sPins.isNotEmpty()) {
                                         val avgX = sPins.map { it.pinX }.average().toFloat()
@@ -513,15 +555,64 @@ fun VisualBoardPinMarker(
                                 }
                             ) {
                                 Box(contentAlignment = Alignment.Center) {
-                                    Icon(Icons.Default.CenterFocusStrong, contentDescription = "المنتصف", tint = Color.White, modifier = Modifier.size(14.dp))
+                                    Icon(Icons.Default.CenterFocusStrong, contentDescription = "المنتصف", tint = Color.White, modifier = Modifier.size(12.dp))
                                 }
                             }
-                            IconButton(onClick = { onMoveSocket(currentSocket, 0f, moveStepPercent) }, modifier = Modifier.size(30.dp)) {
-                                Icon(Icons.Default.ArrowDownward, contentDescription = "أسفل", tint = Color.White, modifier = Modifier.size(18.dp))
+                            IconButton(onClick = { onMoveSocket(currentSocket, 0f, moveStepPercent) }, modifier = Modifier.size(28.dp)) {
+                                Icon(Icons.Default.ArrowDownward, contentDescription = "أسفل", tint = Color.White, modifier = Modifier.size(16.dp))
                             }
-                            IconButton(onClick = { onMoveSocket(currentSocket, -moveStepPercent, 0f) }, modifier = Modifier.size(30.dp)) {
-                                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "يسار", tint = Color.White, modifier = Modifier.size(18.dp))
+                            IconButton(onClick = { onMoveSocket(currentSocket, -moveStepPercent, 0f) }, modifier = Modifier.size(28.dp)) {
+                                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "يسار", tint = Color.White, modifier = Modifier.size(16.dp))
                             }
+                        }
+                    }
+                }
+            }
+
+            // Mode Selector & Wire Toggle Toolbar
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 4.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = if (isDragSocketMode) Color(0xFF0284C7) else MaterialTheme.colorScheme.surfaceVariant,
+                        modifier = Modifier.clickable { isDragSocketMode = true }
+                    ) {
+                        Row(modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.TouchApp, contentDescription = null, modifier = Modifier.size(14.dp), tint = Color.White)
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("✋ سحب السوكيتات باللمس", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                        }
+                    }
+
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = if (!isDragSocketMode) Color(0xFF0284C7) else MaterialTheme.colorScheme.surfaceVariant,
+                        modifier = Modifier.clickable { isDragSocketMode = false }
+                    ) {
+                        Row(modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.ZoomIn, contentDescription = null, modifier = Modifier.size(14.dp), tint = Color.White)
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("🔍 تحريك اللوحة (Pan)", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                        }
+                    }
+                }
+
+                if (bottomPins.isNotEmpty()) {
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = if (showWires) Color(0xFF10B981) else MaterialTheme.colorScheme.surfaceVariant,
+                        modifier = Modifier.clickable { showWires = !showWires }
+                    ) {
+                        Row(modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Icon(if (showWires) Icons.Default.Cable else Icons.Default.CleaningServices, contentDescription = null, modifier = Modifier.size(14.dp), tint = Color.White)
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(if (showWires) "الأسلاك: ظاهرة" else "الأسلاك: مخفية", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.White)
                         }
                     }
                 }
@@ -540,11 +631,19 @@ fun VisualBoardPinMarker(
                         .clip(RoundedCornerShape(12.dp))
                         .background(Color(0xFF0F172A))
                         .border(1.5.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(12.dp))
-                        .pointerInput(Unit) {
-                            detectTransformGestures { _, pan, zoom, _ ->
-                                zoomScale = (zoomScale * zoom).coerceIn(0.6f, 4.0f)
-                                panOffsetX = (panOffsetX + pan.x).coerceIn(-1200f, 1200f)
-                                panOffsetY = (panOffsetY + pan.y).coerceIn(-1200f, 1200f)
+                        .pointerInput(isDragSocketMode) {
+                            if (!isDragSocketMode) {
+                                detectTransformGestures { _, pan, zoom, _ ->
+                                    zoomScale = (zoomScale * zoom).coerceIn(0.6f, 4.0f)
+                                    panOffsetX = (panOffsetX + pan.x).coerceIn(-1200f, 1200f)
+                                    panOffsetY = (panOffsetY + pan.y).coerceIn(-1200f, 1200f)
+                                }
+                            } else {
+                                detectTransformGestures { _, _, zoom, _ ->
+                                    if (zoom != 1f) {
+                                        zoomScale = (zoomScale * zoom).coerceIn(0.6f, 4.0f)
+                                    }
+                                }
                             }
                         }
                 ) {
@@ -646,6 +745,7 @@ fun VisualBoardPinMarker(
                                         }
                                         .padding(horizontal = 10.dp, vertical = 6.dp)
                                 ) {
+                                    val socketBoxScope = this
                                     Column(
                                         horizontalAlignment = Alignment.CenterHorizontally,
                                         verticalArrangement = Arrangement.spacedBy(4.dp)
@@ -709,6 +809,67 @@ fun VisualBoardPinMarker(
                                                 }
                                             }
                                         }
+
+                                        // Corner resize handle when socket is selected
+                                        if (isSocketSelected) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(24.dp)
+                                                    .then(with(socketBoxScope) { Modifier.align(Alignment.BottomEnd) })
+                                                    .clip(RoundedCornerShape(4.dp))
+                                                    .background(Color(0xFF0284C7).copy(alpha = 0.9f))
+                                                    .pointerInput(socketName) {
+                                                        detectDragGestures { change, dragAmount ->
+                                                            change.consume()
+                                                            val delta = dragAmount.x + dragAmount.y
+                                                            val factor = if (delta > 0) 1.05f else 0.95f
+                                                            onResizeSocket(socketName, factor)
+                                                        }
+                                                    },
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.Crop,
+                                                    contentDescription = "تغيير الحجم باللمس",
+                                                    tint = Color.White,
+                                                    modifier = Modifier.size(14.dp)
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // 3. Render Bottom Appliance Components Preview if available
+                        if (bottomPins.isNotEmpty()) {
+                            val bottomGroups = bottomPins.groupBy { it.connectedComponent.ifBlank { "ماتور" } }
+                            Column(
+                                modifier = Modifier
+                                    .align(Alignment.BottomCenter)
+                                    .fillMaxWidth()
+                                    .background(Color(0xFF0A0F1D).copy(alpha = 0.88f))
+                                    .padding(vertical = 4.dp)
+                            ) {
+                                Text(
+                                    text = "الأجزاء والمواتير السفلية المرتبطة:",
+                                    style = MaterialTheme.typography.labelSmall.copy(color = Color(0xFF38BDF8), fontWeight = FontWeight.Bold, fontSize = 9.sp),
+                                    modifier = Modifier.padding(horizontal = 8.dp)
+                                )
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .horizontalScroll(rememberScrollState())
+                                        .padding(horizontal = 8.dp, vertical = 2.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    bottomGroups.forEach { (compName, compPins) ->
+                                        ApplianceModuleCard(
+                                            componentName = compName,
+                                            pins = compPins,
+                                            selectedPinNumber = null,
+                                            onSelectPin = {}
+                                        )
                                     }
                                 }
                             }

@@ -252,6 +252,7 @@ fun AdminHarnessScreen(
                 VisualBoardPinMarker(
                     boardImageUrl = boardImageUrl,
                     pins = boardPins,
+                    bottomPins = bottomPins,
                     onUpdateBoardImageUrl = { boardImageUrl = it },
                     onPickImageClick = {
                         photoPickerLauncher.launch(
@@ -296,6 +297,22 @@ fun AdminHarnessScreen(
                                     pinX = (p.pinX + deltaX).coerceIn(2f, 98f),
                                     pinY = (p.pinY + deltaY).coerceIn(2f, 98f)
                                 )
+                            }
+                        }
+                    },
+                    onResizeSocket = { socketName, scaleFactor ->
+                        val target = socketName.trim()
+                        val targetPins = boardPins.filter { it.socketName.ifBlank { "سوكيت 1" }.trim() == target }
+                        if (targetPins.isNotEmpty()) {
+                            val centerX = targetPins.map { it.pinX }.average().toFloat()
+                            val centerY = targetPins.map { it.pinY }.average().toFloat()
+                            boardPins.indices.forEach { i ->
+                                val p = boardPins[i]
+                                if (p.socketName.ifBlank { "سوكيت 1" }.trim() == target) {
+                                    val newX = (centerX + (p.pinX - centerX) * scaleFactor).coerceIn(2f, 98f)
+                                    val newY = (centerY + (p.pinY - centerY) * scaleFactor).coerceIn(2f, 98f)
+                                    boardPins[i] = p.copy(pinX = newX, pinY = newY)
+                                }
                             }
                         }
                     },

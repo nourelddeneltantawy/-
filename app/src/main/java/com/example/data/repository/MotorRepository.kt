@@ -314,6 +314,7 @@ class MotorRepository(private val db: FirebaseFirestore) {
             return com.example.data.model.HarnessPin(
                 pinNumber = (item["pinNumber"] as? Number)?.toInt() ?: 1,
                 label = item["label"] as? String ?: "",
+                socketName = item["socketName"] as? String ?: "سوكيت 1",
                 wireColor = item["wireColor"] as? String ?: "",
                 colorHex = item["colorHex"] as? String ?: "#3B82F6",
                 secondaryColorHex = item["secondaryColorHex"] as? String,

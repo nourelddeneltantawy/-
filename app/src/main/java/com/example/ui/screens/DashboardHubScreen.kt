@@ -37,6 +37,7 @@ import androidx.compose.material.icons.filled.Hub
 import androidx.compose.material.icons.filled.LocalLaundryService
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Memory
+import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.PrecisionManufacturing
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SystemUpdate
@@ -50,6 +51,11 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import com.example.ui.components.ThemeSettingsDialog
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -96,6 +102,8 @@ fun DashboardHubScreen(
     onNavigateToProfile: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
+    var showThemeDialog by remember { mutableStateOf(false) }
+
     val items = listOf(
         HubCategoryItem(
             id = "profile",
@@ -260,6 +268,15 @@ fun DashboardHubScreen(
                             )
                         }
 
+                        // App Theme Settings (مظهر التطبيق)
+                        IconButton(onClick = { showThemeDialog = true }) {
+                            Icon(
+                                imageVector = Icons.Default.Palette,
+                                contentDescription = "مظهر التطبيق والسمة",
+                                tint = Color.White
+                            )
+                        }
+
                         // Admin: Publish new update
                         if (isAdmin) {
                             IconButton(onClick = onPublishUpdate) {
@@ -397,5 +414,9 @@ fun DashboardHubScreen(
                 }
             }
         }
+    }
+
+    if (showThemeDialog) {
+        ThemeSettingsDialog(onDismiss = { showThemeDialog = false })
     }
 }

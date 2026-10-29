@@ -40,7 +40,8 @@ object UpdateChecker {
 
         try {
             // 1. Primary source: Firebase Firestore (real-time sync across all devices)
-            val docSnapshot = Firebase.firestore
+            val db = FirebaseInitializer.getFirestore(context)
+            val docSnapshot = db
                 .collection(COLLECTION_SETTINGS)
                 .document(DOC_UPDATE)
                 .get()
@@ -129,8 +130,8 @@ object UpdateChecker {
             // Quick network timeout (3.5s). Firestore persists to disk in <10ms and syncs in background.
             try {
                 kotlinx.coroutines.withTimeout(3500L) {
-                    Firebase.firestore
-                        .collection(COLLECTION_SETTINGS)
+                    val db = if (context != null) FirebaseInitializer.getFirestore(context) else FirebaseInitializer.getFirestore(com.google.firebase.FirebaseApp.getInstance().applicationContext)
+                    db.collection(COLLECTION_SETTINGS)
                         .document(DOC_UPDATE)
                         .set(data)
                         .await()

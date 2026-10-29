@@ -18,10 +18,12 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -110,6 +112,8 @@ fun InteractiveHarnessMap(
         activeBoardPin != null && it.connectedComponent == activeBoardPin.connectedComponent && it.pinNumber == activeBoardPin.targetPinNumber
     }
 
+    var showWires by remember { mutableStateOf(true) }
+
     if (isFullscreen) {
         Dialog(
             onDismissRequest = { isFullscreen = false },
@@ -119,7 +123,12 @@ fun InteractiveHarnessMap(
                 modifier = Modifier.fillMaxSize(),
                 color = MaterialTheme.colorScheme.background
             ) {
-                Column(modifier = Modifier.fillMaxSize()) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .navigationBarsPadding()
+                        .padding(bottom = 16.dp)
+                ) {
                     // Fullscreen Top Bar
                     Row(
                         modifier = Modifier
@@ -140,8 +149,24 @@ fun InteractiveHarnessMap(
                             )
                         }
 
-                        IconButton(onClick = { isFullscreen = false }) {
-                            Icon(imageVector = Icons.Default.FullscreenExit, contentDescription = "خروج من ملء الشاشة")
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            // Wire toggle in fullscreen
+                            FilterChip(
+                                selected = showWires,
+                                onClick = { showWires = !showWires },
+                                label = { Text(if (showWires) "إخفاء الأسلاك" else "إظهار الأسلاك", fontSize = 11.sp) },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = if (showWires) Icons.Default.Cable else Icons.Default.CleaningServices,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                }
+                            )
+
+                            IconButton(onClick = { isFullscreen = false }) {
+                                Icon(imageVector = Icons.Default.FullscreenExit, contentDescription = "خروج من ملء الشاشة")
+                            }
                         }
                     }
 
@@ -149,11 +174,12 @@ fun InteractiveHarnessMap(
                         HarnessInteractiveCanvas(
                             harness = harness,
                             selectedPinNumber = selectedPinNumber,
+                            showWires = showWires,
                             onSelectPin = { selectedPinNumber = if (selectedPinNumber == it) null else it }
                         )
                     }
 
-                    // Bottom info bar in fullscreen
+                    // Bottom info bar in fullscreen - elevated above nav bar
                     activeBoardPin?.let { pin ->
                         HarnessPinInspectorBanner(boardPin = pin, bottomPin = activeBottomPin)
                     }
@@ -216,23 +242,40 @@ fun InteractiveHarnessMap(
 
             Spacer(modifier = Modifier.height(8.dp))
 
-            // View Mode Chips
+            // View Mode Chips & Wire Toggle
             Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
                 FilterChip(
                     selected = viewMode == "visual",
                     onClick = { viewMode = "visual" },
-                    label = { Text("المخطط التفاعلي المصور (Zoom)", fontSize = 12.sp) },
+                    label = { Text("المخطط التفاعلي", fontSize = 12.sp) },
                     leadingIcon = { Icon(imageVector = Icons.Default.Hub, contentDescription = null, modifier = Modifier.size(16.dp)) }
                 )
                 FilterChip(
                     selected = viewMode == "table",
                     onClick = { viewMode = "table" },
-                    label = { Text("جدول بيانات الأطراف", fontSize = 12.sp) },
+                    label = { Text("جدول الأطراف", fontSize = 12.sp) },
                     leadingIcon = { Icon(imageVector = Icons.Default.TableChart, contentDescription = null, modifier = Modifier.size(16.dp)) }
                 )
+                if (viewMode == "visual") {
+                    FilterChip(
+                        selected = showWires,
+                        onClick = { showWires = !showWires },
+                        label = { Text(if (showWires) "الأسلاك: ظاهرة 🔌" else "الأسلاك: مخفية 👁️", fontSize = 12.sp) },
+                        leadingIcon = {
+                            Icon(
+                                imageVector = if (showWires) Icons.Default.Cable else Icons.Default.CleaningServices,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                    )
+                }
             }
 
             Spacer(modifier = Modifier.height(10.dp))
@@ -242,6 +285,7 @@ fun InteractiveHarnessMap(
                 HarnessInteractiveCanvas(
                     harness = harness,
                     selectedPinNumber = selectedPinNumber,
+                    showWires = showWires,
                     onSelectPin = { selectedPinNumber = if (selectedPinNumber == it) null else it },
                     modifier = Modifier
                         .fillMaxWidth()
@@ -274,6 +318,7 @@ fun InteractiveHarnessMap(
 fun HarnessInteractiveCanvas(
     harness: Harness,
     selectedPinNumber: Int?,
+    showWires: Boolean = true,
     onSelectPin: (Int) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -290,6 +335,8 @@ fun HarnessInteractiveCanvas(
             harness.boardPins.filter { !it.isBlankPin }.groupBy { it.connectedComponent }
         }
     }
+
+    val density = LocalDensity.current
 
     Box(
         modifier = modifier
@@ -324,7 +371,7 @@ fun HarnessInteractiveCanvas(
                     Card(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(170.dp),
+                            .height(180.dp),
                         shape = RoundedCornerShape(12.dp),
                         colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
                         border = androidx.compose.foundation.BorderStroke(1.5.dp, Color(0xFF0284C7))
@@ -332,6 +379,8 @@ fun HarnessInteractiveCanvas(
                         BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
                             val boardWidth = maxWidth
                             val boardHeight = maxHeight
+                            val bWidthPx = with(density) { boardWidth.toPx() }
+                            val bHeightPx = with(density) { boardHeight.toPx() }
 
                             // Board photo or PCB graphic
                             if (harness.boardImageUrl.isNotBlank()) {
@@ -367,92 +416,90 @@ fun HarnessInteractiveCanvas(
                                 }
                             }
 
-                            // Render Socket Outlines on the Board
-                            val distinctSockets = harness.boardPins.map { it.socketName.ifBlank { "سوكيت 1" } }.distinct()
-                            distinctSockets.forEach { sockName ->
-                                val sockPins = harness.boardPins.filter { (it.socketName.ifBlank { "سوكيت 1" }) == sockName }
-                                if (sockPins.size > 1) {
-                                    val minX = sockPins.minOf { if (it.pinX > 0f) it.pinX else 10f }
-                                    val maxX = sockPins.maxOf { if (it.pinX > 0f) it.pinX else 90f }
-                                    val minY = sockPins.minOf { if (it.pinY > 0f) it.pinY else 40f }
-                                    val maxY = sockPins.maxOf { if (it.pinY > 0f) it.pinY else 75f }
+                            // Render Sockets on the Board with unified, solid connector blocks (identical to Editor)
+                            val socketGroups = harness.boardPins.groupBy { it.socketName.ifBlank { "سوكيت 1" } }
+                            socketGroups.forEach { (sockName, sPins) ->
+                                val validPins = sPins.filter { it.pinX > 0f && it.pinY > 0f }
+                                val avgX = if (validPins.isNotEmpty()) validPins.map { it.pinX }.average().toFloat() else 50f
+                                val avgY = if (validPins.isNotEmpty()) validPins.map { it.pinY }.average().toFloat() else 50f
 
-                                    val sX = ((minX / 100f) * boardWidth.value) - 18
-                                    val sY = ((minY / 100f) * boardHeight.value) - 22
-                                    val sW = (((maxX - minX) / 100f) * boardWidth.value) + 36
-                                    val sH = (((maxY - minY) / 100f) * boardHeight.value) + 36
+                                val socketWidthPx = with(density) { (sPins.size * 34 + 20).dp.toPx() }
+                                val socketHeightPx = with(density) { 62.dp.toPx() }
 
-                                    Box(
-                                        modifier = Modifier
-                                            .offset {
-                                                IntOffset(
-                                                    sX.coerceAtLeast(2f).dp.toPx().toInt(),
-                                                    sY.coerceAtLeast(2f).dp.toPx().toInt()
-                                                )
-                                            }
-                                            .width(sW.coerceAtLeast(50f).dp)
-                                            .height(sH.coerceAtLeast(34f).dp)
-                                            .background(Color(0xFF000000).copy(alpha = 0.35f), RoundedCornerShape(8.dp))
-                                            .border(1.dp, Color(0xFF38BDF8).copy(alpha = 0.5f), RoundedCornerShape(8.dp))
-                                    ) {
-                                        Text(
-                                            text = sockName,
-                                            style = MaterialTheme.typography.labelSmall.copy(color = Color(0xFF38BDF8), fontSize = 9.sp, fontWeight = FontWeight.Bold),
-                                            modifier = Modifier.padding(2.dp)
-                                        )
-                                    }
-                                }
-                            }
-
-                            // Overlay Board Pins Hotspots
-                            harness.boardPins.forEachIndexed { idx, pin ->
-                                // If pinX/pinY set, use them; otherwise distribute evenly in socket row
-                                val posX = if (pin.pinX > 0f) (pin.pinX / 100f) * boardWidth.value else (12f + (idx * (boardWidth.value - 24f) / harness.boardPins.size.coerceAtLeast(1)))
-                                val posY = if (pin.pinY > 0f) (pin.pinY / 100f) * boardHeight.value else (boardHeight.value * 0.75f)
-
-                                val isPinSelected = selectedPinNumber == pin.pinNumber
-                                val isBlank = pin.isBlankPin
-                                val pinColor = if (isBlank) Color(0xFF334155) else parseWireColorToComposeColor(pin.colorHex)
+                                val rawLeftPx = ((avgX / 100f) * bWidthPx) - (socketWidthPx / 2f)
+                                val rawTopPx = ((avgY / 100f) * bHeightPx) - (socketHeightPx / 2f)
+                                val leftPx = rawLeftPx.coerceIn(4f, (bWidthPx - socketWidthPx - 4f).coerceAtLeast(4f))
+                                val topPx = rawTopPx.coerceIn(4f, (bHeightPx - socketHeightPx - 4f).coerceAtLeast(4f))
 
                                 Box(
                                     modifier = Modifier
-                                        .offset {
-                                            val bWidthPx = boardWidth.toPx()
-                                            val bHeightPx = boardHeight.toPx()
-                                            val pX = (posX.dp.toPx() - 14.dp.toPx()).coerceIn(4f, (bWidthPx - 32.dp.toPx()).coerceAtLeast(4f)).toInt()
-                                            val pY = (posY.dp.toPx() - 14.dp.toPx()).coerceIn(4f, (bHeightPx - 32.dp.toPx()).coerceAtLeast(4f)).toInt()
-                                            IntOffset(pX, pY)
-                                        }
-                                        .size(28.dp)
-                                        .shadow(if (isPinSelected) 10.dp else 4.dp, CircleShape)
-                                        .background(if (isPinSelected) Color.White else pinColor, CircleShape)
-                                        .border(
-                                            width = if (isPinSelected) 2.5.dp else 1.5.dp,
-                                            color = if (isBlank) Color(0xFF94A3B8) else if (isPinSelected) pinColor else Color.White,
-                                            shape = CircleShape
-                                        )
-                                        .clickable { onSelectPin(pin.pinNumber) },
-                                    contentAlignment = Alignment.Center
+                                        .offset { IntOffset(leftPx.toInt(), topPx.toInt()) }
+                                        .shadow(4.dp, RoundedCornerShape(10.dp))
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .background(Color(0xFF1E293B).copy(alpha = 0.95f))
+                                        .border(1.5.dp, Color(0xFF38BDF8).copy(alpha = 0.7f), RoundedCornerShape(10.dp))
+                                        .padding(horizontal = 8.dp, vertical = 6.dp)
                                 ) {
-                                    Text(
-                                        text = if (isBlank) "NC" else "${pin.pinNumber}",
-                                        style = MaterialTheme.typography.labelSmall.copy(
-                                            fontWeight = FontWeight.Bold,
-                                            color = if (isBlank) Color(0xFFCBD5E1) else if (isPinSelected) pinColor else if (pin.colorHex == "#F8FAFC" || pin.colorHex == "#EAB308") Color.Black else Color.White,
-                                            fontSize = if (isBlank) 9.sp else 11.sp
+                                    Column(
+                                        horizontalAlignment = Alignment.CenterHorizontally,
+                                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        Text(
+                                            text = "$sockName (${sPins.size} أطراف)",
+                                            style = MaterialTheme.typography.labelSmall.copy(
+                                                color = Color(0xFF38BDF8),
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 11.sp
+                                            )
                                         )
-                                    )
+                                        Row(
+                                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            sPins.forEach { pin ->
+                                                val isPinSelected = selectedPinNumber == pin.pinNumber
+                                                val isBlank = pin.isBlankPin
+                                                val pinColor = if (isBlank) Color(0xFF334155) else parseWireColorToComposeColor(pin.colorHex)
+
+                                                Box(
+                                                    modifier = Modifier
+                                                        .size(26.dp)
+                                                        .shadow(if (isPinSelected) 8.dp else 2.dp, CircleShape)
+                                                        .clip(CircleShape)
+                                                        .background(if (isPinSelected) Color.White else pinColor)
+                                                        .border(
+                                                            width = if (isPinSelected) 2.5.dp else 1.2.dp,
+                                                            color = if (isBlank) Color(0xFF94A3B8) else if (isPinSelected) pinColor else Color.White,
+                                                            shape = CircleShape
+                                                        )
+                                                        .clickable { onSelectPin(pin.pinNumber) },
+                                                    contentAlignment = Alignment.Center
+                                                ) {
+                                                    Text(
+                                                        text = if (isBlank) "NC" else "${pin.pinNumber}",
+                                                        style = MaterialTheme.typography.labelSmall.copy(
+                                                            fontWeight = FontWeight.Bold,
+                                                            color = if (isBlank) Color(0xFFCBD5E1) else if (isPinSelected) pinColor else if (pin.colorHex == "#F8FAFC" || pin.colorHex == "#EAB308") Color.Black else Color.White,
+                                                            fontSize = if (isBlank) 8.sp else 10.sp
+                                                        )
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
                     }
+                }
 
-                // MIDDLE: Visual Wires Canvas with Smooth Curves
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(75.dp)
-                ) {
+                // MIDDLE: Visual Wires Canvas with Smooth Curves (Toggleable)
+                    if (showWires) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(75.dp)
+                        ) {
                     Canvas(modifier = Modifier.fillMaxSize()) {
                         val canvasWidth = size.width
                         val canvasHeight = size.height
@@ -524,6 +571,9 @@ fun HarnessInteractiveCanvas(
                         }
                     }
                 }
+            } else {
+                Spacer(modifier = Modifier.height(16.dp))
+            }
 
                 // BOTTOM: Connected Appliance Components (الماتور، لوك، ليفل، طلمبة، صمامات، سخان)
                 Row(
@@ -543,7 +593,6 @@ fun HarnessInteractiveCanvas(
                 }
             }
         }
-    }
 
         // Floating Zoom & Reset Controls in Top-End Corner
         Column(
@@ -769,13 +818,17 @@ fun HarnessPinInspectorBanner(
     modifier: Modifier = Modifier
 ) {
     Card(
-        modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(12.dp),
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 14.dp, vertical = 6.dp)
+            .shadow(8.dp, RoundedCornerShape(16.dp)),
+        shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.9f)
-        )
+            containerColor = Color(0xFF1E293B)
+        ),
+        border = androidx.compose.foundation.BorderStroke(1.5.dp, Color(0xFF38BDF8))
     ) {
-        Column(modifier = Modifier.padding(12.dp)) {
+        Column(modifier = Modifier.padding(14.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -785,9 +838,9 @@ fun HarnessPinInspectorBanner(
                     WireColorBadge(
                         colorHex = boardPin.colorHex,
                         secondaryColorHex = boardPin.secondaryColorHex,
-                        size = 18.dp
+                        size = 20.dp
                     )
-                    Spacer(modifier = Modifier.width(8.dp))
+                    Spacer(modifier = Modifier.width(10.dp))
                     Text(
                         text = "طرف الكارتة #${boardPin.pinNumber}: ${boardPin.label}",
                         style = MaterialTheme.typography.titleSmall.copy(
