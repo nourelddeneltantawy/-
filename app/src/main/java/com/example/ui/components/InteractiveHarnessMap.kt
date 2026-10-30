@@ -469,7 +469,7 @@ fun HarnessInteractiveCanvas(
                                             sPins.forEach { pin ->
                                                 val isPinSelected = selectedPinNumber == pin.pinNumber
                                                 val isBlank = pin.isBlankPin
-                                                val pinColor = if (isBlank) Color(0xFF334155) else parseWireColorToComposeColor(pin.colorHex)
+                                                val pinColor = if (isBlank) Color(0xFF1E293B) else parseWireColorToComposeColor(pin.colorHex)
 
                                                 Box(
                                                     modifier = Modifier
@@ -479,20 +479,30 @@ fun HarnessInteractiveCanvas(
                                                         .background(if (isPinSelected) Color.White else pinColor)
                                                         .border(
                                                             width = if (isPinSelected) 2.5.dp else 1.2.dp,
-                                                            color = if (isBlank) Color(0xFF94A3B8) else if (isPinSelected) pinColor else Color.White,
+                                                            color = if (isBlank) Color(0xFF64748B).copy(alpha = 0.7f) else if (isPinSelected) pinColor else Color.White,
                                                             shape = CircleShape
                                                         )
                                                         .clickable { onSelectPin(pin.pinNumber) },
                                                     contentAlignment = Alignment.Center
                                                 ) {
-                                                    Text(
-                                                        text = if (isBlank) "NC" else "${pin.pinNumber}",
-                                                        style = MaterialTheme.typography.labelSmall.copy(
-                                                            fontWeight = FontWeight.Bold,
-                                                            color = if (isBlank) Color(0xFFCBD5E1) else if (isPinSelected) pinColor else if (pin.colorHex == "#F8FAFC" || pin.colorHex == "#EAB308") Color.Black else Color.White,
-                                                            fontSize = if (isBlank) 8.sp else 10.sp
+                                                    if (isBlank) {
+                                                        // Empty space slot without number
+                                                        Box(
+                                                            modifier = Modifier
+                                                                .size(4.dp)
+                                                                .clip(CircleShape)
+                                                                .background(Color(0xFF64748B).copy(alpha = 0.6f))
                                                         )
-                                                    )
+                                                    } else {
+                                                        Text(
+                                                            text = "${pin.pinNumber}",
+                                                            style = MaterialTheme.typography.labelSmall.copy(
+                                                                fontWeight = FontWeight.Bold,
+                                                                color = if (isPinSelected) pinColor else if (pin.colorHex == "#F8FAFC" || pin.colorHex == "#EAB308") Color.Black else Color.White,
+                                                                fontSize = 10.sp
+                                                            )
+                                                        )
+                                                    }
                                                 }
                                             }
                                         }
@@ -848,12 +858,11 @@ fun HarnessPinInspectorBanner(
             .padding(horizontal = 4.dp, vertical = 4.dp)
             .shadow(12.dp, RoundedCornerShape(16.dp)),
         shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = Color(0xFF1E293B)
-        ),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B)),
         border = androidx.compose.foundation.BorderStroke(2.dp, Color(0xFF38BDF8))
     ) {
-        Column(modifier = Modifier.padding(14.dp)) {
+        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            // Header Row: Pin number + wire color badge + close button
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -867,7 +876,7 @@ fun HarnessPinInspectorBanner(
                     )
                     Spacer(modifier = Modifier.width(10.dp))
                     Text(
-                        text = "طرف الكارتة #${boardPin.pinNumber}: ${boardPin.label}",
+                        text = "طرف الكارتة #${boardPin.pinNumber} (${boardPin.label.ifBlank { "طرف ${boardPin.pinNumber}" }})",
                         style = MaterialTheme.typography.titleSmall.copy(
                             fontWeight = FontWeight.Bold,
                             color = Color.White
@@ -896,31 +905,53 @@ fun HarnessPinInspectorBanner(
                 }
             }
 
-            Spacer(modifier = Modifier.height(6.dp))
-
-            val destinationDescription = when {
-                boardPin.isBlankPin -> "📍 الوجهة: طرف فارغ (NC)"
-                boardPin.targetPinNumber != null && bottomPin != null ->
-                    "📍 الوجهة: ${boardPin.connectedComponent} - الطرف المقابل #${boardPin.targetPinNumber}" +
-                            (if (bottomPin.label.isNotBlank()) " (${bottomPin.label})" else "")
-                boardPin.targetPinNumber != null && bottomPin == null ->
-                    "📍 الوجهة: ${boardPin.connectedComponent} - طرف #${boardPin.targetPinNumber} (طرف حر / غير متصل)"
-                boardPin.connectedComponent.isNotBlank() ->
-                    "📍 الوجهة: ${boardPin.connectedComponent} (طرف غير محدد)"
-                else ->
-                    "📍 الوجهة: طرف حر / غير محدد"
-            }
-
-            Text(
-                text = destinationDescription,
-                style = MaterialTheme.typography.bodySmall.copy(color = Color(0xFFE2E8F0), fontWeight = FontWeight.SemiBold)
-            )
-
-            if (boardPin.signalType.isNotBlank()) {
-                Text(
-                    text = "⚡ نوع الإشارة: ${boardPin.signalType}",
-                    style = MaterialTheme.typography.labelSmall.copy(color = Color(0xFF94A3B8))
-                )
+            // Direct Connection Details
+            if (!boardPin.isBlankPin && boardPin.targetPinNumber != null && bottomPin != null) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = "🔗 متصل بـ: ",
+                        style = MaterialTheme.typography.bodyMedium.copy(color = Color(0xFF38BDF8), fontWeight = FontWeight.Bold)
+                    )
+                    Text(
+                        text = "${boardPin.connectedComponent} - طرف رقم #${boardPin.targetPinNumber} (${bottomPin.label})",
+                        style = MaterialTheme.typography.bodyMedium.copy(color = Color.White, fontWeight = FontWeight.SemiBold)
+                    )
+                }
+                val functionText = bottomPin.signalType.ifBlank { boardPin.signalType.ifBlank { bottomPin.label } }
+                if (functionText.isNotBlank()) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = "⚡ وظيفة الطرف: ",
+                            style = MaterialTheme.typography.labelSmall.copy(color = Color(0xFF94A3B8), fontWeight = FontWeight.Bold)
+                        )
+                        Text(
+                            text = functionText,
+                            style = MaterialTheme.typography.labelSmall.copy(color = Color(0xFFF1F5F9))
+                        )
+                    }
+                }
+            } else if (boardPin.isBlankPin) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = "⚪ الحالة: ",
+                        style = MaterialTheme.typography.bodyMedium.copy(color = Color(0xFF94A3B8), fontWeight = FontWeight.Bold)
+                    )
+                    Text(
+                        text = "مسافة فاضية / طرف فارغ بدون سلك (NC)",
+                        style = MaterialTheme.typography.bodyMedium.copy(color = Color.LightGray)
+                    )
+                }
+            } else {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = "⚠️ الحالة: ",
+                        style = MaterialTheme.typography.bodyMedium.copy(color = Color(0xFFF59E0B), fontWeight = FontWeight.Bold)
+                    )
+                    Text(
+                        text = "طرف حر (غير متصل بأي موديول أو قطعة)",
+                        style = MaterialTheme.typography.bodyMedium.copy(color = Color.White, fontWeight = FontWeight.SemiBold)
+                    )
+                }
             }
         }
     }

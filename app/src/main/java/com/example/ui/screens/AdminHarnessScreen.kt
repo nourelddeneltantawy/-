@@ -483,33 +483,65 @@ fun AdminHarnessScreen(
                                     }
                                 }
 
-                                // Add Pin to this specific socket
-                                Button(
-                                    onClick = {
-                                        val nextNum = (boardPins.maxOfOrNull { it.pinNumber } ?: 0) + 1
-                                        val avgY = if (socketPins.isNotEmpty()) socketPins.map { it.pinY }.average().toFloat() else 50f
-                                        val maxX = if (socketPins.isNotEmpty()) socketPins.maxOf { it.pinX } + 6f else 50f
-                                        boardPins.add(
-                                            HarnessPin(
-                                                pinNumber = nextNum,
-                                                label = "طرف ${socketPins.size + 1}",
-                                                wireColor = "أزرق",
-                                                colorHex = "#2563EB",
-                                                connectedComponent = "",
-                                                targetPinNumber = null,
-                                                socketName = socketName,
-                                                pinX = maxX.coerceIn(4f, 96f),
-                                                pinY = avgY
-                                            )
-                                        )
-                                    },
+                                // Add Pin / Blank Space buttons to this specific socket
+                                Row(
                                     modifier = Modifier.fillMaxWidth(),
-                                    shape = RoundedCornerShape(8.dp),
-                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0F172A))
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
-                                    Icon(Icons.Default.Add, null, modifier = Modifier.size(14.dp))
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                    Text("+ إضافة طرف جديد لهذا السوكيت ($socketName)", fontSize = 11.sp)
+                                    Button(
+                                        onClick = {
+                                            val nextNum = (boardPins.maxOfOrNull { it.pinNumber } ?: 0) + 1
+                                            val avgY = if (socketPins.isNotEmpty()) socketPins.map { it.pinY }.average().toFloat() else 50f
+                                            val maxX = if (socketPins.isNotEmpty()) socketPins.maxOf { it.pinX } + 6f else 50f
+                                            boardPins.add(
+                                                HarnessPin(
+                                                    pinNumber = nextNum,
+                                                    label = "طرف ${socketPins.size + 1}",
+                                                    wireColor = "أزرق",
+                                                    colorHex = "#2563EB",
+                                                    connectedComponent = "",
+                                                    targetPinNumber = null,
+                                                    socketName = socketName,
+                                                    pinX = maxX.coerceIn(4f, 96f),
+                                                    pinY = avgY
+                                                )
+                                            )
+                                        },
+                                        modifier = Modifier.weight(1f),
+                                        shape = RoundedCornerShape(8.dp),
+                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0F172A))
+                                    ) {
+                                        Icon(Icons.Default.Add, null, modifier = Modifier.size(14.dp))
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text("+ طرف جديد", fontSize = 11.sp)
+                                    }
+
+                                    OutlinedButton(
+                                        onClick = {
+                                            val nextNum = (boardPins.maxOfOrNull { it.pinNumber } ?: 0) + 1
+                                            val avgY = if (socketPins.isNotEmpty()) socketPins.map { it.pinY }.average().toFloat() else 50f
+                                            val maxX = if (socketPins.isNotEmpty()) socketPins.maxOf { it.pinX } + 6f else 50f
+                                            boardPins.add(
+                                                HarnessPin(
+                                                    pinNumber = nextNum,
+                                                    label = "مسافة فاضية",
+                                                    wireColor = "فارغ (بدون سلك)",
+                                                    colorHex = "#94A3B8",
+                                                    isBlank = true,
+                                                    connectedComponent = "",
+                                                    targetPinNumber = null,
+                                                    socketName = socketName,
+                                                    pinX = maxX.coerceIn(4f, 96f),
+                                                    pinY = avgY
+                                                )
+                                            )
+                                        },
+                                        modifier = Modifier.weight(1f),
+                                        shape = RoundedCornerShape(8.dp),
+                                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFF94A3B8))
+                                    ) {
+                                        Text("⚪ + مسافة فاضية (NC)", fontSize = 11.sp)
+                                    }
                                 }
                             }
                         }
