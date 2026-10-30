@@ -30,6 +30,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.Cable
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
@@ -331,6 +332,16 @@ fun AdminHarnessScreen(
                         boardPins.removeAll { it.socketName.ifBlank { "سوكيت 1" }.trim() == target }
                         if (selectedSocketName == socketName) {
                             selectedSocketName = null
+                        }
+                    },
+                    onUpdatePins = { updatedList ->
+                        updatedList.forEach { upPin ->
+                            val idx = boardPins.indexOfFirst { it.pinNumber == upPin.pinNumber }
+                            if (idx >= 0) {
+                                boardPins[idx] = upPin
+                            } else {
+                                boardPins.add(upPin)
+                            }
                         }
                     },
                     selectedSocketName = selectedSocketName,
@@ -965,7 +976,9 @@ fun BoardPinItemCard(
                                     isBlank = isBlank,
                                     wireColor = if (isBlank) "فارغ (بدون سلك)" else "أزرق",
                                     colorHex = if (isBlank) "#94A3B8" else "#2563EB",
-                                    label = if (isBlank) "مكان فاضي بدون سلك (NC)" else pin.label
+                                    label = if (isBlank) "مكان فاضي بدون سلك (NC)" else pin.label,
+                                    connectedComponent = "",
+                                    targetPinNumber = null
                                 )
                             )
                         }
@@ -986,113 +999,141 @@ fun BoardPinItemCard(
                 shape = RoundedCornerShape(8.dp)
             )
 
-            // Wire Color Dropdown
-            var showColorDropdown by remember { mutableStateOf(false) }
-            Box(modifier = Modifier.fillMaxWidth()) {
-                OutlinedButton(
-                    onClick = { showColorDropdown = true },
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(8.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            WireColorBadge(colorHex = pin.colorHex, secondaryColorHex = pin.secondaryColorHex, size = 14.dp)
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("لون السلك: ${pin.wireColor}")
-                        }
-                        Text("تغيير ▾", fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
-                    }
-                }
-                DropdownMenu(expanded = showColorDropdown, onDismissRequest = { showColorDropdown = false }) {
-                    STANDARD_WIRE_COLORS.forEach { (cName, hex) ->
-                        DropdownMenuItem(
-                            text = {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    WireColorBadge(colorHex = hex, size = 16.dp)
-                                    Spacer(modifier = Modifier.width(8.dp))
-                                    Text(cName)
-                                }
-                            },
-                            onClick = {
-                                onUpdate(
-                                    pin.copy(
-                                        wireColor = cName,
-                                        colorHex = hex,
-                                        secondaryColorHex = if (cName.contains("/")) "#16A34A" else null,
-                                        secondaryColorName = if (cName.contains("/")) "أخضر" else null
-                                    )
-                                )
-                                showColorDropdown = false
-                            }
-                        )
-                    }
-                }
-            }
-
-            // Opposite Connection Dropdown (متصل بالطرف السفلي)
-            var showOppositeDropdown by remember { mutableStateOf(false) }
-            val matchedBottomPin = bottomPins.find { it.pinNumber == pin.targetPinNumber }
-
-            Box(modifier = Modifier.fillMaxWidth()) {
+            if (pin.isBlankPin) {
+                // Strict Block Notice: Blank pins cannot be connected to any wire or bottom module
                 Surface(
                     shape = RoundedCornerShape(8.dp),
-                    color = Color(0xFF0F172A).copy(alpha = 0.05f),
-                    border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                    modifier = Modifier.fillMaxWidth().clickable { showOppositeDropdown = true }
+                    color = Color(0xFF1E293B).copy(alpha = 0.7f),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFEF4444).copy(alpha = 0.5f)),
+                    modifier = Modifier.fillMaxWidth()
                 ) {
                     Row(
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
+                        modifier = Modifier.padding(10.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
+                        Icon(Icons.Default.Close, contentDescription = null, tint = Color(0xFFEF4444), modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
                         Column {
-                            Text("متصل بالطرف المقابل في الجزء السفلي:", fontSize = 10.sp, color = MaterialTheme.colorScheme.outline)
                             Text(
-                                text = if (matchedBottomPin != null) "${matchedBottomPin.socketName.ifBlank { matchedBottomPin.connectedComponent }} - طرف #${matchedBottomPin.pinNumber} (${matchedBottomPin.label})"
-                                else "غير متصل (اضغط للاختيار)",
-                                fontWeight = FontWeight.Bold,
-                                color = if (matchedBottomPin != null) Color(0xFF0284C7) else MaterialTheme.colorScheme.onSurface,
-                                fontSize = 12.sp
+                                text = "مسافة فاضية / طرف فارغ بدون سلك (NC)",
+                                style = MaterialTheme.typography.bodySmall.copy(color = Color.White, fontWeight = FontWeight.Bold)
+                            )
+                            Text(
+                                text = "غير مسموح بتوصيله بأي طرف في الضفيرة إطلاقاً",
+                                style = MaterialTheme.typography.labelSmall.copy(color = Color(0xFF94A3B8))
                             )
                         }
-                        Text("تعديل ▾", fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
+                    }
+                }
+            } else {
+                // Wire Color Dropdown
+                var showColorDropdown by remember { mutableStateOf(false) }
+                Box(modifier = Modifier.fillMaxWidth()) {
+                    OutlinedButton(
+                        onClick = { showColorDropdown = true },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                WireColorBadge(colorHex = pin.colorHex, secondaryColorHex = pin.secondaryColorHex, size = 14.dp)
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("لون السلك: ${pin.wireColor}")
+                            }
+                            Text("تغيير ▾", fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
+                        }
+                    }
+                    DropdownMenu(expanded = showColorDropdown, onDismissRequest = { showColorDropdown = false }) {
+                        STANDARD_WIRE_COLORS.forEach { (cName, hex) ->
+                            DropdownMenuItem(
+                                text = {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        WireColorBadge(colorHex = hex, size = 16.dp)
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text(cName)
+                                    }
+                                },
+                                onClick = {
+                                    onUpdate(
+                                        pin.copy(
+                                            wireColor = cName,
+                                            colorHex = hex,
+                                            secondaryColorHex = if (cName.contains("/")) "#16A34A" else null,
+                                            secondaryColorName = if (cName.contains("/")) "أخضر" else null
+                                        )
+                                    )
+                                    showColorDropdown = false
+                                }
+                            )
+                        }
                     }
                 }
 
-                DropdownMenu(expanded = showOppositeDropdown, onDismissRequest = { showOppositeDropdown = false }) {
-                    DropdownMenuItem(
-                        text = { Text("غير متصل (فارغ)") },
-                        onClick = {
-                            onUpdate(pin.copy(connectedComponent = "", targetPinNumber = null))
-                            showOppositeDropdown = false
+                // Opposite Connection Dropdown (متصل بالطرف السفلي)
+                var showOppositeDropdown by remember { mutableStateOf(false) }
+                val matchedBottomPin = bottomPins.find { it.pinNumber == pin.targetPinNumber }
+
+                Box(modifier = Modifier.fillMaxWidth()) {
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = Color(0xFF0F172A).copy(alpha = 0.05f),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                        modifier = Modifier.fillMaxWidth().clickable { showOppositeDropdown = true }
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column {
+                                Text("متصل بالطرف المقابل في الجزء السفلي:", fontSize = 10.sp, color = MaterialTheme.colorScheme.outline)
+                                Text(
+                                    text = if (matchedBottomPin != null) "${matchedBottomPin.socketName.ifBlank { matchedBottomPin.connectedComponent }} - طرف #${matchedBottomPin.pinNumber} (${matchedBottomPin.label})"
+                                    else "غير متصل (اضغط للاختيار)",
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (matchedBottomPin != null) Color(0xFF0284C7) else MaterialTheme.colorScheme.onSurface,
+                                    fontSize = 12.sp
+                                )
+                            }
+                            Text("تعديل ▾", fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
                         }
-                    )
-                    bottomPins.forEach { bPin ->
-                        val isCurSelected = pin.targetPinNumber == bPin.pinNumber
+                    }
+
+                    DropdownMenu(expanded = showOppositeDropdown, onDismissRequest = { showOppositeDropdown = false }) {
                         DropdownMenuItem(
-                            text = {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    WireColorBadge(colorHex = bPin.colorHex, size = 12.dp)
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text(
-                                        text = "${bPin.socketName.ifBlank { bPin.connectedComponent }} - طرف #${bPin.pinNumber} (${bPin.label})",
-                                        fontWeight = if (isCurSelected) FontWeight.Bold else FontWeight.Normal,
-                                        color = if (isCurSelected) Color(0xFF0284C7) else Color.Unspecified
-                                    )
-                                }
-                            },
+                            text = { Text("غير متصل (فارغ)") },
                             onClick = {
-                                onUpdate(pin.copy(
-                                    connectedComponent = bPin.socketName.ifBlank { bPin.connectedComponent },
-                                    targetPinNumber = bPin.pinNumber
-                                ))
+                                onUpdate(pin.copy(connectedComponent = "", targetPinNumber = null))
                                 showOppositeDropdown = false
                             }
                         )
+                        bottomPins.forEach { bPin ->
+                            val isCurSelected = pin.targetPinNumber == bPin.pinNumber
+                            DropdownMenuItem(
+                                text = {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        WireColorBadge(colorHex = bPin.colorHex, size = 12.dp)
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text(
+                                            text = "${bPin.socketName.ifBlank { bPin.connectedComponent }} - طرف #${bPin.pinNumber} (${bPin.label})",
+                                            fontWeight = if (isCurSelected) FontWeight.Bold else FontWeight.Normal,
+                                            color = if (isCurSelected) Color(0xFF0284C7) else Color.Unspecified
+                                        )
+                                    }
+                                },
+                                onClick = {
+                                    onUpdate(pin.copy(
+                                        connectedComponent = bPin.socketName.ifBlank { bPin.connectedComponent },
+                                        targetPinNumber = bPin.pinNumber
+                                    ))
+                                    showOppositeDropdown = false
+                                }
+                            )
+                        }
                     }
                 }
             }

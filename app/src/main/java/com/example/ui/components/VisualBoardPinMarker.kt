@@ -152,6 +152,7 @@ fun VisualBoardPinMarker(
     onMoveSocket: (socketName: String, deltaX: Float, deltaY: Float) -> Unit = { _, _, _ -> },
     onResizeSocket: (socketName: String, scaleFactor: Float) -> Unit = { _, _ -> },
     onDeleteSocket: (socketName: String) -> Unit = {},
+    onUpdatePins: (List<HarnessPin>) -> Unit = {},
     selectedSocketName: String?,
     onSelectSocket: (String?) -> Unit,
     modifier: Modifier = Modifier
@@ -182,6 +183,8 @@ fun VisualBoardPinMarker(
     var showAddSocketDialog by remember { mutableStateOf(false) }
     var showImageDialog by remember { mutableStateOf(false) }
     var showEditSocketDialog by remember { mutableStateOf(false) }
+    var showCropperDialog by remember { mutableStateOf(false) }
+    var showFocusEditorSocket by remember { mutableStateOf<String?>(null) }
     var socketToDelete by remember { mutableStateOf<String?>(null) }
     var showWires by remember { mutableStateOf(true) }
 
@@ -249,6 +252,24 @@ fun VisualBoardPinMarker(
                             text = "تحريك مباشر لحظي بالسحب • مقبض زاوية لتكبير السوكيت • إمكانية قص وضبط الصورة",
                             style = MaterialTheme.typography.labelSmall.copy(color = MaterialTheme.colorScheme.outline)
                         )
+                    }
+                }
+
+                if (boardImageUrl.isNotBlank()) {
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = Color(0xFF0284C7).copy(alpha = 0.15f),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF0284C7)),
+                        modifier = Modifier.clickable { showCropperDialog = true }
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(Icons.Default.Crop, contentDescription = null, tint = Color(0xFF38BDF8), modifier = Modifier.size(15.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("قص الكارتة ✂️", color = Color(0xFF38BDF8), fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                        }
                     }
                 }
             }
@@ -574,6 +595,22 @@ fun VisualBoardPinMarker(
 
                                 Spacer(modifier = Modifier.width(4.dp))
 
+                                // Direct button to open dedicated Precision Hand Editor for this socket
+                                Surface(
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = Color(0xFF0284C7),
+                                    modifier = Modifier.clickable { showFocusEditorSocket = sock }
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Icon(Icons.Default.FitScreen, contentDescription = null, tint = Color.White, modifier = Modifier.size(13.dp))
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text("تعديل باليد 📐", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                                    }
+                                }
+
                                 // Scale up socket (+)
                                 Surface(
                                     shape = CircleShape,
@@ -843,6 +880,34 @@ fun VisualBoardPinMarker(
                 TextButton(onClick = { socketToDelete = null }) {
                     Text("إلغاء")
                 }
+            }
+        )
+    }
+
+    // Photo Cropper Dialog (Photoshop / Gallery style with 4 corner handles)
+    if (showCropperDialog && boardImageUrl.isNotBlank()) {
+        PhotoCropperDialog(
+            imageUrl = boardImageUrl,
+            onDismiss = { showCropperDialog = false },
+            onCropped = { newCroppedPath ->
+                onUpdateBoardImageUrl(newCroppedPath)
+                showCropperDialog = false
+            }
+        )
+    }
+
+    // Socket Focus & Precision Hand Editor Dialog (bounded pin dragging and 4 corner handles)
+    showFocusEditorSocket?.let { sockName ->
+        val sPins = pins.filter { it.socketName.ifBlank { "سوكيت 1" }.trim() == sockName.trim() }
+        SocketFocusEditorDialog(
+            socketName = sockName,
+            boardImageUrl = boardImageUrl,
+            initialPins = sPins,
+            allPins = pins,
+            onDismiss = { showFocusEditorSocket = null },
+            onSavePins = { updatedSocketPins ->
+                onUpdatePins(updatedSocketPins)
+                showFocusEditorSocket = null
             }
         )
     }

@@ -63,6 +63,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -81,6 +82,8 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -358,6 +361,10 @@ fun HarnessInteractiveCanvas(
                 }
             }
     ) {
+        var containerCoordinates by remember { mutableStateOf<LayoutCoordinates?>(null) }
+        val boardPinCenters = remember { mutableStateMapOf<Int, Offset>() }
+        val bottomPinCenters = remember { mutableStateMapOf<Int, Offset>() }
+
         // Zoom & Pan Contained Surface
         Box(
             modifier = Modifier
@@ -368,6 +375,7 @@ fun HarnessInteractiveCanvas(
                     translationX = offset.x,
                     translationY = offset.y
                 )
+                .onGloballyPositioned { containerCoordinates = it }
         ) {
             CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
                 Column(
@@ -482,7 +490,14 @@ fun HarnessInteractiveCanvas(
                                                             color = if (isBlank) Color(0xFF64748B).copy(alpha = 0.7f) else if (isPinSelected) pinColor else Color.White,
                                                             shape = CircleShape
                                                         )
-                                                        .clickable { onSelectPin(pin.pinNumber) },
+                                                        .clickable { onSelectPin(pin.pinNumber) }
+                                                        .onGloballyPositioned { coords ->
+                                                            containerCoordinates?.let { parent ->
+                                                                if (coords.isAttached && parent.isAttached) {
+                                                                    boardPinCenters[pin.pinNumber] = parent.localPositionOf(coords, Offset(coords.size.width / 2f, coords.size.height / 2f))
+                                                                }
+                                                            }
+                                                        },
                                                     contentAlignment = Alignment.Center
                                                 ) {
                                                     if (isBlank) {
@@ -512,80 +527,79 @@ fun HarnessInteractiveCanvas(
                         }
                     }
 
-                // MIDDLE: Visual Wires Canvas with Smooth Curves (Toggleable)
-                    if (showWires) {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(75.dp)
-                        ) {
-                    Canvas(modifier = Modifier.fillMaxSize()) {
-                        val canvasWidth = size.width
-                        val canvasHeight = size.height
+                    Spacer(modifier = Modifier.height(20.dp))
 
-                        val boardCount = harness.boardPins.size.coerceAtLeast(1)
-                        val bottomCount = harness.bottomPins.size.coerceAtLeast(1)
+                    // BOTTOM: Connected Appliance Components (الماتور، لوك، ليفل، طلمبة، صمامات، سخان)
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        componentGroups.forEach { (compName, compPins) ->
+                            ApplianceModuleCard(
+                                componentName = compName,
+                                pins = compPins,
+                                selectedPinNumber = selectedPinNumber,
+                                onSelectPin = onSelectPin,
+                                onPinPositioned = { pinNum, coords ->
+                                    containerCoordinates?.let { parent ->
+                                        if (coords.isAttached && parent.isAttached) {
+                                            bottomPinCenters[pinNum] = parent.localPositionOf(coords, Offset(coords.size.width / 2f, coords.size.height / 2f))
+                                        }
+                                    }
+                                }
+                            )
+                        }
+                    }
+                }
+            }
 
-                        harness.boardPins.forEachIndexed { bIndex, bPin ->
-                            val isPinSelected = selectedPinNumber == bPin.pinNumber
+            // OVERLAY DIRECT WIRES CANVAS (Real physical connections from Board Pins to Module Pins)
+            if (showWires) {
+                Canvas(modifier = Modifier.fillMaxSize()) {
+                    harness.boardPins.forEach { bPin ->
+                        // Blank pins do not draw any wire
+                        if (bPin.isBlankPin) return@forEach
 
-                            // Calculate start position
-                            val startX = if (bPin.pinX > 0f) (bPin.pinX / 100f) * canvasWidth else (bIndex + 0.5f) * (canvasWidth / boardCount)
-                            val startY = 0f
+                        val start = boardPinCenters[bPin.pinNumber]
+                        val targetPinNum = bPin.targetPinNumber
+                        val end = if (targetPinNum != null) bottomPinCenters[targetPinNum] else null
 
-                            if (bPin.isBlankPin) {
-                                // Empty terminal dot
-                                drawCircle(
-                                    color = Color(0xFF64748B),
-                                    radius = if (isPinSelected) 5f else 2.5f,
-                                    center = Offset(startX, startY),
-                                    style = Stroke(width = 1.5f)
-                                )
-                                return@forEachIndexed
-                            }
-
-                            // Calculate end position on corresponding bottom module
-                            val targetIndex = harness.bottomPins.indexOfFirst {
-                                (bPin.targetPinNumber != null && it.pinNumber == bPin.targetPinNumber && (bPin.connectedComponent.isBlank() || it.connectedComponent == bPin.connectedComponent)) ||
-                                (it.targetPinNumber != null && it.targetPinNumber == bPin.pinNumber)
-                            }
-
-                            if (targetIndex < 0) {
-                                // No matching target terminal exists on the bottom modules
-                                // (e.g. board has 4 pins, but motor only has 3 pins).
-                                // Do not draw a bogus wire connecting to pin 1!
-                                drawCircle(
-                                    color = parseWireColorToComposeColor(bPin.colorHex),
-                                    radius = if (isPinSelected) 5f else 3f,
-                                    center = Offset(startX, startY)
-                                )
-                                return@forEachIndexed
-                            }
-
-                            val endX = (targetIndex + 0.5f) * (canvasWidth / bottomCount)
-                            val endY = canvasHeight
+                        // Only draw when both real measured pin positions exist
+                        if (start != null && end != null) {
+                            val isPinSelected = selectedPinNumber == bPin.pinNumber || selectedPinNumber == targetPinNum
+                            val primaryColor = parseWireColorToComposeColor(bPin.colorHex)
+                            val wireWidth = if (isPinSelected) 5.dp.toPx() else 2.5.dp.toPx()
+                            val wireAlpha = if (selectedPinNumber == null || isPinSelected) 1f else 0.15f
 
                             val wirePath = Path().apply {
-                                moveTo(startX, startY)
+                                moveTo(start.x, start.y)
+                                val dy = (end.y - start.y).coerceAtLeast(30f) * 0.45f
                                 cubicTo(
-                                    startX, startY + (canvasHeight * 0.5f),
-                                    endX, endY - (canvasHeight * 0.5f),
-                                    endX, endY
+                                    start.x, start.y + dy,
+                                    end.x, end.y - dy,
+                                    end.x, end.y
                                 )
                             }
 
-                            val primaryColor = parseWireColorToComposeColor(bPin.colorHex)
-                            val wireWidth = if (isPinSelected) 6f else 2.8f
-                            val wireAlpha = if (selectedPinNumber == null || isPinSelected) 1f else 0.18f
+                            if (isPinSelected) {
+                                // Glowing background highlight
+                                drawPath(
+                                    path = wirePath,
+                                    color = Color(0xFF38BDF8).copy(alpha = 0.6f),
+                                    style = Stroke(width = wireWidth + 6.dp.toPx(), cap = StrokeCap.Round)
+                                )
+                            }
 
-                            // Draw main wire
+                            // Main Wire
                             drawPath(
                                 path = wirePath,
                                 color = primaryColor.copy(alpha = wireAlpha),
                                 style = Stroke(width = wireWidth, cap = StrokeCap.Round)
                             )
 
-                            // Striped overlay if secondary color exists
+                            // Secondary color dashed stripe
                             if (bPin.secondaryColorHex != null) {
                                 val secColor = parseWireColorToComposeColor(bPin.secondaryColorHex)
                                 drawPath(
@@ -594,36 +608,15 @@ fun HarnessInteractiveCanvas(
                                     style = Stroke(
                                         width = wireWidth,
                                         cap = StrokeCap.Round,
-                                        pathEffect = PathEffect.dashPathEffect(floatArrayOf(14f, 14f), 0f)
+                                        pathEffect = PathEffect.dashPathEffect(floatArrayOf(12f, 12f), 0f)
                                     )
                                 )
                             }
                         }
                     }
                 }
-            } else {
-                Spacer(modifier = Modifier.height(16.dp))
-            }
-
-                // BOTTOM: Connected Appliance Components (الماتور، لوك، ليفل، طلمبة، صمامات، سخان)
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    componentGroups.forEach { (compName, compPins) ->
-                        ApplianceModuleCard(
-                            componentName = compName,
-                            pins = compPins,
-                            selectedPinNumber = selectedPinNumber,
-                            onSelectPin = onSelectPin
-                        )
-                    }
-                }
             }
         }
-    }
 
         // Floating Zoom & Reset Controls in Top-End Corner
         Column(
@@ -692,6 +685,7 @@ fun ApplianceModuleCard(
     pins: List<HarnessPin>,
     selectedPinNumber: Int?,
     onSelectPin: (Int) -> Unit,
+    onPinPositioned: (pinNumber: Int, coordinates: LayoutCoordinates) -> Unit = { _, _ -> },
     modifier: Modifier = Modifier
 ) {
     val (icon, tint) = getComponentIconAndColor(componentName)
@@ -738,6 +732,7 @@ fun ApplianceModuleCard(
                         .fillMaxWidth()
                         .padding(vertical = 2.dp)
                         .clickable { onSelectPin(pin.pinNumber) }
+                        .onGloballyPositioned { onPinPositioned(pin.pinNumber, it) }
                 ) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
