@@ -45,7 +45,8 @@ object HubCategoryManager {
                         customTitle = obj.optString("customTitle", ""),
                         customSubtitle = obj.optString("customSubtitle", ""),
                         customImageUrl = obj.optString("customImageUrl", ""),
-                        customIconName = obj.optString("customIconName", "")
+                        customIconName = obj.optString("customIconName", ""),
+                        isLocked = obj.optBoolean("isLocked", false)
                     )
                 }
                 _customizations.value = map
@@ -157,6 +158,44 @@ object HubCategoryManager {
         }
     }
 
+    fun toggleCategoryLock(
+        context: Context,
+        id: String,
+        onComplete: ((Boolean) -> Unit)? = null
+    ) {
+        val appContext = context.applicationContext ?: context
+        val current = _customizations.value.toMutableMap()
+        val existing = current[id] ?: HubCategoryCustomization(id = id)
+        val updated = existing.copy(isLocked = !existing.isLocked)
+        current[id] = updated
+        _customizations.value = current
+        saveToPrefs(appContext, current)
+
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val db = FirebaseInitializer.getFirestore(appContext)
+                val remotePayload = mutableMapOf<String, Any>()
+                current.forEach { (catId, cust) ->
+                    remotePayload[catId] = cust.toMap()
+                }
+
+                db.collection("app_settings").document("hub_categories")
+                    .set(remotePayload)
+                    .addOnCompleteListener { task ->
+                        if (task.isSuccessful) {
+                            Log.i(TAG, "Toggled lock for category [$id] -> ${updated.isLocked}")
+                        } else {
+                            Log.e(TAG, "Failed to toggle lock in Firestore: ${task.exception?.message}")
+                        }
+                        onComplete?.invoke(task.isSuccessful)
+                    }
+            } catch (e: Throwable) {
+                Log.e(TAG, "Exception toggling lock in Firestore", e)
+                onComplete?.invoke(false)
+            }
+        }
+    }
+
     fun resetCategory(
         context: Context,
         id: String,
@@ -186,6 +225,7 @@ object HubCategoryManager {
                 obj.put("customSubtitle", item.customSubtitle)
                 obj.put("customImageUrl", item.customImageUrl)
                 obj.put("customIconName", item.customIconName)
+                obj.put("isLocked", item.isLocked)
                 json.put(id, obj)
             }
             val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)

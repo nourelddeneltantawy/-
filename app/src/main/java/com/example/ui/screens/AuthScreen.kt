@@ -23,6 +23,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.activity.compose.BackHandler
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.Build
@@ -141,27 +143,28 @@ fun AuthScreen(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center
         ) {
-            // App Branding Icon
-            Box(
+            // App Branding Logo
+            Surface(
+                shape = CircleShape,
+                color = Color.White,
                 modifier = Modifier
-                    .size(90.dp)
+                    .size(105.dp)
                     .clip(CircleShape)
-                    .background(Color(0xFF1E293B))
-                    .border(2.dp, Color(0xFF38BDF8), CircleShape),
-                contentAlignment = Alignment.Center
+                    .border(3.dp, Color(0xFF38BDF8), CircleShape)
+                    .shadow(8.dp, CircleShape)
             ) {
-                Icon(
-                    imageVector = Icons.Default.Hub,
-                    contentDescription = "شعار التطبيق",
-                    tint = Color(0xFF38BDF8),
-                    modifier = Modifier.size(52.dp)
+                Image(
+                    painter = painterResource(id = R.drawable.logo_albaraa),
+                    contentDescription = "شعار البراء إلكترونيك",
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Crop
                 )
             }
 
-            Spacer(modifier = Modifier.height(18.dp))
+            Spacer(modifier = Modifier.height(20.dp))
 
             Text(
-                text = "دليل مواتير الغسالات",
+                text = "البراء إلكترونيك",
                 style = MaterialTheme.typography.headlineMedium.copy(
                     fontWeight = FontWeight.Bold,
                     color = Color.White,
@@ -170,50 +173,18 @@ fun AuthScreen(
                 textAlign = TextAlign.Center
             )
 
-            Spacer(modifier = Modifier.height(8.dp))
+            Spacer(modifier = Modifier.height(6.dp))
 
             Text(
-                text = "المنصة الهندسية المتكاملة لمخططات وأطراف وتوصيلات مواتير الغسالات للفنيين والمهندسين",
+                text = "المنظومة الشاملة لمخططات وضفائر ومواتير الغسالات",
                 style = MaterialTheme.typography.bodyMedium.copy(
                     color = Color(0xFF94A3B8),
-                    lineHeight = 22.sp
+                    fontSize = 14.sp
                 ),
-                textAlign = TextAlign.Center,
-                modifier = Modifier.padding(horizontal = 16.dp)
+                textAlign = TextAlign.Center
             )
 
-            Spacer(modifier = Modifier.height(32.dp))
-
-            // Tech Feature Pills Card
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B).copy(alpha = 0.7f)),
-                shape = RoundedCornerShape(16.dp),
-                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF334155))
-            ) {
-                Column(
-                    modifier = Modifier.padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    FeatureRow(
-                        icon = Icons.Default.ElectricBolt,
-                        title = "مخططات تفصيلية دقيقة",
-                        subtitle = "أرقام الأطراف، ألوان الأسلاك ووظيفة كل بن في الماتور"
-                    )
-                    FeatureRow(
-                        icon = Icons.Default.Engineering,
-                        title = "لوحة تحكم ديناميكية للفنيين",
-                        subtitle = "إمكانية إضافة مواتير جديدة وإعادة ترتيب الأطراف بالسحب والأسهم"
-                    )
-                    FeatureRow(
-                        icon = Icons.Default.Build,
-                        title = "استوديو الذكاء الاصطناعي",
-                        subtitle = "توليد وتعديل مخططات الأسلاك فائقة الدقة بنقرة واحدة"
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.height(36.dp))
+            Spacer(modifier = Modifier.height(40.dp))
 
             // Interactive Google Sign-In Button
             Button(
@@ -329,48 +300,7 @@ fun AuthScreen(
     }
 }
 
-@Composable
-private fun FeatureRow(
-    icon: ImageVector,
-    title: String,
-    subtitle: String
-) {
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        Box(
-            modifier = Modifier
-                .size(36.dp)
-                .clip(CircleShape)
-                .background(Color(0xFF0369A1).copy(alpha = 0.3f)),
-            contentAlignment = Alignment.Center
-        ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = null,
-                tint = Color(0xFF38BDF8),
-                modifier = Modifier.size(20.dp)
-            )
-        }
-        Spacer(modifier = Modifier.width(12.dp))
-        Column {
-            Text(
-                text = title,
-                style = MaterialTheme.typography.bodyMedium.copy(
-                    fontWeight = FontWeight.Bold,
-                    color = Color.White
-                )
-            )
-            Text(
-                text = subtitle,
-                style = MaterialTheme.typography.bodySmall.copy(
-                    color = Color(0xFF94A3B8)
-                )
-            )
-        }
-    }
-}
+
 
 private const val DEFAULT_WEB_CLIENT_ID_FALLBACK = "194875724444-sj3st9c7cvgbic0lgtcnaa3m6mpehq7i.apps.googleusercontent.com"
 

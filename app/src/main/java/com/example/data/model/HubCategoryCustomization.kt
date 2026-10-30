@@ -5,7 +5,8 @@ data class HubCategoryCustomization(
     val customTitle: String = "",
     val customSubtitle: String = "",
     val customImageUrl: String = "",
-    val customIconName: String = "" // e.g. "contact", "memory", "cable", "lock", "hub", "wash", "cleaning", "settings", "build"
+    val customIconName: String = "", // e.g. "contact", "memory", "cable", "lock", "hub", "wash", "cleaning", "settings", "build"
+    val isLocked: Boolean = false
 ) {
     fun toMap(): Map<String, Any> {
         return mapOf(
@@ -13,7 +14,8 @@ data class HubCategoryCustomization(
             "customTitle" to customTitle,
             "customSubtitle" to customSubtitle,
             "customImageUrl" to customImageUrl,
-            "customIconName" to customIconName
+            "customIconName" to customIconName,
+            "isLocked" to isLocked
         )
     }
 
@@ -24,8 +26,10 @@ data class HubCategoryCustomization(
                 customTitle = map["customTitle"] as? String ?: "",
                 customSubtitle = map["customSubtitle"] as? String ?: "",
                 customImageUrl = map["customImageUrl"] as? String ?: "",
-                customIconName = map["customIconName"] as? String ?: ""
+                customIconName = map["customIconName"] as? String ?: "",
+                isLocked = (map["isLocked"] as? Boolean) ?: false
             )
         }
     }
 }
+

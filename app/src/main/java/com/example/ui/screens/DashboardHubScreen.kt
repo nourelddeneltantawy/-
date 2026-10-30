@@ -44,6 +44,7 @@ import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.LocalLaundryService
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.PrecisionManufacturing
@@ -147,6 +148,7 @@ fun DashboardHubScreen(
     val context = LocalContext.current
     var showThemeDialog by remember { mutableStateOf(false) }
     var editingCategoryId by remember { mutableStateOf<String?>(null) }
+    var lockedDialogCategoryTitle by remember { mutableStateOf<String?>(null) }
 
     val customizations by HubCategoryManager.customizations.collectAsState()
 
@@ -433,17 +435,25 @@ fun DashboardHubScreen(
                     val finalImageUrl = cust?.customImageUrl ?: ""
                     val finalIcon = resolveCategoryIcon(cust?.customIconName ?: "", item.defaultIcon)
 
+                    val isCategoryLocked = cust?.isLocked == true
+
                     Box(modifier = Modifier.fillMaxWidth()) {
                         Card(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(165.dp)
+                                .height(172.dp)
                                 .clip(RoundedCornerShape(24.dp))
-                                .clickable { item.onClick() }
+                                .clickable {
+                                    if (!isAdmin && isCategoryLocked) {
+                                        lockedDialogCategoryTitle = finalTitle
+                                    } else {
+                                        item.onClick()
+                                    }
+                                }
                                 .testTag("hub_card_${item.id}"),
                             shape = RoundedCornerShape(24.dp),
                             colors = CardDefaults.cardColors(
-                                containerColor = MaterialTheme.colorScheme.surface
+                                containerColor = if (isCategoryLocked && !isAdmin) MaterialTheme.colorScheme.surface.copy(alpha = 0.6f) else MaterialTheme.colorScheme.surface
                             ),
                             elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
                         ) {
@@ -459,7 +469,7 @@ fun DashboardHubScreen(
                                     shape = CircleShape,
                                     color = item.circleBackground,
                                     modifier = Modifier
-                                        .size(64.dp)
+                                        .size(62.dp)
                                         .shadow(4.dp, CircleShape)
                                         .clip(CircleShape)
                                 ) {
@@ -476,13 +486,13 @@ fun DashboardHubScreen(
                                                 imageVector = finalIcon,
                                                 contentDescription = finalTitle,
                                                 tint = item.iconTint,
-                                                modifier = Modifier.size(32.dp)
+                                                modifier = Modifier.size(30.dp)
                                             )
                                         }
                                     }
                                 }
 
-                                Spacer(modifier = Modifier.height(12.dp))
+                                Spacer(modifier = Modifier.height(10.dp))
 
                                 Text(
                                     text = finalTitle,
@@ -509,8 +519,18 @@ fun DashboardHubScreen(
                             }
                         }
 
-                        // Admin direct quick-edit badge on individual card
+                        // Admin Controls: Lock Switch (Top Start) & Edit Pencil (Top End)
                         if (isAdmin) {
+                            CategoryLockSwitch(
+                                isLocked = isCategoryLocked,
+                                onToggle = {
+                                    HubCategoryManager.toggleCategoryLock(context, item.id)
+                                },
+                                modifier = Modifier
+                                    .align(Alignment.TopStart)
+                                    .padding(8.dp)
+                            )
+
                             Surface(
                                 shape = CircleShape,
                                 color = MaterialTheme.colorScheme.primary.copy(alpha = 0.9f),
@@ -530,11 +550,90 @@ fun DashboardHubScreen(
                                     )
                                 }
                             }
+                        } else if (isCategoryLocked) {
+                            // Guest indicator when category is locked
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = Color(0xFFEF4444),
+                                modifier = Modifier
+                                    .align(Alignment.TopStart)
+                                    .padding(8.dp)
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Lock,
+                                        contentDescription = "مغلق",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(11.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(3.dp))
+                                    Text(
+                                        text = "مغلق",
+                                        style = MaterialTheme.typography.labelSmall.copy(
+                                            color = Color.White,
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 9.sp
+                                        )
+                                    )
+                                }
+                            }
                         }
                     }
                 }
             }
         }
+    }
+
+    // Alert Dialog when a guest attempts to enter a locked category
+    if (lockedDialogCategoryTitle != null) {
+        AlertDialog(
+            onDismissRequest = { lockedDialogCategoryTitle = null },
+            icon = {
+                Surface(
+                    shape = CircleShape,
+                    color = Color(0xFFEF4444).copy(alpha = 0.15f),
+                    modifier = Modifier.size(56.dp)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            imageVector = Icons.Default.Lock,
+                            contentDescription = null,
+                            tint = Color(0xFFEF4444),
+                            modifier = Modifier.size(32.dp)
+                        )
+                    }
+                }
+            },
+            title = {
+                Text(
+                    text = "القسم مغلق حالياً",
+                    fontWeight = FontWeight.Bold,
+                    textAlign = TextAlign.Center,
+                    style = MaterialTheme.typography.titleMedium
+                )
+            },
+            text = {
+                Text(
+                    text = "عذراً، قسم ($lockedDialogCategoryTitle) مغلق حالياً للصيانة والبرمجة والتطوير من قبل إدارة م. البراء إلكترونيك، وسيتم إتاحته للجميع فور الانتهاء.",
+                    textAlign = TextAlign.Center,
+                    style = MaterialTheme.typography.bodyMedium,
+                    lineHeight = 22.sp
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = { lockedDialogCategoryTitle = null },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0284C7)),
+                    shape = RoundedCornerShape(10.dp)
+                ) {
+                    Text("فهمت ذلك", fontWeight = FontWeight.Bold)
+                }
+            },
+            shape = RoundedCornerShape(20.dp)
+        )
     }
 
     if (showThemeDialog) {
@@ -798,3 +897,78 @@ fun EditCategoryDialog(
         shape = RoundedCornerShape(20.dp)
     )
 }
+
+/**
+ * Custom toggle switch for Admins to lock/unlock sections.
+ * Matches design from user screenshot: Green "مفتوح" with 🔓 vs Red "مغلق" with 🔒.
+ */
+@Composable
+fun CategoryLockSwitch(
+    isLocked: Boolean,
+    onToggle: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        shape = RoundedCornerShape(14.dp),
+        color = if (isLocked) Color(0xFFEF4444) else Color(0xFF22C55E),
+        shadowElevation = 3.dp,
+        modifier = modifier
+            .clip(RoundedCornerShape(14.dp))
+            .clickable { onToggle() }
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
+        ) {
+            if (!isLocked) {
+                Surface(
+                    shape = CircleShape,
+                    color = Color.White,
+                    modifier = Modifier.size(18.dp)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            imageVector = Icons.Default.LockOpen,
+                            contentDescription = "مفتوح",
+                            tint = Color(0xFF16A34A),
+                            modifier = Modifier.size(11.dp)
+                        )
+                    }
+                }
+                Text(
+                    text = "مفتوح",
+                    style = MaterialTheme.typography.labelSmall.copy(
+                        color = Color.White,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 10.sp
+                    )
+                )
+            } else {
+                Text(
+                    text = "مغلق",
+                    style = MaterialTheme.typography.labelSmall.copy(
+                        color = Color.White,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 10.sp
+                    )
+                )
+                Surface(
+                    shape = CircleShape,
+                    color = Color.White,
+                    modifier = Modifier.size(18.dp)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            imageVector = Icons.Default.Lock,
+                            contentDescription = "مغلق",
+                            tint = Color(0xFFDC2626),
+                            modifier = Modifier.size(11.dp)
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+

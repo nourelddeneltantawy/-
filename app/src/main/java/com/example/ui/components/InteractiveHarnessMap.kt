@@ -171,21 +171,21 @@ fun InteractiveHarnessMap(
                         }
                     }
 
+                    // Top info bar in fullscreen - prominently displayed under top bar
+                    activeBoardPin?.let { pin ->
+                        HarnessPinInspectorBanner(
+                            boardPin = pin,
+                            bottomPin = activeBottomPin,
+                            onDismiss = { selectedPinNumber = null }
+                        )
+                    }
+
                     Box(modifier = Modifier.weight(1f)) {
                         HarnessInteractiveCanvas(
                             harness = harness,
                             selectedPinNumber = selectedPinNumber,
                             showWires = showWires,
                             onSelectPin = { selectedPinNumber = if (selectedPinNumber == it) null else it }
-                        )
-                    }
-
-                    // Bottom info bar in fullscreen - elevated above nav bar
-                    activeBoardPin?.let { pin ->
-                        HarnessPinInspectorBanner(
-                            boardPin = pin,
-                            bottomPin = activeBottomPin,
-                            onDismiss = { selectedPinNumber = null }
                         )
                     }
                 }
@@ -283,6 +283,16 @@ fun InteractiveHarnessMap(
                 }
             }
 
+            // Pin Inspector Details when a pin is selected (Prominently displayed at TOP!)
+            activeBoardPin?.let { pin ->
+                Spacer(modifier = Modifier.height(10.dp))
+                HarnessPinInspectorBanner(
+                    boardPin = pin,
+                    bottomPin = activeBottomPin,
+                    onDismiss = { selectedPinNumber = null }
+                )
+            }
+
             Spacer(modifier = Modifier.height(10.dp))
 
             if (viewMode == "visual") {
@@ -303,16 +313,6 @@ fun InteractiveHarnessMap(
                     harness = harness,
                     selectedPinNumber = selectedPinNumber,
                     onSelectPin = { selectedPinNumber = if (selectedPinNumber == it) null else it }
-                )
-            }
-
-            // Pin Inspector Details when a pin is selected
-            activeBoardPin?.let { pin ->
-                Spacer(modifier = Modifier.height(10.dp))
-                HarnessPinInspectorBanner(
-                    boardPin = pin,
-                    bottomPin = activeBottomPin,
-                    onDismiss = { selectedPinNumber = null }
                 )
             }
         }
@@ -536,10 +536,21 @@ fun HarnessInteractiveCanvas(
 
                             // Calculate end position on corresponding bottom module
                             val targetIndex = harness.bottomPins.indexOfFirst {
-                                (bPin.targetPinNumber != null && it.pinNumber == bPin.targetPinNumber) ||
-                                (it.targetPinNumber != null && it.targetPinNumber == bPin.pinNumber) ||
-                                (bPin.connectedComponent.isNotBlank() && it.connectedComponent == bPin.connectedComponent && it.pinNumber == bPin.targetPinNumber)
-                            }.takeIf { it >= 0 } ?: (bIndex % bottomCount)
+                                (bPin.targetPinNumber != null && it.pinNumber == bPin.targetPinNumber && (bPin.connectedComponent.isBlank() || it.connectedComponent == bPin.connectedComponent)) ||
+                                (it.targetPinNumber != null && it.targetPinNumber == bPin.pinNumber)
+                            }
+
+                            if (targetIndex < 0) {
+                                // No matching target terminal exists on the bottom modules
+                                // (e.g. board has 4 pins, but motor only has 3 pins).
+                                // Do not draw a bogus wire connecting to pin 1!
+                                drawCircle(
+                                    color = parseWireColorToComposeColor(bPin.colorHex),
+                                    radius = if (isPinSelected) 5f else 3f,
+                                    center = Offset(startX, startY)
+                                )
+                                return@forEachIndexed
+                            }
 
                             val endX = (targetIndex + 0.5f) * (canvasWidth / bottomCount)
                             val endY = canvasHeight
@@ -834,8 +845,7 @@ fun HarnessPinInspectorBanner(
     Card(
         modifier = modifier
             .fillMaxWidth()
-            .navigationBarsPadding()
-            .padding(horizontal = 14.dp, vertical = 6.dp)
+            .padding(horizontal = 4.dp, vertical = 4.dp)
             .shadow(12.dp, RoundedCornerShape(16.dp)),
         shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(
@@ -888,9 +898,21 @@ fun HarnessPinInspectorBanner(
 
             Spacer(modifier = Modifier.height(6.dp))
 
+            val destinationDescription = when {
+                boardPin.isBlankPin -> "📍 الوجهة: طرف فارغ (NC)"
+                boardPin.targetPinNumber != null && bottomPin != null ->
+                    "📍 الوجهة: ${boardPin.connectedComponent} - الطرف المقابل #${boardPin.targetPinNumber}" +
+                            (if (bottomPin.label.isNotBlank()) " (${bottomPin.label})" else "")
+                boardPin.targetPinNumber != null && bottomPin == null ->
+                    "📍 الوجهة: ${boardPin.connectedComponent} - طرف #${boardPin.targetPinNumber} (طرف حر / غير متصل)"
+                boardPin.connectedComponent.isNotBlank() ->
+                    "📍 الوجهة: ${boardPin.connectedComponent} (طرف غير محدد)"
+                else ->
+                    "📍 الوجهة: طرف حر / غير محدد"
+            }
+
             Text(
-                text = "📍 الوجهة: ${boardPin.connectedComponent} - الطرف المقابل #${boardPin.targetPinNumber ?: '1'}" +
-                        (if (bottomPin != null && bottomPin.label.isNotBlank()) " (${bottomPin.label})" else ""),
+                text = destinationDescription,
                 style = MaterialTheme.typography.bodySmall.copy(color = Color(0xFFE2E8F0), fontWeight = FontWeight.SemiBold)
             )
 
