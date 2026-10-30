@@ -289,13 +289,20 @@ fun AdminHarnessScreen(
                     },
                     onMoveSocket = { socketName, deltaX, deltaY ->
                         val target = socketName.trim()
+                        val distinctList = boardPins.map { it.socketName.ifBlank { "سوكيت 1" }.trim() }.distinct()
+                        val sockIdx = distinctList.indexOf(target).coerceAtLeast(0)
+                        val defaultX = 20f + ((sockIdx % 3) * 28f)
+                        val defaultY = 25f + ((sockIdx / 3) * 30f)
+
                         boardPins.indices.forEach { i ->
                             val p = boardPins[i]
                             if (p.socketName.ifBlank { "سوكيت 1" }.trim() == target) {
+                                val curX = if (p.pinX > 0f) p.pinX else defaultX
+                                val curY = if (p.pinY > 0f) p.pinY else defaultY
                                 boardPins[i] = p.copy(
                                     socketName = socketName,
-                                    pinX = (p.pinX + deltaX).coerceIn(2f, 98f),
-                                    pinY = (p.pinY + deltaY).coerceIn(2f, 98f)
+                                    pinX = (curX + deltaX).coerceIn(2f, 98f),
+                                    pinY = (curY + deltaY).coerceIn(2f, 98f)
                                 )
                             }
                         }
@@ -304,13 +311,16 @@ fun AdminHarnessScreen(
                         val target = socketName.trim()
                         val targetPins = boardPins.filter { it.socketName.ifBlank { "سوكيت 1" }.trim() == target }
                         if (targetPins.isNotEmpty()) {
-                            val centerX = targetPins.map { it.pinX }.average().toFloat()
-                            val centerY = targetPins.map { it.pinY }.average().toFloat()
+                            val validPins = targetPins.filter { it.pinX > 0f && it.pinY > 0f }
+                            val centerX = if (validPins.isNotEmpty()) validPins.map { it.pinX }.average().toFloat() else 50f
+                            val centerY = if (validPins.isNotEmpty()) validPins.map { it.pinY }.average().toFloat() else 50f
                             boardPins.indices.forEach { i ->
                                 val p = boardPins[i]
                                 if (p.socketName.ifBlank { "سوكيت 1" }.trim() == target) {
-                                    val newX = (centerX + (p.pinX - centerX) * scaleFactor).coerceIn(2f, 98f)
-                                    val newY = (centerY + (p.pinY - centerY) * scaleFactor).coerceIn(2f, 98f)
+                                    val curX = if (p.pinX > 0f) p.pinX else centerX
+                                    val curY = if (p.pinY > 0f) p.pinY else centerY
+                                    val newX = (centerX + (curX - centerX) * scaleFactor).coerceIn(2f, 98f)
+                                    val newY = (centerY + (curY - centerY) * scaleFactor).coerceIn(2f, 98f)
                                     boardPins[i] = p.copy(pinX = newX, pinY = newY)
                                 }
                             }

@@ -23,23 +23,43 @@ object UpdateChecker {
     private const val DOC_UPDATE = "app_update"
     private const val PREFS_NAME = "albaraa_update_prefs"
     private const val KEY_ACK_VERSION = "acknowledged_version_code"
+    private const val KEY_ACK_NAME = "acknowledged_version_name"
+    private const val KEY_ACK_TIME = "acknowledged_update_time"
+
+    fun normalizeVersion(v: String): String {
+        return v.trim()
+            .lowercase()
+            .removePrefix("v")
+            .removePrefix("version")
+            .trim()
+    }
 
     fun getAcknowledgedVersionCode(context: Context): Int {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         return prefs.getInt(KEY_ACK_VERSION, 0)
     }
 
-    fun setAcknowledgedVersionCode(context: Context, versionCode: Int) {
+    fun getAcknowledgedVersionName(context: Context): String {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        prefs.edit().putInt(KEY_ACK_VERSION, versionCode).apply()
+        return prefs.getString(KEY_ACK_NAME, "") ?: ""
+    }
+
+    fun setAcknowledgedVersion(context: Context, versionCode: Int, versionName: String, updatedAt: Long = 0L) {
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        prefs.edit()
+            .putInt(KEY_ACK_VERSION, versionCode)
+            .putString(KEY_ACK_NAME, normalizeVersion(versionName))
+            .putLong(KEY_ACK_TIME, updatedAt)
+            .apply()
     }
 
     suspend fun checkUpdate(context: Context, ignoreAcknowledged: Boolean = false): AppUpdateInfo? = withContext(Dispatchers.IO) {
         val currentCode = BuildConfig.VERSION_CODE
         val currentName = BuildConfig.VERSION_NAME
+        val currentNorm = normalizeVersion(currentName)
 
         try {
-            // 1. Primary source: Firebase Firestore (real-time sync across all devices)
+            // 1. Primary source: Firebase Firestore
             val db = FirebaseInitializer.getFirestore(context)
             val docSnapshot = db
                 .collection(COLLECTION_SETTINGS)
@@ -50,18 +70,28 @@ object UpdateChecker {
             if (docSnapshot.exists()) {
                 val remoteVersionCode = (docSnapshot.getLong("versionCode") ?: (docSnapshot.get("versionCode") as? Number)?.toLong() ?: 1L).toInt()
                 val remoteVersionName = docSnapshot.getString("versionName") ?: currentName
+                val remoteNorm = normalizeVersion(remoteVersionName)
                 val downloadUrl = docSnapshot.getString("downloadUrl") ?: ""
                 val releaseNotes = docSnapshot.getString("releaseNotes") ?: ""
                 val forceUpdate = docSnapshot.getBoolean("forceUpdate") ?: false
+                val updatedAt = docSnapshot.getLong("updatedAt") ?: 0L
 
-                val ackVersion = getAcknowledgedVersionCode(context)
-                val isVersionDifferent = (remoteVersionCode != currentCode || remoteVersionName.trim() != currentName.trim()) && downloadUrl.isNotBlank()
-                val isNewerCode = remoteVersionCode > currentCode
-                val isNewerName = remoteVersionName.trim() != currentName.trim()
+                val isCodeNewer = remoteVersionCode > currentCode
+                val isNameDifferent = remoteNorm != currentNorm && remoteNorm.isNotBlank()
+                val isActuallyNewer = (isCodeNewer || (remoteVersionCode >= currentCode && isNameDifferent)) && downloadUrl.isNotBlank()
 
-                // If user explicitly checked (ignoreAcknowledged = true), show update whenever version code or name differs
-                // For automatic startup checks, show if forceUpdate or newer than acknowledged
-                val hasUpdate = isVersionDifferent && (ignoreAcknowledged || forceUpdate || remoteVersionCode > ackVersion)
+                val ackCode = getAcknowledgedVersionCode(context)
+                val ackName = getAcknowledgedVersionName(context)
+                val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                val ackTime = prefs.getLong(KEY_ACK_TIME, 0L)
+
+                // If user dismissed this version or timestamp, don't show on startup
+                val isAcknowledged = (remoteVersionCode <= ackCode && (remoteNorm == ackName || ackName.isNotBlank())) ||
+                                     (updatedAt > 0L && ackTime >= updatedAt)
+
+                // When user manually taps check update: ignoreAcknowledged = true
+                // On auto launch: show only if there is an actual newer version and it hasn't been dismissed
+                val hasUpdate = isActuallyNewer && (ignoreAcknowledged || !isAcknowledged)
 
                 AppUpdateInfo(
                     currentVersionCode = currentCode,
@@ -74,7 +104,7 @@ object UpdateChecker {
                     hasUpdate = hasUpdate
                 )
             } else {
-                // No update document in Firestore yet: App is up to date!
+                // No update document in Firestore: App is up to date!
                 AppUpdateInfo(
                     currentVersionCode = currentCode,
                     currentVersionName = currentName,
@@ -114,19 +144,20 @@ object UpdateChecker {
     ): Result<Unit> = withContext(Dispatchers.IO) {
         try {
             val finalUrl = normalizeDownloadUrl(downloadUrl)
+            val now = System.currentTimeMillis()
             val data = hashMapOf<String, Any>(
                 "versionCode" to versionCode,
                 "versionName" to versionName.trim(),
                 "downloadUrl" to finalUrl,
                 "releaseNotes" to releaseNotes.trim(),
                 "forceUpdate" to forceUpdate,
-                "updatedAt" to System.currentTimeMillis(),
+                "updatedAt" to now,
                 "updatedBy" to adminEmail
             )
 
             // Acknowledge this version for the current device so it doesn't prompt the admin
             context?.let { ctx ->
-                setAcknowledgedVersionCode(ctx, versionCode)
+                setAcknowledgedVersion(ctx, versionCode, versionName, now)
             }
 
             // Quick network timeout (3.5s). Firestore persists to disk in <10ms and syncs in background.
@@ -160,7 +191,6 @@ object UpdateChecker {
             installDownloadedApkFile(context, cacheFile)
         } catch (e: Throwable) {
             Log.e(TAG, "Error installing local APK via cache copy: ${e.message}", e)
-            // Fallback to direct URI
             try {
                 val intent = Intent(Intent.ACTION_VIEW).apply {
                     setDataAndType(uri, "application/vnd.android.package-archive")
@@ -243,7 +273,7 @@ object UpdateChecker {
         val isWebLink = rawUrl.startsWith("http://", ignoreCase = true) || rawUrl.startsWith("https://", ignoreCase = true)
 
         // Mark as acknowledged on this device
-        setAcknowledgedVersionCode(context, updateInfo.remoteVersionCode)
+        setAcknowledgedVersion(context, updateInfo.remoteVersionCode, updateInfo.remoteVersionName)
 
         if (!isWebLink) {
             Toast.makeText(context, "الرابط غير متاح حالياً", Toast.LENGTH_SHORT).show()

@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -535,34 +536,53 @@ fun VisualBoardPinMarker(
 
                             Spacer(modifier = Modifier.width(4.dp))
 
-                            // Arrow Buttons
-                            IconButton(onClick = { onMoveSocket(currentSocket, moveStepPercent, 0f) }, modifier = Modifier.size(28.dp)) {
-                                Icon(Icons.Default.ArrowForward, contentDescription = "يمين", tint = Color.White, modifier = Modifier.size(16.dp))
-                            }
-                            IconButton(onClick = { onMoveSocket(currentSocket, 0f, -moveStepPercent) }, modifier = Modifier.size(28.dp)) {
-                                Icon(Icons.Default.ArrowUpward, contentDescription = "أعلى", tint = Color.White, modifier = Modifier.size(16.dp))
-                            }
-                            Surface(
-                                shape = CircleShape,
-                                color = Color(0xFF0284C7),
-                                modifier = Modifier.size(26.dp).clickable {
-                                    val sPins = socketGroups[currentSocket] ?: emptyList()
-                                    if (sPins.isNotEmpty()) {
-                                        val avgX = sPins.map { it.pinX }.average().toFloat()
-                                        val avgY = sPins.map { it.pinY }.average().toFloat()
-                                        onMoveSocket(currentSocket, 50f - avgX, 50f - avgY)
+                            // Arrow Buttons in physical LTR D-Pad
+                            CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+                                Row(
+                                    horizontalArrangement = Arrangement.spacedBy(3.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    IconButton(
+                                        onClick = { onMoveSocket(currentSocket, -moveStepPercent, 0f) },
+                                        modifier = Modifier.size(28.dp).background(Color(0xFF334155), RoundedCornerShape(4.dp))
+                                    ) {
+                                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "يسار", tint = Color.White, modifier = Modifier.size(16.dp))
+                                    }
+                                    IconButton(
+                                        onClick = { onMoveSocket(currentSocket, 0f, -moveStepPercent) },
+                                        modifier = Modifier.size(28.dp).background(Color(0xFF334155), RoundedCornerShape(4.dp))
+                                    ) {
+                                        Icon(Icons.Filled.ArrowUpward, contentDescription = "أعلى", tint = Color.White, modifier = Modifier.size(16.dp))
+                                    }
+                                    Surface(
+                                        shape = RoundedCornerShape(4.dp),
+                                        color = Color(0xFF0284C7),
+                                        modifier = Modifier.size(28.dp).clickable {
+                                            val sPins = socketGroups[currentSocket] ?: emptyList()
+                                            if (sPins.isNotEmpty()) {
+                                                val avgX = sPins.map { it.pinX }.average().toFloat()
+                                                val avgY = sPins.map { it.pinY }.average().toFloat()
+                                                onMoveSocket(currentSocket, 50f - avgX, 50f - avgY)
+                                            }
+                                        }
+                                    ) {
+                                        Box(contentAlignment = Alignment.Center) {
+                                            Icon(Icons.Default.CenterFocusStrong, contentDescription = "المنتصف", tint = Color.White, modifier = Modifier.size(14.dp))
+                                        }
+                                    }
+                                    IconButton(
+                                        onClick = { onMoveSocket(currentSocket, 0f, moveStepPercent) },
+                                        modifier = Modifier.size(28.dp).background(Color(0xFF334155), RoundedCornerShape(4.dp))
+                                    ) {
+                                        Icon(Icons.Filled.ArrowDownward, contentDescription = "أسفل", tint = Color.White, modifier = Modifier.size(16.dp))
+                                    }
+                                    IconButton(
+                                        onClick = { onMoveSocket(currentSocket, moveStepPercent, 0f) },
+                                        modifier = Modifier.size(28.dp).background(Color(0xFF334155), RoundedCornerShape(4.dp))
+                                    ) {
+                                        Icon(Icons.Filled.ArrowForward, contentDescription = "يمين", tint = Color.White, modifier = Modifier.size(16.dp))
                                     }
                                 }
-                            ) {
-                                Box(contentAlignment = Alignment.Center) {
-                                    Icon(Icons.Default.CenterFocusStrong, contentDescription = "المنتصف", tint = Color.White, modifier = Modifier.size(12.dp))
-                                }
-                            }
-                            IconButton(onClick = { onMoveSocket(currentSocket, 0f, moveStepPercent) }, modifier = Modifier.size(28.dp)) {
-                                Icon(Icons.Default.ArrowDownward, contentDescription = "أسفل", tint = Color.White, modifier = Modifier.size(16.dp))
-                            }
-                            IconButton(onClick = { onMoveSocket(currentSocket, -moveStepPercent, 0f) }, modifier = Modifier.size(28.dp)) {
-                                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "يسار", tint = Color.White, modifier = Modifier.size(16.dp))
                             }
                         }
                     }
@@ -637,12 +657,6 @@ fun VisualBoardPinMarker(
                                     zoomScale = (zoomScale * zoom).coerceIn(0.6f, 4.0f)
                                     panOffsetX = (panOffsetX + pan.x).coerceIn(-1200f, 1200f)
                                     panOffsetY = (panOffsetY + pan.y).coerceIn(-1200f, 1200f)
-                                }
-                            } else {
-                                detectTransformGestures { _, _, zoom, _ ->
-                                    if (zoom != 1f) {
-                                        zoomScale = (zoomScale * zoom).coerceIn(0.6f, 4.0f)
-                                    }
                                 }
                             }
                         }
@@ -840,40 +854,6 @@ fun VisualBoardPinMarker(
                                 }
                             }
                         }
-
-                        // 3. Render Bottom Appliance Components Preview if available
-                        if (bottomPins.isNotEmpty()) {
-                            val bottomGroups = bottomPins.groupBy { it.connectedComponent.ifBlank { "ماتور" } }
-                            Column(
-                                modifier = Modifier
-                                    .align(Alignment.BottomCenter)
-                                    .fillMaxWidth()
-                                    .background(Color(0xFF0A0F1D).copy(alpha = 0.88f))
-                                    .padding(vertical = 4.dp)
-                            ) {
-                                Text(
-                                    text = "الأجزاء والمواتير السفلية المرتبطة:",
-                                    style = MaterialTheme.typography.labelSmall.copy(color = Color(0xFF38BDF8), fontWeight = FontWeight.Bold, fontSize = 9.sp),
-                                    modifier = Modifier.padding(horizontal = 8.dp)
-                                )
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .horizontalScroll(rememberScrollState())
-                                        .padding(horizontal = 8.dp, vertical = 2.dp),
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
-                                    bottomGroups.forEach { (compName, compPins) ->
-                                        ApplianceModuleCard(
-                                            componentName = compName,
-                                            pins = compPins,
-                                            selectedPinNumber = null,
-                                            onSelectPin = {}
-                                        )
-                                    }
-                                }
-                            }
-                        }
                     }
 
                     // Floating Hint
@@ -891,6 +871,42 @@ fun VisualBoardPinMarker(
                             ),
                             modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                         )
+                    }
+                }
+            }
+
+            // 3. Render Bottom Appliance Components Preview cleanly below the canvas
+            if (bottomPins.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(10.dp))
+                val bottomGroups = bottomPins.groupBy { it.connectedComponent.ifBlank { "ماتور" } }
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = Color(0xFF0F172A),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF1E293B)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(10.dp)) {
+                        Text(
+                            text = "الأجزاء والمواتير السفلية المرتبطة بالضفيرة:",
+                            style = MaterialTheme.typography.labelSmall.copy(color = Color(0xFF38BDF8), fontWeight = FontWeight.Bold, fontSize = 11.sp),
+                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            bottomGroups.forEach { (compName, compPins) ->
+                                ApplianceModuleCard(
+                                    componentName = compName,
+                                    pins = compPins,
+                                    selectedPinNumber = null,
+                                    onSelectPin = {}
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -912,32 +928,46 @@ fun VisualBoardPinMarker(
                         modifier = Modifier
                             .fillMaxWidth()
                             .background(Color(0xFF1E293B))
-                            .padding(12.dp),
+                            .padding(horizontal = 12.dp, vertical = 8.dp),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            IconButton(onClick = { isFullscreenCanvas = false }) {
+                            IconButton(onClick = { isFullscreenCanvas = false }, modifier = Modifier.size(32.dp)) {
                                 Icon(Icons.Default.FullscreenExit, contentDescription = "خروج", tint = Color.White)
                             }
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("ورشة الكارتة (شاشة كاملة)", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("ورشة الكارتة (شاشة كاملة)", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
                         }
 
                         Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-                            IconButton(onClick = { zoomScale = (zoomScale - 0.25f).coerceAtLeast(0.6f) }) {
-                                Icon(Icons.Default.ZoomOut, contentDescription = "تصغير", tint = Color.White)
+                            Surface(
+                                shape = RoundedCornerShape(6.dp),
+                                color = if (isDragSocketMode) Color(0xFF0284C7) else Color(0xFF334155),
+                                modifier = Modifier.clickable { isDragSocketMode = !isDragSocketMode }
+                            ) {
+                                Text(
+                                    text = if (isDragSocketMode) "✋ وضع السحب" else "🔍 وضع اللوحة",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color.White,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                )
                             }
-                            Text("${(zoomScale * 100).toInt()}%", color = Color.White, fontWeight = FontWeight.Bold)
-                            IconButton(onClick = { zoomScale = (zoomScale + 0.25f).coerceAtMost(4.0f) }) {
-                                Icon(Icons.Default.ZoomIn, contentDescription = "تكبير", tint = Color.White)
+
+                            IconButton(onClick = { zoomScale = (zoomScale - 0.25f).coerceAtLeast(0.6f) }, modifier = Modifier.size(28.dp)) {
+                                Icon(Icons.Default.ZoomOut, contentDescription = "تصغير", tint = Color.White, modifier = Modifier.size(18.dp))
+                            }
+                            Text("${(zoomScale * 100).toInt()}%", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                            IconButton(onClick = { zoomScale = (zoomScale + 0.25f).coerceAtMost(4.0f) }, modifier = Modifier.size(28.dp)) {
+                                Icon(Icons.Default.ZoomIn, contentDescription = "تكبير", tint = Color.White, modifier = Modifier.size(18.dp))
                             }
                             IconButton(onClick = {
                                 zoomScale = 1.0f
                                 panOffsetX = 0f
                                 panOffsetY = 0f
-                            }) {
-                                Icon(Icons.Default.Refresh, contentDescription = "إعادة ضبط", tint = Color.White)
+                            }, modifier = Modifier.size(28.dp)) {
+                                Icon(Icons.Default.Refresh, contentDescription = "إعادة ضبط", tint = Color.White, modifier = Modifier.size(16.dp))
                             }
                         }
                     }
@@ -948,11 +978,13 @@ fun VisualBoardPinMarker(
                             .fillMaxWidth()
                             .weight(1f)
                             .background(Color(0xFF0A0F1D))
-                            .pointerInput(Unit) {
-                                detectTransformGestures { _, pan, zoom, _ ->
-                                    zoomScale = (zoomScale * zoom).coerceIn(0.6f, 4.0f)
-                                    panOffsetX = (panOffsetX + pan.x).coerceIn(-1500f, 1500f)
-                                    panOffsetY = (panOffsetY + pan.y).coerceIn(-1500f, 1500f)
+                            .pointerInput(isDragSocketMode) {
+                                if (!isDragSocketMode) {
+                                    detectTransformGestures { _, pan, zoom, _ ->
+                                        zoomScale = (zoomScale * zoom).coerceIn(0.6f, 4.0f)
+                                        panOffsetX = (panOffsetX + pan.x).coerceIn(-1500f, 1500f)
+                                        panOffsetY = (panOffsetY + pan.y).coerceIn(-1500f, 1500f)
+                                    }
                                 }
                             }
                     ) {
@@ -1075,35 +1107,76 @@ fun VisualBoardPinMarker(
 
                     // Bottom bar in Fullscreen
                     activeSocketName?.let { curSock ->
-                        Surface(modifier = Modifier.fillMaxWidth(), color = Color(0xFF1E293B)) {
+                        Surface(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .navigationBarsPadding(),
+                            color = Color(0xFF1E293B)
+                        ) {
                             Row(
-                                modifier = Modifier.fillMaxWidth().padding(8.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 12.dp, vertical = 8.dp),
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Text("تحكم في: $curSock", color = Color(0xFF38BDF8), fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    Text(
+                                        text = curSock,
+                                        color = Color(0xFF38BDF8),
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 12.sp
+                                    )
+                                    IconButton(
+                                        onClick = { onResizeSocket(curSock, 1.15f) },
+                                        modifier = Modifier.size(28.dp).background(Color(0xFF334155), RoundedCornerShape(4.dp))
+                                    ) {
+                                        Icon(Icons.Default.Add, contentDescription = "تكبير", tint = Color.White, modifier = Modifier.size(14.dp))
+                                    }
+                                    IconButton(
+                                        onClick = { onResizeSocket(curSock, 0.85f) },
+                                        modifier = Modifier.size(28.dp).background(Color(0xFF334155), RoundedCornerShape(4.dp))
+                                    ) {
+                                        Icon(Icons.Default.Remove, contentDescription = "تصغير", tint = Color.White, modifier = Modifier.size(14.dp))
+                                    }
+                                }
 
-                                Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-                                    IconButton(onClick = { onMoveSocket(curSock, moveStepPercent, 0f) }) {
-                                        Icon(Icons.Default.ArrowForward, "يمين", tint = Color.White)
-                                    }
-                                    IconButton(onClick = { onMoveSocket(curSock, 0f, -moveStepPercent) }) {
-                                        Icon(Icons.Default.ArrowUpward, "أعلى", tint = Color.White)
-                                    }
-                                    IconButton(onClick = { onMoveSocket(curSock, 0f, moveStepPercent) }) {
-                                        Icon(Icons.Default.ArrowDownward, "أسفل", tint = Color.White)
-                                    }
-                                    IconButton(onClick = { onMoveSocket(curSock, -moveStepPercent, 0f) }) {
-                                        Icon(Icons.AutoMirrored.Filled.ArrowBack, "يسار", tint = Color.White)
+                                CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+                                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+                                        IconButton(
+                                            onClick = { onMoveSocket(curSock, -moveStepPercent, 0f) },
+                                            modifier = Modifier.size(32.dp).background(Color(0xFF334155), RoundedCornerShape(4.dp))
+                                        ) {
+                                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "يسار", tint = Color.White, modifier = Modifier.size(16.dp))
+                                        }
+                                        IconButton(
+                                            onClick = { onMoveSocket(curSock, 0f, -moveStepPercent) },
+                                            modifier = Modifier.size(32.dp).background(Color(0xFF334155), RoundedCornerShape(4.dp))
+                                        ) {
+                                            Icon(Icons.Filled.ArrowUpward, contentDescription = "أعلى", tint = Color.White, modifier = Modifier.size(16.dp))
+                                        }
+                                        IconButton(
+                                            onClick = { onMoveSocket(curSock, 0f, moveStepPercent) },
+                                            modifier = Modifier.size(32.dp).background(Color(0xFF334155), RoundedCornerShape(4.dp))
+                                        ) {
+                                            Icon(Icons.Filled.ArrowDownward, contentDescription = "أسفل", tint = Color.White, modifier = Modifier.size(16.dp))
+                                        }
+                                        IconButton(
+                                            onClick = { onMoveSocket(curSock, moveStepPercent, 0f) },
+                                            modifier = Modifier.size(32.dp).background(Color(0xFF334155), RoundedCornerShape(4.dp))
+                                        ) {
+                                            Icon(Icons.Filled.ArrowForward, contentDescription = "يمين", tint = Color.White, modifier = Modifier.size(16.dp))
+                                        }
                                     }
                                 }
 
                                 Button(
                                     onClick = { isFullscreenCanvas = false },
                                     shape = RoundedCornerShape(8.dp),
-                                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
+                                    contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 6.dp)
                                 ) {
-                                    Text("تم وإغلاق", fontSize = 11.sp)
+                                    Text("تم ✓", fontSize = 11.sp, fontWeight = FontWeight.Bold)
                                 }
                             }
                         }

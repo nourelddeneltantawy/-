@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
@@ -181,7 +182,11 @@ fun InteractiveHarnessMap(
 
                     // Bottom info bar in fullscreen - elevated above nav bar
                     activeBoardPin?.let { pin ->
-                        HarnessPinInspectorBanner(boardPin = pin, bottomPin = activeBottomPin)
+                        HarnessPinInspectorBanner(
+                            boardPin = pin,
+                            bottomPin = activeBottomPin,
+                            onDismiss = { selectedPinNumber = null }
+                        )
                     }
                 }
             }
@@ -289,7 +294,7 @@ fun InteractiveHarnessMap(
                     onSelectPin = { selectedPinNumber = if (selectedPinNumber == it) null else it },
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(420.dp)
+                        .height(460.dp)
                         .clip(RoundedCornerShape(14.dp))
                 )
             } else {
@@ -304,7 +309,11 @@ fun InteractiveHarnessMap(
             // Pin Inspector Details when a pin is selected
             activeBoardPin?.let { pin ->
                 Spacer(modifier = Modifier.height(10.dp))
-                HarnessPinInspectorBanner(boardPin = pin, bottomPin = activeBottomPin)
+                HarnessPinInspectorBanner(
+                    boardPin = pin,
+                    bottomPin = activeBottomPin,
+                    onDismiss = { selectedPinNumber = null }
+                )
             }
         }
     }
@@ -364,14 +373,14 @@ fun HarnessInteractiveCanvas(
                 Column(
                     modifier = Modifier
                         .fillMaxSize()
-                        .padding(16.dp),
-                    verticalArrangement = Arrangement.SpaceBetween
+                        .padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     // TOP: The Control Board (الكارتة)
                     Card(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(180.dp),
+                            .weight(1f),
                         shape = RoundedCornerShape(12.dp),
                         colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
                         border = androidx.compose.foundation.BorderStroke(1.5.dp, Color(0xFF0284C7))
@@ -418,10 +427,11 @@ fun HarnessInteractiveCanvas(
 
                             // Render Sockets on the Board with unified, solid connector blocks (identical to Editor)
                             val socketGroups = harness.boardPins.groupBy { it.socketName.ifBlank { "سوكيت 1" } }
-                            socketGroups.forEach { (sockName, sPins) ->
-                                val validPins = sPins.filter { it.pinX > 0f && it.pinY > 0f }
-                                val avgX = if (validPins.isNotEmpty()) validPins.map { it.pinX }.average().toFloat() else 50f
-                                val avgY = if (validPins.isNotEmpty()) validPins.map { it.pinY }.average().toFloat() else 50f
+                            socketGroups.entries.forEachIndexed { sockIndex, (sockName, sPins) ->
+                                val defaultX = 20f + ((sockIndex % 3) * 28f)
+                                val defaultY = 25f + ((sockIndex / 3) * 30f)
+                                val avgX = sPins.map { if (it.pinX > 0f) it.pinX else defaultX }.average().toFloat()
+                                val avgY = sPins.map { if (it.pinY > 0f) it.pinY else defaultY }.average().toFloat()
 
                                 val socketWidthPx = with(density) { (sPins.size * 34 + 20).dp.toPx() }
                                 val socketHeightPx = with(density) { 62.dp.toPx() }
@@ -491,7 +501,6 @@ fun HarnessInteractiveCanvas(
                             }
                         }
                     }
-                }
 
                 // MIDDLE: Visual Wires Canvas with Smooth Curves (Toggleable)
                     if (showWires) {
@@ -593,6 +602,7 @@ fun HarnessInteractiveCanvas(
                 }
             }
         }
+    }
 
         // Floating Zoom & Reset Controls in Top-End Corner
         Column(
@@ -736,7 +746,7 @@ fun ApplianceModuleCard(
 }
 
 /**
- * Detailed Wire Table for Multimeter and Diagnostics.
+ * Detailed Wire Table for Multimeter and Diagnostics with smooth scrolling.
  */
 @Composable
 fun HarnessTableView(
@@ -746,7 +756,10 @@ fun HarnessTableView(
     modifier: Modifier = Modifier
 ) {
     Column(
-        modifier = modifier.fillMaxWidth(),
+        modifier = modifier
+            .fillMaxWidth()
+            .heightIn(max = 480.dp)
+            .verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(6.dp)
     ) {
         harness.boardPins.forEach { bPin ->
@@ -772,7 +785,7 @@ fun HarnessTableView(
                         Surface(
                             shape = CircleShape,
                             color = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(22.dp)
+                            modifier = Modifier.size(24.dp)
                         ) {
                             Box(contentAlignment = Alignment.Center) {
                                 Text(
@@ -781,7 +794,7 @@ fun HarnessTableView(
                                 )
                             }
                         }
-                        Spacer(modifier = Modifier.width(8.dp))
+                        Spacer(modifier = Modifier.width(10.dp))
                         Column {
                             Text(
                                 text = bPin.label,
@@ -815,18 +828,20 @@ fun HarnessTableView(
 fun HarnessPinInspectorBanner(
     boardPin: HarnessPin,
     bottomPin: HarnessPin?,
+    onDismiss: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     Card(
         modifier = modifier
             .fillMaxWidth()
+            .navigationBarsPadding()
             .padding(horizontal = 14.dp, vertical = 6.dp)
-            .shadow(8.dp, RoundedCornerShape(16.dp)),
+            .shadow(12.dp, RoundedCornerShape(16.dp)),
         shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(
             containerColor = Color(0xFF1E293B)
         ),
-        border = androidx.compose.foundation.BorderStroke(1.5.dp, Color(0xFF38BDF8))
+        border = androidx.compose.foundation.BorderStroke(2.dp, Color(0xFF38BDF8))
     ) {
         Column(modifier = Modifier.padding(14.dp)) {
             Row(
@@ -838,30 +853,36 @@ fun HarnessPinInspectorBanner(
                     WireColorBadge(
                         colorHex = boardPin.colorHex,
                         secondaryColorHex = boardPin.secondaryColorHex,
-                        size = 20.dp
+                        size = 22.dp
                     )
                     Spacer(modifier = Modifier.width(10.dp))
                     Text(
                         text = "طرف الكارتة #${boardPin.pinNumber}: ${boardPin.label}",
                         style = MaterialTheme.typography.titleSmall.copy(
                             fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onPrimaryContainer
+                            color = Color.White
                         )
                     )
                 }
 
-                Surface(
-                    shape = RoundedCornerShape(6.dp),
-                    color = MaterialTheme.colorScheme.primary
-                ) {
-                    Text(
-                        text = boardPin.wireColor,
-                        style = MaterialTheme.typography.labelSmall.copy(
-                            color = MaterialTheme.colorScheme.onPrimary,
-                            fontWeight = FontWeight.Bold
-                        ),
-                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                    )
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = parseWireColorToComposeColor(boardPin.colorHex)
+                    ) {
+                        Text(
+                            text = boardPin.wireColor,
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                color = if (boardPin.colorHex == "#F8FAFC" || boardPin.colorHex == "#EAB308") Color.Black else Color.White,
+                                fontWeight = FontWeight.Bold
+                            ),
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                        )
+                    }
+
+                    IconButton(onClick = onDismiss, modifier = Modifier.size(28.dp)) {
+                        Icon(Icons.Default.Close, contentDescription = "إغلاق", tint = Color.LightGray, modifier = Modifier.size(18.dp))
+                    }
                 }
             }
 
@@ -870,13 +891,13 @@ fun HarnessPinInspectorBanner(
             Text(
                 text = "📍 الوجهة: ${boardPin.connectedComponent} - الطرف المقابل #${boardPin.targetPinNumber ?: '1'}" +
                         (if (bottomPin != null && bottomPin.label.isNotBlank()) " (${bottomPin.label})" else ""),
-                style = MaterialTheme.typography.bodySmall.copy(color = MaterialTheme.colorScheme.onPrimaryContainer)
+                style = MaterialTheme.typography.bodySmall.copy(color = Color(0xFFE2E8F0), fontWeight = FontWeight.SemiBold)
             )
 
             if (boardPin.signalType.isNotBlank()) {
                 Text(
                     text = "⚡ نوع الإشارة: ${boardPin.signalType}",
-                    style = MaterialTheme.typography.labelSmall.copy(color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f))
+                    style = MaterialTheme.typography.labelSmall.copy(color = Color(0xFF94A3B8))
                 )
             }
         }

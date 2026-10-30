@@ -241,7 +241,7 @@ fun UpdateDialog(
                 // Acknowledge Button: Mark as updated so it never annoys the user again
                 OutlinedButton(
                     onClick = {
-                        UpdateChecker.setAcknowledgedVersionCode(context, updateInfo.remoteVersionCode)
+                        UpdateChecker.setAcknowledgedVersion(context, updateInfo.remoteVersionCode, updateInfo.remoteVersionName)
                         Toast.makeText(context, "تم التأكيد! لن تظهر رسالة التحديث مجدداً على هذا الجهاز", Toast.LENGTH_SHORT).show()
                         onDismiss()
                     },
