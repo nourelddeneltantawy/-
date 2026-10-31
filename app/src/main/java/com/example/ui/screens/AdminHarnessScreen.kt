@@ -334,15 +334,12 @@ fun AdminHarnessScreen(
                             selectedSocketName = null
                         }
                     },
-                    onUpdatePins = { updatedList ->
-                        updatedList.forEach { upPin ->
-                            val idx = boardPins.indexOfFirst { it.pinNumber == upPin.pinNumber }
-                            if (idx >= 0) {
-                                boardPins[idx] = upPin
-                            } else {
-                                boardPins.add(upPin)
-                            }
-                        }
+                    onUpdatePins = { targetSocketName, updatedList ->
+                        val cleanTarget = targetSocketName.trim()
+                        boardPins.removeAll { it.socketName.ifBlank { "سوكيت 1" }.trim() == cleanTarget }
+                        boardPins.addAll(updatedList)
+                        selectedSocketName = cleanTarget
+                        expandedBoardSockets[cleanTarget] = true
                     },
                     selectedSocketName = selectedSocketName,
                     onSelectSocket = { selectedSocketName = it }

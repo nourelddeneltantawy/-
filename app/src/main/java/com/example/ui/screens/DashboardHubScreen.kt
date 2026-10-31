@@ -14,13 +14,16 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -29,6 +32,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.automirrored.filled.Login
 import androidx.compose.material.icons.automirrored.filled.Logout
+import androidx.compose.material.icons.automirrored.filled.Sort
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.AdminPanelSettings
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Cable
@@ -148,9 +154,11 @@ fun DashboardHubScreen(
     val context = LocalContext.current
     var showThemeDialog by remember { mutableStateOf(false) }
     var editingCategoryId by remember { mutableStateOf<String?>(null) }
+    var showReorderDialog by remember { mutableStateOf(false) }
     var lockedDialogCategoryTitle by remember { mutableStateOf<String?>(null) }
 
     val customizations by HubCategoryManager.customizations.collectAsState()
+    val categoryOrder by HubCategoryManager.categoryOrder.collectAsState()
 
     val rawItems = listOf(
         HubCategoryItem(
@@ -387,36 +395,86 @@ fun DashboardHubScreen(
                     )
                 }
 
+                val orderedItems = remember(rawItems, categoryOrder) {
+                    if (categoryOrder.isEmpty()) rawItems
+                    else {
+                        val orderMap = categoryOrder.withIndex().associate { it.value to it.index }
+                        rawItems.sortedBy { orderMap[it.id] ?: 999 }
+                    }
+                }
+
                 if (isAdmin) {
-                    Surface(
-                        shape = RoundedCornerShape(14.dp),
-                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f),
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(14.dp))
-                            .clickable { editingCategoryId = rawItems.first().id }
-                            .padding(horizontal = 10.dp, vertical = 5.dp)
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                imageVector = Icons.Default.Edit,
-                                contentDescription = "تعديل أسماء وصور القوائم",
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(16.dp)
-                            )
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text(
-                                text = "تعديل القوائم",
-                                style = MaterialTheme.typography.labelSmall.copy(
-                                    color = MaterialTheme.colorScheme.primary,
-                                    fontWeight = FontWeight.Bold
+                        // Reorder slices button
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = Color(0xFF0D9488).copy(alpha = 0.15f),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF0D9488)),
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(12.dp))
+                                .clickable { showReorderDialog = true }
+                                .padding(horizontal = 8.dp, vertical = 5.dp)
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Filled.Sort,
+                                    contentDescription = "ترتيب الشرايح",
+                                    tint = Color(0xFF0D9488),
+                                    modifier = Modifier.size(15.dp)
                                 )
-                            )
+                                Spacer(modifier = Modifier.width(3.dp))
+                                Text(
+                                    text = "ترتيب الشرايح ⇅",
+                                    style = MaterialTheme.typography.labelSmall.copy(
+                                        color = Color(0xFF0D9488),
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                )
+                            }
+                        }
+
+                        // Edit titles and icons button
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f),
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(12.dp))
+                                .clickable { editingCategoryId = rawItems.first().id }
+                                .padding(horizontal = 8.dp, vertical = 5.dp)
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = Icons.Default.Edit,
+                                    contentDescription = "تعديل أسماء وصور القوائم",
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(15.dp)
+                                )
+                                Spacer(modifier = Modifier.width(3.dp))
+                                Text(
+                                    text = "تعديل القوائم",
+                                    style = MaterialTheme.typography.labelSmall.copy(
+                                        color = MaterialTheme.colorScheme.primary,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                )
+                            }
                         }
                     }
                 }
             }
 
             Spacer(modifier = Modifier.height(8.dp))
+
+            val orderedItems = remember(rawItems, categoryOrder) {
+                if (categoryOrder.isEmpty()) rawItems
+                else {
+                    val orderMap = categoryOrder.withIndex().associate { it.value to it.index }
+                    rawItems.sortedBy { orderMap[it.id] ?: 999 }
+                }
+            }
 
             // GRID OF SECTION CARDS
             LazyVerticalGrid(
@@ -426,8 +484,8 @@ fun DashboardHubScreen(
                 verticalArrangement = Arrangement.spacedBy(14.dp),
                 modifier = Modifier.fillMaxSize()
             ) {
-                items(rawItems.size, key = { rawItems[it].id }) { index ->
-                    val item = rawItems[index]
+                items(orderedItems.size, key = { orderedItems[it].id }) { index ->
+                    val item = orderedItems[index]
                     val cust = customizations[item.id]
 
                     val finalTitle = cust?.customTitle?.takeIf { it.isNotBlank() } ?: item.defaultTitle
@@ -676,6 +734,182 @@ fun DashboardHubScreen(
             }
         )
     }
+
+    // Admin Reorder Categories Dialog
+    if (isAdmin && showReorderDialog) {
+        val currentOrderList = remember(rawItems, categoryOrder) {
+            if (categoryOrder.isEmpty()) rawItems
+            else {
+                val orderMap = categoryOrder.withIndex().associate { it.value to it.index }
+                rawItems.sortedBy { orderMap[it.id] ?: 999 }
+            }
+        }
+        ReorderCategoriesDialog(
+            categories = currentOrderList,
+            customizations = customizations,
+            onMove = { catId, delta ->
+                HubCategoryManager.moveCategory(context, catId, delta, currentOrderList.map { it.id }) { success ->
+                    if (success) {
+                        Toast.makeText(context, "تم حفظ الترتيب الجديد في السيرفر", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            },
+            onReset = {
+                HubCategoryManager.reorderCategories(context, rawItems.map { it.id }) {
+                    Toast.makeText(context, "تمت استعادة الترتيب الافتراضي", Toast.LENGTH_SHORT).show()
+                }
+            },
+            onDismiss = { showReorderDialog = false }
+        )
+    }
+}
+
+@Composable
+fun ReorderCategoriesDialog(
+    categories: List<HubCategoryItem>,
+    customizations: Map<String, HubCategoryCustomization>,
+    onMove: (id: String, delta: Int) -> Unit,
+    onReset: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Surface(
+                    shape = CircleShape,
+                    color = Color(0xFF0D9488).copy(alpha = 0.2f),
+                    modifier = Modifier.size(36.dp)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(Icons.AutoMirrored.Filled.Sort, contentDescription = null, tint = Color(0xFF0D9488), modifier = Modifier.size(20.dp))
+                    }
+                }
+                Spacer(modifier = Modifier.width(8.dp))
+                Column {
+                    Text("ترتيب أقسام وقوائم الدليل", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                    Text("غيّر مواضع الشرايح كما تفضل بالتقديم والتأخير", fontSize = 11.sp, color = MaterialTheme.colorScheme.outline)
+                }
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 420.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                LazyColumn(
+                    modifier = Modifier.weight(1f, fill = false),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    itemsIndexed(categories, key = { _, item -> item.id }) { index, item ->
+                        val cust = customizations[item.id]
+                        val title = cust?.customTitle?.takeIf { it.isNotBlank() } ?: item.defaultTitle
+                        val icon = resolveCategoryIcon(cust?.customIconName ?: "", item.defaultIcon)
+
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.2f)),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    // Order Badge
+                                    Surface(
+                                        shape = RoundedCornerShape(6.dp),
+                                        color = Color(0xFF0284C7).copy(alpha = 0.2f),
+                                        modifier = Modifier.size(24.dp)
+                                    ) {
+                                        Box(contentAlignment = Alignment.Center) {
+                                            Text(
+                                                text = "${index + 1}",
+                                                color = Color(0xFF0284C7),
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 11.sp
+                                            )
+                                        }
+                                    }
+
+                                    Spacer(modifier = Modifier.width(8.dp))
+
+                                    Icon(
+                                        imageVector = icon,
+                                        contentDescription = null,
+                                        tint = item.iconTint,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+
+                                    Spacer(modifier = Modifier.width(8.dp))
+
+                                    Text(
+                                        text = title,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 13.sp,
+                                        maxLines = 1
+                                    )
+                                }
+
+                                // Up & Down Reorder Buttons
+                                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    IconButton(
+                                        onClick = { onMove(item.id, -1) },
+                                        enabled = index > 0,
+                                        modifier = Modifier.size(32.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.KeyboardArrowUp,
+                                            contentDescription = "تقديم للأعلى",
+                                            tint = if (index > 0) Color(0xFF0284C7) else Color.Gray.copy(alpha = 0.4f),
+                                            modifier = Modifier.size(20.dp)
+                                        )
+                                    }
+
+                                    IconButton(
+                                        onClick = { onMove(item.id, 1) },
+                                        enabled = index < categories.size - 1,
+                                        modifier = Modifier.size(32.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.KeyboardArrowDown,
+                                            contentDescription = "تأخير للأسفل",
+                                            tint = if (index < categories.size - 1) Color(0xFF0284C7) else Color.Gray.copy(alpha = 0.4f),
+                                            modifier = Modifier.size(20.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = onDismiss,
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0284C7)),
+                shape = RoundedCornerShape(10.dp)
+            ) {
+                Text("تم وتأكيد الترتيب", fontWeight = FontWeight.Bold)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onReset) {
+                Text("إعادة الترتيب الافتراضي", color = MaterialTheme.colorScheme.outline)
+            }
+        },
+        shape = RoundedCornerShape(20.dp)
+    )
 }
 
 @Composable

@@ -19,9 +19,13 @@ object HubCategoryManager {
     private const val TAG = "HubCategoryManager"
     private const val PREFS_NAME = "albaraa_hub_categories_prefs"
     private const val KEY_CATEGORIES_JSON = "categories_json"
+    private const val KEY_CATEGORIES_ORDER = "categories_order"
 
     private val _customizations = MutableStateFlow<Map<String, HubCategoryCustomization>>(emptyMap())
     val customizations: StateFlow<Map<String, HubCategoryCustomization>> = _customizations.asStateFlow()
+
+    private val _categoryOrder = MutableStateFlow<List<String>>(emptyList())
+    val categoryOrder: StateFlow<List<String>> = _categoryOrder.asStateFlow()
 
     private var listenerRegistration: ListenerRegistration? = null
     private var isInitialized = false
@@ -32,6 +36,11 @@ object HubCategoryManager {
         // 1. Load from local cache for instant UI rendering
         val prefs = appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val jsonStr = prefs.getString(KEY_CATEGORIES_JSON, null)
+        val orderStr = prefs.getString(KEY_CATEGORIES_ORDER, null)
+        if (!orderStr.isNullOrBlank()) {
+            _categoryOrder.value = orderStr.split(",").filter { it.isNotBlank() }
+        }
+
         if (!jsonStr.isNullOrBlank()) {
             try {
                 val json = JSONObject(jsonStr)
@@ -46,10 +55,15 @@ object HubCategoryManager {
                         customSubtitle = obj.optString("customSubtitle", ""),
                         customImageUrl = obj.optString("customImageUrl", ""),
                         customIconName = obj.optString("customIconName", ""),
-                        isLocked = obj.optBoolean("isLocked", false)
+                        isLocked = obj.optBoolean("isLocked", false),
+                        orderIndex = obj.optInt("orderIndex", 0)
                     )
                 }
                 _customizations.value = map
+                if (_categoryOrder.value.isEmpty()) {
+                    val sorted = map.values.sortedBy { it.orderIndex }.map { it.id }
+                    if (sorted.isNotEmpty()) _categoryOrder.value = sorted
+                }
             } catch (e: Throwable) {
                 Log.w(TAG, "Failed to parse local categories cache: ${e.message}")
             }
@@ -73,7 +87,11 @@ object HubCategoryManager {
                             if (data != null) {
                                 val map = parseFirestoreData(data)
                                 _customizations.value = map
-                                saveToPrefs(appContext, map)
+                                val order = parseFirestoreOrder(data, map)
+                                if (order.isNotEmpty()) {
+                                    _categoryOrder.value = order
+                                }
+                                saveToPrefs(appContext, map, _categoryOrder.value)
                                 Log.i(TAG, "Hub categories synced in real-time (${map.size} items)")
                             }
                         }
@@ -101,8 +119,12 @@ object HubCategoryManager {
                     if (data != null) {
                         val map = parseFirestoreData(data)
                         _customizations.value = map
-                        saveToPrefs(appContext, map)
-                        Log.i(TAG, "Fetched remote categories: ${map.size} items")
+                        val order = parseFirestoreOrder(data, map)
+                        if (order.isNotEmpty()) {
+                            _categoryOrder.value = order
+                        }
+                        saveToPrefs(appContext, map, _categoryOrder.value)
+                        Log.i(TAG, "Fetched remote categories: ${map.size} items, order: ${_categoryOrder.value.size}")
                     }
                 }
             } catch (e: Throwable) {
@@ -122,8 +144,8 @@ object HubCategoryManager {
     ) {
         val appContext = context.applicationContext ?: context
         val current = _customizations.value.toMutableMap()
-        val updatedItem = HubCategoryCustomization(
-            id = id,
+        val existing = current[id] ?: HubCategoryCustomization(id = id)
+        val updatedItem = existing.copy(
             customTitle = customTitle.trim(),
             customSubtitle = customSubtitle.trim(),
             customImageUrl = customImageUrl.trim(),
@@ -131,31 +153,47 @@ object HubCategoryManager {
         )
         current[id] = updatedItem
         _customizations.value = current
-        saveToPrefs(appContext, current)
+        saveToPrefs(appContext, current, _categoryOrder.value)
 
-        CoroutineScope(Dispatchers.IO).launch {
-            try {
-                val db = FirebaseInitializer.getFirestore(appContext)
-                val remotePayload = mutableMapOf<String, Any>()
-                current.forEach { (catId, cust) ->
-                    remotePayload[catId] = cust.toMap()
-                }
+        syncToFirestore(appContext, current, _categoryOrder.value, onComplete)
+    }
 
-                db.collection("app_settings").document("hub_categories")
-                    .set(remotePayload)
-                    .addOnCompleteListener { task ->
-                        if (task.isSuccessful) {
-                            Log.i(TAG, "Updated hub category [$id] in Firestore successfully")
-                        } else {
-                            Log.e(TAG, "Failed to update hub category in Firestore: ${task.exception?.message}")
-                        }
-                        onComplete?.invoke(task.isSuccessful)
-                    }
-            } catch (e: Throwable) {
-                Log.e(TAG, "Exception updating hub category in Firestore", e)
-                onComplete?.invoke(false)
-            }
+    fun reorderCategories(
+        context: Context,
+        newOrder: List<String>,
+        onComplete: ((Boolean) -> Unit)? = null
+    ) {
+        val appContext = context.applicationContext ?: context
+        _categoryOrder.value = newOrder
+        val current = _customizations.value.toMutableMap()
+        newOrder.forEachIndexed { index, catId ->
+            val existing = current[catId] ?: HubCategoryCustomization(id = catId)
+            current[catId] = existing.copy(orderIndex = index)
         }
+        _customizations.value = current
+        saveToPrefs(appContext, current, newOrder)
+        syncToFirestore(appContext, current, newOrder, onComplete)
+    }
+
+    fun moveCategory(
+        context: Context,
+        categoryId: String,
+        delta: Int,
+        allCategories: List<String>,
+        onComplete: ((Boolean) -> Unit)? = null
+    ) {
+        val currentOrder = if (_categoryOrder.value.isNotEmpty()) _categoryOrder.value.toMutableList() else allCategories.toMutableList()
+        // Ensure all categories exist in the list
+        allCategories.forEach { if (!currentOrder.contains(it)) currentOrder.add(it) }
+
+        val idx = currentOrder.indexOf(categoryId)
+        if (idx == -1) return
+        val newIdx = (idx + delta).coerceIn(0, currentOrder.size - 1)
+        if (newIdx == idx) return
+
+        currentOrder.removeAt(idx)
+        currentOrder.add(newIdx, categoryId)
+        reorderCategories(context, currentOrder, onComplete)
     }
 
     fun toggleCategoryLock(
@@ -169,28 +207,40 @@ object HubCategoryManager {
         val updated = existing.copy(isLocked = !existing.isLocked)
         current[id] = updated
         _customizations.value = current
-        saveToPrefs(appContext, current)
+        saveToPrefs(appContext, current, _categoryOrder.value)
 
+        syncToFirestore(appContext, current, _categoryOrder.value, onComplete)
+    }
+
+    private fun syncToFirestore(
+        context: Context,
+        customizationsMap: Map<String, HubCategoryCustomization>,
+        orderList: List<String>,
+        onComplete: ((Boolean) -> Unit)? = null
+    ) {
         CoroutineScope(Dispatchers.IO).launch {
             try {
-                val db = FirebaseInitializer.getFirestore(appContext)
+                val db = FirebaseInitializer.getFirestore(context)
                 val remotePayload = mutableMapOf<String, Any>()
-                current.forEach { (catId, cust) ->
+                customizationsMap.forEach { (catId, cust) ->
                     remotePayload[catId] = cust.toMap()
+                }
+                if (orderList.isNotEmpty()) {
+                    remotePayload["order_list"] = orderList
                 }
 
                 db.collection("app_settings").document("hub_categories")
                     .set(remotePayload)
                     .addOnCompleteListener { task ->
                         if (task.isSuccessful) {
-                            Log.i(TAG, "Toggled lock for category [$id] -> ${updated.isLocked}")
+                            Log.i(TAG, "Synced hub categories & order to Firestore successfully")
                         } else {
-                            Log.e(TAG, "Failed to toggle lock in Firestore: ${task.exception?.message}")
+                            Log.e(TAG, "Failed to sync to Firestore: ${task.exception?.message}")
                         }
                         onComplete?.invoke(task.isSuccessful)
                     }
             } catch (e: Throwable) {
-                Log.e(TAG, "Exception toggling lock in Firestore", e)
+                Log.e(TAG, "Exception syncing to Firestore", e)
                 onComplete?.invoke(false)
             }
         }
@@ -208,6 +258,7 @@ object HubCategoryManager {
     private fun parseFirestoreData(data: Map<String, Any>): Map<String, HubCategoryCustomization> {
         val result = mutableMapOf<String, HubCategoryCustomization>()
         for ((key, value) in data) {
+            if (key == "order_list") continue
             if (value is Map<*, *>) {
                 val strMap = value as Map<String, Any?>
                 result[key] = HubCategoryCustomization.fromMap(key, strMap)
@@ -216,7 +267,17 @@ object HubCategoryManager {
         return result
     }
 
-    private fun saveToPrefs(context: Context, map: Map<String, HubCategoryCustomization>) {
+    @Suppress("UNCHECKED_CAST")
+    private fun parseFirestoreOrder(data: Map<String, Any>, map: Map<String, HubCategoryCustomization>): List<String> {
+        val explicitOrder = data["order_list"] as? List<String>
+        if (!explicitOrder.isNullOrEmpty()) {
+            return explicitOrder.filter { it.isNotBlank() }
+        }
+        val byOrderIndex = map.values.sortedBy { it.orderIndex }.map { it.id }
+        return byOrderIndex
+    }
+
+    private fun saveToPrefs(context: Context, map: Map<String, HubCategoryCustomization>, orderList: List<String>) {
         try {
             val json = JSONObject()
             map.forEach { (id, item) ->
@@ -226,10 +287,14 @@ object HubCategoryManager {
                 obj.put("customImageUrl", item.customImageUrl)
                 obj.put("customIconName", item.customIconName)
                 obj.put("isLocked", item.isLocked)
+                obj.put("orderIndex", item.orderIndex)
                 json.put(id, obj)
             }
             val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            prefs.edit().putString(KEY_CATEGORIES_JSON, json.toString()).apply()
+            prefs.edit()
+                .putString(KEY_CATEGORIES_JSON, json.toString())
+                .putString(KEY_CATEGORIES_ORDER, orderList.joinToString(","))
+                .apply()
         } catch (e: Throwable) {
             Log.e(TAG, "Failed to write hub categories to prefs", e)
         }

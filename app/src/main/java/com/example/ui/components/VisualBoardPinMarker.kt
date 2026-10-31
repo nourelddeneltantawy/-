@@ -152,7 +152,7 @@ fun VisualBoardPinMarker(
     onMoveSocket: (socketName: String, deltaX: Float, deltaY: Float) -> Unit = { _, _, _ -> },
     onResizeSocket: (socketName: String, scaleFactor: Float) -> Unit = { _, _ -> },
     onDeleteSocket: (socketName: String) -> Unit = {},
-    onUpdatePins: (List<HarnessPin>) -> Unit = {},
+    onUpdatePins: (socketName: String, updatedPins: List<HarnessPin>) -> Unit = { _, _ -> },
     selectedSocketName: String?,
     onSelectSocket: (String?) -> Unit,
     modifier: Modifier = Modifier
@@ -899,14 +899,20 @@ fun VisualBoardPinMarker(
     // Socket Focus & Precision Hand Editor Dialog (bounded pin dragging and 4 corner handles)
     showFocusEditorSocket?.let { sockName ->
         val sPins = pins.filter { it.socketName.ifBlank { "سوكيت 1" }.trim() == sockName.trim() }
+        val validPins = sPins.filter { it.pinX > 0f && it.pinY > 0f }
+        val cXPct = if (validPins.isNotEmpty()) validPins.map { it.pinX }.average().toFloat() else 50f
+        val cYPct = if (validPins.isNotEmpty()) validPins.map { it.pinY }.average().toFloat() else 40f
+
         SocketFocusEditorDialog(
             socketName = sockName,
             boardImageUrl = boardImageUrl,
             initialPins = sPins,
             allPins = pins,
+            initialSocketCenterXPct = cXPct,
+            initialSocketCenterYPct = cYPct,
             onDismiss = { showFocusEditorSocket = null },
-            onSavePins = { updatedSocketPins ->
-                onUpdatePins(updatedSocketPins)
+            onSavePins = { targetSock, updatedSocketPins ->
+                onUpdatePins(targetSock, updatedSocketPins)
                 showFocusEditorSocket = null
             }
         )

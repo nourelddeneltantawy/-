@@ -82,8 +82,10 @@ fun SocketFocusEditorDialog(
     boardImageUrl: String,
     initialPins: List<HarnessPin>,
     allPins: List<HarnessPin>,
+    initialSocketCenterXPct: Float = 50f,
+    initialSocketCenterYPct: Float = 50f,
     onDismiss: () -> Unit,
-    onSavePins: (updatedPins: List<HarnessPin>) -> Unit
+    onSavePins: (socketName: String, updatedPins: List<HarnessPin>) -> Unit
 ) {
     val context = LocalContext.current
     val density = LocalDensity.current
@@ -91,20 +93,31 @@ fun SocketFocusEditorDialog(
     // Local mutable list of pins for this socket
     val socketPins = remember { mutableStateListOf<HarnessPin>().apply { addAll(initialPins) } }
 
-    // Socket Box dimensions & position (in dp)
+    // Socket Center position on the card (% of board canvas width & height)
+    var socketCenterXPct by remember {
+        val validPins = initialPins.filter { it.pinX > 0f }
+        mutableFloatStateOf(if (validPins.isNotEmpty()) validPins.map { it.pinX }.average().toFloat() else initialSocketCenterXPct)
+    }
+    var socketCenterYPct by remember {
+        val validPins = initialPins.filter { it.pinY > 0f }
+        mutableFloatStateOf(if (validPins.isNotEmpty()) validPins.map { it.pinY }.average().toFloat() else initialSocketCenterYPct)
+    }
+
+    // Socket Box dimensions (in dp)
     var socketWidthDp by remember {
-        mutableFloatStateOf((initialPins.size * 42f + 36f).coerceIn(140f, 340f))
+        mutableFloatStateOf((initialPins.size * 40f + 40f).coerceIn(140f, 360f))
     }
     var socketHeightDp by remember {
-        mutableFloatStateOf(80f)
+        mutableFloatStateOf(85f)
     }
-    var pinSizeDp by remember { mutableFloatStateOf(28f) }
+    var pinSizeDp by remember { mutableFloatStateOf(26f) }
 
     // Pin Local Positions inside the socket box (Key: pinNumber -> Offset in dp relative to socket top-left)
     val pinOffsets = remember {
         mutableStateMapOf<Int, Offset>().apply {
+            val step = if (initialPins.isNotEmpty()) ((socketWidthDp - 36f) / initialPins.size.coerceAtLeast(1)) else 34f
             initialPins.forEachIndexed { idx, p ->
-                put(p.pinNumber, Offset(16f + (idx * 38f), 38f))
+                put(p.pinNumber, Offset(16f + (idx * step), 42f))
             }
         }
     }
@@ -146,11 +159,11 @@ fun SocketFocusEditorDialog(
                         Spacer(modifier = Modifier.width(8.dp))
                         Column {
                             Text(
-                                text = "تحرير السوكيت: $socketName",
+                                text = "تحرير السوكيت بدقة: $socketName",
                                 style = MaterialTheme.typography.titleMedium.copy(color = Color.White, fontWeight = FontWeight.Bold)
                             )
                             Text(
-                                text = "اسحب الأطراف بإصبعك داخل المستطيل • غيّر حجم السوكيت من المقابض",
+                                text = "اسحب السوكيت فوق مكانه في الكارتة • اسحب الأطراف • غيّر الحجم من المقابض",
                                 style = MaterialTheme.typography.labelSmall.copy(color = Color(0xFF94A3B8), fontSize = 11.sp)
                             )
                         }
@@ -186,7 +199,7 @@ fun SocketFocusEditorDialog(
                                 color = Color(0xFF334155),
                                 modifier = Modifier
                                     .size(26.dp)
-                                    .clickable { pinSizeDp = (pinSizeDp - 3f).coerceAtLeast(18f) }
+                                    .clickable { pinSizeDp = (pinSizeDp - 2f).coerceAtLeast(16f) }
                             ) {
                                 Box(contentAlignment = Alignment.Center) {
                                     Icon(Icons.Default.Remove, contentDescription = null, tint = Color.White, modifier = Modifier.size(14.dp))
@@ -200,7 +213,7 @@ fun SocketFocusEditorDialog(
                                 color = Color(0xFF334155),
                                 modifier = Modifier
                                     .size(26.dp)
-                                    .clickable { pinSizeDp = (pinSizeDp + 3f).coerceAtMost(46f) }
+                                    .clickable { pinSizeDp = (pinSizeDp + 2f).coerceAtMost(46f) }
                             ) {
                                 Box(contentAlignment = Alignment.Center) {
                                     Icon(Icons.Default.Add, contentDescription = null, tint = Color.White, modifier = Modifier.size(14.dp))
@@ -224,7 +237,7 @@ fun SocketFocusEditorDialog(
                                         socketName = socketName
                                     )
                                     socketPins.add(newPin)
-                                    pinOffsets[nextNum] = Offset(16f + (socketPins.size * 34f).coerceAtMost(socketWidthDp - 40f), 38f)
+                                    pinOffsets[nextNum] = Offset(16f + (socketPins.size * 34f).coerceAtMost(socketWidthDp - 40f), 42f)
                                 }
                             ) {
                                 Text("+ طرف", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 11.sp, modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp))
@@ -245,7 +258,7 @@ fun SocketFocusEditorDialog(
                                         socketName = socketName
                                     )
                                     socketPins.add(newPin)
-                                    pinOffsets[nextNum] = Offset(16f + (socketPins.size * 34f).coerceAtMost(socketWidthDp - 40f), 38f)
+                                    pinOffsets[nextNum] = Offset(16f + (socketPins.size * 34f).coerceAtMost(socketWidthDp - 40f), 42f)
                                 }
                             ) {
                                 Text("⚪ مسافة فاضية", color = Color.LightGray, fontSize = 11.sp, modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp))
@@ -261,7 +274,7 @@ fun SocketFocusEditorDialog(
                                     if (count > 0) {
                                         val step = (socketWidthDp - 32f) / count
                                         socketPins.forEachIndexed { i, p ->
-                                            pinOffsets[p.pinNumber] = Offset(16f + (i * step), 38f)
+                                            pinOffsets[p.pinNumber] = Offset(16f + (i * step), 42f)
                                         }
                                     }
                                 }
@@ -274,17 +287,28 @@ fun SocketFocusEditorDialog(
 
                 Spacer(modifier = Modifier.height(10.dp))
 
-                // Interactive Board & Socket Focus Workspace
-                Box(
+                // Interactive Board & Socket Focus Workspace (Photoshop Canvas Style)
+                BoxWithConstraints(
                     modifier = Modifier
                         .weight(1f)
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(12.dp))
                         .background(Color(0xFF0F172A))
-                        .border(1.dp, Color(0xFF1E293B), RoundedCornerShape(12.dp)),
-                    contentAlignment = Alignment.Center
+                        .border(1.dp, Color(0xFF1E293B), RoundedCornerShape(12.dp))
                 ) {
-                    // Board Background Image
+                    val canvasWidthPx = with(density) { maxWidth.toPx() }
+                    val canvasHeightPx = with(density) { maxHeight.toPx() }
+
+                    val socketWidthPx = with(density) { socketWidthDp.dp.toPx() }
+                    val socketHeightPx = with(density) { socketHeightDp.dp.toPx() }
+
+                    val socketLeftPx = ((socketCenterXPct / 100f) * canvasWidthPx) - (socketWidthPx / 2f)
+                    val socketTopPx = ((socketCenterYPct / 100f) * canvasHeightPx) - (socketHeightPx / 2f)
+
+                    val boundedLeftPx = socketLeftPx.coerceIn(0f, (canvasWidthPx - socketWidthPx).coerceAtLeast(0f))
+                    val boundedTopPx = socketTopPx.coerceIn(0f, (canvasHeightPx - socketHeightPx).coerceAtLeast(0f))
+
+                    // 1. Board Background Image
                     if (boardImageUrl.isNotBlank()) {
                         AsyncImage(
                             model = ImageRequest.Builder(context)
@@ -293,20 +317,31 @@ fun SocketFocusEditorDialog(
                                 .build(),
                             contentDescription = "كارتة التحكم",
                             contentScale = ContentScale.Fit,
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .padding(8.dp)
+                            modifier = Modifier.fillMaxSize()
                         )
                     }
 
-                    // Socket Bounding Box with Draggable Pins and Corner Resize Handles
+                    // 2. Movable & Resizable Socket Bounding Box
                     Box(
                         modifier = Modifier
+                            .offset { IntOffset(boundedLeftPx.roundToInt(), boundedTopPx.roundToInt()) }
                             .size(socketWidthDp.dp, socketHeightDp.dp)
                             .shadow(12.dp, RoundedCornerShape(12.dp))
                             .clip(RoundedCornerShape(12.dp))
                             .background(Color(0xFF0F172A).copy(alpha = 0.94f))
                             .border(2.dp, Color(0xFF38BDF8), RoundedCornerShape(12.dp))
+                            // Dragging the entire socket box across the board photo
+                            .pointerInput(canvasWidthPx, canvasHeightPx) {
+                                detectDragGestures { change, dragAmount ->
+                                    change.consume()
+                                    if (canvasWidthPx > 0 && canvasHeightPx > 0) {
+                                        val dxPct = (dragAmount.x / canvasWidthPx) * 100f
+                                        val dyPct = (dragAmount.y / canvasHeightPx) * 100f
+                                        socketCenterXPct = (socketCenterXPct + dxPct).coerceIn(4f, 96f)
+                                        socketCenterYPct = (socketCenterYPct + dyPct).coerceIn(4f, 96f)
+                                    }
+                                }
+                            }
                     ) {
                         // Socket Header
                         Row(
@@ -326,12 +361,12 @@ fun SocketFocusEditorDialog(
                                 )
                             }
 
-                            Text("حدود السوكيت المغلقة", color = Color(0xFF94A3B8), fontSize = 9.sp)
+                            Text("اسحب لنقل السوكيت", color = Color(0xFF94A3B8), fontSize = 9.sp)
                         }
 
                         // Pins inside the Socket (Directly draggable by finger, strictly bounded)
                         socketPins.forEach { pin ->
-                            val currentOffset = pinOffsets[pin.pinNumber] ?: Offset(20f, 36f)
+                            val currentOffset = pinOffsets[pin.pinNumber] ?: Offset(20f, 40f)
                             val isBlank = pin.isBlankPin
                             val pinColor = if (isBlank) Color(0xFF1E293B) else parseWireColorToComposeColor(pin.colorHex)
 
@@ -358,7 +393,7 @@ fun SocketFocusEditorDialog(
                                             change.consume()
                                             val dxDp = with(density) { dragAmount.x.toDp().value }
                                             val dyDp = with(density) { dragAmount.y.toDp().value }
-                                            val cur = pinOffsets[pin.pinNumber] ?: Offset(20f, 36f)
+                                            val cur = pinOffsets[pin.pinNumber] ?: Offset(20f, 40f)
 
                                             // STRICT CONSTRAINT: Pin cannot exit the socket rectangle!
                                             val minX = 6f
@@ -400,7 +435,7 @@ fun SocketFocusEditorDialog(
                             modifier = Modifier.align(Alignment.BottomEnd),
                             onDragDelta = { dx, dy ->
                                 socketWidthDp = (socketWidthDp + dx).coerceIn(120f, 380f)
-                                socketHeightDp = (socketHeightDp + dy).coerceIn(65f, 220f)
+                                socketHeightDp = (socketHeightDp + dy).coerceIn(65f, 240f)
                             }
                         )
 
@@ -409,7 +444,16 @@ fun SocketFocusEditorDialog(
                             modifier = Modifier.align(Alignment.BottomStart),
                             onDragDelta = { dx, dy ->
                                 socketWidthDp = (socketWidthDp - dx).coerceIn(120f, 380f)
-                                socketHeightDp = (socketHeightDp + dy).coerceIn(65f, 220f)
+                                socketHeightDp = (socketHeightDp + dy).coerceIn(65f, 240f)
+                            }
+                        )
+
+                        // 3. Top-End Corner Handle
+                        CornerResizeHandle(
+                            modifier = Modifier.align(Alignment.TopEnd),
+                            onDragDelta = { dx, dy ->
+                                socketWidthDp = (socketWidthDp + dx).coerceIn(120f, 380f)
+                                socketHeightDp = (socketHeightDp - dy).coerceIn(65f, 240f)
                             }
                         )
                     }
@@ -433,19 +477,35 @@ fun SocketFocusEditorDialog(
 
                     Button(
                         onClick = {
-                            // Update pins with their positions inside the socket
+                            // Calculate each pin's absolute position on the board canvas
                             val updatedList = socketPins.mapIndexed { idx, p ->
-                                val offset = pinOffsets[p.pinNumber] ?: Offset(20f + idx * 30f, 38f)
-                                val xPercent = (offset.x / socketWidthDp) * 100f
+                                val offset = pinOffsets[p.pinNumber] ?: Offset(16f + (idx * 32f), 42f)
+                                val localXFrac = (offset.x / socketWidthDp).coerceIn(0.01f, 0.99f)
+                                val localYFrac = (offset.y / socketHeightDp).coerceIn(0.01f, 0.99f)
+
+                                // Socket bounds as percentage of canvas
+                                val halfWPct = (socketWidthDp / 400f) * 50f
+                                val halfHPct = (socketHeightDp / 400f) * 50f
+
+                                val leftPct = (socketCenterXPct - halfWPct).coerceIn(1f, 98f)
+                                val topPct = (socketCenterYPct - halfHPct).coerceIn(1f, 98f)
+                                val widthPct = (halfWPct * 2f).coerceIn(4f, 95f)
+                                val heightPct = (halfHPct * 2f).coerceIn(4f, 95f)
+
+                                val absPinX = (leftPct + (localXFrac * widthPct)).coerceIn(2f, 98f)
+                                val absPinY = (topPct + (localYFrac * heightPct)).coerceIn(2f, 98f)
+
                                 p.copy(
                                     socketName = socketName,
+                                    pinX = absPinX,
+                                    pinY = absPinY,
                                     label = if (p.isBlankPin) "مكان فاضي بدون سلك (NC)" else p.label,
                                     connectedComponent = if (p.isBlankPin) "" else p.connectedComponent,
                                     targetPinNumber = if (p.isBlankPin) null else p.targetPinNumber
                                 )
                             }
-                            onSavePins(updatedList)
-                            Toast.makeText(context, "تم حفظ أبعاد وترتيب أطراف السوكيت بنجاح!", Toast.LENGTH_SHORT).show()
+                            onSavePins(socketName, updatedList)
+                            Toast.makeText(context, "تم حفظ أبعاد ومكان وأطراف السوكيت بنجاح!", Toast.LENGTH_SHORT).show()
                             onDismiss()
                         },
                         shape = RoundedCornerShape(10.dp),
