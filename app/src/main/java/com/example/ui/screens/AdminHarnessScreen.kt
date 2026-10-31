@@ -341,6 +341,10 @@ fun AdminHarnessScreen(
                         selectedSocketName = cleanTarget
                         expandedBoardSockets[cleanTarget] = true
                     },
+                    onUpdateAllPins = { updatedAll ->
+                        boardPins.clear()
+                        boardPins.addAll(updatedAll)
+                    },
                     selectedSocketName = selectedSocketName,
                     onSelectSocket = { selectedSocketName = it }
                 )

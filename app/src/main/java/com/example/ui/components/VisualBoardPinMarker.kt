@@ -153,6 +153,7 @@ fun VisualBoardPinMarker(
     onResizeSocket: (socketName: String, scaleFactor: Float) -> Unit = { _, _ -> },
     onDeleteSocket: (socketName: String) -> Unit = {},
     onUpdatePins: (socketName: String, updatedPins: List<HarnessPin>) -> Unit = { _, _ -> },
+    onUpdateAllPins: (List<HarnessPin>) -> Unit = {},
     selectedSocketName: String?,
     onSelectSocket: (String?) -> Unit,
     modifier: Modifier = Modifier
@@ -255,20 +256,45 @@ fun VisualBoardPinMarker(
                     }
                 }
 
-                if (boardImageUrl.isNotBlank()) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    // 1. Professional Interactive Canvas Editor (Canva / Pinterest Style)
                     Surface(
-                        shape = RoundedCornerShape(8.dp),
-                        color = Color(0xFF0284C7).copy(alpha = 0.15f),
-                        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF0284C7)),
-                        modifier = Modifier.clickable { showCropperDialog = true }
+                        shape = RoundedCornerShape(10.dp),
+                        color = Color(0xFF0284C7),
+                        shadowElevation = 4.dp,
+                        modifier = Modifier.clickable {
+                            showFocusEditorSocket = activeSocket ?: distinctSockets.firstOrNull() ?: "سوكيت 1"
+                        }
                     ) {
                         Row(
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Icon(Icons.Default.Crop, contentDescription = null, tint = Color(0xFF38BDF8), modifier = Modifier.size(15.dp))
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("قص الكارتة ✂️", color = Color(0xFF38BDF8), fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                            Icon(Icons.Default.FitScreen, contentDescription = null, tint = Color.White, modifier = Modifier.size(15.dp))
+                            Spacer(modifier = Modifier.width(5.dp))
+                            Text("محرر الكارتة الاحترافي 🎨", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                        }
+                    }
+
+                    // 2. Photo Cropper button
+                    if (boardImageUrl.isNotBlank()) {
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = Color(0xFF0284C7).copy(alpha = 0.15f),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF0284C7)),
+                            modifier = Modifier.clickable { showCropperDialog = true }
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(Icons.Default.Crop, contentDescription = null, tint = Color(0xFF38BDF8), modifier = Modifier.size(15.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("قص الكارتة ✂️", color = Color(0xFF38BDF8), fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                            }
                         }
                     }
                 }
@@ -913,7 +939,9 @@ fun VisualBoardPinMarker(
             onDismiss = { showFocusEditorSocket = null },
             onSavePins = { targetSock, updatedSocketPins ->
                 onUpdatePins(targetSock, updatedSocketPins)
-                showFocusEditorSocket = null
+            },
+            onSaveAllPins = { updatedAllPins ->
+                onUpdateAllPins(updatedAllPins)
             }
         )
     }
