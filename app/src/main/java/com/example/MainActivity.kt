@@ -72,6 +72,13 @@ import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.auth
 import kotlinx.coroutines.launch
 
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.runtime.mutableStateListOf
+import com.example.ui.screens.ProgrammingScreen
+
 enum class Screen {
     DASHBOARD,
     CATALOG,
@@ -83,6 +90,7 @@ enum class Screen {
     ADMIN_PART,
     SYSTEM_INTEGRATOR,
     DIAGNOSTICS,
+    PROGRAMMING,
     AI_STUDIO,
     MANAGE_ADMINS,
     AUTH
@@ -277,7 +285,35 @@ fun AppContent(
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
+    val navigationStack = remember { mutableStateListOf<Screen>(Screen.DASHBOARD) }
     var currentScreen by remember { mutableStateOf(Screen.DASHBOARD) }
+
+    fun navigateTo(screen: Screen) {
+        if (currentScreen != screen) {
+            navigationStack.add(screen)
+            currentScreen = screen
+        }
+    }
+
+    fun navigateBack() {
+        if (navigationStack.size > 1) {
+            navigationStack.removeAt(navigationStack.size - 1)
+            currentScreen = navigationStack.last()
+        } else {
+            currentScreen = Screen.DASHBOARD
+        }
+    }
+
+    fun selectTab(screen: Screen) {
+        if (currentScreen != screen) {
+            navigationStack.clear()
+            navigationStack.add(Screen.DASHBOARD)
+            if (screen != Screen.DASHBOARD) {
+                navigationStack.add(screen)
+            }
+            currentScreen = screen
+        }
+    }
     var motorToEdit by remember { mutableStateOf<Motor?>(null) }
     var harnessToEdit by remember { mutableStateOf<Harness?>(null) }
     var partToEdit by remember { mutableStateOf<AppliancePart?>(null) }
@@ -394,7 +430,7 @@ fun AppContent(
                 ) {
                     NavigationBarItem(
                         selected = currentScreen == Screen.DASHBOARD,
-                        onClick = { currentScreen = Screen.DASHBOARD },
+                        onClick = { selectTab(Screen.DASHBOARD) },
                         icon = { Icon(Icons.Default.GridView, contentDescription = "الرئيسية") },
                         label = {
                             Text(
@@ -412,7 +448,7 @@ fun AppContent(
 
                     NavigationBarItem(
                         selected = currentScreen == Screen.CATALOG,
-                        onClick = { currentScreen = Screen.CATALOG },
+                        onClick = { selectTab(Screen.CATALOG) },
                         icon = { Icon(Icons.Default.Memory, contentDescription = "المواتير") },
                         label = {
                             Text(
@@ -430,7 +466,7 @@ fun AppContent(
 
                     NavigationBarItem(
                         selected = currentScreen == Screen.HARNESS_LIST,
-                        onClick = { currentScreen = Screen.HARNESS_LIST },
+                        onClick = { selectTab(Screen.HARNESS_LIST) },
                         icon = { Icon(Icons.Default.Cable, contentDescription = "الضفائر") },
                         label = {
                             Text(
@@ -448,7 +484,7 @@ fun AppContent(
 
                     NavigationBarItem(
                         selected = currentScreen == Screen.PARTS_LIST,
-                        onClick = { currentScreen = Screen.PARTS_LIST },
+                        onClick = { selectTab(Screen.PARTS_LIST) },
                         icon = { Icon(Icons.Default.Lock, contentDescription = "القطع") },
                         label = {
                             Text(
@@ -466,7 +502,7 @@ fun AppContent(
 
                     NavigationBarItem(
                         selected = currentScreen == Screen.SYSTEM_INTEGRATOR,
-                        onClick = { currentScreen = Screen.SYSTEM_INTEGRATOR },
+                        onClick = { selectTab(Screen.SYSTEM_INTEGRATOR) },
                         icon = { Icon(Icons.Default.Hub, contentDescription = "المخطط") },
                         label = {
                             Text(
@@ -492,7 +528,18 @@ fun AppContent(
         ) {
             AnimatedContent(
                 targetState = currentScreen,
-                transitionSpec = { fadeIn() togetherWith fadeOut() },
+                transitionSpec = {
+                    (slideInHorizontally(
+                        animationSpec = tween(320, easing = FastOutSlowInEasing),
+                        initialOffsetX = { fullWidth -> (fullWidth * 0.22f).toInt() }
+                    ) + fadeIn(animationSpec = tween(320)))
+                    .togetherWith(
+                        slideOutHorizontally(
+                            animationSpec = tween(280, easing = FastOutSlowInEasing),
+                            targetOffsetX = { fullWidth -> -(fullWidth * 0.22f).toInt() }
+                        ) + fadeOut(animationSpec = tween(280))
+                    )
+                },
                 label = "screen_transition"
             ) { screen ->
                 when (screen) {
@@ -505,24 +552,25 @@ fun AppContent(
                             motorsCount = motorsCount,
                             harnessesCount = harnessesCount,
                             partsCount = partsCount,
-                            onNavigateToMotors = { currentScreen = Screen.CATALOG },
-                            onNavigateToHarnesses = { currentScreen = Screen.HARNESS_LIST },
-                            onNavigateToParts = { currentScreen = Screen.PARTS_LIST },
-                            onNavigateToIntegrator = { currentScreen = Screen.SYSTEM_INTEGRATOR },
+                            onNavigateToMotors = { navigateTo(Screen.CATALOG) },
+                            onNavigateToHarnesses = { navigateTo(Screen.HARNESS_LIST) },
+                            onNavigateToParts = { navigateTo(Screen.PARTS_LIST) },
+                            onNavigateToIntegrator = { navigateTo(Screen.SYSTEM_INTEGRATOR) },
+                            onNavigateToProgramming = { navigateTo(Screen.PROGRAMMING) },
                             onNavigateToDiagnostics = { title ->
                                 diagnosticsCategoryTitle = title
-                                currentScreen = Screen.DIAGNOSTICS
+                                navigateTo(Screen.DIAGNOSTICS)
                             },
                             onCheckForUpdates = { handleManualUpdateCheck() },
                             onPublishUpdate = { showAdminPublishDialog = true },
                             onManageAdmins = {
                                 if (isSuperAdmin) {
-                                    currentScreen = Screen.MANAGE_ADMINS
+                                    navigateTo(Screen.MANAGE_ADMINS)
                                 }
                             },
                             onAuthClick = {
                                 if (isGuest) {
-                                    currentScreen = Screen.AUTH
+                                    navigateTo(Screen.AUTH)
                                 } else {
                                     onSignOut()
                                 }
@@ -533,9 +581,10 @@ fun AppContent(
 
                     Screen.CATALOG -> {
                         BackHandler {
-                            currentScreen = Screen.DASHBOARD
+                            navigateBack()
                         }
                         CatalogScreen(
+                            onBackClick = { navigateBack() },
                             motorsState = motorsState,
                             searchQuery = searchQuery,
                             onSearchQueryChange = motorViewModel::onSearchQueryChanged,
@@ -548,23 +597,23 @@ fun AppContent(
                             onToggleFavorite = motorViewModel::toggleFavorite,
                             onMotorClick = { motor ->
                                 motorViewModel.selectMotor(motor)
-                                currentScreen = Screen.DETAIL
+                                navigateTo(Screen.DETAIL)
                             },
                             onAddNewMotorClick = {
                                 if (isAdmin) {
                                     motorToEdit = null
-                                    currentScreen = Screen.ADMIN_EDIT
+                                    navigateTo(Screen.ADMIN_EDIT)
                                 }
                             },
                             onAiStudioClick = {
                                 if (isAdmin) {
-                                    currentScreen = Screen.AI_STUDIO
+                                    navigateTo(Screen.AI_STUDIO)
                                 }
                             },
                             onCheckForUpdates = { handleManualUpdateCheck() },
                             onSignOutClick = {
                                 if (isGuest) {
-                                    currentScreen = Screen.AUTH
+                                    navigateTo(Screen.AUTH)
                                 } else {
                                     onSignOut()
                                 }
@@ -575,12 +624,12 @@ fun AppContent(
                             isGuest = isGuest,
                             onManageAdminsClick = {
                                 if (isSuperAdmin) {
-                                    currentScreen = Screen.MANAGE_ADMINS
+                                    navigateTo(Screen.MANAGE_ADMINS)
                                 }
                             },
                             onEditMotorClick = { motor ->
                                 motorToEdit = motor
-                                currentScreen = Screen.ADMIN_EDIT
+                                navigateTo(Screen.ADMIN_EDIT)
                             },
                             onDeleteMotorClick = { motor ->
                                 motorViewModel.deleteMotor(motor.id)
@@ -588,7 +637,7 @@ fun AppContent(
                             onDuplicateMotor = { motor ->
                                 motorViewModel.duplicateMotor(motor) { cloned ->
                                     motorToEdit = cloned
-                                    currentScreen = Screen.ADMIN_EDIT
+                                    navigateTo(Screen.ADMIN_EDIT)
                                 }
                             },
                             onMoveMotor = { motorId, moveUp ->
@@ -602,22 +651,22 @@ fun AppContent(
 
                     Screen.HARNESS_LIST -> {
                         BackHandler {
-                            currentScreen = Screen.DASHBOARD
+                            navigateBack()
                         }
                         HarnessListScreen(
                             harnesses = harnesses,
                             isAdmin = isAdmin,
-                            onBackClick = { currentScreen = Screen.DASHBOARD },
+                            onBackClick = { navigateBack() },
                             onAddHarnessClick = {
                                 if (isAdmin) {
                                     harnessToEdit = null
-                                    currentScreen = Screen.ADMIN_HARNESS
+                                    navigateTo(Screen.ADMIN_HARNESS)
                                 }
                             },
                             onEditHarnessClick = { harness ->
                                 if (isAdmin) {
                                     harnessToEdit = harness
-                                    currentScreen = Screen.ADMIN_HARNESS
+                                    navigateTo(Screen.ADMIN_HARNESS)
                                 }
                             },
                             onDeleteHarnessClick = { id ->
@@ -626,7 +675,7 @@ fun AppContent(
                             onDuplicateHarnessClick = { harness ->
                                 motorViewModel.duplicateHarness(harness) { cloned ->
                                     harnessToEdit = cloned
-                                    currentScreen = Screen.ADMIN_HARNESS
+                                    navigateTo(Screen.ADMIN_HARNESS)
                                 }
                             },
                             onReorderHarnesses = { from, to ->
@@ -637,39 +686,39 @@ fun AppContent(
 
                     Screen.ADMIN_HARNESS -> {
                         BackHandler {
-                            currentScreen = Screen.HARNESS_LIST
+                            navigateBack()
                         }
                         AdminHarnessScreen(
                             initialHarness = harnessToEdit,
                             onSaveSuccess = { savedHarness ->
                                 motorViewModel.saveHarness(savedHarness) {
-                                    currentScreen = Screen.HARNESS_LIST
+                                    navigateBack()
                                 }
                             },
                             onBackClick = {
-                                currentScreen = Screen.HARNESS_LIST
+                                navigateBack()
                             }
                         )
                     }
 
                     Screen.PARTS_LIST -> {
                         BackHandler {
-                            currentScreen = Screen.DASHBOARD
+                            navigateBack()
                         }
                         PartsListScreen(
                             parts = parts,
                             isAdmin = isAdmin,
-                            onBackClick = { currentScreen = Screen.DASHBOARD },
+                            onBackClick = { navigateBack() },
                             onAddPartClick = {
                                 if (isAdmin) {
                                     partToEdit = null
-                                    currentScreen = Screen.ADMIN_PART
+                                    navigateTo(Screen.ADMIN_PART)
                                 }
                             },
                             onEditPartClick = { part ->
                                 if (isAdmin) {
                                     partToEdit = part
-                                    currentScreen = Screen.ADMIN_PART
+                                    navigateTo(Screen.ADMIN_PART)
                                 }
                             },
                             onDeletePartClick = { id ->
@@ -678,7 +727,7 @@ fun AppContent(
                             onDuplicatePartClick = { part ->
                                 motorViewModel.duplicatePart(part) { cloned ->
                                     partToEdit = cloned
-                                    currentScreen = Screen.ADMIN_PART
+                                    navigateTo(Screen.ADMIN_PART)
                                 }
                             }
                         )
@@ -686,62 +735,72 @@ fun AppContent(
 
                     Screen.ADMIN_PART -> {
                         BackHandler {
-                            currentScreen = Screen.PARTS_LIST
+                            navigateBack()
                         }
                         AdminPartScreen(
                             initialPart = partToEdit,
                             onSaveSuccess = { savedPart ->
                                 motorViewModel.savePart(savedPart) {
-                                    currentScreen = Screen.PARTS_LIST
+                                    navigateBack()
                                 }
                             },
                             onBackClick = {
-                                currentScreen = Screen.PARTS_LIST
+                                navigateBack()
                             }
                         )
                     }
 
                     Screen.SYSTEM_INTEGRATOR -> {
                         BackHandler {
-                            currentScreen = Screen.DASHBOARD
+                            navigateBack()
                         }
                         SystemIntegratorScreen(
                             harnesses = harnesses,
                             motors = motorsList,
                             parts = parts,
-                            onBackClick = { currentScreen = Screen.DASHBOARD }
+                            onBackClick = { navigateBack() }
                         )
                     }
 
                     Screen.DIAGNOSTICS -> {
                         BackHandler {
-                            currentScreen = Screen.DASHBOARD
+                            navigateBack()
                         }
                         DiagnosticsGuideScreen(
                             categoryTitle = diagnosticsCategoryTitle,
-                            onBackClick = { currentScreen = Screen.DASHBOARD }
+                            onBackClick = { navigateBack() }
+                        )
+                    }
+
+                    Screen.PROGRAMMING -> {
+                        BackHandler {
+                            navigateBack()
+                        }
+                        ProgrammingScreen(
+                            isAdmin = isAdmin,
+                            onBackClick = { navigateBack() }
                         )
                     }
 
                     Screen.DETAIL -> {
                         BackHandler {
-                            currentScreen = Screen.CATALOG
+                            navigateBack()
                         }
                         selectedMotor?.let { motor ->
                             MotorDetailScreen(
                                 motor = motor,
-                                onBackClick = { currentScreen = Screen.CATALOG },
+                                onBackClick = { navigateBack() },
                                 onEditClick = {
                                     if (isAdmin) {
                                         motorToEdit = motor
-                                        currentScreen = Screen.ADMIN_EDIT
+                                        navigateTo(Screen.ADMIN_EDIT)
                                     }
                                 },
                                 onDuplicateClick = if (isAdmin) {
                                     {
                                         motorViewModel.duplicateMotor(motor) { cloned ->
                                             motorToEdit = cloned
-                                            currentScreen = Screen.ADMIN_EDIT
+                                            navigateTo(Screen.ADMIN_EDIT)
                                         }
                                     }
                                 } else null,
@@ -753,7 +812,7 @@ fun AppContent(
                                             val updated = m.copy(imageUrl = generatedUri)
                                             motorViewModel.saveMotor(updated)
                                         }
-                                        currentScreen = Screen.AI_STUDIO
+                                        navigateTo(Screen.AI_STUDIO)
                                     }
                                 },
                                 isAdmin = isAdmin,
@@ -761,46 +820,46 @@ fun AppContent(
                                 onToggleFavorite = { motorViewModel.toggleFavorite(motor.id) }
                             )
                         } ?: run {
-                            currentScreen = Screen.CATALOG
+                            navigateBack()
                         }
                     }
 
                     Screen.ADMIN_EDIT -> {
                         if (!isAdmin) {
-                            currentScreen = Screen.CATALOG
+                            navigateBack()
                         } else {
                             BackHandler {
-                                currentScreen = if (selectedMotor != null) Screen.DETAIL else Screen.CATALOG
+                                navigateBack()
                             }
                             AdminMotorScreen(
                                 initialMotor = motorToEdit,
                                 currentUserId = userId,
                                 onBackClick = {
-                                    currentScreen = if (selectedMotor != null) Screen.DETAIL else Screen.CATALOG
+                                    navigateBack()
                                 },
                                 onSaveSuccess = { savedMotor ->
                                     motorViewModel.saveMotor(savedMotor) { newId ->
                                         val motorWithId = if (savedMotor.id.isNotBlank()) savedMotor else savedMotor.copy(id = newId)
                                         motorViewModel.selectMotor(motorWithId)
-                                        currentScreen = Screen.CATALOG
+                                        navigateBack()
                                     }
                                 },
                                 onDeleteSuccess = {
                                     motorToEdit?.let { m ->
                                         motorViewModel.deleteMotor(m.id) {
-                                            currentScreen = Screen.CATALOG
+                                            navigateBack()
                                         }
                                     }
                                 },
                                 onOpenAiStudioForImage = { onImageReady ->
                                     onAiImageReceivedCallback = onImageReady
-                                    currentScreen = Screen.AI_STUDIO
+                                    navigateTo(Screen.AI_STUDIO)
                                 },
                                 availableCategories = categories,
                                 onAddNewCategory = { motorViewModel.addCategory(it) },
                                 isSuperAdmin = isSuperAdmin,
                                 onManageAdminsClick = {
-                                    currentScreen = Screen.MANAGE_ADMINS
+                                    navigateTo(Screen.MANAGE_ADMINS)
                                 }
                             )
                         }
@@ -808,19 +867,19 @@ fun AppContent(
 
                     Screen.AI_STUDIO -> {
                         if (!isAdmin) {
-                            currentScreen = Screen.CATALOG
+                            navigateBack()
                         } else {
                             BackHandler {
-                                currentScreen = if (motorToEdit != null) Screen.ADMIN_EDIT else Screen.CATALOG
+                                navigateBack()
                             }
                             AiStudioScreen(
                                 viewModel = aiViewModel,
                                 onBackClick = {
-                                    currentScreen = if (motorToEdit != null) Screen.ADMIN_EDIT else Screen.CATALOG
+                                    navigateBack()
                                 },
                                 onUseGeneratedImage = { imageUri ->
                                     onAiImageReceivedCallback?.invoke(imageUri)
-                                    currentScreen = if (motorToEdit != null) Screen.ADMIN_EDIT else Screen.CATALOG
+                                    navigateBack()
                                 }
                             )
                         }
@@ -828,10 +887,10 @@ fun AppContent(
 
                     Screen.MANAGE_ADMINS -> {
                         if (!isSuperAdmin) {
-                            currentScreen = Screen.CATALOG
+                            navigateBack()
                         } else {
                             BackHandler {
-                                currentScreen = Screen.CATALOG
+                                navigateBack()
                             }
                             ManageAdminsScreen(
                                 admins = adminsList,
@@ -854,7 +913,7 @@ fun AppContent(
                                     }
                                 },
                                 onBackClick = {
-                                    currentScreen = Screen.CATALOG
+                                    navigateBack()
                                 }
                             )
                         }
@@ -862,19 +921,19 @@ fun AppContent(
 
                     Screen.AUTH -> {
                         BackHandler {
-                            currentScreen = Screen.CATALOG
+                            navigateBack()
                         }
                         AuthScreen(
                             onAuthSuccess = { signedInEmail ->
                                 onAuthSuccess()
                                 motorViewModel.refreshUserRole(signedInEmail)
-                                currentScreen = Screen.CATALOG
+                                navigateBack()
                             },
                             onContinueAsGuest = {
-                                currentScreen = Screen.CATALOG
+                                navigateBack()
                             },
                             onBackClick = {
-                                currentScreen = Screen.CATALOG
+                                navigateBack()
                             }
                         )
                     }

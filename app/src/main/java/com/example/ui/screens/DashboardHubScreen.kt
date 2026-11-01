@@ -57,7 +57,11 @@ import androidx.compose.material.icons.filled.PrecisionManufacturing
 import androidx.compose.material.icons.filled.RestartAlt
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SystemUpdate
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.filled.WaterDamage
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -143,6 +147,7 @@ fun DashboardHubScreen(
     onNavigateToHarnesses: () -> Unit,
     onNavigateToParts: () -> Unit,
     onNavigateToIntegrator: () -> Unit,
+    onNavigateToProgramming: () -> Unit = {},
     onNavigateToDiagnostics: (String) -> Unit,
     onCheckForUpdates: () -> Unit,
     onPublishUpdate: () -> Unit = {},
@@ -196,6 +201,15 @@ fun DashboardHubScreen(
             iconTint = Color(0xFFD97706),
             circleBackground = Color(0xFFFEF3C7),
             onClick = onNavigateToParts
+        ),
+        HubCategoryItem(
+            id = "programming",
+            defaultTitle = "برمجة وسوفت وير",
+            defaultSubtitle = "سوفتات • برامج • ربط المبرمجات",
+            defaultIcon = Icons.Default.Memory,
+            iconTint = Color(0xFF10B981),
+            circleBackground = Color(0xFFD1FAE5),
+            onClick = onNavigateToProgramming
         ),
         HubCategoryItem(
             id = "integrator",
@@ -466,13 +480,19 @@ fun DashboardHubScreen(
                 }
             }
 
-            Spacer(modifier = Modifier.height(8.dp))
-
-            val orderedItems = remember(rawItems, categoryOrder) {
-                if (categoryOrder.isEmpty()) rawItems
+            val orderedItems = remember(rawItems, categoryOrder, customizations, isAdmin) {
+                val visibleItems = if (isAdmin) {
+                    rawItems
+                } else {
+                    rawItems.filter { item ->
+                        val cust = customizations[item.id]
+                        cust?.isHidden != true
+                    }
+                }
+                if (categoryOrder.isEmpty()) visibleItems
                 else {
                     val orderMap = categoryOrder.withIndex().associate { it.value to it.index }
-                    rawItems.sortedBy { orderMap[it.id] ?: 999 }
+                    visibleItems.sortedBy { orderMap[it.id] ?: 999 }
                 }
             }
 
@@ -494,6 +514,7 @@ fun DashboardHubScreen(
                     val finalIcon = resolveCategoryIcon(cust?.customIconName ?: "", item.defaultIcon)
 
                     val isCategoryLocked = cust?.isLocked == true
+                    val isCategoryHidden = cust?.isHidden == true
 
                     Box(modifier = Modifier.fillMaxWidth()) {
                         Card(
@@ -502,8 +523,11 @@ fun DashboardHubScreen(
                                 .height(172.dp)
                                 .clip(RoundedCornerShape(24.dp))
                                 .clickable {
+                                    val isProg = finalTitle.contains("برمج") || finalTitle.contains("سوفت") || item.id == "programming"
                                     if (!isAdmin && isCategoryLocked) {
                                         lockedDialogCategoryTitle = finalTitle
+                                    } else if (isProg) {
+                                        onNavigateToProgramming()
                                     } else {
                                         item.onClick()
                                     }
@@ -577,17 +601,63 @@ fun DashboardHubScreen(
                             }
                         }
 
-                        // Admin Controls: Lock Switch (Top Start) & Edit Pencil (Top End)
+                        // Admin Controls: Lock Switch (Top Start), Hide/Show Eye (Center Start), and Edit Pencil (Top End)
                         if (isAdmin) {
-                            CategoryLockSwitch(
-                                isLocked = isCategoryLocked,
-                                onToggle = {
-                                    HubCategoryManager.toggleCategoryLock(context, item.id)
-                                },
+                            Row(
                                 modifier = Modifier
                                     .align(Alignment.TopStart)
-                                    .padding(8.dp)
-                            )
+                                    .padding(6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                CategoryLockSwitch(
+                                    isLocked = isCategoryLocked,
+                                    onToggle = {
+                                        HubCategoryManager.toggleCategoryLock(context, item.id)
+                                    }
+                                )
+
+                                Surface(
+                                    shape = CircleShape,
+                                    color = if (isCategoryHidden) Color(0xFFEF4444).copy(alpha = 0.85f) else Color(0xFF0F172A).copy(alpha = 0.7f),
+                                    border = androidx.compose.foundation.BorderStroke(1.dp, if (isCategoryHidden) Color(0xFFEF4444) else Color(0xFF94A3B8).copy(alpha = 0.5f)),
+                                    modifier = Modifier
+                                        .size(26.dp)
+                                        .clip(CircleShape)
+                                        .clickable {
+                                            HubCategoryManager.toggleCategoryVisibility(context, item.id)
+                                            val state = if (!isCategoryHidden) "إخفاء" else "إظهار"
+                                            Toast.makeText(context, "تم $state القسم ${item.defaultTitle} عن المستخدمين بنجاح", Toast.LENGTH_SHORT).show()
+                                        }
+                                ) {
+                                    Box(contentAlignment = Alignment.Center) {
+                                        Icon(
+                                            imageVector = if (isCategoryHidden) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                            contentDescription = if (isCategoryHidden) "إظهار للزوار" else "إخفاء عن الزوار",
+                                            tint = Color.White,
+                                            modifier = Modifier.size(14.dp)
+                                        )
+                                    }
+                                }
+                            }
+
+                            if (isCategoryHidden) {
+                                Surface(
+                                    shape = RoundedCornerShape(6.dp),
+                                    color = Color(0xFFEF4444).copy(alpha = 0.9f),
+                                    modifier = Modifier
+                                        .align(Alignment.BottomStart)
+                                        .padding(8.dp)
+                                ) {
+                                    Text(
+                                        text = "مخفية 👁️‍🗨️",
+                                        color = Color.White,
+                                        fontSize = 9.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
+                                    )
+                                }
+                            }
 
                             Surface(
                                 shape = CircleShape,
@@ -709,7 +779,7 @@ fun DashboardHubScreen(
             currentCustomization = currentCust,
             onSelectCategory = { newId -> editingCategoryId = newId },
             onDismiss = { editingCategoryId = null },
-            onSave = { updatedTitle, updatedSubtitle, updatedImageUrl, updatedIconName ->
+            onSave = { updatedTitle, updatedSubtitle, updatedImageUrl, updatedIconName, updatedIsHidden ->
                 HubCategoryManager.updateCategory(
                     context = context,
                     id = selectedCat.id,
@@ -717,7 +787,8 @@ fun DashboardHubScreen(
                     customSubtitle = updatedSubtitle,
                     customImageUrl = updatedImageUrl,
                     customIconName = updatedIconName
-                ) { success ->
+                )
+                HubCategoryManager.setCategoryVisibility(context, selectedCat.id, updatedIsHidden) { success ->
                     Toast.makeText(
                         context,
                         if (success) "تم حفظ وتحديث القسم بنجاح في السيرفر!" else "تم الحفظ محلياً",
@@ -919,7 +990,7 @@ fun EditCategoryDialog(
     currentCustomization: HubCategoryCustomization,
     onSelectCategory: (String) -> Unit,
     onDismiss: () -> Unit,
-    onSave: (title: String, subtitle: String, imageUrl: String, iconName: String) -> Unit,
+    onSave: (title: String, subtitle: String, imageUrl: String, iconName: String, isHidden: Boolean) -> Unit,
     onReset: () -> Unit
 ) {
     var title by remember(currentCategory.id, currentCustomization) {
@@ -933,6 +1004,9 @@ fun EditCategoryDialog(
     }
     var selectedIconName by remember(currentCategory.id, currentCustomization) {
         mutableStateOf(currentCustomization.customIconName)
+    }
+    var isHidden by remember(currentCategory.id, currentCustomization) {
+        mutableStateOf(currentCustomization.isHidden)
     }
 
     val iconOptions = listOf(
@@ -1100,12 +1174,44 @@ fun EditCategoryDialog(
                         }
                     }
                 }
+
+                // Visibility switch
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "إخفاء القسم عن الزوار العاديين 👁️‍🗨️",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp
+                            )
+                            Text(
+                                text = if (isHidden) "القسم مخفي تماماً عن الزوار، ويظهر للمشرفين فقط" else "القسم مرئي لجميع المستخدمين",
+                                fontSize = 11.sp,
+                                color = if (isHidden) Color(0xFFEF4444) else MaterialTheme.colorScheme.outline
+                            )
+                        }
+                        Switch(
+                            checked = isHidden,
+                            onCheckedChange = { isHidden = it }
+                        )
+                    }
+                }
             }
         },
         confirmButton = {
             Button(
                 onClick = {
-                    onSave(title, subtitle, imageUrl, selectedIconName)
+                    onSave(title, subtitle, imageUrl, selectedIconName, isHidden)
                 },
                 shape = RoundedCornerShape(10.dp)
             ) {

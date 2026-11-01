@@ -56,6 +56,7 @@ object HubCategoryManager {
                         customImageUrl = obj.optString("customImageUrl", ""),
                         customIconName = obj.optString("customIconName", ""),
                         isLocked = obj.optBoolean("isLocked", false),
+                        isHidden = obj.optBoolean("isHidden", false),
                         orderIndex = obj.optInt("orderIndex", 0)
                     )
                 }
@@ -212,6 +213,39 @@ object HubCategoryManager {
         syncToFirestore(appContext, current, _categoryOrder.value, onComplete)
     }
 
+    fun toggleCategoryVisibility(
+        context: Context,
+        id: String,
+        onComplete: ((Boolean) -> Unit)? = null
+    ) {
+        val appContext = context.applicationContext ?: context
+        val current = _customizations.value.toMutableMap()
+        val existing = current[id] ?: HubCategoryCustomization(id = id)
+        val updated = existing.copy(isHidden = !existing.isHidden)
+        current[id] = updated
+        _customizations.value = current
+        saveToPrefs(appContext, current, _categoryOrder.value)
+
+        syncToFirestore(appContext, current, _categoryOrder.value, onComplete)
+    }
+
+    fun setCategoryVisibility(
+        context: Context,
+        id: String,
+        isHidden: Boolean,
+        onComplete: ((Boolean) -> Unit)? = null
+    ) {
+        val appContext = context.applicationContext ?: context
+        val current = _customizations.value.toMutableMap()
+        val existing = current[id] ?: HubCategoryCustomization(id = id)
+        val updated = existing.copy(isHidden = isHidden)
+        current[id] = updated
+        _customizations.value = current
+        saveToPrefs(appContext, current, _categoryOrder.value)
+
+        syncToFirestore(appContext, current, _categoryOrder.value, onComplete)
+    }
+
     private fun syncToFirestore(
         context: Context,
         customizationsMap: Map<String, HubCategoryCustomization>,
@@ -287,6 +321,7 @@ object HubCategoryManager {
                 obj.put("customImageUrl", item.customImageUrl)
                 obj.put("customIconName", item.customIconName)
                 obj.put("isLocked", item.isLocked)
+                obj.put("isHidden", item.isHidden)
                 obj.put("orderIndex", item.orderIndex)
                 json.put(id, obj)
             }

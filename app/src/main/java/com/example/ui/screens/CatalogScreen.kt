@@ -26,6 +26,7 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.automirrored.filled.Login
 import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.Add
@@ -107,6 +108,7 @@ fun CatalogScreen(
     onDuplicateMotor: (Motor) -> Unit = {},
     onMoveMotor: (String, Boolean) -> Unit = { _, _ -> },
     onReorderMotors: (Int, Int) -> Unit = { _, _ -> },
+    onBackClick: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     var motorToDelete by remember { mutableStateOf<Motor?>(null) }
@@ -120,6 +122,19 @@ fun CatalogScreen(
         modifier = modifier.testTag("catalog_screen"),
         topBar = {
             TopAppBar(
+                navigationIcon = {
+                    if (onBackClick != null) {
+                        IconButton(
+                            onClick = onBackClick,
+                            modifier = Modifier.testTag("catalog_back_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.ArrowForward,
+                                contentDescription = "رجوع للخلف"
+                            )
+                        }
+                    }
+                },
                 title = {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Surface(

@@ -1,0 +1,833 @@
+package com.example.data.repository
+
+import android.content.Context
+import android.provider.Settings
+import android.util.Log
+import com.example.data.model.ConnectionPinItem
+import com.example.data.model.FirmwareDump
+import com.example.data.model.FirmwareFolder
+import com.example.data.model.LicenseKeyRecord
+import com.example.data.model.ProgrammerConnection
+import com.example.data.model.ProgrammerSoftware
+import com.example.util.FirebaseInitializer
+import com.google.firebase.firestore.ListenerRegistration
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.tasks.await
+import org.json.JSONArray
+import org.json.JSONObject
+import java.security.SecureRandom
+import java.util.UUID
+
+object ProgrammingRepository {
+    private const val TAG = "ProgrammingRepo"
+    private const val PREFS_NAME = "albaraa_programming_prefs"
+    private const val KEY_USER_ACTIVATED_LICENSES = "user_activated_licenses"
+    private const val KEY_CACHED_SOFTWARES = "cached_softwares"
+    private const val KEY_CACHED_FOLDERS = "cached_folders"
+    private const val KEY_CACHED_DUMPS = "cached_dumps"
+    private const val KEY_CACHED_CONNECTIONS = "cached_connections"
+    private const val KEY_CACHED_KEYS = "cached_keys"
+
+    private val _softwares = MutableStateFlow<List<ProgrammerSoftware>>(emptyList())
+    val softwares: StateFlow<List<ProgrammerSoftware>> = _softwares.asStateFlow()
+
+    private val _folders = MutableStateFlow<List<FirmwareFolder>>(emptyList())
+    val folders: StateFlow<List<FirmwareFolder>> = _folders.asStateFlow()
+
+    private val _dumps = MutableStateFlow<List<FirmwareDump>>(emptyList())
+    val dumps: StateFlow<List<FirmwareDump>> = _dumps.asStateFlow()
+
+    private val _connections = MutableStateFlow<List<ProgrammerConnection>>(emptyList())
+    val connections: StateFlow<List<ProgrammerConnection>> = _connections.asStateFlow()
+
+    private val _licenseKeys = MutableStateFlow<List<LicenseKeyRecord>>(emptyList())
+    val licenseKeys: StateFlow<List<LicenseKeyRecord>> = _licenseKeys.asStateFlow()
+
+    private val _unlockedScopes = MutableStateFlow<Set<String>>(emptySet())
+    val unlockedScopes: StateFlow<Set<String>> = _unlockedScopes.asStateFlow()
+
+    private var listeners = mutableListOf<ListenerRegistration>()
+    private var isInitialized = false
+
+    fun init(context: Context) {
+        val appContext = context.applicationContext ?: context
+        if (isInitialized) return
+        isInitialized = true
+
+        loadLocalLicenses(appContext)
+        loadLocalCache(appContext)
+
+        if (_folders.value.isEmpty()) {
+            _folders.value = getInitialFolders()
+            saveFoldersToPrefs(appContext, _folders.value)
+        }
+        if (_softwares.value.isEmpty()) {
+            _softwares.value = getInitialSoftwares()
+            saveSoftwaresToPrefs(appContext, _softwares.value)
+        }
+        if (_connections.value.isEmpty()) {
+            _connections.value = getInitialConnections()
+            saveConnectionsToPrefs(appContext, _connections.value)
+        }
+
+        startRealtimeSync(appContext)
+    }
+
+    private fun loadLocalLicenses(context: Context) {
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val set = prefs.getStringSet(KEY_USER_ACTIVATED_LICENSES, emptySet()) ?: emptySet()
+        _unlockedScopes.value = set
+    }
+
+    fun isUnlocked(scope: String, isAdmin: Boolean): Boolean {
+        if (isAdmin) return true
+        val current = _unlockedScopes.value
+        return current.contains("ALL_FIRMWARE") || current.contains(scope)
+    }
+
+    fun getDeviceId(context: Context): String {
+        return try {
+            Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID) ?: "device_${UUID.randomUUID().toString().take(8)}"
+        } catch (_: Throwable) {
+            "device_${UUID.randomUUID().toString().take(8)}"
+        }
+    }
+
+    // =========================================================================
+    // LICENSE KEY ACTIVATION & GENERATION
+    // =========================================================================
+
+    suspend fun activateLicenseKey(
+        context: Context,
+        rawKey: String
+    ): Result<LicenseKeyRecord> {
+        val appContext = context.applicationContext ?: context
+        val cleanKey = rawKey.trim().uppercase()
+        if (cleanKey.isBlank()) {
+            return Result.failure(Exception("يرجى إدخال مفتاح التنشيط أولاً"))
+        }
+
+        return try {
+            val db = FirebaseInitializer.getFirestore(appContext)
+            val docRef = db.collection("license_keys").document(cleanKey)
+            val snapshot = docRef.get().await()
+
+            if (!snapshot.exists()) {
+                // Check if it exists in local cache
+                val localKey = _licenseKeys.value.firstOrNull { it.licenseKey.equals(cleanKey, ignoreCase = true) }
+                if (localKey != null) {
+                    recordActivationSuccess(appContext, localKey)
+                    return Result.success(localKey)
+                }
+                return Result.failure(Exception("مفتاح التنشيط غير صحيح أو غير مسجل في النظام"))
+            }
+
+            val keyRecord = LicenseKeyRecord.fromMap(snapshot.id, snapshot.data ?: emptyMap())
+            val currentDeviceId = getDeviceId(appContext)
+
+            if (keyRecord.isActivated && keyRecord.activatedDeviceId.isNotBlank() && keyRecord.activatedDeviceId != currentDeviceId) {
+                return Result.failure(Exception("هذا المفتاح تم تفعيله مسبقاً على جهاز آخر ولا يمكن استخدامه مجدداً"))
+            }
+
+            // Mark activated
+            val updated = keyRecord.copy(
+                isActivated = true,
+                activatedDeviceId = currentDeviceId,
+                activatedTimestamp = System.currentTimeMillis()
+            )
+            docRef.set(updated.toMap()).await()
+
+            recordActivationSuccess(appContext, updated)
+            Result.success(updated)
+        } catch (e: Throwable) {
+            Log.e(TAG, "Failed to activate license key", e)
+            Result.failure(Exception("فشل تفعيل المفتاح: ${e.localizedMessage ?: "تأكد من الاتصال بالإنترنت"}"))
+        }
+    }
+
+    private fun recordActivationSuccess(context: Context, record: LicenseKeyRecord) {
+        val set = _unlockedScopes.value.toMutableSet()
+        set.add(record.targetScope)
+        set.add(record.licenseKey)
+        _unlockedScopes.value = set
+
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        prefs.edit().putStringSet(KEY_USER_ACTIVATED_LICENSES, set).apply()
+    }
+
+    fun generateUniqueKey(
+        context: Context,
+        clientName: String,
+        clientPhone: String,
+        targetScope: String = "ALL_FIRMWARE",
+        targetScopeName: String = "جميع السوفتات والبرامج",
+        notes: String = "",
+        onComplete: (LicenseKeyRecord?) -> Unit
+    ) {
+        val appContext = context.applicationContext ?: context
+        val random = SecureRandom()
+        val part1 = (1000 + random.nextInt(9000)).toString()
+        val chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+        val part2 = (1..4).map { chars[random.nextInt(chars.length)] }.joinToString("")
+        val keyString = "ALB-SOFT-$part1-$part2"
+
+        val record = LicenseKeyRecord(
+            id = keyString,
+            licenseKey = keyString,
+            clientName = clientName.trim(),
+            clientPhone = clientPhone.trim(),
+            targetScope = targetScope,
+            targetScopeName = targetScopeName,
+            isActivated = false,
+            createdTimestamp = System.currentTimeMillis(),
+            notes = notes.trim()
+        )
+
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val db = FirebaseInitializer.getFirestore(appContext)
+                db.collection("license_keys").document(keyString)
+                    .set(record.toMap())
+                    .await()
+                val current = _licenseKeys.value.toMutableList()
+                current.removeAll { it.licenseKey == keyString }
+                current.add(0, record)
+                _licenseKeys.value = current
+                saveKeysToPrefs(appContext, current)
+                onComplete(record)
+            } catch (e: Throwable) {
+                Log.e(TAG, "Error generating license key", e)
+                onComplete(null)
+            }
+        }
+    }
+
+    fun deleteLicenseKey(context: Context, keyId: String, onComplete: ((Boolean) -> Unit)? = null) {
+        val appContext = context.applicationContext ?: context
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val db = FirebaseInitializer.getFirestore(appContext)
+                db.collection("license_keys").document(keyId).delete().await()
+                val current = _licenseKeys.value.toMutableList()
+                current.removeAll { it.id == keyId || it.licenseKey == keyId }
+                _licenseKeys.value = current
+                saveKeysToPrefs(appContext, current)
+                onComplete?.invoke(true)
+            } catch (e: Throwable) {
+                Log.e(TAG, "Error deleting license key", e)
+                onComplete?.invoke(false)
+            }
+        }
+    }
+
+    // =========================================================================
+    // CRUD FOR SOFTWARES, FOLDERS, DUMPS, CONNECTIONS
+    // =========================================================================
+
+    fun saveSoftware(context: Context, item: ProgrammerSoftware, onComplete: ((Boolean) -> Unit)? = null) {
+        val appContext = context.applicationContext ?: context
+        val current = _softwares.value.toMutableList()
+        current.removeAll { it.id == item.id }
+        current.add(0, item)
+        _softwares.value = current
+        saveSoftwaresToPrefs(appContext, current)
+
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val db = FirebaseInitializer.getFirestore(appContext)
+                db.collection("programming_software").document(item.id).set(item.toMap()).await()
+                onComplete?.invoke(true)
+            } catch (e: Throwable) {
+                Log.e(TAG, "Error saving software", e)
+                onComplete?.invoke(false)
+            }
+        }
+    }
+
+    fun deleteSoftware(context: Context, id: String, onComplete: ((Boolean) -> Unit)? = null) {
+        val appContext = context.applicationContext ?: context
+        val current = _softwares.value.toMutableList()
+        current.removeAll { it.id == id }
+        _softwares.value = current
+        saveSoftwaresToPrefs(appContext, current)
+
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val db = FirebaseInitializer.getFirestore(appContext)
+                db.collection("programming_software").document(id).delete().await()
+                onComplete?.invoke(true)
+            } catch (e: Throwable) {
+                Log.e(TAG, "Error deleting software", e)
+                onComplete?.invoke(false)
+            }
+        }
+    }
+
+    fun saveFolder(context: Context, item: FirmwareFolder, onComplete: ((Boolean) -> Unit)? = null) {
+        val appContext = context.applicationContext ?: context
+        val current = _folders.value.toMutableList()
+        current.removeAll { it.id == item.id }
+        current.add(item)
+        _folders.value = current
+        saveFoldersToPrefs(appContext, current)
+
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val db = FirebaseInitializer.getFirestore(appContext)
+                db.collection("programming_folders").document(item.id).set(item.toMap()).await()
+                onComplete?.invoke(true)
+            } catch (e: Throwable) {
+                Log.e(TAG, "Error saving folder", e)
+                onComplete?.invoke(false)
+            }
+        }
+    }
+
+    fun deleteFolder(context: Context, id: String, onComplete: ((Boolean) -> Unit)? = null) {
+        val appContext = context.applicationContext ?: context
+        val current = _folders.value.toMutableList()
+        current.removeAll { it.id == id }
+        _folders.value = current
+        saveFoldersToPrefs(appContext, current)
+
+        // Also delete dumps inside folder
+        val curDumps = _dumps.value.toMutableList()
+        curDumps.removeAll { it.folderId == id }
+        _dumps.value = curDumps
+        saveDumpsToPrefs(appContext, curDumps)
+
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val db = FirebaseInitializer.getFirestore(appContext)
+                db.collection("programming_folders").document(id).delete().await()
+                onComplete?.invoke(true)
+            } catch (e: Throwable) {
+                Log.e(TAG, "Error deleting folder", e)
+                onComplete?.invoke(false)
+            }
+        }
+    }
+
+    fun saveDump(context: Context, item: FirmwareDump, onComplete: ((Boolean) -> Unit)? = null) {
+        val appContext = context.applicationContext ?: context
+        val current = _dumps.value.toMutableList()
+        current.removeAll { it.id == item.id }
+        current.add(0, item)
+        _dumps.value = current
+        saveDumpsToPrefs(appContext, current)
+
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val db = FirebaseInitializer.getFirestore(appContext)
+                db.collection("programming_dumps").document(item.id).set(item.toMap()).await()
+                onComplete?.invoke(true)
+            } catch (e: Throwable) {
+                Log.e(TAG, "Error saving dump", e)
+                onComplete?.invoke(false)
+            }
+        }
+    }
+
+    fun deleteDump(context: Context, id: String, onComplete: ((Boolean) -> Unit)? = null) {
+        val appContext = context.applicationContext ?: context
+        val current = _dumps.value.toMutableList()
+        current.removeAll { it.id == id }
+        _dumps.value = current
+        saveDumpsToPrefs(appContext, current)
+
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val db = FirebaseInitializer.getFirestore(appContext)
+                db.collection("programming_dumps").document(id).delete().await()
+                onComplete?.invoke(true)
+            } catch (e: Throwable) {
+                Log.e(TAG, "Error deleting dump", e)
+                onComplete?.invoke(false)
+            }
+        }
+    }
+
+    fun saveConnection(context: Context, item: ProgrammerConnection, onComplete: ((Boolean) -> Unit)? = null) {
+        val appContext = context.applicationContext ?: context
+        val current = _connections.value.toMutableList()
+        current.removeAll { it.id == item.id }
+        current.add(0, item)
+        _connections.value = current
+        saveConnectionsToPrefs(appContext, current)
+
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val db = FirebaseInitializer.getFirestore(appContext)
+                db.collection("programming_connections").document(item.id).set(item.toMap()).await()
+                onComplete?.invoke(true)
+            } catch (e: Throwable) {
+                Log.e(TAG, "Error saving connection diagram", e)
+                onComplete?.invoke(false)
+            }
+        }
+    }
+
+    fun deleteConnection(context: Context, id: String, onComplete: ((Boolean) -> Unit)? = null) {
+        val appContext = context.applicationContext ?: context
+        val current = _connections.value.toMutableList()
+        current.removeAll { it.id == id }
+        _connections.value = current
+        saveConnectionsToPrefs(appContext, current)
+
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val db = FirebaseInitializer.getFirestore(appContext)
+                db.collection("programming_connections").document(id).delete().await()
+                onComplete?.invoke(true)
+            } catch (e: Throwable) {
+                Log.e(TAG, "Error deleting connection diagram", e)
+                onComplete?.invoke(false)
+            }
+        }
+    }
+
+    // =========================================================================
+    // REAL-TIME FIRESTORE SYNC
+    // =========================================================================
+
+    private fun startRealtimeSync(context: Context) {
+        try {
+            val db = FirebaseInitializer.getFirestore(context)
+
+            // 1. Softwares
+            listeners.add(
+                db.collection("programming_software").addSnapshotListener { snapshot, error ->
+                    if (error != null) return@addSnapshotListener
+                    if (snapshot != null && !snapshot.isEmpty) {
+                        val list = snapshot.documents.map { doc ->
+                            ProgrammerSoftware.fromMap(doc.id, doc.data ?: emptyMap())
+                        }
+                        _softwares.value = list
+                        saveSoftwaresToPrefs(context, list)
+                    }
+                }
+            )
+
+            // 2. Folders
+            listeners.add(
+                db.collection("programming_folders").addSnapshotListener { snapshot, error ->
+                    if (error != null) return@addSnapshotListener
+                    if (snapshot != null && !snapshot.isEmpty) {
+                        val list = snapshot.documents.map { doc ->
+                            FirmwareFolder.fromMap(doc.id, doc.data ?: emptyMap())
+                        }.sortedBy { it.orderIndex }
+                        _folders.value = list
+                        saveFoldersToPrefs(context, list)
+                    }
+                }
+            )
+
+            // 3. Dumps
+            listeners.add(
+                db.collection("programming_dumps").addSnapshotListener { snapshot, error ->
+                    if (error != null) return@addSnapshotListener
+                    if (snapshot != null && !snapshot.isEmpty) {
+                        val list = snapshot.documents.map { doc ->
+                            FirmwareDump.fromMap(doc.id, doc.data ?: emptyMap())
+                        }
+                        _dumps.value = list
+                        saveDumpsToPrefs(context, list)
+                    }
+                }
+            )
+
+            // 4. Connections
+            listeners.add(
+                db.collection("programming_connections").addSnapshotListener { snapshot, error ->
+                    if (error != null) return@addSnapshotListener
+                    if (snapshot != null && !snapshot.isEmpty) {
+                        val list = snapshot.documents.map { doc ->
+                            ProgrammerConnection.fromMap(doc.id, doc.data ?: emptyMap())
+                        }
+                        _connections.value = list
+                        saveConnectionsToPrefs(context, list)
+                    }
+                }
+            )
+
+            // 5. License Keys (for admin inspection)
+            listeners.add(
+                db.collection("license_keys").addSnapshotListener { snapshot, error ->
+                    if (error != null) return@addSnapshotListener
+                    if (snapshot != null) {
+                        val list = snapshot.documents.map { doc ->
+                            LicenseKeyRecord.fromMap(doc.id, doc.data ?: emptyMap())
+                        }.sortedByDescending { it.createdTimestamp }
+                        _licenseKeys.value = list
+                        saveKeysToPrefs(context, list)
+                    }
+                }
+            )
+        } catch (e: Throwable) {
+            Log.e(TAG, "Failed to start real-time programming sync", e)
+        }
+    }
+
+    // =========================================================================
+    // LOCAL PREFS PERSISTENCE
+    // =========================================================================
+
+    private fun loadLocalCache(context: Context) {
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+
+        // Softwares
+        prefs.getString(KEY_CACHED_SOFTWARES, null)?.let { jsonStr ->
+            try {
+                val arr = JSONArray(jsonStr)
+                val list = (0 until arr.length()).map { i ->
+                    val obj = arr.getJSONObject(i)
+                    ProgrammerSoftware(
+                        id = obj.optString("id", UUID.randomUUID().toString()),
+                        name = obj.optString("name", ""),
+                        description = obj.optString("description", ""),
+                        version = obj.optString("version", "v1.0"),
+                        fileUrl = obj.optString("fileUrl", ""),
+                        fileSizeText = obj.optString("fileSizeText", ""),
+                        fileType = obj.optString("fileType", "EXE"),
+                        iconUrl = obj.optString("iconUrl", ""),
+                        requiresLicense = obj.optBoolean("requiresLicense", false),
+                        isLocked = obj.optBoolean("isLocked", false)
+                    )
+                }
+                if (list.isNotEmpty()) _softwares.value = list
+            } catch (_: Throwable) {}
+        }
+
+        // Folders
+        prefs.getString(KEY_CACHED_FOLDERS, null)?.let { jsonStr ->
+            try {
+                val arr = JSONArray(jsonStr)
+                val list = (0 until arr.length()).map { i ->
+                    val obj = arr.getJSONObject(i)
+                    FirmwareFolder(
+                        id = obj.optString("id", UUID.randomUUID().toString()),
+                        name = obj.optString("name", ""),
+                        description = obj.optString("description", ""),
+                        brand = obj.optString("brand", ""),
+                        iconName = obj.optString("iconName", "folder"),
+                        isLocked = obj.optBoolean("isLocked", true),
+                        orderIndex = obj.optInt("orderIndex", i)
+                    )
+                }
+                if (list.isNotEmpty()) _folders.value = list
+            } catch (_: Throwable) {}
+        }
+
+        // Dumps
+        prefs.getString(KEY_CACHED_DUMPS, null)?.let { jsonStr ->
+            try {
+                val arr = JSONArray(jsonStr)
+                val list = (0 until arr.length()).map { i ->
+                    val obj = arr.getJSONObject(i)
+                    FirmwareDump(
+                        id = obj.optString("id", UUID.randomUUID().toString()),
+                        title = obj.optString("title", ""),
+                        folderId = obj.optString("folderId", ""),
+                        processorType = obj.optString("processorType", ""),
+                        boardPartNumber = obj.optString("boardPartNumber", ""),
+                        applianceModel = obj.optString("applianceModel", ""),
+                        fileUrl = obj.optString("fileUrl", ""),
+                        fileType = obj.optString("fileType", "BIN"),
+                        previewImageUrl = obj.optString("previewImageUrl", ""),
+                        notes = obj.optString("notes", ""),
+                        requiresLicense = obj.optBoolean("requiresLicense", true)
+                    )
+                }
+                if (list.isNotEmpty()) _dumps.value = list
+            } catch (_: Throwable) {}
+        }
+
+        // Connections
+        prefs.getString(KEY_CACHED_CONNECTIONS, null)?.let { jsonStr ->
+            try {
+                val arr = JSONArray(jsonStr)
+                val list = (0 until arr.length()).map { i ->
+                    val obj = arr.getJSONObject(i)
+                    val pinsArr = obj.optJSONArray("pins") ?: JSONArray()
+                    val pList = (0 until pinsArr.length()).map { pi ->
+                        val pObj = pinsArr.getJSONObject(pi)
+                        ConnectionPinItem(
+                            programmerPin = pObj.optString("programmerPin", ""),
+                            boardPin = pObj.optString("boardPin", ""),
+                            wireColor = pObj.optString("wireColor", "أحمر"),
+                            colorHex = pObj.optString("colorHex", "#EF4444"),
+                            note = pObj.optString("note", "")
+                        )
+                    }
+                    ProgrammerConnection(
+                        id = obj.optString("id", UUID.randomUUID().toString()),
+                        programmerName = obj.optString("programmerName", ""),
+                        boardName = obj.optString("boardName", ""),
+                        boardImageUrl = obj.optString("boardImageUrl", ""),
+                        programmerImageUrl = obj.optString("programmerImageUrl", ""),
+                        wiringInstructions = obj.optString("wiringInstructions", ""),
+                        voltageNote = obj.optString("voltageNote", "3.3V DC"),
+                        pins = pList
+                    )
+                }
+                if (list.isNotEmpty()) _connections.value = list
+            } catch (_: Throwable) {}
+        }
+    }
+
+    private fun saveSoftwaresToPrefs(context: Context, list: List<ProgrammerSoftware>) {
+        try {
+            val arr = JSONArray()
+            list.forEach { item ->
+                val obj = JSONObject()
+                obj.put("id", item.id)
+                obj.put("name", item.name)
+                obj.put("description", item.description)
+                obj.put("version", item.version)
+                obj.put("fileUrl", item.fileUrl)
+                obj.put("fileSizeText", item.fileSizeText)
+                obj.put("fileType", item.fileType)
+                obj.put("iconUrl", item.iconUrl)
+                obj.put("requiresLicense", item.requiresLicense)
+                obj.put("isLocked", item.isLocked)
+                arr.put(obj)
+            }
+            context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit()
+                .putString(KEY_CACHED_SOFTWARES, arr.toString()).apply()
+        } catch (_: Throwable) {}
+    }
+
+    private fun saveFoldersToPrefs(context: Context, list: List<FirmwareFolder>) {
+        try {
+            val arr = JSONArray()
+            list.forEach { item ->
+                val obj = JSONObject()
+                obj.put("id", item.id)
+                obj.put("name", item.name)
+                obj.put("description", item.description)
+                obj.put("brand", item.brand)
+                obj.put("iconName", item.iconName)
+                obj.put("isLocked", item.isLocked)
+                obj.put("orderIndex", item.orderIndex)
+                arr.put(obj)
+            }
+            context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit()
+                .putString(KEY_CACHED_FOLDERS, arr.toString()).apply()
+        } catch (_: Throwable) {}
+    }
+
+    private fun saveDumpsToPrefs(context: Context, list: List<FirmwareDump>) {
+        try {
+            val arr = JSONArray()
+            list.forEach { item ->
+                val obj = JSONObject()
+                obj.put("id", item.id)
+                obj.put("title", item.title)
+                obj.put("folderId", item.folderId)
+                obj.put("processorType", item.processorType)
+                obj.put("boardPartNumber", item.boardPartNumber)
+                obj.put("applianceModel", item.applianceModel)
+                obj.put("fileUrl", item.fileUrl)
+                obj.put("fileType", item.fileType)
+                obj.put("previewImageUrl", item.previewImageUrl)
+                obj.put("notes", item.notes)
+                obj.put("requiresLicense", item.requiresLicense)
+                arr.put(obj)
+            }
+            context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit()
+                .putString(KEY_CACHED_DUMPS, arr.toString()).apply()
+        } catch (_: Throwable) {}
+    }
+
+    private fun saveConnectionsToPrefs(context: Context, list: List<ProgrammerConnection>) {
+        try {
+            val arr = JSONArray()
+            list.forEach { item ->
+                val obj = JSONObject()
+                obj.put("id", item.id)
+                obj.put("programmerName", item.programmerName)
+                obj.put("boardName", item.boardName)
+                obj.put("boardImageUrl", item.boardImageUrl)
+                obj.put("programmerImageUrl", item.programmerImageUrl)
+                obj.put("wiringInstructions", item.wiringInstructions)
+                obj.put("voltageNote", item.voltageNote)
+                val pArr = JSONArray()
+                item.pins.forEach { p ->
+                    val pObj = JSONObject()
+                    pObj.put("programmerPin", p.programmerPin)
+                    pObj.put("boardPin", p.boardPin)
+                    pObj.put("wireColor", p.wireColor)
+                    pObj.put("colorHex", p.colorHex)
+                    pObj.put("note", p.note)
+                    pArr.put(pObj)
+                }
+                obj.put("pins", pArr)
+                arr.put(obj)
+            }
+            context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit()
+                .putString(KEY_CACHED_CONNECTIONS, arr.toString()).apply()
+        } catch (_: Throwable) {}
+    }
+
+    private fun saveKeysToPrefs(context: Context, list: List<LicenseKeyRecord>) {
+        try {
+            val arr = JSONArray()
+            list.forEach { item ->
+                val obj = JSONObject()
+                obj.put("id", item.id)
+                obj.put("licenseKey", item.licenseKey)
+                obj.put("clientName", item.clientName)
+                obj.put("clientPhone", item.clientPhone)
+                obj.put("targetScope", item.targetScope)
+                obj.put("targetScopeName", item.targetScopeName)
+                obj.put("isActivated", item.isActivated)
+                obj.put("activatedDeviceId", item.activatedDeviceId)
+                obj.put("createdTimestamp", item.createdTimestamp)
+                obj.put("activatedTimestamp", item.activatedTimestamp)
+                obj.put("notes", item.notes)
+                arr.put(obj)
+            }
+            context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit()
+                .putString(KEY_CACHED_KEYS, arr.toString()).apply()
+        } catch (_: Throwable) {}
+    }
+
+    // =========================================================================
+    // INITIAL STARTER DATA
+    // =========================================================================
+
+    private fun getInitialFolders(): List<FirmwareFolder> {
+        return listOf(
+            FirmwareFolder(
+                id = "folder_renesas",
+                name = "كروت رينيساس (Renesas)",
+                description = "سوفتات كروت الغسالات التي تعمل بمعالجات R5F و M16C",
+                brand = "Renesas",
+                isLocked = true,
+                orderIndex = 0
+            ),
+            FirmwareFolder(
+                id = "folder_lg",
+                name = "كروت إل جي (LG Inverter & DD)",
+                description = "سوفتات غسالات إل جي فوق وأوتوماتيك كامل",
+                brand = "LG",
+                isLocked = true,
+                orderIndex = 1
+            ),
+            FirmwareFolder(
+                id = "folder_samsung",
+                name = "كروت سامسونج (Samsung EcoBubble)",
+                description = "ملفات فلاشات ومعالجات غسالات سامسونج",
+                brand = "Samsung",
+                isLocked = true,
+                orderIndex = 2
+            ),
+            FirmwareFolder(
+                id = "folder_toshiba",
+                name = "كروت توشيبا وتورنيدو (Toshiba / Tornado)",
+                description = "دامبات وفلاشات كروت التوشيبا النصف والأوتوماتيك",
+                brand = "Toshiba",
+                isLocked = true,
+                orderIndex = 3
+            ),
+            FirmwareFolder(
+                id = "folder_indesit",
+                name = "كروت إنديست وأريستون (Arcadia / EVO)",
+                description = "سوفتات بروسيسورات Freescale و Arcadia II",
+                brand = "Indesit/Ariston",
+                isLocked = true,
+                orderIndex = 4
+            )
+        )
+    }
+
+    private fun getInitialSoftwares(): List<ProgrammerSoftware> {
+        return listOf(
+            ProgrammerSoftware(
+                id = "soft_rt809h",
+                name = "برنامج مبرمجة RT809H الإصدار الرسمي",
+                description = "برنامج تشغيل وقراءة الفلاشات والمعالجات لمبرمجة RT809H للكمبيوتر مع كافة ملفات التعريف.",
+                version = "v2024.10",
+                fileUrl = "https://www.ifix.net.cn/",
+                fileSizeText = "450 MB",
+                fileType = "EXE",
+                requiresLicense = true,
+                isLocked = true
+            ),
+            ProgrammerSoftware(
+                id = "soft_neoprog",
+                name = "برنامج NeoProgrammer (CH341A)",
+                description = "البرنامج الاحترافي لتشغيل مبرمجة CH341A وقراءة فلاشات SPI و EEPROM 24/25 بسرعة فائقة.",
+                version = "v2.2.0.10",
+                fileUrl = "https://github.com/",
+                fileSizeText = "12 MB",
+                fileType = "ZIP",
+                requiresLicense = false,
+                isLocked = false
+            ),
+            ProgrammerSoftware(
+                id = "soft_renesas_flash",
+                name = "برنامج Renesas Flash Programmer (RFP)",
+                description = "البرنامج الرسمي من شركة رينيساس لحرق وسحب السوفتات لمعالجات RL78 و RX و RH850.",
+                version = "v3.12",
+                fileUrl = "https://www.renesas.com/",
+                fileSizeText = "180 MB",
+                fileType = "EXE",
+                requiresLicense = true,
+                isLocked = true
+            ),
+            ProgrammerSoftware(
+                id = "soft_stlink",
+                name = "برنامج STM32 ST-Link Utility",
+                description = "أداة سحب وكتابة السوفت وير لمعالجات STM32 المستخدمة في كروت الغسالات الحديثة.",
+                version = "v4.6.0",
+                fileUrl = "https://www.st.com/",
+                fileSizeText = "40 MB",
+                fileType = "EXE",
+                requiresLicense = false,
+                isLocked = false
+            )
+        )
+    }
+
+    private fun getInitialConnections(): List<ProgrammerConnection> {
+        return listOf(
+            ProgrammerConnection(
+                id = "conn_renesas_toshiba",
+                programmerName = "RT809H / Renesas RFP",
+                boardName = "كارتة توشيبا فوق أوتوماتيك معالج R5F21334",
+                boardImageUrl = "",
+                programmerImageUrl = "",
+                voltageNote = "3.3V DC (لا تقم بتوصيل 5V نهائياً لتفادي تلف المعالج)",
+                wiringInstructions = "يتم لحام الأسلاك على نقاط الاختبار (Test Points) أسفل البورده الموضحة، ويجب رفع المقاومة 10k قبل البدء ثم إعادتها بعد انتهاء البرمجة.",
+                pins = listOf(
+                    ConnectionPinItem("Pin 1: VCC 3.3V", "نقطة TP1 (تغذية المعالج)", "أحمر", "#EF4444", "تأكد من قياس الجهد قبل التوصيل"),
+                    ConnectionPinItem("Pin 2: GND (الأرضي)", "نقطة TP2 (الأرضي العام)", "أسود", "#1E293B", "شاسيه المكثف الرئيسي"),
+                    ConnectionPinItem("Pin 3: MODE / RESET", "نقطة TP3 (طرف الريسيت)", "أصفر", "#EAB308", "مربوط بمقاومة شد 4.7K"),
+                    ConnectionPinItem("Pin 4: TXD / SO", "نقطة TP4 (إرسال البيانات)", "أزرق", "#2563EB", "طرف Serial Data Out"),
+                    ConnectionPinItem("Pin 5: RXD / SI", "نقطة TP5 (استقبال البيانات)", "أخضر", "#16A34A", "طرف Serial Data In")
+                )
+            ),
+            ProgrammerConnection(
+                id = "conn_lg_dd",
+                programmerName = "CH341A / TL866II Plus",
+                boardName = "فلاشة إيبروم غسالة إل جي Direct Drive (24C04)",
+                boardImageUrl = "",
+                programmerImageUrl = "",
+                voltageNote = "5.0V أو 3.3V حسب الفلاشة",
+                wiringInstructions = "يمكن القراءة إما باستخدام كليبس SOIC8 مباشرة على البوردة دون فك الفلاشة، أو فك الشريحة وتثبيتها في سوكيت المبرمجة.",
+                pins = listOf(
+                    ConnectionPinItem("Pin 4: GND", "شريحة الفلاشة طرف 4", "أسود", "#1E293B", "أرضي الفلاشة"),
+                    ConnectionPinItem("Pin 8: VCC", "شريحة الفلاشة طرف 8", "أحمر", "#EF4444", "تغذية 5V"),
+                    ConnectionPinItem("Pin 5: SDA", "شريحة الفلاشة طرف 5", "أخضر", "#16A34A", "خط البيانات Data"),
+                    ConnectionPinItem("Pin 6: SCL", "شريحة الفلاشة طرف 6", "أصفر", "#EAB308", "خط النبضات Clock")
+                )
+            )
+        )
+    }
+}
