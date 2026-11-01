@@ -84,10 +84,18 @@ object ProgrammingRepository {
         _unlockedScopes.value = set
     }
 
-    fun isUnlocked(scope: String, isAdmin: Boolean): Boolean {
-        if (isAdmin) return true
+    fun isUnlocked(
+        scope: String = "",
+        folderId: String = "",
+        isFree: Boolean = false,
+        isAdmin: Boolean = false
+    ): Boolean {
+        if (isAdmin || isFree) return true
         val current = _unlockedScopes.value
-        return current.contains("ALL_FIRMWARE") || current.contains(scope)
+        if (current.contains("ALL_FIRMWARE")) return true
+        if (scope.isNotBlank() && current.contains(scope)) return true
+        if (folderId.isNotBlank() && current.contains(folderId)) return true
+        return false
     }
 
     fun getDeviceId(context: Context): String {
@@ -99,12 +107,56 @@ object ProgrammingRepository {
     }
 
     // =========================================================================
+    // REAL FILE STORAGE & FREE/LOCK TOGGLES
+    // =========================================================================
+
+    fun saveUploadedFile(context: Context, uri: android.net.Uri, originalName: String): Pair<String, Long> {
+        return try {
+            val dir = java.io.File(context.filesDir, "programming_files")
+            if (!dir.exists()) dir.mkdirs()
+            val cleanName = originalName.replace("[^a-zA-Z0-9._-]".toRegex(), "_").ifBlank { "firmware_${System.currentTimeMillis()}.bin" }
+            val destFile = java.io.File(dir, "${System.currentTimeMillis()}_$cleanName")
+            context.contentResolver.openInputStream(uri)?.use { input ->
+                destFile.outputStream().use { output ->
+                    input.copyTo(output)
+                }
+            }
+            Pair(destFile.absolutePath, destFile.length())
+        } catch (e: Throwable) {
+            Log.e(TAG, "Error saving uploaded file", e)
+            Pair("", 0L)
+        }
+    }
+
+    fun toggleFolderFree(context: Context, folderId: String) {
+        val folder = _folders.value.firstOrNull { it.id == folderId } ?: return
+        val newFree = !folder.isFree
+        val updated = folder.copy(isFree = newFree, isLocked = !newFree)
+        saveFolder(context, updated)
+    }
+
+    fun toggleSoftwareFree(context: Context, softwareId: String) {
+        val software = _softwares.value.firstOrNull { it.id == softwareId } ?: return
+        val newFree = !software.isFree
+        val updated = software.copy(isFree = newFree, isLocked = !newFree, requiresLicense = !newFree)
+        saveSoftware(context, updated)
+    }
+
+    fun toggleDumpFree(context: Context, dumpId: String) {
+        val dump = _dumps.value.firstOrNull { it.id == dumpId } ?: return
+        val newFree = !dump.isFree
+        val updated = dump.copy(isFree = newFree, requiresLicense = !newFree)
+        saveDump(context, updated)
+    }
+
+    // =========================================================================
     // LICENSE KEY ACTIVATION & GENERATION
     // =========================================================================
 
     suspend fun activateLicenseKey(
         context: Context,
-        rawKey: String
+        rawKey: String,
+        currentUserEmail: String? = null
     ): Result<LicenseKeyRecord> {
         val appContext = context.applicationContext ?: context
         val cleanKey = rawKey.trim().uppercase()
@@ -117,17 +169,29 @@ object ProgrammingRepository {
             val docRef = db.collection("license_keys").document(cleanKey)
             val snapshot = docRef.get().await()
 
-            if (!snapshot.exists()) {
-                // Check if it exists in local cache
+            val keyRecord: LicenseKeyRecord = if (!snapshot.exists()) {
                 val localKey = _licenseKeys.value.firstOrNull { it.licenseKey.equals(cleanKey, ignoreCase = true) }
                 if (localKey != null) {
-                    recordActivationSuccess(appContext, localKey)
-                    return Result.success(localKey)
+                    localKey
+                } else {
+                    return Result.failure(Exception("مفتاح التنشيط غير صحيح أو غير مسجل في النظام"))
                 }
-                return Result.failure(Exception("مفتاح التنشيط غير صحيح أو غير مسجل في النظام"))
+            } else {
+                LicenseKeyRecord.fromMap(snapshot.id, snapshot.data ?: emptyMap())
             }
 
-            val keyRecord = LicenseKeyRecord.fromMap(snapshot.id, snapshot.data ?: emptyMap())
+            // Check email binding if key specifies an email
+            if (keyRecord.clientEmail.isNotBlank()) {
+                val userEmail = currentUserEmail?.trim()?.lowercase() ?: ""
+                val boundEmail = keyRecord.clientEmail.trim().lowercase()
+                if (userEmail.isBlank()) {
+                    return Result.failure(Exception("هذا المفتاح مرتبط بحساب إلكتروني (${keyRecord.clientEmail}). يرجى تسجيل الدخول بنفس الحساب أولاً لتفعيله."))
+                }
+                if (userEmail != boundEmail) {
+                    return Result.failure(Exception("هذا المفتاح مخصص للحساب ($boundEmail) ولا يتطابق مع بريدك الحالي ($userEmail)."))
+                }
+            }
+
             val currentDeviceId = getDeviceId(appContext)
 
             if (keyRecord.isActivated && keyRecord.activatedDeviceId.isNotBlank() && keyRecord.activatedDeviceId != currentDeviceId) {
@@ -140,7 +204,9 @@ object ProgrammingRepository {
                 activatedDeviceId = currentDeviceId,
                 activatedTimestamp = System.currentTimeMillis()
             )
-            docRef.set(updated.toMap()).await()
+            if (snapshot.exists()) {
+                docRef.set(updated.toMap()).await()
+            }
 
             recordActivationSuccess(appContext, updated)
             Result.success(updated)
@@ -152,7 +218,14 @@ object ProgrammingRepository {
 
     private fun recordActivationSuccess(context: Context, record: LicenseKeyRecord) {
         val set = _unlockedScopes.value.toMutableSet()
-        set.add(record.targetScope)
+        if (record.isFullAccess || record.targetScope == "ALL_FIRMWARE") {
+            set.add("ALL_FIRMWARE")
+        }
+        if (record.targetScope.isNotBlank()) {
+            set.add(record.targetScope)
+        }
+        set.addAll(record.allowedFolderIds)
+        set.addAll(record.allowedSoftwareIds)
         set.add(record.licenseKey)
         _unlockedScopes.value = set
 
@@ -164,8 +237,12 @@ object ProgrammingRepository {
         context: Context,
         clientName: String,
         clientPhone: String,
+        clientEmail: String = "",
         targetScope: String = "ALL_FIRMWARE",
         targetScopeName: String = "جميع السوفتات والبرامج",
+        allowedFolderIds: List<String> = emptyList(),
+        allowedSoftwareIds: List<String> = emptyList(),
+        isFullAccess: Boolean = true,
         notes: String = "",
         onComplete: (LicenseKeyRecord?) -> Unit
     ) {
@@ -181,8 +258,12 @@ object ProgrammingRepository {
             licenseKey = keyString,
             clientName = clientName.trim(),
             clientPhone = clientPhone.trim(),
+            clientEmail = clientEmail.trim().lowercase(),
             targetScope = targetScope,
             targetScopeName = targetScopeName,
+            allowedFolderIds = allowedFolderIds,
+            allowedSoftwareIds = allowedSoftwareIds,
+            isFullAccess = isFullAccess,
             isActivated = false,
             createdTimestamp = System.currentTimeMillis(),
             notes = notes.trim()

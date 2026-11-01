@@ -30,8 +30,14 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.People
 import androidx.compose.material.icons.filled.Place
+import androidx.compose.material.icons.filled.RateReview
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.StarBorder
+import com.example.data.AppStatsAndRatingManager
+import com.example.data.AppStatsData
 import com.example.ui.components.ThemeSettingsDialog
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -50,6 +56,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -106,15 +113,18 @@ fun SplashScreen(
     var showAdminPublishDialog by remember { mutableStateOf(false) }
     var showThemeDialog by remember { mutableStateOf(false) }
     var showFacebookFollowDialog by remember { mutableStateOf(false) }
+    var showRatingDialog by remember { mutableStateOf(false) }
+    var showMustLoginDialog by remember { mutableStateOf(false) }
     var activeUpdateInfo by remember { mutableStateOf<AppUpdateInfo?>(null) }
     var hasCheckedUpdateOnLaunch by remember { mutableStateOf(false) }
 
     val userPrefs = remember { context.getSharedPreferences("albaraa_user_prefs", Context.MODE_PRIVATE) }
     var hasFollowedFacebook by remember { mutableStateOf(userPrefs.getBoolean("facebook_followed", false)) }
 
-    LaunchedEffect(Unit) {
+    LaunchedEffect(currentUserEmail) {
         ContactInfoManager.init(context)
         ContactInfoManager.fetchRemote(context)
+        AppStatsAndRatingManager.init(context, currentUserEmail)
         // Background check for update info
         try {
             val update = UpdateChecker.checkUpdate(context)
@@ -126,6 +136,7 @@ fun SplashScreen(
     }
 
     val contactInfo by ContactInfoManager.contactInfo.collectAsState()
+    val statsData by AppStatsAndRatingManager.stats.collectAsState()
 
     val handleUpdateIconClick = {
         coroutineScope.launch {
@@ -382,7 +393,7 @@ fun SplashScreen(
 
             Spacer(modifier = Modifier.height(26.dp))
 
-            // Middle Floating Card (Workshop Name & Address)
+            // Middle Floating Card: Users Count & Interactive App Rating
             Card(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -393,19 +404,53 @@ fun SplashScreen(
                 border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
             ) {
                 Column(
-                    modifier = Modifier.padding(vertical = 22.dp, horizontal = 20.dp),
+                    modifier = Modifier.padding(vertical = 18.dp, horizontal = 20.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                    verticalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
-                    Text(
-                        text = contactInfo.centerName,
-                        style = MaterialTheme.typography.titleMedium.copy(
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onSurface,
-                            fontSize = 17.sp
-                        ),
-                        textAlign = TextAlign.Center
-                    )
+                    // 1. Total Active Users Counter
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f))
+                            .padding(vertical = 10.dp, horizontal = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center
+                    ) {
+                        Surface(
+                            shape = CircleShape,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(34.dp)
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    imageVector = Icons.Default.People,
+                                    contentDescription = "المستخدمين",
+                                    tint = MaterialTheme.colorScheme.onPrimary,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                        }
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Column(horizontalAlignment = Alignment.Start) {
+                            Text(
+                                text = "+${statsData.totalUsersCount} فني ومهندس يستخدمون التطبيق",
+                                style = MaterialTheme.typography.titleMedium.copy(
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    fontSize = 15.sp
+                                )
+                            )
+                            Text(
+                                text = "المنصة الفنية الرائدة لكروت وصيانة الغسالات",
+                                style = MaterialTheme.typography.bodySmall.copy(
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    fontSize = 11.sp
+                                )
+                            )
+                        }
+                    }
 
                     HorizontalDivider(
                         modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp),
@@ -413,39 +458,83 @@ fun SplashScreen(
                         color = MaterialTheme.colorScheme.outline.copy(alpha = 0.15f)
                     )
 
-                    Row(
+                    // 2. Interactive App Rating Section
+                    Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clip(RoundedCornerShape(14.dp))
-                            .clickable { openMapLocation(context, contactInfo.locationUrl) }
-                            .padding(vertical = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text(
-                            text = contactInfo.address,
-                            style = MaterialTheme.typography.bodySmall.copy(
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                fontSize = 13.sp,
-                                lineHeight = 21.sp,
-                                fontWeight = FontWeight.Medium
-                            ),
-                            modifier = Modifier.weight(1f).padding(end = 12.dp)
-                        )
-
-                        Surface(
-                            shape = RoundedCornerShape(14.dp),
-                            color = MaterialTheme.colorScheme.primaryContainer,
-                            modifier = Modifier.size(46.dp)
-                        ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Icon(
-                                    imageVector = Icons.Default.Place,
-                                    contentDescription = "الموقع الجغرافي",
-                                    tint = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.size(24.dp)
-                                )
+                            .clip(RoundedCornerShape(16.dp))
+                            .clickable {
+                                if (currentUserEmail.isNullOrBlank()) {
+                                    showMustLoginDialog = true
+                                } else {
+                                    showRatingDialog = true
+                                }
                             }
+                            .background(Color(0xFFFEF9C3).copy(alpha = 0.45f))
+                            .border(1.dp, Color(0xFFFDE047).copy(alpha = 0.5f), RoundedCornerShape(16.dp))
+                            .padding(vertical = 10.dp, horizontal = 14.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center
+                        ) {
+                            Text(
+                                text = String.format(java.util.Locale.US, "%.1f", statsData.averageRating),
+                                style = MaterialTheme.typography.titleLarge.copy(
+                                    fontWeight = FontWeight.ExtraBold,
+                                    color = Color(0xFFB45309),
+                                    fontSize = 20.sp
+                                )
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            // 5 Gold Stars
+                            Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                                val fullStars = statsData.averageRating.toInt()
+                                for (i in 1..5) {
+                                    Icon(
+                                        imageVector = if (i <= fullStars) Icons.Default.Star else Icons.Default.StarBorder,
+                                        contentDescription = null,
+                                        tint = Color(0xFFEAB308),
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+                            }
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "(${statsData.totalRatingsCount} تقييم)",
+                                style = MaterialTheme.typography.bodySmall.copy(
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Medium
+                                )
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(4.dp))
+
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.RateReview,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = if (statsData.currentUserRating > 0)
+                                    "تقييمك: ${statsData.currentUserRating} ★ (انقر للتعديل)"
+                                else
+                                    "اضغط هنا لتقييم التطبيق وإبداء رأيك ★",
+                                style = MaterialTheme.typography.labelSmall.copy(
+                                    color = MaterialTheme.colorScheme.primary,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 12.sp
+                                )
+                            )
                         }
                     }
                 }
@@ -626,6 +715,167 @@ fun SplashScreen(
         if (showThemeDialog) {
             ThemeSettingsDialog(
                 onDismiss = { showThemeDialog = false }
+            )
+        }
+
+        // Rating Dialog (Logged in user)
+        if (showRatingDialog && !currentUserEmail.isNullOrBlank()) {
+            var selectedStars by remember { mutableIntStateOf(if (statsData.currentUserRating > 0) statsData.currentUserRating else 5) }
+            var reviewText by remember { mutableStateOf(statsData.currentUserReview) }
+            var isSubmitting by remember { mutableStateOf(false) }
+
+            AlertDialog(
+                onDismissRequest = { if (!isSubmitting) showRatingDialog = false },
+                title = {
+                    Text(
+                        text = "تقييم تطبيق البراء إلكترونيك ⭐",
+                        fontWeight = FontWeight.Bold,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                },
+                text = {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = "رأيك الفني يهمنا لتطوير وتحديث الدليل الشامل",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center
+                        )
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            for (star in 1..5) {
+                                IconButton(
+                                    onClick = { selectedStars = star },
+                                    modifier = Modifier.size(40.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = if (star <= selectedStars) Icons.Default.Star else Icons.Default.StarBorder,
+                                        contentDescription = "$star نجوم",
+                                        tint = if (star <= selectedStars) Color(0xFFEAB308) else Color.Gray,
+                                        modifier = Modifier.size(32.dp)
+                                    )
+                                }
+                            }
+                        }
+                        Text(
+                            text = when (selectedStars) {
+                                5 -> "ممتاز جداً 🌟🌟🌟🌟🌟"
+                                4 -> "جيد جداً 👍"
+                                3 -> "جيد 🛠️"
+                                2 -> "مقبول ⚠️"
+                                else -> "يحتاج تحسين 🔧"
+                            },
+                            style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold, color = Color(0xFFB45309)),
+                            modifier = Modifier.padding(top = 4.dp, bottom = 12.dp)
+                        )
+                        OutlinedTextField(
+                            value = reviewText,
+                            onValueChange = { reviewText = it },
+                            label = { Text("أضف تعليقك أو اقتراحك (اختياري)") },
+                            placeholder = { Text("اكتب ملاحظاتك لم. نور الدين...") },
+                            modifier = Modifier.fillMaxWidth(),
+                            minLines = 3,
+                            maxLines = 5,
+                            shape = RoundedCornerShape(12.dp)
+                        )
+                    }
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            isSubmitting = true
+                            AppStatsAndRatingManager.submitRating(
+                                context = context,
+                                userEmail = currentUserEmail,
+                                userName = currentUserEmail.substringBefore("@"),
+                                rating = selectedStars,
+                                review = reviewText.trim()
+                            ) { success ->
+                                isSubmitting = false
+                                showRatingDialog = false
+                                Toast.makeText(
+                                    context,
+                                    if (success) "شكراً جزيلاً لتقييمك الرائع! 🎉" else "تم حفظ تقييمك محلياً",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            }
+                        },
+                        enabled = !isSubmitting,
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        Text(if (isSubmitting) "جاري الإرسال..." else "إرسال التقييم")
+                    }
+                },
+                dismissButton = {
+                    TextButton(
+                        onClick = { showRatingDialog = false },
+                        enabled = !isSubmitting
+                    ) {
+                        Text("إلغاء")
+                    }
+                },
+                shape = RoundedCornerShape(20.dp)
+            )
+        }
+
+        // Must Login Dialog (Guest trying to rate)
+        if (showMustLoginDialog) {
+            AlertDialog(
+                onDismissRequest = { showMustLoginDialog = false },
+                icon = {
+                    Surface(
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.primaryContainer,
+                        modifier = Modifier.size(56.dp)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = Icons.Default.Star,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(30.dp)
+                            )
+                        }
+                    }
+                },
+                title = {
+                    Text(
+                        text = "تسجيل الحساب مطلوب للتقييم",
+                        fontWeight = FontWeight.Bold,
+                        textAlign = TextAlign.Center
+                    )
+                },
+                text = {
+                    Text(
+                        text = "عزيزي الفني/المهندس، التقييم متاح فقط للمستخدمين المسجلين بحساب موثق لضمان جودة ومصداقية التقييمات الفنية. يرجى تسجيل الدخول بحسابك أولاً لإبداء رأيك 🌟",
+                        style = MaterialTheme.typography.bodyMedium,
+                        textAlign = TextAlign.Center
+                    )
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            showMustLoginDialog = false
+                            onAuthClick()
+                        },
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        Text("تسجيل الدخول الآن")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showMustLoginDialog = false }) {
+                        Text("إلغاء")
+                    }
+                },
+                shape = RoundedCornerShape(20.dp)
             )
         }
 

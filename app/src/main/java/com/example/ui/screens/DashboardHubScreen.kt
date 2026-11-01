@@ -508,8 +508,18 @@ fun DashboardHubScreen(
                     val item = orderedItems[index]
                     val cust = customizations[item.id]
 
-                    val finalTitle = cust?.customTitle?.takeIf { it.isNotBlank() } ?: item.defaultTitle
-                    val finalSubtitle = cust?.customSubtitle?.takeIf { it.isNotBlank() } ?: item.defaultSubtitle
+                    val rawTitle = cust?.customTitle?.takeIf { it.isNotBlank() } ?: item.defaultTitle
+                    // Ensure only the dedicated programming section has the programming title to prevent accidental duplication
+                    val finalTitle = if (item.id != "programming" && (rawTitle.contains("برمج") || rawTitle.contains("سوفت"))) {
+                        item.defaultTitle
+                    } else {
+                        rawTitle
+                    }
+                    val finalSubtitle = if (item.id != "programming" && (rawTitle.contains("برمج") || rawTitle.contains("سوفت"))) {
+                        item.defaultSubtitle
+                    } else {
+                        cust?.customSubtitle?.takeIf { it.isNotBlank() } ?: item.defaultSubtitle
+                    }
                     val finalImageUrl = cust?.customImageUrl ?: ""
                     val finalIcon = resolveCategoryIcon(cust?.customIconName ?: "", item.defaultIcon)
 
@@ -523,10 +533,9 @@ fun DashboardHubScreen(
                                 .height(172.dp)
                                 .clip(RoundedCornerShape(24.dp))
                                 .clickable {
-                                    val isProg = finalTitle.contains("برمج") || finalTitle.contains("سوفت") || item.id == "programming"
                                     if (!isAdmin && isCategoryLocked) {
                                         lockedDialogCategoryTitle = finalTitle
-                                    } else if (isProg) {
+                                    } else if (item.id == "programming") {
                                         onNavigateToProgramming()
                                     } else {
                                         item.onClick()

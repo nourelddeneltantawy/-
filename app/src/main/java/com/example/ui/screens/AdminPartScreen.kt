@@ -20,6 +20,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
@@ -114,6 +115,29 @@ fun AdminPartScreen(
                     }
                 },
                 actions = {
+                    if (initialPart != null) {
+                        OutlinedButton(
+                            onClick = {
+                                name = initialPart.name
+                                partType = initialPart.partType
+                                brand = initialPart.brand
+                                model = initialPart.model
+                                resistanceValue = initialPart.resistanceValue
+                                operatingVoltage = initialPart.operatingVoltage
+                                testMethod = initialPart.testMethod
+                                notes = initialPart.notes
+                                pinouts.clear()
+                                pinouts.addAll(initialPart.pinouts)
+                            },
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.padding(end = 6.dp)
+                        ) {
+                            Icon(Icons.AutoMirrored.Filled.Undo, contentDescription = "تراجع", modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("تراجع")
+                        }
+                    }
+
                     Button(
                         onClick = {
                             if (name.isNotBlank()) {

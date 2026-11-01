@@ -778,6 +778,7 @@ fun AppContent(
                         }
                         ProgrammingScreen(
                             isAdmin = isAdmin,
+                            currentUserEmail = userEmail,
                             onBackClick = { navigateBack() }
                         )
                     }

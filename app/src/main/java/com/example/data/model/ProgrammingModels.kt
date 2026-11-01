@@ -12,10 +12,13 @@ data class ProgrammerSoftware(
     val version: String = "v1.0",
     val fileUrl: String = "",
     val fileSizeText: String = "",
-    val fileType: String = "EXE", // "EXE", "ZIP", "APK", "RAR", "LINK"
+    val fileType: String = "EXE", // "EXE", "ZIP", "APK", "RAR", "BIN", "HEX"
     val iconUrl: String = "",
-    val requiresLicense: Boolean = false,
+    val requiresLicense: Boolean = true,
     val isLocked: Boolean = false,
+    val isFree: Boolean = false, // Quick toggle: if true, accessible to everyone
+    val localFilePath: String = "", // Real local file on device storage
+    val fileSizeBytes: Long = 0L,
     val createdTimestamp: Long = System.currentTimeMillis()
 ) {
     fun toMap(): Map<String, Any> {
@@ -30,6 +33,9 @@ data class ProgrammerSoftware(
             "iconUrl" to iconUrl,
             "requiresLicense" to requiresLicense,
             "isLocked" to isLocked,
+            "isFree" to isFree,
+            "localFilePath" to localFilePath,
+            "fileSizeBytes" to fileSizeBytes,
             "createdTimestamp" to createdTimestamp
         )
     }
@@ -45,8 +51,11 @@ data class ProgrammerSoftware(
                 fileSizeText = map["fileSizeText"] as? String ?: "",
                 fileType = map["fileType"] as? String ?: "EXE",
                 iconUrl = map["iconUrl"] as? String ?: "",
-                requiresLicense = (map["requiresLicense"] as? Boolean) ?: false,
+                requiresLicense = (map["requiresLicense"] as? Boolean) ?: true,
                 isLocked = (map["isLocked"] as? Boolean) ?: false,
+                isFree = (map["isFree"] as? Boolean) ?: false,
+                localFilePath = map["localFilePath"] as? String ?: "",
+                fileSizeBytes = (map["fileSizeBytes"] as? Number)?.toLong() ?: 0L,
                 createdTimestamp = (map["createdTimestamp"] as? Number)?.toLong() ?: System.currentTimeMillis()
             )
         }
@@ -63,6 +72,8 @@ data class FirmwareFolder(
     val brand: String = "",
     val iconName: String = "folder",
     val isLocked: Boolean = true, // Locked for subscribers by default
+    val isFree: Boolean = false, // Quick toggle: if true, accessible to everyone for free
+    val parentFolderId: String = "", // Subfolders support
     val orderIndex: Int = 0
 ) {
     fun toMap(): Map<String, Any> {
@@ -73,6 +84,8 @@ data class FirmwareFolder(
             "brand" to brand,
             "iconName" to iconName,
             "isLocked" to isLocked,
+            "isFree" to isFree,
+            "parentFolderId" to parentFolderId,
             "orderIndex" to orderIndex
         )
     }
@@ -86,6 +99,8 @@ data class FirmwareFolder(
                 brand = map["brand"] as? String ?: "",
                 iconName = map["iconName"] as? String ?: "folder",
                 isLocked = (map["isLocked"] as? Boolean) ?: true,
+                isFree = (map["isFree"] as? Boolean) ?: false,
+                parentFolderId = map["parentFolderId"] as? String ?: "",
                 orderIndex = (map["orderIndex"] as? Number)?.toInt() ?: 0
             )
         }
@@ -107,6 +122,9 @@ data class FirmwareDump(
     val previewImageUrl: String = "",
     val notes: String = "",
     val requiresLicense: Boolean = true,
+    val isFree: Boolean = false,
+    val localFilePath: String = "", // Real local file on device storage
+    val fileSizeBytes: Long = 0L,
     val createdTimestamp: Long = System.currentTimeMillis()
 ) {
     fun toMap(): Map<String, Any> {
@@ -122,6 +140,9 @@ data class FirmwareDump(
             "previewImageUrl" to previewImageUrl,
             "notes" to notes,
             "requiresLicense" to requiresLicense,
+            "isFree" to isFree,
+            "localFilePath" to localFilePath,
+            "fileSizeBytes" to fileSizeBytes,
             "createdTimestamp" to createdTimestamp
         )
     }
@@ -140,6 +161,9 @@ data class FirmwareDump(
                 previewImageUrl = map["previewImageUrl"] as? String ?: "",
                 notes = map["notes"] as? String ?: "",
                 requiresLicense = (map["requiresLicense"] as? Boolean) ?: true,
+                isFree = (map["isFree"] as? Boolean) ?: false,
+                localFilePath = map["localFilePath"] as? String ?: "",
+                fileSizeBytes = (map["fileSizeBytes"] as? Number)?.toLong() ?: 0L,
                 createdTimestamp = (map["createdTimestamp"] as? Number)?.toLong() ?: System.currentTimeMillis()
             )
         }
@@ -228,14 +252,19 @@ data class ConnectionPinItem(
 
 /**
  * Unique Activation / License Key for clients.
+ * Binds to clientEmail, deviceId, with granular allowed folders & software items.
  */
 data class LicenseKeyRecord(
     val id: String = "", // Same as key
     val licenseKey: String = "",
     val clientName: String = "",
     val clientPhone: String = "",
+    val clientEmail: String = "", // Bound to registered user email
     val targetScope: String = "ALL_FIRMWARE", // "ALL_FIRMWARE", or specific itemId
     val targetScopeName: String = "جميع السوفتات والبرامج",
+    val allowedFolderIds: List<String> = emptyList(), // Specific folders unlocked
+    val allowedSoftwareIds: List<String> = emptyList(), // Specific software unlocked
+    val isFullAccess: Boolean = false, // If true, unlocks EVERYTHING
     val isActivated: Boolean = false,
     val activatedDeviceId: String = "",
     val createdTimestamp: Long = System.currentTimeMillis(),
@@ -248,8 +277,12 @@ data class LicenseKeyRecord(
             "licenseKey" to licenseKey,
             "clientName" to clientName,
             "clientPhone" to clientPhone,
+            "clientEmail" to clientEmail,
             "targetScope" to targetScope,
             "targetScopeName" to targetScopeName,
+            "allowedFolderIds" to allowedFolderIds,
+            "allowedSoftwareIds" to allowedSoftwareIds,
+            "isFullAccess" to isFullAccess,
             "isActivated" to isActivated,
             "activatedDeviceId" to activatedDeviceId,
             "createdTimestamp" to createdTimestamp,
@@ -259,14 +292,19 @@ data class LicenseKeyRecord(
     }
 
     companion object {
+        @Suppress("UNCHECKED_CAST")
         fun fromMap(id: String, map: Map<String, Any?>): LicenseKeyRecord {
             return LicenseKeyRecord(
                 id = id,
                 licenseKey = map["licenseKey"] as? String ?: id,
                 clientName = map["clientName"] as? String ?: "",
                 clientPhone = map["clientPhone"] as? String ?: "",
+                clientEmail = map["clientEmail"] as? String ?: "",
                 targetScope = map["targetScope"] as? String ?: "ALL_FIRMWARE",
                 targetScopeName = map["targetScopeName"] as? String ?: "جميع السوفتات والبرامج",
+                allowedFolderIds = (map["allowedFolderIds"] as? List<String>) ?: emptyList(),
+                allowedSoftwareIds = (map["allowedSoftwareIds"] as? List<String>) ?: emptyList(),
+                isFullAccess = (map["isFullAccess"] as? Boolean) ?: (map["targetScope"] == "ALL_FIRMWARE"),
                 isActivated = (map["isActivated"] as? Boolean) ?: false,
                 activatedDeviceId = map["activatedDeviceId"] as? String ?: "",
                 createdTimestamp = (map["createdTimestamp"] as? Number)?.toLong() ?: System.currentTimeMillis(),

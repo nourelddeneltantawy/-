@@ -39,9 +39,12 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Cable
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
@@ -51,23 +54,37 @@ import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Laptop
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.Power
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.VpnKey
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material.icons.filled.UploadFile
+import androidx.compose.material.icons.filled.CreateNewFolder
+import androidx.compose.material.icons.filled.Computer
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.Spring
+import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.foundation.horizontalScroll
+import java.io.File
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.ScrollableTabRow
 import androidx.compose.material3.Surface
@@ -124,6 +141,7 @@ import java.util.UUID
 @Composable
 fun ProgrammingScreen(
     isAdmin: Boolean,
+    currentUserEmail: String? = null,
     onBackClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -168,6 +186,43 @@ fun ProgrammingScreen(
 
     var showAddConnectionDialog by remember { mutableStateOf(false) }
     var editingConnection by remember { mutableStateOf<ProgrammerConnection?>(null) }
+
+    // Real File Picker Launcher for firmware dumps
+    val filePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            coroutineScope.launch {
+                var fileName = "firmware_${System.currentTimeMillis()}.bin"
+                try {
+                    context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+                        val nameIndex = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                        if (nameIndex != -1 && cursor.moveToFirst()) {
+                            fileName = cursor.getString(nameIndex) ?: fileName
+                        }
+                    }
+                } catch (_: Throwable) {}
+
+                val (savedPath, size) = ProgrammingRepository.saveUploadedFile(context, uri, fileName)
+                if (savedPath.isNotBlank()) {
+                    val ext = fileName.substringAfterLast(".", "BIN").uppercase()
+                    editingDump = FirmwareDump(
+                        title = fileName.substringBeforeLast("."),
+                        folderId = activeFolderId ?: (folders.firstOrNull()?.id ?: ""),
+                        fileType = if (ext.length in 2..5) ext else "BIN",
+                        localFilePath = savedPath,
+                        fileSizeBytes = size,
+                        requiresLicense = true,
+                        isFree = false
+                    )
+                    showAddDumpDialog = true
+                    Toast.makeText(context, "تم حفظ الملف في النظام بنجاح ($fileName)", Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(context, "تعذر حفظ الملف المختار من الذاكرة", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
 
     // Search query
     var searchQuery by remember { mutableStateOf("") }
@@ -362,6 +417,27 @@ fun ProgrammingScreen(
                     }
                 }
             }
+        },
+        floatingActionButton = {
+            if (isAdmin) {
+                AdminSpeedDialFab(
+                    onAddFolder = {
+                        editingFolder = null
+                        showAddFolderDialog = true
+                    },
+                    onUploadDump = {
+                        editingDump = null
+                        filePickerLauncher.launch("*/*")
+                    },
+                    onAddSoftware = {
+                        editingSoftware = null
+                        showAddSoftwareDialog = true
+                    },
+                    onManageKeys = {
+                        showAdminKeysManagerDialog = true
+                    }
+                )
+            }
         }
     ) { innerPadding ->
         Column(
@@ -431,8 +507,8 @@ fun ProgrammingScreen(
                             },
                             isAdmin = isAdmin,
                             onFolderClick = { folder ->
-                                val isUnlocked = ProgrammingRepository.isUnlocked(folder.id, isAdmin)
-                                if (!isUnlocked && folder.isLocked) {
+                                val isUnlocked = ProgrammingRepository.isUnlocked(folder.id, isFree = folder.isFree, isAdmin = isAdmin)
+                                if (!isUnlocked && folder.isLocked && !folder.isFree) {
                                     activationTargetScope = folder.id
                                     activationTargetName = "مجلد ${folder.name}"
                                     showActivationDialog = true
@@ -457,7 +533,8 @@ fun ProgrammingScreen(
                             onBackToFolders = { activeFolderId = null },
                             onEditDump = { editingDump = it; showAddDumpDialog = true },
                             onDeleteDump = { ProgrammingRepository.deleteDump(context, it.id) },
-                            onAddDump = { editingDump = null; showAddDumpDialog = true }
+                            onAddDump = { editingDump = null; showAddDumpDialog = true },
+                            onUploadDumpFile = { filePickerLauncher.launch("*/*") }
                         )
                     }
                 }
@@ -485,6 +562,7 @@ fun ProgrammingScreen(
         ActivationKeyDialog(
             targetScope = activationTargetScope,
             targetScopeName = activationTargetName,
+            currentUserEmail = currentUserEmail,
             onDismiss = { showActivationDialog = false },
             onActivated = {
                 showActivationDialog = false
@@ -497,11 +575,24 @@ fun ProgrammingScreen(
     if (showAdminKeysManagerDialog && isAdmin) {
         AdminLicenseKeysManagerDialog(
             licenseKeys = licenseKeys,
+            folders = folders,
+            softwares = softwares,
             onDismiss = { showAdminKeysManagerDialog = false },
-            onGenerateKey = { name, phone, scope, scopeName, notes ->
-                ProgrammingRepository.generateUniqueKey(context, name, phone, scope, scopeName, notes) { newKey ->
+            onGenerateKey = { name, phone, email, scope, scopeName, allowedFolders, allowedSoftwares, isFull, notes ->
+                ProgrammingRepository.generateUniqueKey(
+                    context = context,
+                    clientName = name,
+                    clientPhone = phone,
+                    clientEmail = email,
+                    targetScope = scope,
+                    targetScopeName = scopeName,
+                    allowedFolderIds = allowedFolders,
+                    allowedSoftwareIds = allowedSoftwares,
+                    isFullAccess = isFull,
+                    notes = notes
+                ) { newKey ->
                     if (newKey != null) {
-                        Toast.makeText(context, "تم توليد المفتاح بنجاح: ${newKey.licenseKey}", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, "تم توليد وحفظ المفتاح بنجاح: ${newKey.licenseKey}", Toast.LENGTH_SHORT).show()
                     }
                 }
             },
@@ -598,8 +689,8 @@ fun SoftwareListTab(
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         items(softwares, key = { it.id }) { item ->
-            val isUnlocked = ProgrammingRepository.isUnlocked(item.id, isAdmin)
-            val isLocked = item.isLocked && !isUnlocked
+            val isUnlocked = ProgrammingRepository.isUnlocked(item.id, isFree = item.isFree, isAdmin = isAdmin)
+            val isLocked = (item.requiresLicense || item.isLocked) && !isUnlocked && !item.isFree
 
             Card(
                 modifier = Modifier.fillMaxWidth(),
@@ -662,6 +753,35 @@ fun SoftwareListTab(
                                             color = Color(0xFF0284C7),
                                             modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
                                         )
+                                    }
+                                    // Quick Free / Lock Badge
+                                    Surface(
+                                        shape = RoundedCornerShape(4.dp),
+                                        color = if (item.isFree) Color(0xFF10B981).copy(alpha = 0.2f) else Color(0xFFEAB308).copy(alpha = 0.2f),
+                                        border = BorderStroke(1.dp, if (item.isFree) Color(0xFF10B981) else Color(0xFFEAB308)),
+                                        modifier = Modifier.clickable(enabled = isAdmin) {
+                                            ProgrammingRepository.toggleSoftwareFree(context, item.id)
+                                            Toast.makeText(context, if (!item.isFree) "أصبح البرنامج متاحاً مجاناً للجميع 🔓" else "تم قفل البرنامج ليصبح للمشتركين فقط 🔒", Toast.LENGTH_SHORT).show()
+                                        }
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Icon(
+                                                imageVector = if (item.isFree) Icons.Default.LockOpen else Icons.Default.Lock,
+                                                contentDescription = null,
+                                                tint = if (item.isFree) Color(0xFF10B981) else Color(0xFFCA8A04),
+                                                modifier = Modifier.size(10.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(3.dp))
+                                            Text(
+                                                text = if (item.isFree) "مجاني 🔓" else "مدفوع 🔒",
+                                                fontSize = 9.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                color = if (item.isFree) Color(0xFF10B981) else Color(0xFFCA8A04)
+                                            )
+                                        }
                                     }
                                 }
                             }
@@ -773,6 +893,8 @@ fun FoldersGridTab(
     onDeleteFolder: (FirmwareFolder) -> Unit,
     onRequestUnlockAll: () -> Unit
 ) {
+    val context = LocalContext.current
+
     Column(modifier = Modifier.fillMaxSize()) {
         // Banner informing about folder activation
         Surface(
@@ -806,7 +928,7 @@ fun FoldersGridTab(
                     }
                 }
 
-                if (!isAdmin && !ProgrammingRepository.isUnlocked("ALL_FIRMWARE", isAdmin)) {
+                if (!isAdmin && !ProgrammingRepository.isUnlocked(scope = "ALL_FIRMWARE", isAdmin = isAdmin)) {
                     Button(
                         onClick = onRequestUnlockAll,
                         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFEAB308)),
@@ -829,8 +951,8 @@ fun FoldersGridTab(
             modifier = Modifier.fillMaxSize()
         ) {
             items(folders, key = { it.id }) { folder ->
-                val isUnlocked = ProgrammingRepository.isUnlocked(folder.id, isAdmin)
-                val isLocked = folder.isLocked && !isUnlocked
+                val isUnlocked = ProgrammingRepository.isUnlocked(folder.id, isFree = folder.isFree, isAdmin = isAdmin)
+                val isLocked = folder.isLocked && !isUnlocked && !folder.isFree
 
                 Card(
                     modifier = Modifier
@@ -895,23 +1017,36 @@ fun FoldersGridTab(
                             )
                         }
 
-                        // Top Badges
-                        if (isLocked) {
-                            Surface(
-                                shape = RoundedCornerShape(8.dp),
-                                color = Color(0xFFEF4444),
-                                modifier = Modifier
-                                    .align(Alignment.TopStart)
-                                    .padding(8.dp)
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Icon(Icons.Default.Lock, contentDescription = null, tint = Color.White, modifier = Modifier.size(10.dp))
-                                    Spacer(modifier = Modifier.width(3.dp))
-                                    Text("مقفل", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                        // Free / Locked Badge
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = if (folder.isFree) Color(0xFF10B981).copy(alpha = 0.2f) else Color(0xFFEAB308).copy(alpha = 0.2f),
+                            border = BorderStroke(1.dp, if (folder.isFree) Color(0xFF10B981) else Color(0xFFEAB308)),
+                            modifier = Modifier
+                                .align(Alignment.TopStart)
+                                .padding(8.dp)
+                                .clickable(enabled = isAdmin) {
+                                    ProgrammingRepository.toggleFolderFree(context, folder.id)
+                                    Toast.makeText(context, if (!folder.isFree) "أصبح المجلد متاحاً مجاناً للجميع 🔓" else "تم قفل المجلد ليصبح للمشتركين فقط 🔒", Toast.LENGTH_SHORT).show()
                                 }
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = if (folder.isFree) Icons.Default.LockOpen else Icons.Default.Lock,
+                                    contentDescription = null,
+                                    tint = if (folder.isFree) Color(0xFF10B981) else Color(0xFFCA8A04),
+                                    modifier = Modifier.size(10.dp)
+                                )
+                                Spacer(modifier = Modifier.width(3.dp))
+                                Text(
+                                    text = if (folder.isFree) "مجاني 🔓" else "مدفوع 🔒",
+                                    color = if (folder.isFree) Color(0xFF10B981) else Color(0xFFCA8A04),
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
                             }
                         }
 
@@ -948,52 +1083,104 @@ fun DumpsListTab(
     onBackToFolders: () -> Unit,
     onEditDump: (FirmwareDump) -> Unit,
     onDeleteDump: (FirmwareDump) -> Unit,
-    onAddDump: () -> Unit
+    onAddDump: () -> Unit,
+    onUploadDumpFile: () -> Unit = {}
 ) {
     val context = LocalContext.current
 
     Column(modifier = Modifier.fillMaxSize()) {
-        // Navigation Bar: Return to Folders + Folder Title
+        // Navigation & Breadcrumbs Bar (Computer File Explorer Style)
         Surface(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp, vertical = 8.dp),
             shape = RoundedCornerShape(12.dp),
-            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
         ) {
-            Row(
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
+            Column(modifier = Modifier.padding(10.dp)) {
+                // Breadcrumbs row
                 Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.clickable { onBackToFolders() }
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Filled.ArrowForward,
-                        contentDescription = "رجوع للمجلدات",
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(20.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = "الرجوع للمجلدات / ${folder.name}",
-                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
-                        color = MaterialTheme.colorScheme.primary
-                    )
+                    IconButton(
+                        onClick = onBackToFolders,
+                        modifier = Modifier.size(32.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.ArrowForward,
+                            contentDescription = "رجوع للمجلدات",
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(6.dp))
+
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.horizontalScroll(rememberScrollState())
+                    ) {
+                        Text(
+                            text = "الملفات",
+                            color = MaterialTheme.colorScheme.outline,
+                            fontSize = 12.sp,
+                            modifier = Modifier.clickable { onBackToFolders() }
+                        )
+                        Text(text = " > ", color = MaterialTheme.colorScheme.outline, fontSize = 12.sp)
+                        Text(
+                            text = "سوفتات البروسيسور",
+                            color = MaterialTheme.colorScheme.outline,
+                            fontSize = 12.sp,
+                            modifier = Modifier.clickable { onBackToFolders() }
+                        )
+                        Text(text = " > ", color = MaterialTheme.colorScheme.outline, fontSize = 12.sp)
+                        Text(
+                            text = folder.name,
+                            color = MaterialTheme.colorScheme.primary,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
                 }
 
-                if (isAdmin) {
-                    Button(
-                        onClick = onAddDump,
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0F766E)),
-                        shape = RoundedCornerShape(8.dp),
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
-                    ) {
-                        Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(14.dp))
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("+ سوفت جديد", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                Spacer(modifier = Modifier.height(6.dp))
+
+                // Stats & Quick Actions
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "${dumps.size} ملفات سوفت وير • ${folder.brand.ifBlank { "عام" }}",
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    if (isAdmin) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            OutlinedButton(
+                                onClick = onUploadDumpFile,
+                                shape = RoundedCornerShape(8.dp),
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                            ) {
+                                Icon(Icons.Default.UploadFile, contentDescription = null, modifier = Modifier.size(14.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("رفع ملف 💾", fontSize = 11.sp)
+                            }
+
+                            Button(
+                                onClick = onAddDump,
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0F766E)),
+                                shape = RoundedCornerShape(8.dp),
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                            ) {
+                                Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(14.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("+ سوفت", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
                     }
                 }
             }
@@ -1010,8 +1197,13 @@ fun DumpsListTab(
                     Text("هذا المجلد لا يحتوي على ملفات سوفت حالياً", color = MaterialTheme.colorScheme.outline)
                     if (isAdmin) {
                         Spacer(modifier = Modifier.height(12.dp))
-                        Button(onClick = onAddDump) {
-                            Text("إضافة أول سوفتوير هنا")
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(onClick = onAddDump) {
+                                Text("إضافة أول سوفتوير")
+                            }
+                            OutlinedButton(onClick = onUploadDumpFile) {
+                                Text("رفع ملف من الهاتف 💾")
+                            }
                         }
                     }
                 }
@@ -1049,11 +1241,33 @@ fun DumpsListTab(
                                 }
                                 Spacer(modifier = Modifier.width(10.dp))
                                 Column {
-                                    Text(
-                                        text = dump.title,
-                                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, fontSize = 14.sp),
-                                        color = MaterialTheme.colorScheme.onSurface
-                                    )
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text(
+                                            text = dump.title,
+                                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, fontSize = 14.sp),
+                                            color = MaterialTheme.colorScheme.onSurface
+                                        )
+
+                                        // Free / Locked Badge
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Surface(
+                                            shape = RoundedCornerShape(6.dp),
+                                            color = if (dump.isFree) Color(0xFF10B981).copy(alpha = 0.2f) else Color(0xFFEAB308).copy(alpha = 0.2f),
+                                            border = BorderStroke(1.dp, if (dump.isFree) Color(0xFF10B981) else Color(0xFFEAB308)),
+                                            modifier = Modifier.clickable(enabled = isAdmin) {
+                                                ProgrammingRepository.toggleDumpFree(context, dump.id)
+                                                Toast.makeText(context, if (!dump.isFree) "أصبح السوفت متاحاً مجاناً للجميع 🔓" else "تم قفل السوفت ليصبح للمشتركين فقط 🔒", Toast.LENGTH_SHORT).show()
+                                            }
+                                        ) {
+                                            Text(
+                                                text = if (dump.isFree) "مجاني 🔓" else "مدفوع 🔒",
+                                                color = if (dump.isFree) Color(0xFF10B981) else Color(0xFFCA8A04),
+                                                fontSize = 9.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                                            )
+                                        }
+                                    }
                                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
                                         if (dump.processorType.isNotBlank()) {
                                             Surface(
@@ -1071,6 +1285,20 @@ fun DumpsListTab(
                                         }
                                         if (dump.boardPartNumber.isNotBlank()) {
                                             Text(text = "كود: ${dump.boardPartNumber}", fontSize = 11.sp, color = MaterialTheme.colorScheme.outline)
+                                        }
+                                        if (dump.localFilePath.isNotBlank()) {
+                                            Surface(
+                                                shape = RoundedCornerShape(4.dp),
+                                                color = Color(0xFF0F766E).copy(alpha = 0.15f)
+                                            ) {
+                                                Text(
+                                                    text = "ملف محلي 💾",
+                                                    color = Color(0xFF0F766E),
+                                                    fontSize = 9.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                                                )
+                                            }
                                         }
                                     }
                                 }
@@ -1105,31 +1333,48 @@ fun DumpsListTab(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            Button(
-                                onClick = {
-                                    if (dump.fileUrl.isNotBlank()) {
-                                        try {
-                                            val browserIntent = Intent(Intent.ACTION_VIEW, Uri.parse(dump.fileUrl))
-                                            context.startActivity(browserIntent)
-                                        } catch (_: Throwable) {
-                                            Toast.makeText(context, "تعذر فتح رابط تحميل السوفتوير", Toast.LENGTH_SHORT).show()
+                            if (dump.localFilePath.isNotBlank()) {
+                                Button(
+                                    onClick = {
+                                        shareLocalFile(context, dump.localFilePath, dump.title)
+                                    },
+                                    modifier = Modifier.weight(1f),
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0F766E)),
+                                    shape = RoundedCornerShape(8.dp)
+                                ) {
+                                    Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(15.dp))
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("مشاركة الملف الأصلي 📤", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                }
+                            } else {
+                                Button(
+                                    onClick = {
+                                        if (dump.fileUrl.isNotBlank()) {
+                                            try {
+                                                val browserIntent = Intent(Intent.ACTION_VIEW, Uri.parse(dump.fileUrl))
+                                                context.startActivity(browserIntent)
+                                            } catch (_: Throwable) {
+                                                Toast.makeText(context, "تعذر فتح رابط تحميل السوفتوير", Toast.LENGTH_SHORT).show()
+                                            }
+                                        } else {
+                                            Toast.makeText(context, "لم يتم رفع ملف لهذا السوفت بعد", Toast.LENGTH_SHORT).show()
                                         }
-                                    } else {
-                                        Toast.makeText(context, "لم يتم رفع ملف لهذا السوفت بعد", Toast.LENGTH_SHORT).show()
-                                    }
-                                },
-                                modifier = Modifier.weight(1f),
-                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0F766E)),
-                                shape = RoundedCornerShape(8.dp)
-                            ) {
-                                Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(15.dp))
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text("تنزيل السوفتوير (${dump.fileType})", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                    },
+                                    modifier = Modifier.weight(1f),
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0F766E)),
+                                    shape = RoundedCornerShape(8.dp)
+                                ) {
+                                    Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(15.dp))
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("تنزيل السوفتوير (${dump.fileType})", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                }
                             }
 
                             OutlinedButton(
                                 onClick = {
-                                    if (dump.fileUrl.isNotBlank()) {
+                                    if (dump.localFilePath.isNotBlank()) {
+                                        shareLocalFile(context, dump.localFilePath, dump.title)
+                                    } else if (dump.fileUrl.isNotBlank()) {
                                         val shareText = "ملف سوفتوير: ${dump.title}\nالمعالج: ${dump.processorType}\nكود الكارتة: ${dump.boardPartNumber}\nالرابط المباشر:\n${dump.fileUrl}\n\nمرسل من تطبيق البراء إلكترونيك ⚡"
                                         val shareIntent = Intent(Intent.ACTION_SEND).apply {
                                             type = "text/plain"
@@ -1146,7 +1391,7 @@ fun DumpsListTab(
                             ) {
                                 Icon(Icons.Default.Share, contentDescription = null, tint = Color(0xFF0F766E), modifier = Modifier.size(15.dp))
                                 Spacer(modifier = Modifier.width(4.dp))
-                                Text("مشاركة للكمبيوتر 💻", fontSize = 11.sp, color = Color(0xFF0F766E))
+                                Text("مشاركة 💻", fontSize = 11.sp, color = Color(0xFF0F766E))
                             }
                         }
                     }
@@ -1378,6 +1623,7 @@ fun ConnectionDiagramsTab(
 fun ActivationKeyDialog(
     targetScope: String,
     targetScopeName: String,
+    currentUserEmail: String? = null,
     onDismiss: () -> Unit,
     onActivated: () -> Unit
 ) {
@@ -1405,11 +1651,28 @@ fun ActivationKeyDialog(
         text = {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Text(
-                    text = "عذراً، $targetScopeName محمي ويتطلب مفتاح تنشيط فريد خاص بجهازك.",
+                    text = "عذراً، $targetScopeName محمي ويتطلب مفتاح تنشيط فريد خاص بحسابك وجهازك.",
                     fontSize = 13.sp,
                     textAlign = TextAlign.Center,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+
+                if (!currentUserEmail.isNullOrBlank()) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.1f)
+                    ) {
+                        Text(
+                            text = "الحساب الحالي: $currentUserEmail",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                        )
+                    }
+                }
+
                 Spacer(modifier = Modifier.height(14.dp))
 
                 OutlinedTextField(
@@ -1441,7 +1704,8 @@ fun ActivationKeyDialog(
                         .clickable {
                             val phone = contactInfo.whatsappNumber.ifBlank { contactInfo.phoneNumber }
                             val cleanPhone = phone.replace("+", "").replace(" ", "").trim()
-                            val msg = "السلام عليكم م. البراء، أرغب في شراء مفتاح تنشيط لـ: $targetScopeName في تطبيق البراء إلكترونيك ⚡"
+                            val emailSnippet = if (!currentUserEmail.isNullOrBlank()) "\nإيميلي المسجل: $currentUserEmail" else ""
+                            val msg = "السلام عليكم م. البراء، أرغب في شراء مفتاح تنشيط لـ: $targetScopeName في تطبيق البراء إلكترونيك ⚡$emailSnippet"
                             try {
                                 val url = "https://api.whatsapp.com/send?phone=$cleanPhone&text=${Uri.encode(msg)}"
                                 val i = Intent(Intent.ACTION_VIEW, Uri.parse(url))
@@ -1478,7 +1742,7 @@ fun ActivationKeyDialog(
                     isVerifying = true
                     errorMessage = null
                     coroutineScope.launch {
-                        val result = ProgrammingRepository.activateLicenseKey(context, keyInput)
+                        val result = ProgrammingRepository.activateLicenseKey(context, keyInput, currentUserEmail)
                         isVerifying = false
                         if (result.isSuccess) {
                             onActivated()
@@ -1507,16 +1771,31 @@ fun ActivationKeyDialog(
 @Composable
 fun AdminLicenseKeysManagerDialog(
     licenseKeys: List<LicenseKeyRecord>,
+    folders: List<FirmwareFolder> = emptyList(),
+    softwares: List<ProgrammerSoftware> = emptyList(),
     onDismiss: () -> Unit,
-    onGenerateKey: (clientName: String, clientPhone: String, scope: String, scopeName: String, notes: String) -> Unit,
+    onGenerateKey: (
+        clientName: String,
+        clientPhone: String,
+        clientEmail: String,
+        scope: String,
+        scopeName: String,
+        allowedFolders: List<String>,
+        allowedSoftwares: List<String>,
+        isFull: Boolean,
+        notes: String
+    ) -> Unit,
     onDeleteKey: (keyId: String) -> Unit
 ) {
     val context = LocalContext.current
     var clientName by remember { mutableStateOf("") }
     var clientPhone by remember { mutableStateOf("") }
+    var clientEmail by remember { mutableStateOf("") }
     var notes by remember { mutableStateOf("") }
-    var selectedScope by remember { mutableStateOf("ALL_FIRMWARE") }
-    var selectedScopeName by remember { mutableStateOf("جميع السوفتات والبرامج") }
+
+    var isFullAccess by remember { mutableStateOf(true) }
+    val selectedFolderIds = remember { mutableStateListOf<String>() }
+    val selectedSoftwareIds = remember { mutableStateListOf<String>() }
 
     val dateFormat = remember { SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()) }
 
@@ -1543,13 +1822,23 @@ fun AdminLicenseKeysManagerDialog(
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Column(modifier = Modifier.padding(12.dp)) {
-                        Text(text = "توليد مفتاح فريد لعميل جديد ⚡", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = MaterialTheme.colorScheme.primary)
+                        Text(text = "توليد مفتاح مخصص لعميل جديد ⚡", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = MaterialTheme.colorScheme.primary)
                         Spacer(modifier = Modifier.height(8.dp))
 
                         OutlinedTextField(
                             value = clientName,
                             onValueChange = { clientName = it },
-                            label = { Text("اسم العميل / المهندس") },
+                            label = { Text("اسم العميل / المهندس *") },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+
+                        OutlinedTextField(
+                            value = clientEmail,
+                            onValueChange = { clientEmail = it },
+                            label = { Text("إيميل العميل (لربط المفتاح بحسابه)") },
+                            placeholder = { Text("example@gmail.com") },
                             modifier = Modifier.fillMaxWidth(),
                             singleLine = true
                         )
@@ -1567,11 +1856,60 @@ fun AdminLicenseKeysManagerDialog(
                         OutlinedTextField(
                             value = notes,
                             onValueChange = { notes = it },
-                            label = { Text("ملاحظات (قيمة الاشتراك، نوع الجهاز...)") },
+                            label = { Text("ملاحظات (سعر الاشتراك، كود الجهاز...)") },
                             modifier = Modifier.fillMaxWidth(),
                             singleLine = true
                         )
                         Spacer(modifier = Modifier.height(10.dp))
+
+                        // Granular Scope Selection
+                        Text("صلاحيات المفتاح:", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                        Spacer(modifier = Modifier.height(4.dp))
+
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            androidx.compose.material3.Checkbox(
+                                checked = isFullAccess,
+                                onCheckedChange = { isFullAccess = it }
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("الوصول الشامل (جميع السوفتات والبرامج) 👑", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        }
+
+                        if (!isFullAccess) {
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Text("اختر المجلدات المسموح بها:", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                            folders.forEach { f ->
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    val checked = selectedFolderIds.contains(f.id)
+                                    androidx.compose.material3.Checkbox(
+                                        checked = checked,
+                                        onCheckedChange = {
+                                            if (it) selectedFolderIds.add(f.id) else selectedFolderIds.remove(f.id)
+                                        }
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text(f.name, fontSize = 11.sp)
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Text("اختر برامج المبرمجات المسموح بها:", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                            softwares.forEach { s ->
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    val checked = selectedSoftwareIds.contains(s.id)
+                                    androidx.compose.material3.Checkbox(
+                                        checked = checked,
+                                        onCheckedChange = {
+                                            if (it) selectedSoftwareIds.add(s.id) else selectedSoftwareIds.remove(s.id)
+                                        }
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text(s.name, fontSize = 11.sp)
+                                }
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(12.dp))
 
                         Button(
                             onClick = {
@@ -1579,10 +1917,25 @@ fun AdminLicenseKeysManagerDialog(
                                     Toast.makeText(context, "يرجى كتابة اسم العميل أولاً", Toast.LENGTH_SHORT).show()
                                     return@Button
                                 }
-                                onGenerateKey(clientName, clientPhone, selectedScope, selectedScopeName, notes)
+                                val scopeName = if (isFullAccess) "الوصول الشامل لجميع السوفتات والبرامج" else "محدد (${selectedFolderIds.size} مجلد، ${selectedSoftwareIds.size} برنامج)"
+                                onGenerateKey(
+                                    clientName.trim(),
+                                    clientPhone.trim(),
+                                    clientEmail.trim(),
+                                    if (isFullAccess) "ALL_FIRMWARE" else "GRANULAR",
+                                    scopeName,
+                                    selectedFolderIds.toList(),
+                                    selectedSoftwareIds.toList(),
+                                    isFullAccess,
+                                    notes.trim()
+                                )
                                 clientName = ""
                                 clientPhone = ""
+                                clientEmail = ""
                                 notes = ""
+                                selectedFolderIds.clear()
+                                selectedSoftwareIds.clear()
+                                isFullAccess = true
                             },
                             modifier = Modifier.fillMaxWidth(),
                             colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0F766E)),
@@ -1649,6 +2002,14 @@ fun AdminLicenseKeysManagerDialog(
                                     fontSize = 11.sp,
                                     fontWeight = FontWeight.Bold
                                 )
+                                if (keyRecord.clientEmail.isNotBlank()) {
+                                    Text(
+                                        text = "الإيميل المقيد: ${keyRecord.clientEmail}",
+                                        fontSize = 10.sp,
+                                        color = Color(0xFF0F766E),
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
                                 Text(
                                     text = "القسم: ${keyRecord.targetScopeName} • تاريخ الإنشاء: ${dateFormat.format(Date(keyRecord.createdTimestamp))}",
                                     fontSize = 10.sp,
@@ -1665,7 +2026,8 @@ fun AdminLicenseKeysManagerDialog(
                                     // WhatsApp Send to Client
                                     Button(
                                         onClick = {
-                                            val clientMsg = "مرحباً يا باشمهندس ${keyRecord.clientName}،\nتم تفعيل اشتراكك في قسم ${keyRecord.targetScopeName} بتطبيق البراء إلكترونيك.\n\nمفتاح التنشيط الخاص بك هو:\n${keyRecord.licenseKey}\n\nطريقة التفعيل: ادخل على قسم البرمجة والسوفت وير بالتطبيق، واضغط على فتح القسم، ثم الصق المفتاح واضغط تفعيل ✨\nمع تحيات م. البراء إلكترونيك ⚡"
+                                            val emailClause = if (keyRecord.clientEmail.isNotBlank()) "\nالحساب المرتبط: ${keyRecord.clientEmail}" else ""
+                                            val clientMsg = "مرحباً يا باشمهندس ${keyRecord.clientName}،\nتم تفعيل اشتراكك في قسم ${keyRecord.targetScopeName} بتطبيق البراء إلكترونيك.$emailClause\n\nمفتاح التنشيط الخاص بك هو:\n${keyRecord.licenseKey}\n\nطريقة التفعيل: ادخل على قسم البرمجة والسوفت وير بالتطبيق، واضغط على فتح القسم، ثم الصق المفتاح واضغط تفعيل ✨\nمع تحيات م. البراء إلكترونيك ⚡"
                                             val cleanPhone = keyRecord.clientPhone.replace("+", "").replace(" ", "").trim()
                                             try {
                                                 val url = if (cleanPhone.isNotBlank()) "https://api.whatsapp.com/send?phone=$cleanPhone&text=${Uri.encode(clientMsg)}" else "https://api.whatsapp.com/send?text=${Uri.encode(clientMsg)}"
@@ -2002,3 +2364,160 @@ fun ConnectionEditDialog(
         }
     )
 }
+
+// =============================================================================
+// COMPONENT: ADMIN EXPANDABLE SPEED DIAL FAB (مطابق للصورة)
+// =============================================================================
+@Composable
+fun AdminSpeedDialFab(
+    onAddFolder: () -> Unit,
+    onUploadDump: () -> Unit,
+    onAddSoftware: () -> Unit,
+    onManageKeys: () -> Unit
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val rotation by animateFloatAsState(
+        targetValue = if (expanded) 45f else 0f,
+        animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
+        label = "fab_rotation"
+    )
+
+    Column(
+        horizontalAlignment = Alignment.End,
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        if (expanded) {
+            // Option 1: Manage Keys
+            SpeedDialItem(
+                label = "مفاتيح وتراخيص العملاء 🔑",
+                icon = Icons.Default.Key,
+                backgroundColor = Color(0xFFEAB308),
+                onClick = {
+                    expanded = false
+                    onManageKeys()
+                }
+            )
+
+            // Option 2: Add Software
+            SpeedDialItem(
+                label = "إضافة برنامج برمجة 💻",
+                icon = Icons.Default.Computer,
+                backgroundColor = Color(0xFF0F766E),
+                onClick = {
+                    expanded = false
+                    onAddSoftware()
+                }
+            )
+
+            // Option 3: Upload Firmware File
+            SpeedDialItem(
+                label = "رفع فلاشة / سوفت 💾",
+                icon = Icons.Default.UploadFile,
+                backgroundColor = Color(0xFF0284C7),
+                onClick = {
+                    expanded = false
+                    onUploadDump()
+                }
+            )
+
+            // Option 4: Add New Folder
+            SpeedDialItem(
+                label = "إضافة مجلد جديد 📁",
+                icon = Icons.Default.CreateNewFolder,
+                backgroundColor = Color(0xFF10B981),
+                onClick = {
+                    expanded = false
+                    onAddFolder()
+                }
+            )
+        }
+
+        // Main FAB
+        FloatingActionButton(
+            onClick = { expanded = !expanded },
+            containerColor = if (expanded) Color(0xFF0F766E) else Color(0xFF0D9488),
+            contentColor = Color.White,
+            shape = CircleShape,
+            modifier = Modifier.size(58.dp)
+        ) {
+            Icon(
+                imageVector = Icons.Default.Add,
+                contentDescription = "قائمة الإجراءات السريعة",
+                modifier = Modifier
+                    .size(28.dp)
+                    .rotate(rotation)
+            )
+        }
+    }
+}
+
+@Composable
+private fun SpeedDialItem(
+    label: String,
+    icon: ImageVector,
+    backgroundColor: Color,
+    onClick: () -> Unit
+) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        modifier = Modifier.clickable { onClick() }
+    ) {
+        Surface(
+            shape = RoundedCornerShape(8.dp),
+            color = MaterialTheme.colorScheme.surface,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+        ) {
+            Text(
+                text = label,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+            )
+        }
+
+        FloatingActionButton(
+            onClick = onClick,
+            containerColor = backgroundColor,
+            contentColor = Color.White,
+            shape = CircleShape,
+            modifier = Modifier.size(44.dp)
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = label,
+                modifier = Modifier.size(20.dp)
+            )
+        }
+    }
+}
+
+// =============================================================================
+// HELPER: SHARE LOCAL FILE VIA FILEPROVIDER (للكمبيوتر والواتساب وتطبيقات المشاركة)
+// =============================================================================
+fun shareLocalFile(context: Context, localPath: String, title: String) {
+    try {
+        val file = File(localPath)
+        if (!file.exists()) {
+            Toast.makeText(context, "الملف غير موجود على الجهاز", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val fileUri = androidx.core.content.FileProvider.getUriForFile(
+            context,
+            "${context.packageName}.fileprovider",
+            file
+        )
+        val shareIntent = Intent(Intent.ACTION_SEND).apply {
+            type = "*/*"
+            putExtra(Intent.EXTRA_STREAM, fileUri)
+            putExtra(Intent.EXTRA_SUBJECT, title)
+            putExtra(Intent.EXTRA_TEXT, "ملف سوفت وير / برمجة من تطبيق البراء إلكترونيك ⚡\n$title")
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        context.startActivity(Intent.createChooser(shareIntent, "إرسال الملف للكمبيوتر أو مشاركته 💻"))
+    } catch (e: Exception) {
+        Toast.makeText(context, "تعذر مشاركة الملف: ${e.message}", Toast.LENGTH_SHORT).show()
+    }
+}
+
