@@ -269,21 +269,26 @@ object ProgrammingRepository {
             notes = notes.trim()
         )
 
+        // 1. Save locally IMMEDIATELY so key is never lost
+        val current = _licenseKeys.value.toMutableList()
+        current.removeAll { it.licenseKey == keyString }
+        current.add(0, record)
+        _licenseKeys.value = current
+        saveKeysToPrefs(appContext, current)
+
+        CoroutineScope(Dispatchers.Main).launch {
+            onComplete(record)
+        }
+
+        // 2. Sync to Firestore in background
         CoroutineScope(Dispatchers.IO).launch {
             try {
                 val db = FirebaseInitializer.getFirestore(appContext)
                 db.collection("license_keys").document(keyString)
                     .set(record.toMap())
                     .await()
-                val current = _licenseKeys.value.toMutableList()
-                current.removeAll { it.licenseKey == keyString }
-                current.add(0, record)
-                _licenseKeys.value = current
-                saveKeysToPrefs(appContext, current)
-                onComplete(record)
             } catch (e: Throwable) {
-                Log.e(TAG, "Error generating license key", e)
-                onComplete(null)
+                Log.w(TAG, "Key saved locally, cloud sync error: ${e.message}")
             }
         }
     }
@@ -541,11 +546,14 @@ object ProgrammingRepository {
                 db.collection("license_keys").addSnapshotListener { snapshot, error ->
                     if (error != null) return@addSnapshotListener
                     if (snapshot != null) {
-                        val list = snapshot.documents.map { doc ->
+                        val remoteList = snapshot.documents.map { doc ->
                             LicenseKeyRecord.fromMap(doc.id, doc.data ?: emptyMap())
-                        }.sortedByDescending { it.createdTimestamp }
-                        _licenseKeys.value = list
-                        saveKeysToPrefs(context, list)
+                        }
+                        val merged = (remoteList + _licenseKeys.value)
+                            .distinctBy { it.licenseKey }
+                            .sortedByDescending { it.createdTimestamp }
+                        _licenseKeys.value = merged
+                        saveKeysToPrefs(context, merged)
                     }
                 }
             )
@@ -659,6 +667,37 @@ object ProgrammingRepository {
                 if (list.isNotEmpty()) _connections.value = list
             } catch (_: Throwable) {}
         }
+        // License Keys
+        prefs.getString(KEY_CACHED_KEYS, null)?.let { jsonStr ->
+            try {
+                val arr = JSONArray(jsonStr)
+                val list = (0 until arr.length()).map { i ->
+                    val obj = arr.getJSONObject(i)
+                    val fArr = obj.optJSONArray("allowedFolderIds") ?: JSONArray()
+                    val fList = (0 until fArr.length()).map { fArr.getString(it) }
+                    val sArr = obj.optJSONArray("allowedSoftwareIds") ?: JSONArray()
+                    val sList = (0 until sArr.length()).map { sArr.getString(it) }
+                    LicenseKeyRecord(
+                        id = obj.optString("id", UUID.randomUUID().toString()),
+                        licenseKey = obj.optString("licenseKey", ""),
+                        clientName = obj.optString("clientName", ""),
+                        clientPhone = obj.optString("clientPhone", ""),
+                        clientEmail = obj.optString("clientEmail", ""),
+                        targetScope = obj.optString("targetScope", "ALL_FIRMWARE"),
+                        targetScopeName = obj.optString("targetScopeName", "جميع السوفتات والبرامج"),
+                        allowedFolderIds = fList,
+                        allowedSoftwareIds = sList,
+                        isFullAccess = obj.optBoolean("isFullAccess", true),
+                        isActivated = obj.optBoolean("isActivated", false),
+                        activatedDeviceId = obj.optString("activatedDeviceId", ""),
+                        createdTimestamp = obj.optLong("createdTimestamp", System.currentTimeMillis()),
+                        activatedTimestamp = obj.optLong("activatedTimestamp", 0L),
+                        notes = obj.optString("notes", "")
+                    )
+                }
+                if (list.isNotEmpty()) _licenseKeys.value = list
+            } catch (_: Throwable) {}
+        }
     }
 
     private fun saveSoftwaresToPrefs(context: Context, list: List<ProgrammerSoftware>) {
@@ -676,6 +715,9 @@ object ProgrammingRepository {
                 obj.put("iconUrl", item.iconUrl)
                 obj.put("requiresLicense", item.requiresLicense)
                 obj.put("isLocked", item.isLocked)
+                obj.put("isFree", item.isFree)
+                obj.put("localFilePath", item.localFilePath)
+                obj.put("fileSizeBytes", item.fileSizeBytes)
                 arr.put(obj)
             }
             context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit()
@@ -694,6 +736,8 @@ object ProgrammingRepository {
                 obj.put("brand", item.brand)
                 obj.put("iconName", item.iconName)
                 obj.put("isLocked", item.isLocked)
+                obj.put("isFree", item.isFree)
+                obj.put("parentFolderId", item.parentFolderId)
                 obj.put("orderIndex", item.orderIndex)
                 arr.put(obj)
             }
@@ -718,6 +762,9 @@ object ProgrammingRepository {
                 obj.put("previewImageUrl", item.previewImageUrl)
                 obj.put("notes", item.notes)
                 obj.put("requiresLicense", item.requiresLicense)
+                obj.put("isFree", item.isFree)
+                obj.put("localFilePath", item.localFilePath)
+                obj.put("fileSizeBytes", item.fileSizeBytes)
                 arr.put(obj)
             }
             context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit()
@@ -764,8 +811,16 @@ object ProgrammingRepository {
                 obj.put("licenseKey", item.licenseKey)
                 obj.put("clientName", item.clientName)
                 obj.put("clientPhone", item.clientPhone)
+                obj.put("clientEmail", item.clientEmail)
                 obj.put("targetScope", item.targetScope)
                 obj.put("targetScopeName", item.targetScopeName)
+                val fArr = JSONArray()
+                item.allowedFolderIds.forEach { fArr.put(it) }
+                obj.put("allowedFolderIds", fArr)
+                val sArr = JSONArray()
+                item.allowedSoftwareIds.forEach { sArr.put(it) }
+                obj.put("allowedSoftwareIds", sArr)
+                obj.put("isFullAccess", item.isFullAccess)
                 obj.put("isActivated", item.isActivated)
                 obj.put("activatedDeviceId", item.activatedDeviceId)
                 obj.put("createdTimestamp", item.createdTimestamp)

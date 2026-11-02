@@ -2,6 +2,7 @@ package com.example.data
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.provider.Settings
 import android.util.Log
 import com.example.util.FirebaseInitializer
 import com.google.firebase.firestore.FieldValue
@@ -14,6 +15,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
+import java.util.UUID
 
 data class AppRatingItem(
     val userEmail: String = "",
@@ -24,9 +26,9 @@ data class AppRatingItem(
 )
 
 data class AppStatsData(
-    val totalUsersCount: Long = 1480L, // Baseline starter count
-    val averageRating: Double = 4.9,
-    val totalRatingsCount: Long = 342L,
+    val totalUsersCount: Long = 1L, // Real users who opened the app
+    val averageRating: Double = 5.0, // Real average of submitted ratings
+    val totalRatingsCount: Long = 0L, // Real count of submitted reviews
     val currentUserRating: Int = 0,
     val currentUserReview: String = ""
 )
@@ -34,17 +36,18 @@ data class AppStatsData(
 object AppStatsAndRatingManager {
     private const val TAG = "AppStatsAndRating"
     private const val PREFS_NAME = "albaraa_app_stats_prefs"
-    private const val KEY_TOTAL_USERS = "total_users"
-    private const val KEY_AVG_RATING = "avg_rating"
-    private const val KEY_TOTAL_RATINGS = "total_ratings"
+    private const val KEY_TOTAL_USERS = "real_total_users"
+    private const val KEY_AVG_RATING = "real_avg_rating"
+    private const val KEY_TOTAL_RATINGS = "real_total_ratings"
     private const val KEY_USER_RATING = "my_rating"
     private const val KEY_USER_REVIEW = "my_review"
-    private const val KEY_HAS_RECORDED_VISIT = "has_recorded_visit"
+    private const val KEY_HAS_RECORDED_VISIT = "has_recorded_visit_real_v2"
 
     private val _stats = MutableStateFlow(AppStatsData())
     val stats: StateFlow<AppStatsData> = _stats.asStateFlow()
 
-    private var listenerRegistration: ListenerRegistration? = null
+    private var ratingsListenerRegistration: ListenerRegistration? = null
+    private var statsDocListenerRegistration: ListenerRegistration? = null
     private var isInitialized = false
 
     fun init(context: Context, currentUserEmail: String?) {
@@ -52,9 +55,9 @@ object AppStatsAndRatingManager {
         val prefs = appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
         // 1. Load from cache for immediate UI rendering
-        val cachedUsers = prefs.getLong(KEY_TOTAL_USERS, 1480L)
-        val cachedAvg = prefs.getFloat(KEY_AVG_RATING, 4.9f).toDouble()
-        val cachedRatingsCount = prefs.getLong(KEY_TOTAL_RATINGS, 342L)
+        val cachedUsers = prefs.getLong(KEY_TOTAL_USERS, 1L)
+        val cachedAvg = prefs.getFloat(KEY_AVG_RATING, 5.0f).toDouble()
+        val cachedRatingsCount = prefs.getLong(KEY_TOTAL_RATINGS, 0L)
         val cachedUserRating = prefs.getInt(KEY_USER_RATING, 0)
         val cachedUserReview = prefs.getString(KEY_USER_REVIEW, "") ?: ""
 
@@ -66,31 +69,52 @@ object AppStatsAndRatingManager {
             currentUserReview = cachedUserReview
         )
 
-        // 2. Record this visit/user in Firestore once per install
+        // 2. Record this visit in Firestore once per device
         recordVisitOnce(appContext, currentUserEmail, prefs)
 
-        // 3. Attach real-time snapshot listener on stats document
+        // 3. Attach real-time snapshot listener on real ratings and stats
         if (!isInitialized) {
             attachFirestoreListener(appContext, currentUserEmail)
             isInitialized = true
         }
     }
 
+    private fun getDeviceId(context: Context): String {
+        return try {
+            Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID) ?: "dev_${UUID.randomUUID().toString().take(8)}"
+        } catch (_: Throwable) {
+            "dev_${UUID.randomUUID().toString().take(8)}"
+        }
+    }
+
     private fun recordVisitOnce(context: Context, userEmail: String?, prefs: SharedPreferences) {
         val hasRecorded = prefs.getBoolean(KEY_HAS_RECORDED_VISIT, false)
-        if (!hasRecorded) {
-            CoroutineScope(Dispatchers.IO).launch {
-                try {
-                    val db = FirebaseInitializer.getFirestore(context)
+        val deviceId = getDeviceId(context)
+
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val db = FirebaseInitializer.getFirestore(context)
+                // Record in visitors collection
+                db.collection("app_visitors").document(deviceId)
+                    .set(
+                        mapOf(
+                            "deviceId" to deviceId,
+                            "userEmail" to (userEmail ?: ""),
+                            "lastActive" to System.currentTimeMillis()
+                        ),
+                        SetOptions.merge()
+                    ).await()
+
+                if (!hasRecorded) {
                     db.collection("app_stats").document("usage")
                         .set(
                             mapOf("totalUsersCount" to FieldValue.increment(1)),
                             SetOptions.merge()
                         ).await()
                     prefs.edit().putBoolean(KEY_HAS_RECORDED_VISIT, true).apply()
-                } catch (e: Throwable) {
-                    Log.w(TAG, "Failed to increment user count: ${e.message}")
                 }
+            } catch (e: Throwable) {
+                Log.w(TAG, "Failed to record visitor: ${e.message}")
             }
         }
     }
@@ -98,28 +122,51 @@ object AppStatsAndRatingManager {
     private fun attachFirestoreListener(context: Context, currentUserEmail: String?) {
         try {
             val db = FirebaseInitializer.getFirestore(context)
-            listenerRegistration?.remove()
-            listenerRegistration = db.collection("app_stats").document("usage")
+
+            // Listen to total user counts in stats doc
+            statsDocListenerRegistration?.remove()
+            statsDocListenerRegistration = db.collection("app_stats").document("usage")
                 .addSnapshotListener { snapshot, error ->
                     if (error != null) {
                         Log.w(TAG, "Stats snapshot error: ${error.message}")
                         return@addSnapshotListener
                     }
                     if (snapshot != null && snapshot.exists()) {
-                        val count = snapshot.getLong("totalUsersCount") ?: 1480L
-                        val avg = snapshot.getDouble("averageRating") ?: 4.9
-                        val ratingsCount = snapshot.getLong("totalRatingsCount") ?: 342L
-
+                        val count = snapshot.getLong("totalUsersCount") ?: 1L
                         _stats.value = _stats.value.copy(
-                            totalUsersCount = maxOf(count, 1480L),
-                            averageRating = avg,
-                            totalRatingsCount = maxOf(ratingsCount, 342L)
+                            totalUsersCount = maxOf(count, 1L)
                         )
                         saveCache(context)
                     }
                 }
 
-            // Also check current user's rating if logged in
+            // Real-time listener on real submitted ratings collection
+            ratingsListenerRegistration?.remove()
+            ratingsListenerRegistration = db.collection("app_ratings")
+                .addSnapshotListener { snapshot, error ->
+                    if (error != null) {
+                        Log.w(TAG, "Ratings listener error: ${error.message}")
+                        return@addSnapshotListener
+                    }
+                    if (snapshot != null) {
+                        val count = snapshot.size().toLong()
+                        val ratingsList = snapshot.documents.mapNotNull { it.getLong("rating")?.toDouble() }
+                        val avg = if (ratingsList.isNotEmpty()) {
+                            val rawAvg = ratingsList.average()
+                            (Math.round(rawAvg * 10.0) / 10.0).coerceIn(1.0, 5.0)
+                        } else {
+                            5.0
+                        }
+
+                        _stats.value = _stats.value.copy(
+                            totalRatingsCount = count,
+                            averageRating = avg
+                        )
+                        saveCache(context)
+                    }
+                }
+
+            // Check current user's rating if logged in
             if (!currentUserEmail.isNullOrBlank()) {
                 val cleanEmailKey = currentUserEmail.replace(".", "_").replace("@", "_at_")
                 db.collection("app_ratings").document(cleanEmailKey).get()
@@ -168,25 +215,6 @@ object AppStatsAndRatingManager {
                     "timestamp" to System.currentTimeMillis()
                 )
                 db.collection("app_ratings").document(cleanEmailKey).set(ratingDoc).await()
-
-                // Recalculate or increment stats
-                val newRatingsCount = _stats.value.totalRatingsCount + 1
-                val newAvg = ((_stats.value.averageRating * _stats.value.totalRatingsCount) + rating) / newRatingsCount
-                val roundedAvg = (Math.round(newAvg * 10.0) / 10.0).coerceIn(1.0, 5.0)
-
-                db.collection("app_stats").document("usage").set(
-                    mapOf(
-                        "averageRating" to roundedAvg,
-                        "totalRatingsCount" to FieldValue.increment(1)
-                    ),
-                    SetOptions.merge()
-                ).await()
-
-                _stats.value = _stats.value.copy(
-                    averageRating = roundedAvg,
-                    totalRatingsCount = newRatingsCount
-                )
-                saveCache(appContext)
                 onComplete?.invoke(true)
             } catch (e: Throwable) {
                 Log.e(TAG, "Failed to submit rating", e)

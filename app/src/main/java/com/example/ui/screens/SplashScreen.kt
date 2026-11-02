@@ -5,6 +5,7 @@ import android.content.Intent
 import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -393,147 +394,89 @@ fun SplashScreen(
 
             Spacer(modifier = Modifier.height(26.dp))
 
-            // Middle Floating Card: Users Count & Interactive App Rating
-            Card(
+            // Real Users Count & App Rating - Seamlessly blending with the screen background
+            Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 22.dp)
-                    .shadow(10.dp, RoundedCornerShape(26.dp)),
-                shape = RoundedCornerShape(26.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
+                    .padding(horizontal = 20.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Column(
-                    modifier = Modifier.padding(vertical = 18.dp, horizontal = 20.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                // 1. Real Active Users Pill
+                Surface(
+                    shape = RoundedCornerShape(20.dp),
+                    color = Color.White.copy(alpha = 0.12f),
+                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.25f))
                 ) {
-                    // 1. Total Active Users Counter
                     Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(14.dp))
-                            .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f))
-                            .padding(vertical = 10.dp, horizontal = 12.dp),
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.People,
+                            contentDescription = null,
+                            tint = Color(0xFF67E8F9),
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "${statsData.totalUsersCount} مستخدم مسجل بالتطبيق ⚡",
+                            color = Color.White,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+
+                // 2. Interactive Real App Rating Badge
+                Surface(
+                    shape = RoundedCornerShape(20.dp),
+                    color = Color.White.copy(alpha = 0.14f),
+                    border = BorderStroke(1.dp, Color(0xFFFDE047).copy(alpha = 0.4f)),
+                    modifier = Modifier.clickable {
+                        if (currentUserEmail.isNullOrBlank()) {
+                            showMustLoginDialog = true
+                        } else {
+                            showRatingDialog = true
+                        }
+                    }
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.Center
                     ) {
-                        Surface(
-                            shape = CircleShape,
-                            color = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(34.dp)
-                        ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Icon(
-                                    imageVector = Icons.Default.People,
-                                    contentDescription = "المستخدمين",
-                                    tint = MaterialTheme.colorScheme.onPrimary,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                            }
-                        }
-                        Spacer(modifier = Modifier.width(10.dp))
-                        Column(horizontalAlignment = Alignment.Start) {
-                            Text(
-                                text = "+${statsData.totalUsersCount} فني ومهندس يستخدمون التطبيق",
-                                style = MaterialTheme.typography.titleMedium.copy(
-                                    fontWeight = FontWeight.Bold,
-                                    color = MaterialTheme.colorScheme.onSurface,
-                                    fontSize = 15.sp
-                                )
-                            )
-                            Text(
-                                text = "المنصة الفنية الرائدة لكروت وصيانة الغسالات",
-                                style = MaterialTheme.typography.bodySmall.copy(
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    fontSize = 11.sp
-                                )
-                            )
-                        }
-                    }
-
-                    HorizontalDivider(
-                        modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp),
-                        thickness = 1.dp,
-                        color = MaterialTheme.colorScheme.outline.copy(alpha = 0.15f)
-                    )
-
-                    // 2. Interactive App Rating Section
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(16.dp))
-                            .clickable {
-                                if (currentUserEmail.isNullOrBlank()) {
-                                    showMustLoginDialog = true
-                                } else {
-                                    showRatingDialog = true
-                                }
-                            }
-                            .background(Color(0xFFFEF9C3).copy(alpha = 0.45f))
-                            .border(1.dp, Color(0xFFFDE047).copy(alpha = 0.5f), RoundedCornerShape(16.dp))
-                            .padding(vertical = 10.dp, horizontal = 14.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.Center
-                        ) {
-                            Text(
-                                text = String.format(java.util.Locale.US, "%.1f", statsData.averageRating),
-                                style = MaterialTheme.typography.titleLarge.copy(
-                                    fontWeight = FontWeight.ExtraBold,
-                                    color = Color(0xFFB45309),
-                                    fontSize = 20.sp
-                                )
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            // 5 Gold Stars
-                            Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                                val fullStars = statsData.averageRating.toInt()
-                                for (i in 1..5) {
-                                    Icon(
-                                        imageVector = if (i <= fullStars) Icons.Default.Star else Icons.Default.StarBorder,
-                                        contentDescription = null,
-                                        tint = Color(0xFFEAB308),
-                                        modifier = Modifier.size(18.dp)
-                                    )
-                                }
-                            }
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(
-                                text = "(${statsData.totalRatingsCount} تقييم)",
-                                style = MaterialTheme.typography.bodySmall.copy(
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Medium
-                                )
-                            )
-                        }
-
-                        Spacer(modifier = Modifier.height(4.dp))
-
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.Center
-                        ) {
+                        Text(
+                            text = String.format(java.util.Locale.US, "%.1f", statsData.averageRating),
+                            color = Color(0xFFFDE047),
+                            fontWeight = FontWeight.ExtraBold,
+                            fontSize = 15.sp
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        // 5 Stars
+                        val fullStars = statsData.averageRating.toInt()
+                        for (i in 1..5) {
                             Icon(
-                                imageVector = Icons.Default.RateReview,
+                                imageVector = if (i <= fullStars) Icons.Default.Star else Icons.Default.StarBorder,
                                 contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary,
+                                tint = Color(0xFFFDE047),
                                 modifier = Modifier.size(14.dp)
                             )
+                        }
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = if (statsData.totalRatingsCount > 0) "(${statsData.totalRatingsCount} تقييم)" else "(كن أول من يقيّم التطبيق ⭐)",
+                            color = Color.White.copy(alpha = 0.9f),
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Medium
+                        )
+                        if (statsData.currentUserRating > 0) {
                             Spacer(modifier = Modifier.width(4.dp))
                             Text(
-                                text = if (statsData.currentUserRating > 0)
-                                    "تقييمك: ${statsData.currentUserRating} ★ (انقر للتعديل)"
-                                else
-                                    "اضغط هنا لتقييم التطبيق وإبداء رأيك ★",
-                                style = MaterialTheme.typography.labelSmall.copy(
-                                    color = MaterialTheme.colorScheme.primary,
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 12.sp
-                                )
+                                text = "• تقييمك: ${statsData.currentUserRating}★",
+                                color = Color(0xFF86EFAC),
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold
                             )
                         }
                     }
