@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -220,7 +221,12 @@ fun AdminMotorScreen(
     var category by remember { mutableStateOf(initialMotor?.category ?: "") }
     var motorType by remember { mutableStateOf(initialMotor?.motorType ?: "") }
     var notes by remember { mutableStateOf(initialMotor?.notes ?: "") }
-    var imageUrl by remember { mutableStateOf(initialMotor?.imageUrl ?: "") }
+    val imageUrlsList = remember {
+        mutableStateListOf<String>().apply {
+            addAll(initialMotor?.getAllImages() ?: emptyList())
+        }
+    }
+    var directUrlInput by remember { mutableStateOf("") }
     var isSaving by remember { mutableStateOf(false) }
 
     var showDeleteConfirmDialog by remember { mutableStateOf(false) }
@@ -237,11 +243,11 @@ fun AdminMotorScreen(
             coroutineScope.launch {
                 try {
                     val localPath = ImageHelper.copyUriToLocalStorage(context, uri)
-                    imageUrl = localPath
-                    snackbarHostState.showSnackbar("تم حفظ وتحديد صورة الماتور بنجاح")
+                    imageUrlsList.add(localPath)
+                    snackbarHostState.showSnackbar("تمت إضافة صورة الماتور بنجاح (${imageUrlsList.size} صور)")
                 } catch (e: Exception) {
-                    imageUrl = uri.toString()
-                    snackbarHostState.showSnackbar("تم تحديد الصورة")
+                    imageUrlsList.add(uri.toString())
+                    snackbarHostState.showSnackbar("تمت إضافة الصورة")
                 }
             }
         }
@@ -501,47 +507,67 @@ fun AdminMotorScreen(
                             )
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                text = "صورة الماتور أو مخطط الأسلاك",
+                                text = "صور الماتور ومخططات الأسلاك (${imageUrlsList.size})",
                                 style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
                             )
                         }
 
-                        // Preview if image is present
-                        if (imageUrl.isNotBlank()) {
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(180.dp)
-                                    .clip(RoundedCornerShape(12.dp))
-                                    .background(MaterialTheme.colorScheme.surface)
+                        // List of attached images with thumbnail preview & remove option
+                        if (imageUrlsList.isNotEmpty()) {
+                            LazyRow(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                modifier = Modifier.fillMaxWidth()
                             ) {
-                                AsyncImage(
-                                    model = ImageRequest.Builder(context)
-                                        .data(ImageHelper.getCoilData(imageUrl))
-                                        .crossfade(true)
-                                        .build(),
-                                    contentDescription = "معاينة صورة الماتور",
-                                    contentScale = ContentScale.Fit,
-                                    modifier = Modifier.fillMaxSize()
-                                )
-
-                                Surface(
-                                    shape = CircleShape,
-                                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.85f),
-                                    modifier = Modifier
-                                        .padding(8.dp)
-                                        .align(Alignment.TopEnd)
-                                ) {
-                                    IconButton(
-                                        onClick = { imageUrl = "" },
-                                        modifier = Modifier.size(32.dp)
+                                itemsIndexed(imageUrlsList) { index, imgItem ->
+                                    Box(
+                                        modifier = Modifier
+                                            .size(110.dp)
+                                            .clip(RoundedCornerShape(12.dp))
+                                            .background(MaterialTheme.colorScheme.surfaceVariant)
                                     ) {
-                                        Icon(
-                                            imageVector = Icons.Default.Close,
-                                            contentDescription = "إزالة الصورة",
-                                            tint = MaterialTheme.colorScheme.error,
-                                            modifier = Modifier.size(18.dp)
+                                        AsyncImage(
+                                            model = ImageRequest.Builder(context)
+                                                .data(ImageHelper.getCoilData(imgItem))
+                                                .crossfade(true)
+                                                .build(),
+                                            contentDescription = "صورة $index",
+                                            contentScale = ContentScale.Crop,
+                                            modifier = Modifier.fillMaxSize()
                                         )
+
+                                        // Badge index
+                                        Surface(
+                                            shape = RoundedCornerShape(bottomStart = 8.dp),
+                                            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.85f),
+                                            modifier = Modifier.align(Alignment.TopEnd)
+                                        ) {
+                                            Text(
+                                                text = "${index + 1}",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                            )
+                                        }
+
+                                        // Delete button
+                                        Surface(
+                                            shape = CircleShape,
+                                            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.85f),
+                                            modifier = Modifier
+                                                .padding(4.dp)
+                                                .align(Alignment.BottomEnd)
+                                        ) {
+                                            IconButton(
+                                                onClick = { imageUrlsList.removeAt(index) },
+                                                modifier = Modifier.size(28.dp)
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.Close,
+                                                    contentDescription = "حذف الصورة",
+                                                    tint = MaterialTheme.colorScheme.error,
+                                                    modifier = Modifier.size(16.dp)
+                                                )
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -563,13 +589,13 @@ fun AdminMotorScreen(
                             ) {
                                 Icon(imageVector = Icons.Default.PhotoLibrary, contentDescription = null, modifier = Modifier.size(18.dp))
                                 Spacer(modifier = Modifier.width(6.dp))
-                                Text("من المعرض", fontSize = 13.sp)
+                                Text("إضافة من المعرض", fontSize = 13.sp)
                             }
 
                             OutlinedButton(
                                 onClick = {
                                     onOpenAiStudioForImage { generatedUrl ->
-                                        imageUrl = generatedUrl
+                                        imageUrlsList.add(generatedUrl)
                                     }
                                 },
                                 modifier = Modifier.weight(1f),
@@ -582,14 +608,31 @@ fun AdminMotorScreen(
                         }
 
                         // Direct URL / local file input fallback
-                        OutlinedTextField(
-                            value = imageUrl,
-                            onValueChange = { imageUrl = it },
-                            label = { Text("أو مسار الصورة / رابط مباشر (URL)") },
+                        Row(
                             modifier = Modifier.fillMaxWidth(),
-                            singleLine = true,
-                            shape = RoundedCornerShape(10.dp)
-                        )
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            OutlinedTextField(
+                                value = directUrlInput,
+                                onValueChange = { directUrlInput = it },
+                                label = { Text("أو إضافة مسار / رابط صورة (URL)") },
+                                modifier = Modifier.weight(1f),
+                                singleLine = true,
+                                shape = RoundedCornerShape(10.dp)
+                            )
+                            IconButton(
+                                onClick = {
+                                    if (directUrlInput.isNotBlank()) {
+                                        imageUrlsList.add(directUrlInput.trim())
+                                        directUrlInput = ""
+                                    }
+                                },
+                                enabled = directUrlInput.isNotBlank()
+                            ) {
+                                Icon(Icons.Default.Add, contentDescription = "إضافة رابط")
+                            }
+                        }
                     }
                 }
             }
@@ -1010,6 +1053,9 @@ fun AdminMotorScreen(
                             onAddNewCategory(trimmedCategory)
                         }
 
+                        val allImages = imageUrlsList.toList()
+                        val primaryImage = allImages.firstOrNull() ?: ""
+
                         val updatedMotor = Motor(
                             id = initialMotor?.id ?: "",
                             userId = initialMotor?.userId ?: currentUserId,
@@ -1019,7 +1065,8 @@ fun AdminMotorScreen(
                             category = trimmedCategory,
                             motorType = motorType.trim(),
                             notes = notes.trim(),
-                            imageUrl = imageUrl.trim(),
+                            imageUrl = primaryImage,
+                            imageUrls = allImages,
                             pinouts = pinouts.toList(),
                             orderIndex = initialMotor?.orderIndex ?: 0,
                             createdAt = initialMotor?.createdAt,

@@ -330,64 +330,7 @@ fun ProgrammingScreen(
 
                         // END SIDE (Left in RTL): Admin Actions (License Manager + Add)
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            if (isAdmin) {
-                                // License Keys Manager Button
-                                Surface(
-                                    shape = RoundedCornerShape(10.dp),
-                                    color = Color(0xFFEAB308).copy(alpha = 0.2f),
-                                    border = BorderStroke(1.dp, Color(0xFFEAB308)),
-                                    modifier = Modifier
-                                        .clip(RoundedCornerShape(10.dp))
-                                        .clickable { showAdminKeysManagerDialog = true }
-                                        .padding(horizontal = 8.dp, vertical = 6.dp)
-                                ) {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Icon(
-                                            imageVector = Icons.Default.Key,
-                                            contentDescription = "سجل التراخيص",
-                                            tint = Color(0xFFFDE047),
-                                            modifier = Modifier.size(15.dp)
-                                        )
-                                        Spacer(modifier = Modifier.width(4.dp))
-                                        Text(
-                                            text = "المفاتيح 🔑",
-                                            color = Color(0xFFFDE047),
-                                            fontSize = 11.sp,
-                                            fontWeight = FontWeight.Bold
-                                        )
-                                    }
-                                }
-
-                                // Quick Add Button
-                                IconButton(
-                                    onClick = {
-                                        when (selectedTabIndex) {
-                                            0 -> { editingSoftware = null; showAddSoftwareDialog = true }
-                                            1 -> {
-                                                if (activeFolderId != null) {
-                                                    editingDump = null
-                                                    showAddDumpDialog = true
-                                                } else {
-                                                    editingFolder = null
-                                                    defaultParentFolderIdForNew = ""
-                                                    showAddFolderDialog = true
-                                                }
-                                            }
-                                            2 -> { editingConnection = null; showAddConnectionDialog = true }
-                                        }
-                                    },
-                                    modifier = Modifier
-                                        .size(38.dp)
-                                        .background(Color(0xFF0D9488), CircleShape)
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.Add,
-                                        contentDescription = "إضافة جديد",
-                                        tint = Color.White,
-                                        modifier = Modifier.size(20.dp)
-                                    )
-                                }
-                            }
+                            // All controls consolidated in the bottom floating action circle
                         }
                     }
 
@@ -426,7 +369,14 @@ fun ProgrammingScreen(
         floatingActionButton = {
             if (isAdmin) {
                 AdminSpeedDialFab(
+                    isInsideFolder = activeFolderId != null,
+                    activeFolderName = activeFolder?.name ?: "",
                     onAddFolder = {
+                        editingFolder = null
+                        defaultParentFolderIdForNew = ""
+                        showAddFolderDialog = true
+                    },
+                    onAddSubFolder = {
                         editingFolder = null
                         defaultParentFolderIdForNew = activeFolder?.id ?: ""
                         showAddFolderDialog = true
@@ -435,9 +385,17 @@ fun ProgrammingScreen(
                         editingDump = null
                         filePickerLauncher.launch("*/*")
                     },
+                    onAddDumpManual = {
+                        editingDump = null
+                        showAddDumpDialog = true
+                    },
                     onAddSoftware = {
                         editingSoftware = null
                         showAddSoftwareDialog = true
+                    },
+                    onAddConnection = {
+                        editingConnection = null
+                        showAddConnectionDialog = true
                     },
                     onManageKeys = {
                         showAdminKeysManagerDialog = true
@@ -1204,40 +1162,7 @@ fun DumpsListTab(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
 
-                    if (isAdmin) {
-                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            OutlinedButton(
-                                onClick = onAddSubFolder,
-                                shape = RoundedCornerShape(8.dp),
-                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
-                            ) {
-                                Icon(Icons.Default.CreateNewFolder, contentDescription = null, modifier = Modifier.size(14.dp))
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text("+ مجلد فرعي", fontSize = 11.sp)
-                            }
-
-                            OutlinedButton(
-                                onClick = onUploadDumpFile,
-                                shape = RoundedCornerShape(8.dp),
-                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
-                            ) {
-                                Icon(Icons.Default.UploadFile, contentDescription = null, modifier = Modifier.size(14.dp))
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text("رفع ملف 💾", fontSize = 11.sp)
-                            }
-
-                            Button(
-                                onClick = onAddDump,
-                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0F766E)),
-                                shape = RoundedCornerShape(8.dp),
-                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
-                            ) {
-                                Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(14.dp))
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text("+ سوفت", fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                            }
-                        }
-                    }
+                    // Actions consolidated exclusively into the bottom speed dial FAB as requested
                 }
             }
         }
@@ -1251,20 +1176,7 @@ fun DumpsListTab(
                     Icon(Icons.Default.FolderOpen, contentDescription = null, tint = Color.Gray, modifier = Modifier.size(48.dp))
                     Spacer(modifier = Modifier.height(8.dp))
                     Text("هذا المجلد لا يحتوي على مجلدات فرعية أو ملفات سوفت حالياً", color = MaterialTheme.colorScheme.outline)
-                    if (isAdmin) {
-                        Spacer(modifier = Modifier.height(12.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Button(onClick = onAddSubFolder) {
-                                Text("إضافة مجلد فرعي 📁")
-                            }
-                            Button(onClick = onAddDump) {
-                                Text("إضافة سوفتوير ⚡")
-                            }
-                            OutlinedButton(onClick = onUploadDumpFile) {
-                                Text("رفع ملف من الهاتف 💾")
-                            }
-                        }
-                    }
+                    Text("استخدم الزر العائم (+) بالأسفل لإضافة مجلد فرعي أو رفع ملف سوفت", fontSize = 11.sp, color = MaterialTheme.colorScheme.outline)
                 }
             }
             return
@@ -3204,9 +3116,14 @@ fun ConnectionEditDialog(
 // =============================================================================
 @Composable
 fun AdminSpeedDialFab(
+    isInsideFolder: Boolean = false,
+    activeFolderName: String = "",
     onAddFolder: () -> Unit,
+    onAddSubFolder: () -> Unit,
     onUploadDump: () -> Unit,
+    onAddDumpManual: () -> Unit,
     onAddSoftware: () -> Unit,
+    onAddConnection: () -> Unit,
     onManageKeys: () -> Unit
 ) {
     var expanded by remember { mutableStateOf(false) }
@@ -3221,7 +3138,7 @@ fun AdminSpeedDialFab(
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         if (expanded) {
-            // Option 1: Manage Keys
+            // Option 1: Manage Keys (Always available)
             SpeedDialItem(
                 label = "مفاتيح وتراخيص العملاء 🔑",
                 icon = Icons.Default.Key,
@@ -3232,38 +3149,79 @@ fun AdminSpeedDialFab(
                 }
             )
 
-            // Option 2: Add Software
-            SpeedDialItem(
-                label = "إضافة برنامج برمجة 💻",
-                icon = Icons.Default.Computer,
-                backgroundColor = Color(0xFF0F766E),
-                onClick = {
-                    expanded = false
-                    onAddSoftware()
-                }
-            )
+            if (isInsideFolder) {
+                // Inside Folder Actions
+                SpeedDialItem(
+                    label = "إضافة مجلد فرعي داخل ($activeFolderName) 📁",
+                    icon = Icons.Default.CreateNewFolder,
+                    backgroundColor = Color(0xFF10B981),
+                    onClick = {
+                        expanded = false
+                        onAddSubFolder()
+                    }
+                )
 
-            // Option 3: Upload Firmware File
-            SpeedDialItem(
-                label = "رفع فلاشة / سوفت 💾",
-                icon = Icons.Default.UploadFile,
-                backgroundColor = Color(0xFF0284C7),
-                onClick = {
-                    expanded = false
-                    onUploadDump()
-                }
-            )
+                SpeedDialItem(
+                    label = "رفع ملف سوفت من الهاتف 💾",
+                    icon = Icons.Default.UploadFile,
+                    backgroundColor = Color(0xFF0284C7),
+                    onClick = {
+                        expanded = false
+                        onUploadDump()
+                    }
+                )
 
-            // Option 4: Add New Folder
-            SpeedDialItem(
-                label = "إضافة مجلد جديد 📁",
-                icon = Icons.Default.CreateNewFolder,
-                backgroundColor = Color(0xFF10B981),
-                onClick = {
-                    expanded = false
-                    onAddFolder()
-                }
-            )
+                SpeedDialItem(
+                    label = "إضافة سوفتوير يدوياً 📄",
+                    icon = Icons.Default.Add,
+                    backgroundColor = Color(0xFF0F766E),
+                    onClick = {
+                        expanded = false
+                        onAddDumpManual()
+                    }
+                )
+            } else {
+                // Root Actions
+                SpeedDialItem(
+                    label = "إضافة برنامج برمجة 💻",
+                    icon = Icons.Default.Computer,
+                    backgroundColor = Color(0xFF0F766E),
+                    onClick = {
+                        expanded = false
+                        onAddSoftware()
+                    }
+                )
+
+                SpeedDialItem(
+                    label = "رفع فلاشة / سوفت 💾",
+                    icon = Icons.Default.UploadFile,
+                    backgroundColor = Color(0xFF0284C7),
+                    onClick = {
+                        expanded = false
+                        onUploadDump()
+                    }
+                )
+
+                SpeedDialItem(
+                    label = "إضافة مجلد رئيسي جديد 📁",
+                    icon = Icons.Default.CreateNewFolder,
+                    backgroundColor = Color(0xFF10B981),
+                    onClick = {
+                        expanded = false
+                        onAddFolder()
+                    }
+                )
+
+                SpeedDialItem(
+                    label = "إضافة مخطط توصيل مبرمجة 🔌",
+                    icon = Icons.Default.Cable,
+                    backgroundColor = Color(0xFF8B5CF6),
+                    onClick = {
+                        expanded = false
+                        onAddConnection()
+                    }
+                )
+            }
         }
 
         // Main FAB

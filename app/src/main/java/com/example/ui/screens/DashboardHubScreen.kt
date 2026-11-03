@@ -167,15 +167,6 @@ fun DashboardHubScreen(
 
     val rawItems = listOf(
         HubCategoryItem(
-            id = "profile",
-            defaultTitle = "مركز البراء والاتصال",
-            defaultSubtitle = "واتساب • هاتف • العنوان",
-            defaultIcon = Icons.Default.ContactPhone,
-            iconTint = Color(0xFF0284C7),
-            circleBackground = Color(0xFFE0F2FE),
-            onClick = onNavigateToProfile
-        ),
-        HubCategoryItem(
             id = "motors",
             defaultTitle = "أطراف وتوصيلات المواتير",
             defaultSubtitle = "$motorsCount ماتور مسجل",
@@ -210,51 +201,6 @@ fun DashboardHubScreen(
             iconTint = Color(0xFF10B981),
             circleBackground = Color(0xFFD1FAE5),
             onClick = onNavigateToProgramming
-        ),
-        HubCategoryItem(
-            id = "integrator",
-            defaultTitle = "مخطط التجميع الشامل",
-            defaultSubtitle = "دمج الضفيرة + الماتور + اللوك",
-            defaultIcon = Icons.Default.Hub,
-            iconTint = Color(0xFF8B5CF6),
-            circleBackground = Color(0xFFEDE9FE),
-            onClick = onNavigateToIntegrator
-        ),
-        HubCategoryItem(
-            id = "auto_faults",
-            defaultTitle = "أعطال الأوتوماتيك",
-            defaultSubtitle = "أكواد الأعطال والحلول",
-            defaultIcon = Icons.Default.LocalLaundryService,
-            iconTint = Color(0xFF0D9488),
-            circleBackground = Color(0xFFCCFBF1),
-            onClick = { onNavigateToDiagnostics("أعطال الأوتوماتيك") }
-        ),
-        HubCategoryItem(
-            id = "top_load_faults",
-            defaultTitle = "الفوق أوتوماتيك",
-            defaultSubtitle = "الأعطال ومفاتيح الأمان",
-            defaultIcon = Icons.Default.CleaningServices,
-            iconTint = Color(0xFFEA580C),
-            circleBackground = Color(0xFFFFEDD5),
-            onClick = { onNavigateToDiagnostics("الفوق أوتوماتيك") }
-        ),
-        HubCategoryItem(
-            id = "test_mode",
-            defaultTitle = "تيست مود (Test Mode)",
-            defaultSubtitle = "خطوات فحص البرامج",
-            defaultIcon = Icons.Default.Settings,
-            iconTint = Color(0xFF7C3AED),
-            circleBackground = Color(0xFFF3E8FF),
-            onClick = { onNavigateToDiagnostics("تيست مود") }
-        ),
-        HubCategoryItem(
-            id = "bearings",
-            defaultTitle = "رولمان بلي وأولسيه",
-            defaultSubtitle = "جدول المقاسات والأبعاد",
-            defaultIcon = Icons.Default.Build,
-            iconTint = Color(0xFF059669),
-            circleBackground = Color(0xFFD1FAE5),
-            onClick = { onNavigateToDiagnostics("رولمان بلي وأولسيه") }
         )
     )
 

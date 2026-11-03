@@ -83,6 +83,9 @@ class MotorRepository(private val db: FirebaseFirestore) {
                     }
                 }
 
+                val rawImageUrls = data["imageUrls"] as? List<*>
+                val imageUrls = rawImageUrls?.mapNotNull { it as? String }?.filter { it.isNotBlank() } ?: if (imageUrl.isNotBlank()) listOf(imageUrl) else emptyList()
+
                 Motor(
                     id = id,
                     userId = userId,
@@ -91,7 +94,8 @@ class MotorRepository(private val db: FirebaseFirestore) {
                     model = model,
                     motorType = motorType,
                     notes = notes,
-                    imageUrl = imageUrl,
+                    imageUrl = imageUrl.ifBlank { imageUrls.firstOrNull() ?: "" },
+                    imageUrls = imageUrls,
                     pinouts = pinoutsList,
                     orderIndex = orderIndex,
                     category = category,

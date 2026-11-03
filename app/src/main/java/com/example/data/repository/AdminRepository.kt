@@ -71,7 +71,23 @@ class AdminRepository(
                 .snapshots()
                 .map { snapshot ->
                     snapshot.documents.mapNotNull { doc ->
-                        doc.toObject(AdminRecord::class.java)
+                        try {
+                            doc.toObject(AdminRecord::class.java)
+                        } catch (_: Throwable) {
+                            null
+                        } ?: run {
+                            val d = doc.data ?: return@mapNotNull null
+                            val email = (d["email"] as? String)?.ifBlank { doc.id } ?: doc.id
+                            val perms = (d["permissions"] as? List<*>)?.mapNotNull { it as? String } ?: listOf("all")
+                            AdminRecord(
+                                email = email,
+                                addedBy = d["addedBy"] as? String ?: "",
+                                role = d["role"] as? String ?: "admin",
+                                permissions = perms,
+                                createdAt = d["createdAt"] as? com.google.firebase.Timestamp,
+                                updatedAt = d["updatedAt"] as? com.google.firebase.Timestamp
+                            )
+                        }
                     }.sortedWith(compareBy({ !isSuperAdminEmail(it.email) }, { it.email }))
                 }
                 .catch { error ->

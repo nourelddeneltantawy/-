@@ -75,7 +75,36 @@ object ProgrammingRepository {
             saveConnectionsToPrefs(appContext, _connections.value)
         }
 
+        bootstrapInitialDataToCloud(appContext)
         startRealtimeSync(appContext)
+    }
+
+    private fun bootstrapInitialDataToCloud(context: Context) {
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val db = FirebaseInitializer.getFirestore(context)
+                for (s in getInitialSoftwares()) {
+                    val doc = db.collection("programming_software").document(s.id).get().await()
+                    if (!doc.exists()) {
+                        db.collection("programming_software").document(s.id).set(s.toMap()).await()
+                    }
+                }
+                for (f in getInitialFolders()) {
+                    val doc = db.collection("programming_folders").document(f.id).get().await()
+                    if (!doc.exists()) {
+                        db.collection("programming_folders").document(f.id).set(f.toMap()).await()
+                    }
+                }
+                for (c in getInitialConnections()) {
+                    val doc = db.collection("programming_connections").document(c.id).get().await()
+                    if (!doc.exists()) {
+                        db.collection("programming_connections").document(c.id).set(c.toMap()).await()
+                    }
+                }
+            } catch (e: Throwable) {
+                Log.w(TAG, "Bootstrap data to cloud non-fatal error: ${e.message}")
+            }
+        }
     }
 
     private fun loadLocalLicenses(context: Context) {
@@ -525,12 +554,23 @@ object ProgrammingRepository {
             listeners.add(
                 db.collection("programming_software").addSnapshotListener { snapshot, error ->
                     if (error != null) return@addSnapshotListener
-                    if (snapshot != null && !snapshot.isEmpty) {
-                        val list = snapshot.documents.map { doc ->
+                    if (snapshot != null) {
+                        val remoteList = snapshot.documents.map { doc ->
                             ProgrammerSoftware.fromMap(doc.id, doc.data ?: emptyMap())
                         }
-                        _softwares.value = list
-                        saveSoftwaresToPrefs(context, list)
+                        if (remoteList.isNotEmpty()) {
+                            val current = _softwares.value.toMutableList()
+                            for (remote in remoteList) {
+                                val idx = current.indexOfFirst { it.id == remote.id }
+                                if (idx != -1) {
+                                    current[idx] = remote
+                                } else {
+                                    current.add(remote)
+                                }
+                            }
+                            _softwares.value = current
+                            saveSoftwaresToPrefs(context, current)
+                        }
                     }
                 }
             )
@@ -539,12 +579,24 @@ object ProgrammingRepository {
             listeners.add(
                 db.collection("programming_folders").addSnapshotListener { snapshot, error ->
                     if (error != null) return@addSnapshotListener
-                    if (snapshot != null && !snapshot.isEmpty) {
-                        val list = snapshot.documents.map { doc ->
+                    if (snapshot != null) {
+                        val remoteList = snapshot.documents.map { doc ->
                             FirmwareFolder.fromMap(doc.id, doc.data ?: emptyMap())
-                        }.sortedBy { it.orderIndex }
-                        _folders.value = list
-                        saveFoldersToPrefs(context, list)
+                        }
+                        if (remoteList.isNotEmpty()) {
+                            val current = _folders.value.toMutableList()
+                            for (remote in remoteList) {
+                                val idx = current.indexOfFirst { it.id == remote.id }
+                                if (idx != -1) {
+                                    current[idx] = remote
+                                } else {
+                                    current.add(remote)
+                                }
+                            }
+                            val sorted = current.sortedBy { it.orderIndex }
+                            _folders.value = sorted
+                            saveFoldersToPrefs(context, sorted)
+                        }
                     }
                 }
             )
@@ -553,12 +605,23 @@ object ProgrammingRepository {
             listeners.add(
                 db.collection("programming_dumps").addSnapshotListener { snapshot, error ->
                     if (error != null) return@addSnapshotListener
-                    if (snapshot != null && !snapshot.isEmpty) {
-                        val list = snapshot.documents.map { doc ->
+                    if (snapshot != null) {
+                        val remoteList = snapshot.documents.map { doc ->
                             FirmwareDump.fromMap(doc.id, doc.data ?: emptyMap())
                         }
-                        _dumps.value = list
-                        saveDumpsToPrefs(context, list)
+                        if (remoteList.isNotEmpty()) {
+                            val current = _dumps.value.toMutableList()
+                            for (remote in remoteList) {
+                                val idx = current.indexOfFirst { it.id == remote.id }
+                                if (idx != -1) {
+                                    current[idx] = remote
+                                } else {
+                                    current.add(0, remote)
+                                }
+                            }
+                            _dumps.value = current
+                            saveDumpsToPrefs(context, current)
+                        }
                     }
                 }
             )
@@ -567,12 +630,23 @@ object ProgrammingRepository {
             listeners.add(
                 db.collection("programming_connections").addSnapshotListener { snapshot, error ->
                     if (error != null) return@addSnapshotListener
-                    if (snapshot != null && !snapshot.isEmpty) {
-                        val list = snapshot.documents.map { doc ->
+                    if (snapshot != null) {
+                        val remoteList = snapshot.documents.map { doc ->
                             ProgrammerConnection.fromMap(doc.id, doc.data ?: emptyMap())
                         }
-                        _connections.value = list
-                        saveConnectionsToPrefs(context, list)
+                        if (remoteList.isNotEmpty()) {
+                            val current = _connections.value.toMutableList()
+                            for (remote in remoteList) {
+                                val idx = current.indexOfFirst { it.id == remote.id }
+                                if (idx != -1) {
+                                    current[idx] = remote
+                                } else {
+                                    current.add(remote)
+                                }
+                            }
+                            _connections.value = current
+                            saveConnectionsToPrefs(context, current)
+                        }
                     }
                 }
             )

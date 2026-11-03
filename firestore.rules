@@ -123,5 +123,17 @@ service cloud.firestore {
       allow get, list: if true;
       allow create, update, delete: if true;
     }
+
+    // User Profiles (بيانات الفني والمهندس للبوستات)
+    match /user_profiles/{profileId} {
+      allow get, list: if true;
+      allow create, update, delete: if true;
+    }
+
+    // Marketplace Posts (سوق كروت الغسالات: بيع وشراء)
+    match /marketplace_posts/{postId} {
+      allow get, list: if true;
+      allow create, update, delete: if true;
+    }
   }
 }

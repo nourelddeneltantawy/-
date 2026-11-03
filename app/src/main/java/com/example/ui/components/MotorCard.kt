@@ -24,6 +24,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.automirrored.filled.ArrowForwardIos
 import androidx.compose.material.icons.filled.Cable
 import androidx.compose.material.icons.filled.ContentCopy
@@ -49,6 +51,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -317,25 +320,102 @@ fun MotorCard(
                 }
             }
 
-            // Motor Image Thumbnail if available
-            if (motor.imageUrl.isNotBlank()) {
+            // Motor Image Carousel (Single or Multiple images with smooth flipping)
+            val allImages = motor.getAllImages()
+            if (allImages.isNotEmpty()) {
                 Spacer(modifier = Modifier.height(12.dp))
+                var currentImageIndex by remember(motor.id) { mutableIntStateOf(0) }
+                val safeIndex = currentImageIndex.coerceIn(0, allImages.size - 1)
+                val currentImg = allImages[safeIndex]
+
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(140.dp)
+                        .height(150.dp)
                         .clip(RoundedCornerShape(12.dp))
                         .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
                 ) {
                     AsyncImage(
                         model = ImageRequest.Builder(context)
-                            .data(com.example.util.ImageHelper.getCoilData(motor.imageUrl))
+                            .data(com.example.util.ImageHelper.getCoilData(currentImg))
                             .crossfade(true)
                             .build(),
-                        contentDescription = motor.name,
+                        contentDescription = "${motor.name} - صورة ${safeIndex + 1}",
                         contentScale = ContentScale.Fit,
-                        modifier = Modifier.fillMaxWidth().height(140.dp)
+                        modifier = Modifier.fillMaxWidth().height(150.dp)
                     )
+
+                    // Multiple images navigation arrows & dots indicator
+                    if (allImages.size > 1) {
+                        IconButton(
+                            onClick = {
+                                currentImageIndex = if (safeIndex > 0) safeIndex - 1 else allImages.size - 1
+                            },
+                            modifier = Modifier
+                                .align(Alignment.CenterStart)
+                                .padding(6.dp)
+                                .size(30.dp)
+                                .background(Color.Black.copy(alpha = 0.55f), CircleShape)
+                        ) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                contentDescription = "الصورة السابقة",
+                                tint = Color.White,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+
+                        IconButton(
+                            onClick = {
+                                currentImageIndex = if (safeIndex < allImages.size - 1) safeIndex + 1 else 0
+                            },
+                            modifier = Modifier
+                                .align(Alignment.CenterEnd)
+                                .padding(6.dp)
+                                .size(30.dp)
+                                .background(Color.Black.copy(alpha = 0.55f), CircleShape)
+                        ) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.ArrowForward,
+                                contentDescription = "الصورة التالية",
+                                tint = Color.White,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+
+                        // Counter and Dots badge
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = Color.Black.copy(alpha = 0.65f),
+                            modifier = Modifier
+                                .align(Alignment.BottomCenter)
+                                .padding(bottom = 6.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "${safeIndex + 1} / ${allImages.size}",
+                                    color = Color.White,
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Spacer(modifier = Modifier.width(3.dp))
+                                allImages.forEachIndexed { dotIdx, _ ->
+                                    Box(
+                                        modifier = Modifier
+                                            .size(if (dotIdx == safeIndex) 6.dp else 4.dp)
+                                            .background(
+                                                if (dotIdx == safeIndex) Color.White else Color.White.copy(alpha = 0.45f),
+                                                CircleShape
+                                            )
+                                    )
+                                }
+                            }
+                        }
+                    }
                 }
             }
 

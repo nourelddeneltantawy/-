@@ -17,8 +17,10 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.ContentCopy
@@ -42,6 +44,10 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -123,20 +129,104 @@ fun MotorDetailScreen(
                     shape = RoundedCornerShape(16.dp),
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
                 ) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        if (motor.imageUrl.isNotBlank()) {
-                            AsyncImage(
-                                model = ImageRequest.Builder(context)
-                                    .data(com.example.util.ImageHelper.getCoilData(motor.imageUrl))
-                                    .crossfade(true)
-                                    .build(),
-                                contentDescription = motor.name,
-                                contentScale = ContentScale.Fit,
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp)
+                    ) {
+                        val allImages = motor.getAllImages()
+                        if (allImages.isNotEmpty()) {
+                            var currentImageIndex by remember(motor.id) { mutableIntStateOf(0) }
+                            val safeIndex = currentImageIndex.coerceIn(0, allImages.size - 1)
+                            val currentImg = allImages[safeIndex]
+
+                            Box(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .height(200.dp)
+                                    .height(220.dp)
                                     .clip(RoundedCornerShape(12.dp))
-                            )
+                                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                            ) {
+                                AsyncImage(
+                                    model = ImageRequest.Builder(context)
+                                        .data(com.example.util.ImageHelper.getCoilData(currentImg))
+                                        .crossfade(true)
+                                        .build(),
+                                    contentDescription = "${motor.name} - صورة ${safeIndex + 1}",
+                                    contentScale = ContentScale.Fit,
+                                    modifier = Modifier.fillMaxWidth().height(220.dp)
+                                )
+
+                                if (allImages.size > 1) {
+                                    IconButton(
+                                        onClick = {
+                                            currentImageIndex = if (safeIndex > 0) safeIndex - 1 else allImages.size - 1
+                                        },
+                                        modifier = Modifier
+                                            .align(Alignment.CenterStart)
+                                            .padding(6.dp)
+                                            .size(36.dp)
+                                            .background(Color.Black.copy(alpha = 0.55f), CircleShape)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                            contentDescription = "الصورة السابقة",
+                                            tint = Color.White,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    }
+
+                                    IconButton(
+                                        onClick = {
+                                            currentImageIndex = if (safeIndex < allImages.size - 1) safeIndex + 1 else 0
+                                        },
+                                        modifier = Modifier
+                                            .align(Alignment.CenterEnd)
+                                            .padding(6.dp)
+                                            .size(36.dp)
+                                            .background(Color.Black.copy(alpha = 0.55f), CircleShape)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.AutoMirrored.Filled.ArrowForward,
+                                            contentDescription = "الصورة التالية",
+                                            tint = Color.White,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    }
+
+                                    Surface(
+                                        shape = RoundedCornerShape(10.dp),
+                                        color = Color.Black.copy(alpha = 0.65f),
+                                        modifier = Modifier
+                                            .align(Alignment.BottomCenter)
+                                            .padding(bottom = 8.dp)
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Text(
+                                                text = "${safeIndex + 1} / ${allImages.size}",
+                                                color = Color.White,
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                            Spacer(modifier = Modifier.width(4.dp))
+                                            allImages.forEachIndexed { dotIdx, _ ->
+                                                Box(
+                                                    modifier = Modifier
+                                                        .size(if (dotIdx == safeIndex) 7.dp else 4.dp)
+                                                        .background(
+                                                            if (dotIdx == safeIndex) Color.White else Color.White.copy(alpha = 0.45f),
+                                                            CircleShape
+                                                        )
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                             Spacer(modifier = Modifier.height(12.dp))
                         }
 

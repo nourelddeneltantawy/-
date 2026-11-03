@@ -78,6 +78,9 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.runtime.mutableStateListOf
 import com.example.ui.screens.ProgrammingScreen
+import com.example.ui.screens.MarketplaceScreen
+import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Storefront
 
 enum class Screen {
     DASHBOARD,
@@ -93,6 +96,7 @@ enum class Screen {
     PROGRAMMING,
     AI_STUDIO,
     MANAGE_ADMINS,
+    MARKETPLACE,
     AUTH
 }
 
@@ -103,6 +107,7 @@ class MainActivity : ComponentActivity() {
         com.example.util.ThemeManager.init(this)
         com.example.data.ContactInfoManager.init(this)
         com.example.data.HubCategoryManager.init(this)
+        com.example.data.repository.MarketplaceRepository.init(this, null, null)
         enableEdgeToEdge()
         setContent {
             val themeMode by com.example.util.ThemeManager.themeMode.collectAsState()
@@ -457,10 +462,7 @@ fun AppContent(
 
     val showBottomBar = currentScreen in setOf(
         Screen.DASHBOARD,
-        Screen.CATALOG,
-        Screen.HARNESS_LIST,
-        Screen.PARTS_LIST,
-        Screen.SYSTEM_INTEGRATOR
+        Screen.MARKETPLACE
     )
 
     Scaffold(
@@ -470,13 +472,34 @@ fun AppContent(
                     containerColor = MaterialTheme.colorScheme.surface,
                     tonalElevation = 8.dp
                 ) {
+                    // Item 1: شاشة البدء
+                    NavigationBarItem(
+                        selected = false,
+                        onClick = { onOpenWelcomeProfile() },
+                        icon = { Icon(Icons.Default.Home, contentDescription = "شاشة البدء") },
+                        label = {
+                            Text(
+                                "شاشة البدء",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Normal
+                            )
+                        },
+                        colors = NavigationBarItemDefaults.colors(
+                            selectedIconColor = MaterialTheme.colorScheme.primary,
+                            unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                            selectedTextColor = MaterialTheme.colorScheme.primary,
+                            unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    )
+
+                    // Item 2: الأقسام
                     NavigationBarItem(
                         selected = currentScreen == Screen.DASHBOARD,
                         onClick = { selectTab(Screen.DASHBOARD) },
-                        icon = { Icon(Icons.Default.GridView, contentDescription = "الرئيسية") },
+                        icon = { Icon(Icons.Default.GridView, contentDescription = "الأقسام") },
                         label = {
                             Text(
-                                "الرئيسية",
+                                "الأقسام",
                                 fontSize = 11.sp,
                                 fontWeight = if (currentScreen == Screen.DASHBOARD) FontWeight.Bold else FontWeight.Normal
                             )
@@ -488,75 +511,22 @@ fun AppContent(
                         )
                     )
 
+                    // Item 3: سوق الكروت
                     NavigationBarItem(
-                        selected = currentScreen == Screen.CATALOG,
-                        onClick = { selectTab(Screen.CATALOG) },
-                        icon = { Icon(Icons.Default.Memory, contentDescription = "المواتير") },
+                        selected = currentScreen == Screen.MARKETPLACE,
+                        onClick = { selectTab(Screen.MARKETPLACE) },
+                        icon = { Icon(Icons.Default.Storefront, contentDescription = "سوق الكروت") },
                         label = {
                             Text(
-                                "المواتير",
+                                "سوق الكروت",
                                 fontSize = 11.sp,
-                                fontWeight = if (currentScreen == Screen.CATALOG) FontWeight.Bold else FontWeight.Normal
+                                fontWeight = if (currentScreen == Screen.MARKETPLACE) FontWeight.Bold else FontWeight.Normal
                             )
                         },
                         colors = NavigationBarItemDefaults.colors(
-                            selectedIconColor = Color(0xFFEF4444),
-                            selectedTextColor = Color(0xFFEF4444),
-                            indicatorColor = Color(0xFFFFE4E6)
-                        )
-                    )
-
-                    NavigationBarItem(
-                        selected = currentScreen == Screen.HARNESS_LIST,
-                        onClick = { selectTab(Screen.HARNESS_LIST) },
-                        icon = { Icon(Icons.Default.Cable, contentDescription = "الضفائر") },
-                        label = {
-                            Text(
-                                "الضفائر",
-                                fontSize = 11.sp,
-                                fontWeight = if (currentScreen == Screen.HARNESS_LIST) FontWeight.Bold else FontWeight.Normal
-                            )
-                        },
-                        colors = NavigationBarItemDefaults.colors(
-                            selectedIconColor = Color(0xFF0284C7),
-                            selectedTextColor = Color(0xFF0284C7),
-                            indicatorColor = Color(0xFFE0F2FE)
-                        )
-                    )
-
-                    NavigationBarItem(
-                        selected = currentScreen == Screen.PARTS_LIST,
-                        onClick = { selectTab(Screen.PARTS_LIST) },
-                        icon = { Icon(Icons.Default.Lock, contentDescription = "القطع") },
-                        label = {
-                            Text(
-                                "القطع",
-                                fontSize = 11.sp,
-                                fontWeight = if (currentScreen == Screen.PARTS_LIST) FontWeight.Bold else FontWeight.Normal
-                            )
-                        },
-                        colors = NavigationBarItemDefaults.colors(
-                            selectedIconColor = Color(0xFFD97706),
-                            selectedTextColor = Color(0xFFD97706),
-                            indicatorColor = Color(0xFFFEF3C7)
-                        )
-                    )
-
-                    NavigationBarItem(
-                        selected = currentScreen == Screen.SYSTEM_INTEGRATOR,
-                        onClick = { selectTab(Screen.SYSTEM_INTEGRATOR) },
-                        icon = { Icon(Icons.Default.Hub, contentDescription = "المخطط") },
-                        label = {
-                            Text(
-                                "المخطط",
-                                fontSize = 11.sp,
-                                fontWeight = if (currentScreen == Screen.SYSTEM_INTEGRATOR) FontWeight.Bold else FontWeight.Normal
-                            )
-                        },
-                        colors = NavigationBarItemDefaults.colors(
-                            selectedIconColor = Color(0xFF8B5CF6),
-                            selectedTextColor = Color(0xFF8B5CF6),
-                            indicatorColor = Color(0xFFEDE9FE)
+                            selectedIconColor = Color(0xFF10B981),
+                            selectedTextColor = Color(0xFF10B981),
+                            indicatorColor = Color(0xFFD1FAE5)
                         )
                     )
                 }
@@ -969,6 +939,20 @@ fun AppContent(
                                 }
                             )
                         }
+                    }
+
+                    Screen.MARKETPLACE -> {
+                        BackHandler {
+                            selectTab(Screen.DASHBOARD)
+                        }
+                        MarketplaceScreen(
+                            currentUserId = userId,
+                            currentUserEmail = userEmail,
+                            isAdmin = isAdmin,
+                            onBackClick = {
+                                selectTab(Screen.DASHBOARD)
+                            }
+                        )
                     }
 
                     Screen.AUTH -> {
