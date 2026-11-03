@@ -171,20 +171,6 @@ fun CatalogScreen(
                     }
                 },
                 actions = {
-                    // Manage Admins shortcut (Super Admin Only)
-                    if (isSuperAdmin) {
-                        IconButton(
-                            onClick = onManageAdminsClick,
-                            modifier = Modifier.testTag("manage_admins_top_button")
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.AdminPanelSettings,
-                                contentDescription = "إدارة المشرفين وصلاحيات التطبيق",
-                                tint = MaterialTheme.colorScheme.tertiary
-                            )
-                        }
-                    }
-
                     // AI Studio shortcut (Admins only)
                     if (isAdmin) {
                         IconButton(

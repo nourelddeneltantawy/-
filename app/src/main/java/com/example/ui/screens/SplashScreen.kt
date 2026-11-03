@@ -98,6 +98,7 @@ fun SplashScreen(
     isAdmin: Boolean = false,
     currentUserEmail: String? = null,
     onAuthClick: () -> Unit = {},
+    onManageAdminsClick: (() -> Unit)? = null,
     onSignOutClick: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
@@ -171,7 +172,7 @@ fun SplashScreen(
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
     ) {
-        // TOP 48% DEEP ELECTRIC BLUE HERO CURVE
+        // TOP 48% DYNAMIC THEME HERO CURVE
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -180,8 +181,8 @@ fun SplashScreen(
                 .background(
                     Brush.verticalGradient(
                         colors = listOf(
-                            Color(0xFF0284C7), // Bright Cyan Blue
-                            Color(0xFF0369A1)  // Deep Blue
+                            MaterialTheme.colorScheme.primary,
+                            MaterialTheme.colorScheme.primaryContainer
                         )
                     )
                 )
@@ -510,8 +511,8 @@ fun SplashScreen(
                         .background(
                             Brush.horizontalGradient(
                                 listOf(
-                                    Color(0xFF0284C7),
-                                    Color(0xFF0369A1)
+                                    MaterialTheme.colorScheme.primary,
+                                    MaterialTheme.colorScheme.primary.copy(alpha = 0.85f)
                                 )
                             )
                         ),
@@ -657,7 +658,8 @@ fun SplashScreen(
         // Theme & Appearance Settings Dialog (Available for All: Admin & Guest)
         if (showThemeDialog) {
             ThemeSettingsDialog(
-                onDismiss = { showThemeDialog = false }
+                onDismiss = { showThemeDialog = false },
+                onManageAdmins = if (isAdmin) onManageAdminsClick else null
             )
         }
 
@@ -733,21 +735,31 @@ fun SplashScreen(
                 confirmButton = {
                     Button(
                         onClick = {
+                            if (isSubmitting) return@Button
                             isSubmitting = true
-                            AppStatsAndRatingManager.submitRating(
-                                context = context,
-                                userEmail = currentUserEmail,
-                                userName = currentUserEmail.substringBefore("@"),
-                                rating = selectedStars,
-                                review = reviewText.trim()
-                            ) { success ->
+                            try {
+                                val email = currentUserEmail?.trim() ?: ""
+                                val name = if (email.contains("@")) email.substringBefore("@") else email.ifBlank { "مستخدم" }
+                                AppStatsAndRatingManager.submitRating(
+                                    context = context.applicationContext,
+                                    userEmail = email,
+                                    userName = name,
+                                    rating = selectedStars,
+                                    review = reviewText.trim()
+                                ) { success ->
+                                    isSubmitting = false
+                                    showRatingDialog = false
+                                    try {
+                                        Toast.makeText(
+                                            context.applicationContext,
+                                            if (success) "شكراً جزيلاً لتقييمك الرائع! 🎉" else "تم حفظ تقييمك بنجاح",
+                                            Toast.LENGTH_SHORT
+                                        ).show()
+                                    } catch (_: Throwable) {}
+                                }
+                            } catch (e: Throwable) {
                                 isSubmitting = false
                                 showRatingDialog = false
-                                Toast.makeText(
-                                    context,
-                                    if (success) "شكراً جزيلاً لتقييمك الرائع! 🎉" else "تم حفظ تقييمك محلياً",
-                                    Toast.LENGTH_SHORT
-                                ).show()
                             }
                         },
                         enabled = !isSubmitting,

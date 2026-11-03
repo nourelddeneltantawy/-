@@ -196,7 +196,14 @@ object AppStatsAndRatingManager {
         onComplete: ((Boolean) -> Unit)? = null
     ) {
         val appContext = context.applicationContext ?: context
-        val cleanEmailKey = userEmail.replace(".", "_").replace("@", "_at_")
+        val safeEmail = if (userEmail.isBlank()) "guest_user" else userEmail.trim()
+        val cleanEmailKey = safeEmail.replace(".", "_")
+            .replace("@", "_at_")
+            .replace("/", "_")
+            .replace("#", "_")
+            .replace("$", "_")
+            .replace("[", "_")
+            .replace("]", "_")
 
         _stats.value = _stats.value.copy(
             currentUserRating = rating,
@@ -208,17 +215,25 @@ object AppStatsAndRatingManager {
             try {
                 val db = FirebaseInitializer.getFirestore(appContext)
                 val ratingDoc = mapOf(
-                    "userEmail" to userEmail,
-                    "userName" to userName,
-                    "rating" to rating,
+                    "userEmail" to safeEmail,
+                    "userName" to userName.ifBlank { safeEmail.substringBefore("@") },
+                    "rating" to rating.coerceIn(1, 5),
                     "review" to review,
                     "timestamp" to System.currentTimeMillis()
                 )
                 db.collection("app_ratings").document(cleanEmailKey).set(ratingDoc).await()
-                onComplete?.invoke(true)
+                kotlinx.coroutines.withContext(Dispatchers.Main) {
+                    try {
+                        onComplete?.invoke(true)
+                    } catch (_: Throwable) {}
+                }
             } catch (e: Throwable) {
                 Log.e(TAG, "Failed to submit rating", e)
-                onComplete?.invoke(false)
+                kotlinx.coroutines.withContext(Dispatchers.Main) {
+                    try {
+                        onComplete?.invoke(false)
+                    } catch (_: Throwable) {}
+                }
             }
         }
     }

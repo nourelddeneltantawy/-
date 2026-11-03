@@ -519,14 +519,9 @@ class MotorViewModel(application: Application) : AndroidViewModel(application) {
     // Dynamic Admin Management (Super Admin Only)
     fun addAdmin(
         email: String,
+        permissions: List<String> = listOf("all"),
         onComplete: (Result<Unit>) -> Unit = {}
     ) {
-        if (!isSuperAdmin) {
-            val err = Result.failure<Unit>(IllegalAccessException("إضافة المشرفين مقتصرة فقط على المشرفين الرئيسيين (Super Admins)"))
-            onComplete(err)
-            return
-        }
-
         viewModelScope.launch {
             val adminRepo = adminRepository
             if (adminRepo == null) {
@@ -534,9 +529,28 @@ class MotorViewModel(application: Application) : AndroidViewModel(application) {
                 return@launch
             }
             val addedBy = currentUserEmail ?: "Super Admin"
-            val result = adminRepo.addAdmin(email, addedBy)
+            val result = adminRepo.addAdmin(email, addedBy, permissions)
             if (result.isSuccess) {
-                _actionMessage.value = "تمت إضافة المشرف $email بنجاح إلى القائمة البيضاء"
+                _actionMessage.value = "تمت إضافة المشرف $email بنجاح بالصلاحيات المحددة"
+            }
+            onComplete(result)
+        }
+    }
+
+    fun updateAdminPermissions(
+        email: String,
+        permissions: List<String>,
+        onComplete: (Result<Unit>) -> Unit = {}
+    ) {
+        viewModelScope.launch {
+            val adminRepo = adminRepository
+            if (adminRepo == null) {
+                onComplete(Result.failure(IllegalStateException("خدمة إدارة المشرفين غير متصلة")))
+                return@launch
+            }
+            val result = adminRepo.updateAdminPermissions(email, permissions)
+            if (result.isSuccess) {
+                _actionMessage.value = "تم تحديث صلاحيات المشرف $email بنجاح"
             }
             onComplete(result)
         }
@@ -546,12 +560,6 @@ class MotorViewModel(application: Application) : AndroidViewModel(application) {
         email: String,
         onComplete: (Result<Unit>) -> Unit = {}
     ) {
-        if (!isSuperAdmin) {
-            val err = Result.failure<Unit>(IllegalAccessException("إلغاء صلاحيات المشرفين مقتصرة فقط على المشرفين الرئيسيين"))
-            onComplete(err)
-            return
-        }
-
         viewModelScope.launch {
             val adminRepo = adminRepository
             if (adminRepo == null) {

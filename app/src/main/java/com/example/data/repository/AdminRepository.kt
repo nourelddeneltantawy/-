@@ -66,26 +66,22 @@ class AdminRepository(
 
     fun observeAdmins(): Flow<List<AdminRecord>> = flow {
         val path = "admins"
-        if (!isCurrentUserSuperAdmin()) {
-            emit(emptyList())
-            return@flow
-        }
         emitAll(
             db.collection(path)
-                .orderBy("createdAt", Query.Direction.ASCENDING)
                 .snapshots()
                 .map { snapshot ->
                     snapshot.documents.mapNotNull { doc ->
                         doc.toObject(AdminRecord::class.java)
-                    }
+                    }.sortedWith(compareBy({ !isSuperAdminEmail(it.email) }, { it.email }))
                 }
                 .catch { error ->
+                    android.util.Log.w("AdminRepository", "observeAdmins error: ${error.message}")
                     emit(emptyList())
                 }
         )
     }
 
-    suspend fun addAdmin(rawEmail: String, addedBy: String): Result<Unit> {
+    suspend fun addAdmin(rawEmail: String, addedBy: String, permissions: List<String> = listOf("all")): Result<Unit> {
         val cleanEmail = rawEmail.trim().lowercase()
         val path = "admins/$cleanEmail"
         if (!cleanEmail.contains("@") || !cleanEmail.contains(".")) {
@@ -98,6 +94,7 @@ class AdminRepository(
                 "email" to cleanEmail,
                 "addedBy" to addedBy,
                 "role" to if (isSuper) "super_admin" else "admin",
+                "permissions" to if (isSuper) listOf("all") else permissions,
                 "createdAt" to FieldValue.serverTimestamp(),
                 "updatedAt" to FieldValue.serverTimestamp()
             )
@@ -105,6 +102,23 @@ class AdminRepository(
             Result.success(Unit)
         } catch (e: Exception) {
             handleFirestoreError(e, OperationType.CREATE, path)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun updateAdminPermissions(rawEmail: String, permissions: List<String>): Result<Unit> {
+        val cleanEmail = rawEmail.trim().lowercase()
+        val path = "admins/$cleanEmail"
+        return try {
+            db.collection("admins").document(cleanEmail).update(
+                mapOf(
+                    "permissions" to permissions,
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            ).await()
+            Result.success(Unit)
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.UPDATE, path)
             Result.failure(e)
         }
     }

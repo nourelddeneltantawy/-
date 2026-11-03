@@ -21,14 +21,14 @@ service cloud.firestore {
     function isSuperAdmin() {
       return isSignedIn() &&
         request.auth.token.email != null &&
-        (request.auth.token.email == 'nwnwraldynaltantawy@gmail.com' ||
-         request.auth.token.email == 'nwraldynmstfymhmd@gmail.com');
+        (request.auth.token.email.lower() == 'nwnwraldynaltantawy@gmail.com' ||
+         request.auth.token.email.lower() == 'nwraldynmstfymhmd@gmail.com');
     }
 
     function isDynamicAdmin() {
       return isSignedIn() &&
         request.auth.token.email != null &&
-        exists(/databases/$(database)/documents/admins/$(request.auth.token.email));
+        exists(/databases/$(database)/documents/admins/$(request.auth.token.email.lower()));
     }
 
     function isAdmin() {
@@ -36,57 +36,13 @@ service cloud.firestore {
     }
 
     function isProtectedSuperAdmin(email) {
-      return email == 'nwnwraldynaltantawy@gmail.com' || email == 'nwraldynmstfymhmd@gmail.com';
-    }
-
-    function isOwner(userId) {
-      return isSignedIn() && request.auth.uid == userId;
-    }
-
-    function isValidId(id) {
-      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
-    }
-
-    function isValidEmailId(id) {
-      return id is string && id.size() > 0 && id.size() <= 200 && id.matches('^[a-zA-Z0-9_.+@\\-]+$');
-    }
-
-    function isValidMotor(data) {
-      return data.id is string && data.id.size() > 0 && data.id.size() <= 128 &&
-        data.userId is string && data.userId.size() > 0 && data.userId.size() <= 128 &&
-        data.name is string && data.name.size() > 0 && data.name.size() <= 200 &&
-        (!('brand' in data) || (data.brand is string && data.brand.size() <= 100)) &&
-        (!('model' in data) || (data.model is string && data.model.size() <= 100)) &&
-        (!('category' in data) || (data.category is string && data.category.size() <= 100)) &&
-        (!('orderIndex' in data) || (data.orderIndex is int || data.orderIndex is number)) &&
-        (!('motorType' in data) || (data.motorType is string && data.motorType.size() <= 100)) &&
-        (!('notes' in data) || (data.notes is string && data.notes.size() <= 2000)) &&
-        (!('imageUrl' in data) || (data.imageUrl is string && data.imageUrl.size() <= 2000000)) &&
-        data.pinouts is list && data.pinouts.size() <= 50 &&
-        data.createdAt is timestamp && data.createdAt <= request.time &&
-        data.updatedAt is timestamp && data.updatedAt <= request.time;
-    }
-
-    function isValidAdminUser(data) {
-      return data.email is string && data.email.size() > 0 && data.email.size() <= 200 &&
-        data.addedBy is string && data.addedBy.size() > 0 && data.addedBy.size() <= 200 &&
-        data.role is string && (data.role == 'admin' || data.role == 'super_admin') &&
-        data.createdAt is timestamp && data.createdAt <= request.time &&
-        data.updatedAt is timestamp && data.updatedAt <= request.time;
+      return email.lower() == 'nwnwraldynaltantawy@gmail.com' || email.lower() == 'nwraldynmstfymhmd@gmail.com';
     }
 
     // Motors collection: Public read, Write/Delete for signed-in users
     match /motors/{motorId} {
       allow get, list: if true;
-      allow create: if isSignedIn() &&
-        isValidId(motorId) &&
-        incoming().userId == request.auth.uid &&
-        incoming().id == motorId &&
-        isValidMotor(incoming());
-      allow update: if isSignedIn() &&
-        incoming().id == existing().id &&
-        isValidMotor(incoming());
-      allow delete: if isSignedIn();
+      allow create, update, delete: if isSignedIn();
     }
 
     // Categories collection: Public read, Write/Delete for signed-in users
@@ -112,24 +68,60 @@ service cloud.firestore {
       allow read, write: if true;
     }
 
-    // Admins management: Strictly Super Admins can list, write and delete admin records
+    // Admins management: Signed in users can check/list, Super Admins & Admins manage
     match /admins/{email} {
-      allow get: if isSignedIn();
-      allow list: if isSuperAdmin();
+      allow get, list: if isSignedIn();
+      allow create, update, delete: if isSignedIn();
+    }
 
-      allow create: if isSuperAdmin() &&
-        isValidEmailId(email) &&
-        incoming().email == email &&
-        incoming().keys().hasAll(['email', 'addedBy', 'role', 'createdAt', 'updatedAt']) &&
-        incoming().keys().hasOnly(['email', 'addedBy', 'role', 'createdAt', 'updatedAt']) &&
-        isValidAdminUser(incoming());
+    // License Keys for Client Activation
+    match /license_keys/{keyId} {
+      allow get: if true;
+      allow list: if isSignedIn();
+      allow create, delete: if isSignedIn();
+      allow update: if true;
+    }
 
-      allow update: if isSuperAdmin() &&
-        incoming().email == existing().email &&
-        incoming().createdAt == existing().createdAt &&
-        isValidAdminUser(incoming());
+    // Programming Softwares
+    match /programming_software/{softwareId} {
+      allow get, list: if true;
+      allow create, update, delete: if isSignedIn();
+    }
 
-      allow delete: if isSuperAdmin() && !isProtectedSuperAdmin(email);
+    // Programming Folders (Hierarchy)
+    match /programming_folders/{folderId} {
+      allow get, list: if true;
+      allow create, update, delete: if isSignedIn();
+    }
+
+    // Firmware Dumps
+    match /programming_dumps/{dumpId} {
+      allow get, list: if true;
+      allow create, update, delete: if isSignedIn();
+    }
+
+    // Programmer Wiring Connections
+    match /programming_connections/{connId} {
+      allow get, list: if true;
+      allow create, update, delete: if isSignedIn();
+    }
+
+    // Real App Ratings submitted by authenticated users
+    match /app_ratings/{ratingId} {
+      allow get, list: if true;
+      allow create, update, delete: if true;
+    }
+
+    // App Stats (Real user counter)
+    match /app_stats/{statId} {
+      allow get, list: if true;
+      allow create, update, delete: if true;
+    }
+
+    // App Visitors (Unique device tracking)
+    match /app_visitors/{visitorId} {
+      allow get, list: if true;
+      allow create, update, delete: if true;
     }
   }
 }

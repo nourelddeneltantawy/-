@@ -21,6 +21,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.material.icons.filled.AdminPanelSettings
 import androidx.compose.material.icons.filled.BrightnessAuto
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
@@ -56,6 +58,7 @@ import com.example.util.ThemeManager
 @Composable
 fun ThemeSettingsDialog(
     onDismiss: () -> Unit,
+    onManageAdmins: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -193,6 +196,35 @@ fun ThemeSettingsDialog(
                     isSelected = currentMode == AppThemeMode.LIGHT,
                     onClick = { ThemeManager.setThemeMode(context, AppThemeMode.LIGHT) }
                 )
+
+                if (onManageAdmins != null) {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = Color(0xFFEAB308).copy(alpha = 0.15f),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFEAB308)),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .clickable {
+                                onDismiss()
+                                onManageAdmins()
+                            }
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(Icons.Default.AdminPanelSettings, contentDescription = null, tint = Color(0xFFCA8A04), modifier = Modifier.size(24.dp))
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("إدارة المشرفين والصلاحيات 🛡️", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = Color(0xFF854D0E))
+                                Text("إضافة مشرفين وتحديد الصلاحيات المسموحة", fontSize = 10.sp, color = Color(0xFF713F12))
+                            }
+                            Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = null, tint = Color(0xFFCA8A04), modifier = Modifier.size(16.dp))
+                        }
+                    }
+                }
             }
         },
         shape = RoundedCornerShape(20.dp),

@@ -178,6 +178,8 @@ fun AppRoot() {
     }
 
     var isAuthScreenVisibleFromSplash by remember { mutableStateOf(false) }
+    var isManageAdminsVisibleFromSplash by remember { mutableStateOf(false) }
+    val coroutineScope = rememberCoroutineScope()
 
     if (isAuthScreenVisibleFromSplash) {
         AuthScreen(
@@ -192,6 +194,45 @@ fun AppRoot() {
                 isAuthScreenVisibleFromSplash = false
             }
         )
+    } else if (isManageAdminsVisibleFromSplash) {
+        val adminRepo = remember { AdminRepository(context) }
+        val adminsList by adminRepo.observeAdmins().collectAsState(initial = emptyList())
+        ManageAdminsScreen(
+            admins = adminsList,
+            onAddAdmin = { email, perms, onResult ->
+                coroutineScope.launch {
+                    val result = adminRepo.addAdmin(email, currentUser?.email ?: "Super Admin", perms)
+                    if (result.isSuccess) {
+                        onResult(true, "تمت إضافة المشرف بنجاح")
+                    } else {
+                        onResult(false, result.exceptionOrNull()?.message ?: "فشلت الإضافة")
+                    }
+                }
+            },
+            onRemoveAdmin = { email, onResult ->
+                coroutineScope.launch {
+                    val result = adminRepo.removeAdmin(email)
+                    if (result.isSuccess) {
+                        onResult(true, "تم حذف المشرف بنجاح")
+                    } else {
+                        onResult(false, result.exceptionOrNull()?.message ?: "فشل الحذف")
+                    }
+                }
+            },
+            onUpdatePermissions = { email, perms, onResult ->
+                coroutineScope.launch {
+                    val result = adminRepo.updateAdminPermissions(email, perms)
+                    if (result.isSuccess) {
+                        onResult(true, "تم تحديث الصلاحيات بنجاح")
+                    } else {
+                        onResult(false, result.exceptionOrNull()?.message ?: "فشل التحديث")
+                    }
+                }
+            },
+            onBackClick = {
+                isManageAdminsVisibleFromSplash = false
+            }
+        )
     } else if (!isSplashFinished) {
         SplashScreen(
             onReady = {
@@ -204,6 +245,7 @@ fun AppRoot() {
             onAuthClick = {
                 isAuthScreenVisibleFromSplash = true
             },
+            onManageAdminsClick = if (isCurrentUserAdmin) { { isManageAdminsVisibleFromSplash = true } } else null,
             onSignOutClick = {
                 try {
                     Firebase.auth.signOut()
@@ -895,10 +937,10 @@ fun AppContent(
                             }
                             ManageAdminsScreen(
                                 admins = adminsList,
-                                onAddAdmin = { email, onResult ->
-                                    motorViewModel.addAdmin(email) { result ->
+                                onAddAdmin = { email, perms, onResult ->
+                                    motorViewModel.addAdmin(email, perms) { result ->
                                         if (result.isSuccess) {
-                                            onResult(true, "تمت إضافة المشرف بنجاح")
+                                            onResult(true, "تمت إضافة المشرف بنجاح بالصلاحيات المحددة")
                                         } else {
                                             onResult(false, result.exceptionOrNull()?.message ?: "فشلت الإضافة")
                                         }
@@ -910,6 +952,15 @@ fun AppContent(
                                             onResult(true, "تم سحب صلاحيات الإشراف بنجاح")
                                         } else {
                                             onResult(false, result.exceptionOrNull()?.message ?: "فشل الحذف")
+                                        }
+                                    }
+                                },
+                                onUpdatePermissions = { email, perms, onResult ->
+                                    motorViewModel.updateAdminPermissions(email, perms) { result ->
+                                        if (result.isSuccess) {
+                                            onResult(true, "تم تحديث الصلاحيات بنجاح")
+                                        } else {
+                                            onResult(false, result.exceptionOrNull()?.message ?: "فشل التحديث")
                                         }
                                     }
                                 },

@@ -204,8 +204,10 @@ object ProgrammingRepository {
                 activatedDeviceId = currentDeviceId,
                 activatedTimestamp = System.currentTimeMillis()
             )
-            if (snapshot.exists()) {
+            try {
                 docRef.set(updated.toMap()).await()
+            } catch (e: Throwable) {
+                Log.w(TAG, "Cloud sync on activation: ${e.message}")
             }
 
             recordActivationSuccess(appContext, updated)
@@ -293,6 +295,36 @@ object ProgrammingRepository {
         }
     }
 
+    fun updateLicenseKey(context: Context, updatedRecord: LicenseKeyRecord, onComplete: ((Boolean) -> Unit)? = null) {
+        val appContext = context.applicationContext ?: context
+        val current = _licenseKeys.value.toMutableList()
+        val idx = current.indexOfFirst { it.licenseKey == updatedRecord.licenseKey }
+        if (idx != -1) {
+            current[idx] = updatedRecord
+        } else {
+            current.add(0, updatedRecord)
+        }
+        _licenseKeys.value = current
+        saveKeysToPrefs(appContext, current)
+
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val db = FirebaseInitializer.getFirestore(appContext)
+                db.collection("license_keys").document(updatedRecord.licenseKey)
+                    .set(updatedRecord.toMap())
+                    .await()
+                kotlinx.coroutines.withContext(Dispatchers.Main) {
+                    onComplete?.invoke(true)
+                }
+            } catch (e: Throwable) {
+                Log.e(TAG, "Error updating license key", e)
+                kotlinx.coroutines.withContext(Dispatchers.Main) {
+                    onComplete?.invoke(false)
+                }
+            }
+        }
+    }
+
     fun deleteLicenseKey(context: Context, keyId: String, onComplete: ((Boolean) -> Unit)? = null) {
         val appContext = context.applicationContext ?: context
         CoroutineScope(Dispatchers.IO).launch {
@@ -303,10 +335,14 @@ object ProgrammingRepository {
                 current.removeAll { it.id == keyId || it.licenseKey == keyId }
                 _licenseKeys.value = current
                 saveKeysToPrefs(appContext, current)
-                onComplete?.invoke(true)
+                kotlinx.coroutines.withContext(Dispatchers.Main) {
+                    onComplete?.invoke(true)
+                }
             } catch (e: Throwable) {
                 Log.e(TAG, "Error deleting license key", e)
-                onComplete?.invoke(false)
+                kotlinx.coroutines.withContext(Dispatchers.Main) {
+                    onComplete?.invoke(false)
+                }
             }
         }
     }

@@ -274,8 +274,8 @@ fun DashboardHubScreen(
                     .background(
                         Brush.verticalGradient(
                             colors = listOf(
-                                Color(0xFF0284C7),
-                                Color(0xFF0369A1)
+                                MaterialTheme.colorScheme.primary,
+                                MaterialTheme.colorScheme.primaryContainer
                             )
                         )
                     )
@@ -763,7 +763,7 @@ fun DashboardHubScreen(
             confirmButton = {
                 Button(
                     onClick = { lockedDialogCategoryTitle = null },
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0284C7)),
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
                     shape = RoundedCornerShape(10.dp)
                 ) {
                     Text("فهمت ذلك", fontWeight = FontWeight.Bold)
@@ -977,7 +977,7 @@ fun ReorderCategoriesDialog(
         confirmButton = {
             Button(
                 onClick = onDismiss,
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0284C7)),
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
                 shape = RoundedCornerShape(10.dp)
             ) {
                 Text("تم وتأكيد الترتيب", fontWeight = FontWeight.Bold)

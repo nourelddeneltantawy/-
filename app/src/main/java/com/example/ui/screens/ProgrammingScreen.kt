@@ -64,6 +64,8 @@ import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.filled.UploadFile
 import androidx.compose.material.icons.filled.CreateNewFolder
 import androidx.compose.material.icons.filled.Computer
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.Spring
@@ -254,8 +256,8 @@ fun ProgrammingScreen(
                     .background(
                         Brush.verticalGradient(
                             colors = listOf(
-                                Color(0xFF0F766E), // Deep Teal
-                                Color(0xFF042F2E)  // Dark Navy Teal
+                                MaterialTheme.colorScheme.primary,
+                                MaterialTheme.colorScheme.primaryContainer
                             )
                         )
                     )
@@ -636,6 +638,13 @@ fun ProgrammingScreen(
             },
             onDeleteKey = { keyId ->
                 ProgrammingRepository.deleteLicenseKey(context, keyId)
+            },
+            onUpdateKey = { updatedKey ->
+                ProgrammingRepository.updateLicenseKey(context, updatedKey) { success ->
+                    if (success) {
+                        Toast.makeText(context, "تم حفظ وتحديث بيانات المفتاح بنجاح ✨", Toast.LENGTH_SHORT).show()
+                    }
+                }
             }
         )
     }
@@ -865,10 +874,9 @@ fun SoftwareListTab(
                         }
                     } else {
                         Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            modifier = Modifier.fillMaxWidth()
                         ) {
-                            // 1. Download / Install Button
+                            // Download / Install Button
                             Button(
                                 onClick = {
                                     if (item.localFilePath.isNotBlank()) {
@@ -884,8 +892,8 @@ fun SoftwareListTab(
                                         Toast.makeText(context, "لم يتم رفع ملف أو تحديد رابط لهذا البرنامج بعد", Toast.LENGTH_SHORT).show()
                                     }
                                 },
-                                modifier = Modifier.weight(1f),
-                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0F766E)),
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
                                 shape = RoundedCornerShape(10.dp)
                             ) {
                                 Icon(
@@ -893,37 +901,12 @@ fun SoftwareListTab(
                                     contentDescription = null,
                                     modifier = Modifier.size(16.dp)
                                 )
-                                Spacer(modifier = Modifier.width(4.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
                                 Text(
-                                    text = if (item.localFilePath.isNotBlank()) "تثبيت / إرسال الملف 💾" else "تنزيل من الرابط 🌐",
-                                    fontSize = 11.sp,
+                                    text = if (item.localFilePath.isNotBlank()) "تثبيت / إرسال التطبيق 📱" else "تنزيل من الرابط 🌐",
+                                    fontSize = 12.sp,
                                     fontWeight = FontWeight.Bold
                                 )
-                            }
-
-                            // 2. Share to PC / Send to anyone Button
-                            OutlinedButton(
-                                onClick = {
-                                    if (item.localFilePath.isNotBlank()) {
-                                        shareLocalFile(context, item.localFilePath, item.name)
-                                    } else if (item.fileUrl.isNotBlank()) {
-                                        val shareText = "رابط تحميل وتثبيت ${item.name} (${item.version}):\n${item.fileUrl}\n\nمرسل من تطبيق البراء إلكترونيك لصيانة وبرمجة كروت الغسالات ⚡"
-                                        val shareIntent = Intent(Intent.ACTION_SEND).apply {
-                                            type = "text/plain"
-                                            putExtra(Intent.EXTRA_SUBJECT, item.name)
-                                            putExtra(Intent.EXTRA_TEXT, shareText)
-                                        }
-                                        context.startActivity(Intent.createChooser(shareIntent, "مشاركة برنامج ${item.name} إلى الكمبيوتر أو عبر التطبيقات"))
-                                    } else {
-                                        Toast.makeText(context, "لا يوجد ملف أو رابط للمشاركة", Toast.LENGTH_SHORT).show()
-                                    }
-                                },
-                                shape = RoundedCornerShape(10.dp),
-                                border = BorderStroke(1.dp, Color(0xFF0F766E))
-                            ) {
-                                Icon(Icons.Default.Share, contentDescription = "مشاركة للكمبيوتر", tint = Color(0xFF0F766E), modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text("مشاركة للكمبيوتر 💻", fontSize = 11.sp, color = Color(0xFF0F766E))
                             }
                         }
                     }
@@ -1486,23 +1469,22 @@ fun DumpsListTab(
                         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
                         Spacer(modifier = Modifier.height(10.dp))
 
-                        // Download & Share to PC Buttons
+                        // Action Button
                         Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            modifier = Modifier.fillMaxWidth()
                         ) {
                             if (dump.localFilePath.isNotBlank()) {
                                 Button(
                                     onClick = {
                                         shareLocalFile(context, dump.localFilePath, dump.title)
                                     },
-                                    modifier = Modifier.weight(1f),
-                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0F766E)),
+                                    modifier = Modifier.fillMaxWidth(),
+                                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
                                     shape = RoundedCornerShape(8.dp)
                                 ) {
-                                    Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(15.dp))
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                    Text("مشاركة الملف الأصلي 📤", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                    Icon(Icons.Default.UploadFile, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("تثبيت / إرسال الملف 📤", fontSize = 12.sp, fontWeight = FontWeight.Bold)
                                 }
                             } else {
                                 Button(
@@ -1518,38 +1500,14 @@ fun DumpsListTab(
                                             Toast.makeText(context, "لم يتم رفع ملف لهذا السوفت بعد", Toast.LENGTH_SHORT).show()
                                         }
                                     },
-                                    modifier = Modifier.weight(1f),
-                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0F766E)),
+                                    modifier = Modifier.fillMaxWidth(),
+                                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
                                     shape = RoundedCornerShape(8.dp)
                                 ) {
-                                    Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(15.dp))
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                    Text("تنزيل السوفتوير (${dump.fileType})", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                    Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("تنزيل السوفتوير (${dump.fileType}) 🌐", fontSize = 12.sp, fontWeight = FontWeight.Bold)
                                 }
-                            }
-
-                            OutlinedButton(
-                                onClick = {
-                                    if (dump.localFilePath.isNotBlank()) {
-                                        shareLocalFile(context, dump.localFilePath, dump.title)
-                                    } else if (dump.fileUrl.isNotBlank()) {
-                                        val shareText = "ملف سوفتوير: ${dump.title}\nالمعالج: ${dump.processorType}\nكود الكارتة: ${dump.boardPartNumber}\nالرابط المباشر:\n${dump.fileUrl}\n\nمرسل من تطبيق البراء إلكترونيك ⚡"
-                                        val shareIntent = Intent(Intent.ACTION_SEND).apply {
-                                            type = "text/plain"
-                                            putExtra(Intent.EXTRA_SUBJECT, dump.title)
-                                            putExtra(Intent.EXTRA_TEXT, shareText)
-                                        }
-                                        context.startActivity(Intent.createChooser(shareIntent, "مشاركة السوفت للكمبيوتر أو البرامج"))
-                                    } else {
-                                        Toast.makeText(context, "الرابط فارغ", Toast.LENGTH_SHORT).show()
-                                    }
-                                },
-                                shape = RoundedCornerShape(8.dp),
-                                border = BorderStroke(1.dp, Color(0xFF0F766E))
-                            ) {
-                                Icon(Icons.Default.Share, contentDescription = null, tint = Color(0xFF0F766E), modifier = Modifier.size(15.dp))
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text("مشاركة 💻", fontSize = 11.sp, color = Color(0xFF0F766E))
                             }
                         }
                     }
@@ -1926,6 +1884,24 @@ fun ActivationKeyDialog(
 // =============================================================================
 // MODAL: GRANULAR SCOPE SELECTOR (اختيار المجلدات والبرامج بدقة لمفتاح العميل)
 // =============================================================================
+data class FlattenedFolderItem(
+    val folder: FirmwareFolder,
+    val level: Int,
+    val hasChildren: Boolean
+)
+
+fun formatPhoneForWhatsApp(rawPhone: String): String {
+    val digits = rawPhone.filter { it.isDigit() }
+    return when {
+        digits.startsWith("0020") -> digits.removePrefix("00")
+        digits.startsWith("20") -> digits
+        digits.startsWith("01") && digits.length == 11 -> "20" + digits.substring(1)
+        digits.startsWith("1") && digits.length == 10 -> "20$digits"
+        digits.startsWith("0") && digits.length >= 10 -> "20" + digits.substring(1)
+        else -> digits
+    }
+}
+
 @Composable
 fun GranularScopeSelectorDialog(
     folders: List<FirmwareFolder>,
@@ -1939,12 +1915,41 @@ fun GranularScopeSelectorDialog(
     var filterText by remember { mutableStateOf("") }
     val tempFolderIds = remember { mutableStateListOf<String>().apply { addAll(initiallySelectedFolderIds) } }
     val tempSoftwareIds = remember { mutableStateListOf<String>().apply { addAll(initiallySelectedSoftwareIds) } }
+    val expandedFolderIds = remember { mutableStateListOf<String>() }
+
+    val childrenMap = remember(folders) { folders.groupBy { it.parentFolderId } }
+    val allFolderIds = remember(folders) { folders.map { it.id }.toSet() }
+    val roots = remember(folders) { folders.filter { it.parentFolderId.isBlank() || !allFolderIds.contains(it.parentFolderId) } }
+
+    val flattenedNodes = remember(folders, expandedFolderIds.toList(), filterText) {
+        if (filterText.isNotBlank()) {
+            folders.filter {
+                it.name.contains(filterText, ignoreCase = true) || it.brand.contains(filterText, ignoreCase = true)
+            }.map { FlattenedFolderItem(it, level = 0, hasChildren = false) }
+        } else {
+            val result = mutableListOf<FlattenedFolderItem>()
+            fun traverse(f: FirmwareFolder, level: Int) {
+                val kids = childrenMap[f.id].orEmpty()
+                val hasKids = kids.isNotEmpty()
+                result.add(FlattenedFolderItem(f, level, hasKids))
+                if (hasKids && expandedFolderIds.contains(f.id)) {
+                    for (k in kids) {
+                        traverse(k, level + 1)
+                    }
+                }
+            }
+            for (r in roots) {
+                traverse(r, 0)
+            }
+            result
+        }
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
         title = {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Default.Key, contentDescription = null, tint = Color(0xFF0F766E))
+                Icon(Icons.Default.Key, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
                 Spacer(modifier = Modifier.width(8.dp))
                 Text("تحديد صلاحيات العميل بالتفصيل 🎯", fontWeight = FontWeight.Bold, fontSize = 15.sp)
             }
@@ -1962,7 +1967,7 @@ fun GranularScopeSelectorDialog(
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Surface(
                         shape = RoundedCornerShape(8.dp),
-                        color = if (activeTab == 0) Color(0xFF0F766E) else MaterialTheme.colorScheme.surfaceVariant,
+                        color = if (activeTab == 0) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
                         modifier = Modifier
                             .weight(1f)
                             .clip(RoundedCornerShape(8.dp))
@@ -1979,7 +1984,7 @@ fun GranularScopeSelectorDialog(
                     }
                     Surface(
                         shape = RoundedCornerShape(8.dp),
-                        color = if (activeTab == 1) Color(0xFF0F766E) else MaterialTheme.colorScheme.surfaceVariant,
+                        color = if (activeTab == 1) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
                         modifier = Modifier
                             .weight(1f)
                             .clip(RoundedCornerShape(8.dp))
@@ -2007,7 +2012,7 @@ fun GranularScopeSelectorDialog(
                     OutlinedTextField(
                         value = filterText,
                         onValueChange = { filterText = it },
-                        placeholder = { Text("بحث...", fontSize = 11.sp) },
+                        placeholder = { Text("بحث في العناصر...", fontSize = 11.sp) },
                         modifier = Modifier
                             .weight(1f)
                             .height(50.dp),
@@ -2042,37 +2047,69 @@ fun GranularScopeSelectorDialog(
                 Spacer(modifier = Modifier.height(8.dp))
 
                 // Items List
-                Box(modifier = Modifier.fillMaxWidth().height(240.dp)) {
+                Box(modifier = Modifier.fillMaxWidth().height(260.dp)) {
                     if (activeTab == 0) {
-                        val filteredFolders = folders.filter {
-                            filterText.isBlank() || it.name.contains(filterText, ignoreCase = true) || it.brand.contains(filterText, ignoreCase = true)
-                        }
-                        if (filteredFolders.isEmpty()) {
+                        if (flattenedNodes.isEmpty()) {
                             Text("لا توجد مجلدات مطابقة", fontSize = 11.sp, color = Color.Gray, modifier = Modifier.align(Alignment.Center))
                         } else {
                             LazyColumn(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                items(filteredFolders, key = { it.id }) { f ->
+                                items(flattenedNodes, key = { it.folder.id }) { node ->
+                                    val f = node.folder
                                     val isChecked = tempFolderIds.contains(f.id)
+                                    val isExpanded = expandedFolderIds.contains(f.id)
                                     Surface(
                                         shape = RoundedCornerShape(8.dp),
-                                        color = if (isChecked) Color(0xFF0F766E).copy(alpha = 0.12f) else MaterialTheme.colorScheme.surface,
-                                        border = BorderStroke(1.dp, if (isChecked) Color(0xFF0F766E) else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
+                                        color = if (isChecked) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f) else MaterialTheme.colorScheme.surface,
+                                        border = BorderStroke(1.dp, if (isChecked) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
                                         modifier = Modifier
                                             .fillMaxWidth()
                                             .clip(RoundedCornerShape(8.dp))
-                                            .clickable {
-                                                if (isChecked) tempFolderIds.remove(f.id) else tempFolderIds.add(f.id)
-                                            }
                                     ) {
-                                        Row(modifier = Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                        Row(
+                                            modifier = Modifier
+                                                .padding(horizontal = 6.dp, vertical = 6.dp)
+                                                .padding(start = (node.level * 18).dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            if (node.hasChildren) {
+                                                IconButton(
+                                                    onClick = {
+                                                        if (isExpanded) expandedFolderIds.remove(f.id) else expandedFolderIds.add(f.id)
+                                                    },
+                                                    modifier = Modifier.size(28.dp)
+                                                ) {
+                                                    Icon(
+                                                        imageVector = if (isExpanded) Icons.Default.KeyboardArrowDown else Icons.Default.KeyboardArrowUp,
+                                                        contentDescription = "عرض المجلدات الفرعية",
+                                                        tint = MaterialTheme.colorScheme.primary,
+                                                        modifier = Modifier.size(18.dp)
+                                                    )
+                                                }
+                                            } else {
+                                                Spacer(modifier = Modifier.width(28.dp))
+                                            }
+
                                             androidx.compose.material3.Checkbox(
                                                 checked = isChecked,
-                                                onCheckedChange = { if (it) tempFolderIds.add(f.id) else tempFolderIds.remove(f.id) }
+                                                onCheckedChange = { checked ->
+                                                    if (checked) tempFolderIds.add(f.id) else tempFolderIds.remove(f.id)
+                                                }
                                             )
-                                            Spacer(modifier = Modifier.width(4.dp))
-                                            Icon(Icons.Default.Folder, contentDescription = null, tint = Color(0xFF0F766E), modifier = Modifier.size(20.dp))
+                                            Spacer(modifier = Modifier.width(2.dp))
+                                            Icon(
+                                                imageVector = if (node.hasChildren && isExpanded) Icons.Default.FolderOpen else Icons.Default.Folder,
+                                                contentDescription = null,
+                                                tint = MaterialTheme.colorScheme.primary,
+                                                modifier = Modifier.size(20.dp)
+                                            )
                                             Spacer(modifier = Modifier.width(6.dp))
-                                            Column {
+                                            Column(
+                                                modifier = Modifier
+                                                    .weight(1f)
+                                                    .clickable {
+                                                        if (isChecked) tempFolderIds.remove(f.id) else tempFolderIds.add(f.id)
+                                                    }
+                                            ) {
                                                 Text(f.name, fontWeight = FontWeight.Bold, fontSize = 12.sp)
                                                 if (f.brand.isNotBlank()) Text(f.brand, fontSize = 10.sp, color = MaterialTheme.colorScheme.outline)
                                             }
@@ -2093,8 +2130,8 @@ fun GranularScopeSelectorDialog(
                                     val isChecked = tempSoftwareIds.contains(s.id)
                                     Surface(
                                         shape = RoundedCornerShape(8.dp),
-                                        color = if (isChecked) Color(0xFF0F766E).copy(alpha = 0.12f) else MaterialTheme.colorScheme.surface,
-                                        border = BorderStroke(1.dp, if (isChecked) Color(0xFF0F766E) else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
+                                        color = if (isChecked) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f) else MaterialTheme.colorScheme.surface,
+                                        border = BorderStroke(1.dp, if (isChecked) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
                                         modifier = Modifier
                                             .fillMaxWidth()
                                             .clip(RoundedCornerShape(8.dp))
@@ -2108,7 +2145,7 @@ fun GranularScopeSelectorDialog(
                                                 onCheckedChange = { if (it) tempSoftwareIds.add(s.id) else tempSoftwareIds.remove(s.id) }
                                             )
                                             Spacer(modifier = Modifier.width(4.dp))
-                                            Icon(Icons.Default.Laptop, contentDescription = null, tint = Color(0xFF0284C7), modifier = Modifier.size(20.dp))
+                                            Icon(Icons.Default.Laptop, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
                                             Spacer(modifier = Modifier.width(6.dp))
                                             Column {
                                                 Text(s.name, fontWeight = FontWeight.Bold, fontSize = 12.sp)
@@ -2128,7 +2165,7 @@ fun GranularScopeSelectorDialog(
                 onClick = {
                     onConfirm(tempFolderIds.toList(), tempSoftwareIds.toList())
                 },
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0F766E))
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
             ) {
                 Text("تأكيد الصلاحيات (${tempFolderIds.size + tempSoftwareIds.size}) ✓")
             }
@@ -2159,13 +2196,16 @@ fun AdminLicenseKeysManagerDialog(
         isFull: Boolean,
         notes: String
     ) -> Unit,
-    onDeleteKey: (keyId: String) -> Unit
+    onDeleteKey: (keyId: String) -> Unit,
+    onUpdateKey: (updatedKey: LicenseKeyRecord) -> Unit = {}
 ) {
     val context = LocalContext.current
     var clientName by remember { mutableStateOf("") }
     var clientPhone by remember { mutableStateOf("") }
     var clientEmail by remember { mutableStateOf("") }
     var notes by remember { mutableStateOf("") }
+    var keySearchQuery by remember { mutableStateOf("") }
+    var editingKeyRecord by remember { mutableStateOf<LicenseKeyRecord?>(null) }
 
     var isFullAccess by remember { mutableStateOf(true) }
     var showGranularScopePicker by remember { mutableStateOf(false) }
@@ -2212,7 +2252,7 @@ fun AdminLicenseKeysManagerDialog(
                         OutlinedTextField(
                             value = clientEmail,
                             onValueChange = { clientEmail = it },
-                            label = { Text("إيميل العميل (لربط المفتاح بحسابه)") },
+                            label = { Text("إيميل العميل (مطلوب لربط المفتاح بحسابه) *") },
                             placeholder = { Text("example@gmail.com") },
                             modifier = Modifier.fillMaxWidth(),
                             singleLine = true
@@ -2223,6 +2263,7 @@ fun AdminLicenseKeysManagerDialog(
                             value = clientPhone,
                             onValueChange = { clientPhone = it },
                             label = { Text("رقم هاتف / واتساب العميل") },
+                            placeholder = { Text("010xxxxxxxx") },
                             modifier = Modifier.fillMaxWidth(),
                             singleLine = true
                         )
@@ -2254,8 +2295,8 @@ fun AdminLicenseKeysManagerDialog(
                             Spacer(modifier = Modifier.height(6.dp))
                             Surface(
                                 shape = RoundedCornerShape(10.dp),
-                                color = Color(0xFF0F766E).copy(alpha = 0.12f),
-                                border = BorderStroke(1.dp, Color(0xFF0F766E)),
+                                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary),
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clip(RoundedCornerShape(10.dp))
@@ -2268,7 +2309,7 @@ fun AdminLicenseKeysManagerDialog(
                                     horizontalArrangement = Arrangement.SpaceBetween
                                 ) {
                                     Column(modifier = Modifier.weight(1f)) {
-                                        Text("الأقسام المسموح بها لهذا المفتاح 🎯", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = Color(0xFF0F766E))
+                                        Text("الأقسام المسموح بها لهذا المفتاح 🎯", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = MaterialTheme.colorScheme.primary)
                                         Text(
                                             text = if (selectedFolderIds.isEmpty() && selectedSoftwareIds.isEmpty()) "اضغط هنا لاختيار المجلدات والبرامج" else "محدد: ${selectedFolderIds.size} مجلد • ${selectedSoftwareIds.size} برنامج مبرمجة",
                                             fontSize = 11.sp,
@@ -2277,7 +2318,7 @@ fun AdminLicenseKeysManagerDialog(
                                     }
                                     Surface(
                                         shape = RoundedCornerShape(6.dp),
-                                        color = Color(0xFF0F766E)
+                                        color = MaterialTheme.colorScheme.primary
                                     ) {
                                         Text(
                                             text = "تحديد الصلاحيات ✍️",
@@ -2297,6 +2338,10 @@ fun AdminLicenseKeysManagerDialog(
                             onClick = {
                                 if (clientName.isBlank()) {
                                     Toast.makeText(context, "يرجى كتابة اسم العميل أولاً", Toast.LENGTH_SHORT).show()
+                                    return@Button
+                                }
+                                if (clientEmail.isBlank() || !clientEmail.contains("@")) {
+                                    Toast.makeText(context, "البريد الإلكتروني للعميل مطلوب لربط المفتاح بحسابه الشخصي في التطبيق", Toast.LENGTH_LONG).show()
                                     return@Button
                                 }
                                 val scopeName = if (isFullAccess) "الوصول الشامل لجميع السوفتات والبرامج" else "محدد (${selectedFolderIds.size} مجلد، ${selectedSoftwareIds.size} برنامج)"
@@ -2321,7 +2366,7 @@ fun AdminLicenseKeysManagerDialog(
                                 isFullAccess = true
                             },
                             modifier = Modifier.fillMaxWidth(),
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0F766E)),
+                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
                             shape = RoundedCornerShape(8.dp)
                         ) {
                             Text("توليد مفتاح فريد وحفظه في السحاب 🔑", fontSize = 12.sp, fontWeight = FontWeight.Bold)
@@ -2331,19 +2376,48 @@ fun AdminLicenseKeysManagerDialog(
 
                 Spacer(modifier = Modifier.height(16.dp))
 
-                // Section 2: List of Generated Keys
+                // Section 2: List of Generated Keys with Search
+                val displayedKeys = licenseKeys.filter { key ->
+                    keySearchQuery.isBlank() ||
+                    key.clientPhone.contains(keySearchQuery, ignoreCase = true) ||
+                    key.clientName.contains(keySearchQuery, ignoreCase = true) ||
+                    key.clientEmail.contains(keySearchQuery, ignoreCase = true) ||
+                    key.licenseKey.contains(keySearchQuery, ignoreCase = true)
+                }
+
                 Text(
-                    text = "المفاتيح المسجلة (${licenseKeys.size} مفتاح):",
+                    text = "المفاتيح المسجلة (${displayedKeys.size} من ${licenseKeys.size}):",
                     fontWeight = FontWeight.Bold,
                     fontSize = 13.sp,
                     color = MaterialTheme.colorScheme.onSurface
                 )
+                Spacer(modifier = Modifier.height(6.dp))
+
+                OutlinedTextField(
+                    value = keySearchQuery,
+                    onValueChange = { keySearchQuery = it },
+                    placeholder = { Text("بحث في المفاتيح بالرقم، الاسم، الإيميل...", fontSize = 11.sp) },
+                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                    trailingIcon = {
+                        if (keySearchQuery.isNotBlank()) {
+                            IconButton(onClick = { keySearchQuery = "" }) {
+                                Icon(Icons.Default.Close, contentDescription = "مسح", modifier = Modifier.size(16.dp))
+                            }
+                        }
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(52.dp),
+                    singleLine = true,
+                    shape = RoundedCornerShape(10.dp)
+                )
+
                 Spacer(modifier = Modifier.height(8.dp))
 
-                if (licenseKeys.isEmpty()) {
-                    Text("لا توجد مفاتيح مسجلة حتى الآن", fontSize = 11.sp, color = Color.Gray)
+                if (displayedKeys.isEmpty()) {
+                    Text("لا توجد مفاتيح مسجلة مطابقة للبحث", fontSize = 11.sp, color = Color.Gray)
                 } else {
-                    licenseKeys.forEach { keyRecord ->
+                    displayedKeys.forEach { keyRecord ->
                         Surface(
                             shape = RoundedCornerShape(10.dp),
                             color = MaterialTheme.colorScheme.surface,
@@ -2389,7 +2463,7 @@ fun AdminLicenseKeysManagerDialog(
                                     Text(
                                         text = "الإيميل المقيد: ${keyRecord.clientEmail}",
                                         fontSize = 10.sp,
-                                        color = Color(0xFF0F766E),
+                                        color = MaterialTheme.colorScheme.primary,
                                         fontWeight = FontWeight.Bold
                                     )
                                 }
@@ -2401,17 +2475,18 @@ fun AdminLicenseKeysManagerDialog(
 
                                 Spacer(modifier = Modifier.height(8.dp))
 
-                                // Quick Actions: Copy / Send WhatsApp / Delete
+                                // Quick Actions: Copy / Send WhatsApp / Edit / Delete
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                    verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    // WhatsApp Send to Client
+                                    // WhatsApp Send to Client with formatted Egyptian/international number
                                     Button(
                                         onClick = {
                                             val emailClause = if (keyRecord.clientEmail.isNotBlank()) "\nالحساب المرتبط: ${keyRecord.clientEmail}" else ""
                                             val clientMsg = "مرحباً يا باشمهندس ${keyRecord.clientName}،\nتم تفعيل اشتراكك في قسم ${keyRecord.targetScopeName} بتطبيق البراء إلكترونيك.$emailClause\n\nمفتاح التنشيط الخاص بك هو:\n${keyRecord.licenseKey}\n\nطريقة التفعيل: ادخل على قسم البرمجة والسوفت وير بالتطبيق، واضغط على فتح القسم، ثم الصق المفتاح واضغط تفعيل ✨\nمع تحيات م. البراء إلكترونيك ⚡"
-                                            val cleanPhone = keyRecord.clientPhone.replace("+", "").replace(" ", "").trim()
+                                            val cleanPhone = formatPhoneForWhatsApp(keyRecord.clientPhone)
                                             try {
                                                 val url = if (cleanPhone.isNotBlank()) "https://api.whatsapp.com/send?phone=$cleanPhone&text=${Uri.encode(clientMsg)}" else "https://api.whatsapp.com/send?text=${Uri.encode(clientMsg)}"
                                                 val i = Intent(Intent.ACTION_VIEW, Uri.parse(url))
@@ -2440,6 +2515,14 @@ fun AdminLicenseKeysManagerDialog(
                                         contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
                                     ) {
                                         Icon(Icons.Default.ContentCopy, contentDescription = "نسخ", modifier = Modifier.size(13.dp))
+                                    }
+
+                                    // Edit Key Button
+                                    IconButton(
+                                        onClick = { editingKeyRecord = keyRecord },
+                                        modifier = Modifier.size(28.dp)
+                                    ) {
+                                        Icon(Icons.Default.Edit, contentDescription = "تعديل بيانات المفتاح والصلاحيات", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(15.dp))
                                     }
 
                                     // Delete Key
@@ -2476,6 +2559,182 @@ fun AdminLicenseKeysManagerDialog(
                 selectedSoftwareIds.clear()
                 selectedSoftwareIds.addAll(sIds)
                 showGranularScopePicker = false
+            }
+        )
+    }
+
+    if (editingKeyRecord != null) {
+        EditCustomerKeyDialog(
+            keyRecord = editingKeyRecord!!,
+            folders = folders,
+            softwares = softwares,
+            onDismiss = { editingKeyRecord = null },
+            onSave = { updated ->
+                onUpdateKey(updated)
+                editingKeyRecord = null
+            }
+        )
+    }
+}
+
+@Composable
+fun EditCustomerKeyDialog(
+    keyRecord: LicenseKeyRecord,
+    folders: List<FirmwareFolder>,
+    softwares: List<ProgrammerSoftware>,
+    onDismiss: () -> Unit,
+    onSave: (LicenseKeyRecord) -> Unit
+) {
+    var editName by remember { mutableStateOf(keyRecord.clientName) }
+    var editPhone by remember { mutableStateOf(keyRecord.clientPhone) }
+    var editEmail by remember { mutableStateOf(keyRecord.clientEmail) }
+    var editNotes by remember { mutableStateOf(keyRecord.notes) }
+    var editIsFullAccess by remember { mutableStateOf(keyRecord.isFullAccess) }
+    val editSelectedFolderIds = remember { mutableStateListOf<String>().apply { addAll(keyRecord.allowedFolderIds) } }
+    val editSelectedSoftwareIds = remember { mutableStateListOf<String>().apply { addAll(keyRecord.allowedSoftwareIds) } }
+    var showScopePicker by remember { mutableStateOf(false) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.Edit, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("تعديل بيانات المفتاح والصلاحيات ✏️", fontWeight = FontWeight.Bold, fontSize = 15.sp)
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.2f),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.4f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = "المفتاح: ${keyRecord.licenseKey}",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(8.dp),
+                        textAlign = TextAlign.Center
+                    )
+                }
+
+                OutlinedTextField(
+                    value = editName,
+                    onValueChange = { editName = it },
+                    label = { Text("اسم العميل / المهندس *") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true
+                )
+
+                OutlinedTextField(
+                    value = editEmail,
+                    onValueChange = { editEmail = it },
+                    label = { Text("إيميل العميل (لربط المفتاح بحسابه) *") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true
+                )
+
+                OutlinedTextField(
+                    value = editPhone,
+                    onValueChange = { editPhone = it },
+                    label = { Text("رقم هاتف / واتساب العميل") },
+                    placeholder = { Text("010xxxxxxxx") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true
+                )
+
+                OutlinedTextField(
+                    value = editNotes,
+                    onValueChange = { editNotes = it },
+                    label = { Text("ملاحظات") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true
+                )
+
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    androidx.compose.material3.Checkbox(
+                        checked = editIsFullAccess,
+                        onCheckedChange = { editIsFullAccess = it }
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("الوصول الشامل (جميع السوفتات والبرامج) 👑", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                }
+
+                if (!editIsFullAccess) {
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable { showScopePicker = true }
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                text = "محدد: ${editSelectedFolderIds.size} مجلد • ${editSelectedSoftwareIds.size} برنامج",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text("تعديل الصلاحيات ✍️", fontSize = 10.sp, color = MaterialTheme.colorScheme.primary)
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    if (editName.isBlank()) return@Button
+                    val scopeName = if (editIsFullAccess) "الوصول الشامل لجميع السوفتات والبرامج" else "محدد (${editSelectedFolderIds.size} مجلد، ${editSelectedSoftwareIds.size} برنامج)"
+                    val updated = keyRecord.copy(
+                        clientName = editName.trim(),
+                        clientPhone = editPhone.trim(),
+                        clientEmail = editEmail.trim(),
+                        notes = editNotes.trim(),
+                        isFullAccess = editIsFullAccess,
+                        targetScope = if (editIsFullAccess) "ALL_FIRMWARE" else "GRANULAR",
+                        targetScopeName = scopeName,
+                        allowedFolderIds = editSelectedFolderIds.toList(),
+                        allowedSoftwareIds = editSelectedSoftwareIds.toList()
+                    )
+                    onSave(updated)
+                },
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+            ) {
+                Text("حفظ التعديلات")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("إلغاء") }
+        }
+    )
+
+    if (showScopePicker) {
+        GranularScopeSelectorDialog(
+            folders = folders,
+            softwares = softwares,
+            initiallySelectedFolderIds = editSelectedFolderIds.toList(),
+            initiallySelectedSoftwareIds = editSelectedSoftwareIds.toList(),
+            onDismiss = { showScopePicker = false },
+            onConfirm = { selectedF, selectedS ->
+                editSelectedFolderIds.clear()
+                editSelectedFolderIds.addAll(selectedF)
+                editSelectedSoftwareIds.clear()
+                editSelectedSoftwareIds.addAll(selectedS)
+                showScopePicker = false
             }
         )
     }
