@@ -80,11 +80,31 @@ class MotorViewModel(application: Application) : AndroidViewModel(application) {
     private val _userRole = MutableStateFlow(UserRole.REGULAR)
     val userRole: StateFlow<UserRole> = _userRole.asStateFlow()
 
-    val isAdmin: Boolean
-        get() = currentUserEmail != null || _userRole.value == UserRole.ADMIN || _userRole.value == UserRole.SUPER_ADMIN
-
     val isSuperAdmin: Boolean
-        get() = _userRole.value == UserRole.SUPER_ADMIN
+        get() = _userRole.value == UserRole.SUPER_ADMIN || AdminRepository.isSuperAdminEmail(currentUserEmail)
+
+    val currentUserPermissions: List<String>
+        get() {
+            if (isSuperAdmin) return listOf("all", "motors", "harnesses", "parts", "programming", "settings")
+            val email = currentUserEmail?.trim()?.lowercase() ?: return emptyList()
+            val record = _adminsList.value.firstOrNull { it.email.trim().lowercase() == email }
+            return record?.permissions ?: emptyList()
+        }
+
+    fun hasPermission(permission: String): Boolean {
+        if (isSuperAdmin) return true
+        val perms = currentUserPermissions
+        return perms.contains("all") || perms.contains(permission)
+    }
+
+    val isAdmin: Boolean
+        get() = isSuperAdmin || (_userRole.value == UserRole.ADMIN && currentUserPermissions.isNotEmpty())
+
+    val canEditMotors: Boolean get() = hasPermission("motors")
+    val canEditHarnesses: Boolean get() = hasPermission("harnesses")
+    val canEditParts: Boolean get() = hasPermission("parts")
+    val canEditProgramming: Boolean get() = hasPermission("programming")
+    val canEditSettings: Boolean get() = hasPermission("settings")
 
     // Clean initial state - user creates from scratch!
     private val _motorsState = MutableStateFlow<MotorsUiState>(

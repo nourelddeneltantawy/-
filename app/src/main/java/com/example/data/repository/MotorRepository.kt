@@ -180,10 +180,14 @@ class MotorRepository(private val db: FirebaseFirestore) {
         val path = "motors/$motorId"
 
         return try {
+            val allImgs = motor.getAllImages()
+            val primaryImage = allImgs.firstOrNull() ?: motor.imageUrl
             val isNew = motor.createdAt == null || motor.id.isBlank()
             val payload = motor.toMap().toMutableMap()
             payload["id"] = motorId
             payload["userId"] = uid
+            payload["imageUrl"] = primaryImage
+            payload["imageUrls"] = allImgs
             payload["updatedAt"] = FieldValue.serverTimestamp()
 
             if (isNew) {
@@ -198,7 +202,8 @@ class MotorRepository(private val db: FirebaseFirestore) {
                         "motorType" to motor.motorType,
                         "category" to motor.category,
                         "notes" to motor.notes,
-                        "imageUrl" to motor.imageUrl,
+                        "imageUrl" to primaryImage,
+                        "imageUrls" to allImgs,
                         "orderIndex" to motor.orderIndex,
                         "pinouts" to motor.pinouts.map { it.toMap() },
                         "updatedAt" to FieldValue.serverTimestamp()

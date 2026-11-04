@@ -59,6 +59,9 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
+import com.example.ui.components.BreadcrumbBar
+import com.example.ui.components.BreadcrumbItem
+import com.example.ui.components.SearchAutocompleteBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -235,35 +238,48 @@ fun CatalogScreen(
                 .fillMaxSize()
                 .padding(innerPadding)
         ) {
-            // Search Bar
-            OutlinedTextField(
-                value = searchQuery,
-                onValueChange = onSearchQueryChange,
-                modifier = Modifier
-                    .testTag("search_motors_input")
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 6.dp),
-                placeholder = { Text("ابحث باسم الماتور، الموديل، لون السلك أو الوظيفة...") },
-                leadingIcon = {
-                    Icon(
-                        imageVector = Icons.Default.Search,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.outline
-                    )
-                },
-                trailingIcon = {
-                    if (searchQuery.isNotEmpty()) {
-                        IconButton(onClick = { onSearchQueryChange("") }) {
-                            Icon(imageVector = Icons.Default.Clear, contentDescription = "مسح البحث")
-                        }
-                    }
-                },
-                singleLine = true,
-                shape = RoundedCornerShape(14.dp),
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = MaterialTheme.colorScheme.primary,
-                    unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant
+            // Breadcrumbs Navigation Bar
+            if (onBackClick != null) {
+                BreadcrumbBar(
+                    items = listOf(
+                        BreadcrumbItem(
+                            title = "الأقسام",
+                            onClick = onBackClick
+                        ),
+                        BreadcrumbItem(
+                            title = "مواتير الغسالات ومخططات الأطراف",
+                            isCurrent = true
+                        )
+                    ),
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
                 )
+            }
+
+            // Dynamic suggestions for autocomplete
+            val motorSuggestions = remember(allMotors) {
+                val set = linkedSetOf<String>()
+                allMotors.forEach { m ->
+                    if (m.name.isNotBlank()) set.add(m.name)
+                    if (m.brand.isNotBlank()) set.add(m.brand)
+                    if (m.model.isNotBlank()) set.add(m.model)
+                    m.pinouts.forEach { p ->
+                        if (p.name.isNotBlank()) set.add(p.name)
+                        if (p.wireColor.isNotBlank()) set.add(p.wireColor)
+                        if (p.functionDesc.isNotBlank()) set.add(p.functionDesc)
+                    }
+                }
+                set.toList()
+            }
+
+            // Autocomplete Search Box
+            SearchAutocompleteBox(
+                query = searchQuery,
+                onQueryChange = onSearchQueryChange,
+                placeholder = "ابحث باسم الماتور، الموديل، لون السلك أو الوظيفة...",
+                allSuggestions = motorSuggestions,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 6.dp)
             )
 
             // User's Custom Categories / Lists Bar

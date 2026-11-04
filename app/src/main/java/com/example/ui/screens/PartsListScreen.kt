@@ -64,6 +64,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.model.AppliancePart
+import com.example.ui.components.BreadcrumbBar
+import com.example.ui.components.BreadcrumbItem
+import com.example.ui.components.SearchAutocompleteBox
 import com.example.ui.components.WireColorBadge
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -158,30 +161,40 @@ fun PartsListScreen(
                 .fillMaxSize()
                 .padding(innerPadding)
         ) {
-            // Search Input
-            OutlinedTextField(
-                value = searchQuery,
-                onValueChange = { searchQuery = it },
+            // Breadcrumbs Navigation
+            BreadcrumbBar(
+                items = listOf(
+                    BreadcrumbItem(
+                        title = "الأقسام",
+                        onClick = onBackClick
+                    ),
+                    BreadcrumbItem(
+                        title = "لوكات الباب وموازين الماء والأجزاء",
+                        isCurrent = true
+                    )
+                ),
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+            )
+
+            val partSuggestions = remember(parts) {
+                val set = linkedSetOf<String>()
+                parts.forEach { p ->
+                    if (p.name.isNotBlank()) set.add(p.name)
+                    if (p.brand.isNotBlank()) set.add(p.brand)
+                    if (p.model.isNotBlank()) set.add(p.model)
+                    if (p.partType.isNotBlank()) set.add(p.partType)
+                }
+                set.toList()
+            }
+
+            SearchAutocompleteBox(
+                query = searchQuery,
+                onQueryChange = { searchQuery = it },
+                placeholder = "ابحث باسم القطعة، الموديل، المقاومة...",
+                allSuggestions = partSuggestions,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 6.dp),
-                placeholder = { Text("ابحث باسم القطعة، الموديل، المقاومة...") },
-                leadingIcon = {
-                    Icon(imageVector = Icons.Default.Search, contentDescription = null, tint = MaterialTheme.colorScheme.outline)
-                },
-                trailingIcon = {
-                    if (searchQuery.isNotEmpty()) {
-                        IconButton(onClick = { searchQuery = "" }) {
-                            Icon(imageVector = Icons.Default.Clear, contentDescription = "مسح")
-                        }
-                    }
-                },
-                singleLine = true,
-                shape = RoundedCornerShape(14.dp),
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = MaterialTheme.colorScheme.primary,
-                    unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant
-                )
+                    .padding(horizontal = 16.dp, vertical = 6.dp)
             )
 
             // Filter Chips

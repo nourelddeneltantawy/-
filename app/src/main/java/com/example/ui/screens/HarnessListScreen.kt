@@ -62,7 +62,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.data.model.Harness
+import com.example.ui.components.BreadcrumbBar
+import com.example.ui.components.BreadcrumbItem
 import com.example.ui.components.InteractiveHarnessMap
+import com.example.ui.components.SearchAutocompleteBox
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -186,30 +189,39 @@ fun HarnessListScreen(
                     InteractiveHarnessMap(harness = h)
                 }
             } else {
-                // Search Input
-                OutlinedTextField(
-                    value = searchQuery,
-                    onValueChange = { searchQuery = it },
+                // Breadcrumbs
+                BreadcrumbBar(
+                    items = listOf(
+                        BreadcrumbItem(
+                            title = "الأقسام",
+                            onClick = onBackClick
+                        ),
+                        BreadcrumbItem(
+                            title = "الضفائر وتوصيلات الكروت",
+                            isCurrent = true
+                        )
+                    ),
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+                )
+
+                val harnessSuggestions = remember(harnesses) {
+                    val set = linkedSetOf<String>()
+                    harnesses.forEach { h ->
+                        if (h.name.isNotBlank()) set.add(h.name)
+                        if (h.brand.isNotBlank()) set.add(h.brand)
+                        if (h.model.isNotBlank()) set.add(h.model)
+                    }
+                    set.toList()
+                }
+
+                SearchAutocompleteBox(
+                    query = searchQuery,
+                    onQueryChange = { searchQuery = it },
+                    placeholder = "ابحث في أسماء الضفائر والموديلات...",
+                    allSuggestions = harnessSuggestions,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 6.dp),
-                    placeholder = { Text("ابحث في أسماء الضفائر والموديلات...") },
-                    leadingIcon = {
-                        Icon(imageVector = Icons.Default.Search, contentDescription = null, tint = MaterialTheme.colorScheme.outline)
-                    },
-                    trailingIcon = {
-                        if (searchQuery.isNotEmpty()) {
-                            IconButton(onClick = { searchQuery = "" }) {
-                                Icon(imageVector = Icons.Default.Clear, contentDescription = "مسح")
-                            }
-                        }
-                    },
-                    singleLine = true,
-                    shape = RoundedCornerShape(14.dp),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = MaterialTheme.colorScheme.primary,
-                        unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant
-                    )
+                        .padding(horizontal = 16.dp, vertical = 6.dp)
                 )
 
                 if (filtered.isEmpty()) {

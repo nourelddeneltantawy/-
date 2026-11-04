@@ -6,6 +6,7 @@ import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -32,10 +33,11 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.LocationOn
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PhotoLibrary
-import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Storefront
 import androidx.compose.material.icons.filled.Verified
 import androidx.compose.material3.AlertDialog
@@ -43,6 +45,8 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -84,7 +88,12 @@ import coil.request.ImageRequest
 import com.example.data.model.MarketplacePost
 import com.example.data.model.UserProfile
 import com.example.data.repository.MarketplaceRepository
+import com.example.ui.components.BreadcrumbBar
+import com.example.ui.components.BreadcrumbItem
+import com.example.ui.components.SearchAutocompleteBox
+import com.example.util.HierarchicalLocationSelector
 import com.example.util.ImageHelper
+import com.example.util.LocationData
 import kotlinx.coroutines.launch
 import java.net.URLEncoder
 import java.text.SimpleDateFormat
@@ -98,6 +107,8 @@ fun MarketplaceScreen(
     currentUserEmail: String?,
     isAdmin: Boolean,
     onBackClick: () -> Unit,
+    isGuest: Boolean = false,
+    onAuthClick: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -113,24 +124,54 @@ fun MarketplaceScreen(
         displayName = currentUserEmail?.substringBefore("@") ?: "فني البراء"
     )
 
-    var selectedTabIndex by remember { mutableIntStateOf(0) } // 0: SELL, 1: BUY
+    // 0: SELL, 1: BUY, 2: MY_POSTS (Facebook-style profile/posts)
+    var selectedTabIndex by remember { mutableIntStateOf(0) }
     var searchQuery by remember { mutableStateOf("") }
+    var selectedGovernorateFilter by remember { mutableStateOf("الكل") }
 
     var showCreatePostDialog by remember { mutableStateOf(false) }
     var postToEdit by remember { mutableStateOf<MarketplacePost?>(null) }
     var showProfileDialog by remember { mutableStateOf(false) }
     var profileToView by remember { mutableStateOf<UserProfile?>(null) }
+    var showFilterDropdown by remember { mutableStateOf(false) }
 
-    // Filter posts by type and search query
-    val targetType = if (selectedTabIndex == 0) "SELL" else "BUY"
-    val filteredPosts = remember(posts, targetType, searchQuery) {
-        posts.filter { post ->
-            post.postType.equals(targetType, ignoreCase = true) &&
-                    (searchQuery.isBlank() ||
-                            post.title.contains(searchQuery, ignoreCase = true) ||
-                            post.description.contains(searchQuery, ignoreCase = true) ||
-                            post.userCity.contains(searchQuery, ignoreCase = true) ||
-                            post.userName.contains(searchQuery, ignoreCase = true))
+    // Dynamic autocomplete suggestions from current posts
+    val autocompleteSuggestions = remember(posts) {
+        val list = mutableListOf<String>()
+        posts.forEach { p ->
+            if (p.title.isNotBlank()) list.add(p.title)
+            if (p.userCity.isNotBlank()) list.add(p.userCity)
+            if (p.userName.isNotBlank()) list.add(p.userName)
+        }
+        list.addAll(listOf("إل جي", "سامسونج", "شارب", "هوفر", "زانوسي", "إنفرتر", "ماتور", "كارتة باور", "كارتة شاشة", "لوك", "طلمبة"))
+        list.distinct()
+    }
+
+    // Filter posts
+    val filteredPosts = remember(posts, selectedTabIndex, searchQuery, selectedGovernorateFilter, currentUserId, currentUserEmail) {
+        when (selectedTabIndex) {
+            0 -> posts.filter { p -> p.postType.equals("SELL", ignoreCase = true) }
+            1 -> posts.filter { p -> p.postType.equals("BUY", ignoreCase = true) }
+            else -> posts.filter { p ->
+                p.userId == currentUserId ||
+                        (currentUserEmail != null && p.userEmail.equals(currentUserEmail, ignoreCase = true))
+            }
+        }.filter { post ->
+            val matchGov = selectedGovernorateFilter == "الكل" ||
+                    post.userCity.contains(selectedGovernorateFilter, ignoreCase = true)
+            val matchQuery = searchQuery.isBlank() ||
+                    post.title.contains(searchQuery, ignoreCase = true) ||
+                    post.description.contains(searchQuery, ignoreCase = true) ||
+                    post.userCity.contains(searchQuery, ignoreCase = true) ||
+                    post.userName.contains(searchQuery, ignoreCase = true)
+            matchGov && matchQuery
+        }
+    }
+
+    val myPostsCount = remember(posts, currentUserId, currentUserEmail) {
+        posts.count { p ->
+            p.userId == currentUserId ||
+                    (currentUserEmail != null && p.userEmail.equals(currentUserEmail, ignoreCase = true))
         }
     }
 
@@ -138,33 +179,40 @@ fun MarketplaceScreen(
         modifier = modifier.fillMaxSize().testTag("marketplace_screen"),
         snackbarHost = { SnackbarHost(snackbarHostState) },
         floatingActionButton = {
-            FloatingActionButton(
-                onClick = {
-                    if (myProfile.phone.isBlank()) {
-                        coroutineScope.launch {
-                            snackbarHostState.showSnackbar("يرجى إكمال ملفك الشخصي وإضافة رقم الهاتف أولاً للتواصل")
+            if (selectedTabIndex != 2) {
+                FloatingActionButton(
+                    onClick = {
+                        if (isGuest || currentUserEmail.isNullOrBlank()) {
+                            coroutineScope.launch {
+                                snackbarHostState.showSnackbar("يرجى تسجيل الدخول بحسابك أولاً لتتمكن من النشر وحفظ إعلاناتك")
+                            }
+                            onAuthClick()
+                        } else if (myProfile.phone.isBlank()) {
+                            coroutineScope.launch {
+                                snackbarHostState.showSnackbar("يرجى إكمال ملفك الشخصي وإضافة رقم الهاتف أولاً للتواصل")
+                            }
+                            showProfileDialog = true
+                        } else {
+                            postToEdit = null
+                            showCreatePostDialog = true
                         }
-                        showProfileDialog = true
-                    } else {
-                        postToEdit = null
-                        showCreatePostDialog = true
-                    }
-                },
-                containerColor = MaterialTheme.colorScheme.primary,
-                contentColor = MaterialTheme.colorScheme.onPrimary,
-                modifier = Modifier.testTag("add_marketplace_post_fab")
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 16.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                    },
+                    containerColor = MaterialTheme.colorScheme.primary,
+                    contentColor = MaterialTheme.colorScheme.onPrimary,
+                    modifier = Modifier.testTag("add_marketplace_post_fab")
                 ) {
-                    Icon(imageVector = Icons.Default.Add, contentDescription = "إضافة إعلان")
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(
-                        text = if (selectedTabIndex == 0) "عرض كارتة للبيع" else "طلب كارتة للشراء",
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 14.sp
-                    )
+                    Row(
+                        modifier = Modifier.padding(horizontal = 16.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(imageVector = Icons.Default.Add, contentDescription = "إضافة إعلان")
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = if (selectedTabIndex == 0) "عرض كارتة للبيع" else "طلب كارتة للشراء",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 14.sp
+                        )
+                    }
                 }
             }
         }
@@ -174,7 +222,7 @@ fun MarketplaceScreen(
                 .fillMaxSize()
                 .padding(bottom = innerPadding.calculateBottomPadding())
         ) {
-            // Header Bar
+            // Top Header Box
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -187,7 +235,7 @@ fun MarketplaceScreen(
                             )
                         )
                     )
-                    .padding(top = innerPadding.calculateTopPadding() + 8.dp, bottom = 16.dp, start = 16.dp, end = 16.dp)
+                    .padding(top = innerPadding.calculateTopPadding() + 6.dp, bottom = 14.dp, start = 16.dp, end = 16.dp)
             ) {
                 Column {
                     Row(
@@ -224,7 +272,7 @@ fun MarketplaceScreen(
                                     text = "بيع وشراء كروت الغسالات بين الفنيين والمهندسين",
                                     style = MaterialTheme.typography.bodySmall.copy(
                                         color = Color.White.copy(alpha = 0.85f),
-                                        fontSize = 12.sp
+                                        fontSize = 11.sp
                                     )
                                 )
                             }
@@ -233,57 +281,63 @@ fun MarketplaceScreen(
                         // My Profile Button
                         Surface(
                             shape = RoundedCornerShape(12.dp),
-                            color = Color.White.copy(alpha = 0.2f),
+                            color = Color.White.copy(alpha = 0.22f),
                             modifier = Modifier
                                 .clip(RoundedCornerShape(12.dp))
-                                .clickable { showProfileDialog = true }
+                                .clickable {
+                                    if (isGuest) onAuthClick() else showProfileDialog = true
+                                }
                                 .padding(horizontal = 10.dp, vertical = 6.dp)
                         ) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Icon(
-                                    imageVector = Icons.Default.Person,
+                                    imageVector = if (isGuest) Icons.Default.Lock else Icons.Default.Person,
                                     contentDescription = "الملف الشخصي",
                                     tint = Color.White,
-                                    modifier = Modifier.size(18.dp)
+                                    modifier = Modifier.size(17.dp)
                                 )
                                 Spacer(modifier = Modifier.width(4.dp))
                                 Text(
-                                    text = "ملفي",
+                                    text = if (isGuest) "تسجيل الدخول" else "ملفي الشخصي",
                                     color = Color.White,
                                     fontWeight = FontWeight.Bold,
-                                    fontSize = 13.sp
+                                    fontSize = 12.sp
                                 )
                             }
                         }
                     }
 
-                    Spacer(modifier = Modifier.height(14.dp))
+                    Spacer(modifier = Modifier.height(12.dp))
 
-                    // Search box
-                    OutlinedTextField(
-                        value = searchQuery,
-                        onValueChange = { searchQuery = it },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(12.dp)),
-                        placeholder = { Text("بحث عن كارتة، موديل، مدينة، أو فني...", fontSize = 13.sp) },
-                        leadingIcon = {
-                            Icon(Icons.Default.Search, contentDescription = "بحث")
-                        },
-                        trailingIcon = {
-                            if (searchQuery.isNotBlank()) {
-                                IconButton(onClick = { searchQuery = "" }) {
-                                    Icon(Icons.Default.Close, contentDescription = "مسح")
-                                }
-                            }
-                        },
-                        singleLine = true,
-                        shape = RoundedCornerShape(12.dp)
+                    // Predictive Search Autocomplete Box
+                    SearchAutocompleteBox(
+                        query = searchQuery,
+                        onQueryChange = { searchQuery = it },
+                        placeholder = "ابحث بالاسم، الموديل، الحي، أو الفني...",
+                        allSuggestions = autocompleteSuggestions,
+                        modifier = Modifier.fillMaxWidth()
                     )
                 }
             }
 
-            // Tabs: SELL vs BUY
+            // Breadcrumbs Navigation Trail
+            BreadcrumbBar(
+                items = listOf(
+                    BreadcrumbItem(title = "الأقسام", onClick = onBackClick),
+                    BreadcrumbItem(title = "سوق الكروت", onClick = { selectedTabIndex = 0 }),
+                    BreadcrumbItem(
+                        title = when (selectedTabIndex) {
+                            0 -> "بيع كروت 🏷️"
+                            1 -> "طلب شراء 🔍"
+                            else -> "صفحتي وإعلاناتي 👤"
+                        },
+                        isCurrent = true
+                    )
+                ),
+                onHomeClick = onBackClick
+            )
+
+            // Tabs: 1. SELL, 2. BUY, 3. MY POSTS & PROFILE
             TabRow(
                 selectedTabIndex = selectedTabIndex,
                 containerColor = MaterialTheme.colorScheme.surface,
@@ -297,7 +351,7 @@ fun MarketplaceScreen(
                         Text(
                             text = "بيع كروت 🏷️ (${posts.count { it.postType.equals("SELL", ignoreCase = true) }})",
                             fontWeight = if (selectedTabIndex == 0) FontWeight.Bold else FontWeight.Normal,
-                            fontSize = 14.sp
+                            fontSize = 13.sp
                         )
                     }
                 )
@@ -308,127 +362,409 @@ fun MarketplaceScreen(
                         Text(
                             text = "طلب شراء 🔍 (${posts.count { it.postType.equals("BUY", ignoreCase = true) }})",
                             fontWeight = if (selectedTabIndex == 1) FontWeight.Bold else FontWeight.Normal,
-                            fontSize = 14.sp
+                            fontSize = 13.sp
+                        )
+                    }
+                )
+                Tab(
+                    selected = selectedTabIndex == 2,
+                    onClick = { selectedTabIndex = 2 },
+                    text = {
+                        Text(
+                            text = "إعلاناتي 👤 ($myPostsCount)",
+                            fontWeight = if (selectedTabIndex == 2) FontWeight.Bold else FontWeight.Normal,
+                            fontSize = 13.sp
                         )
                     }
                 )
             }
 
-            // Post count & notice
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 8.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = if (selectedTabIndex == 0) "الكروت المعروضة للبيع حالياً" else "طلبات الكروت المطلوبة للشراء",
-                    style = MaterialTheme.typography.labelMedium.copy(
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontWeight = FontWeight.Bold
-                    )
-                )
-                Text(
-                    text = "${filteredPosts.size} إعلان",
-                    style = MaterialTheme.typography.labelSmall.copy(color = MaterialTheme.colorScheme.primary)
-                )
-            }
-
-            // List of posts
-            if (filteredPosts.isEmpty()) {
-                Box(
+            // Location Filter Bar (only for Sell/Buy tabs)
+            if (selectedTabIndex != 2) {
+                Row(
                     modifier = Modifier
-                        .fillMaxSize()
-                        .padding(32.dp),
-                    contentAlignment = Alignment.Center
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 6.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(
+                        text = "${filteredPosts.size} إعلان متاح",
+                        style = MaterialTheme.typography.labelSmall.copy(color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                    )
+
+                    // Governorate Filter Pill
+                    Box {
                         Surface(
-                            shape = CircleShape,
-                            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f),
-                            modifier = Modifier.size(72.dp)
+                            shape = RoundedCornerShape(12.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(12.dp))
+                                .clickable { showFilterDropdown = true }
+                                .padding(horizontal = 10.dp, vertical = 4.dp)
                         ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Icon(
-                                    imageVector = Icons.Default.Storefront,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.size(36.dp)
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Default.FilterList, contentDescription = null, modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.primary)
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(
+                                    text = if (selectedGovernorateFilter == "الكل") "تصفية بالمحافظة: الكل" else "المحافظة: $selectedGovernorateFilter",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Medium
                                 )
                             }
                         }
-                        Spacer(modifier = Modifier.height(16.dp))
-                        Text(
-                            text = if (searchQuery.isNotBlank()) "لا توجد نتائج مطابقة لبحثك"
-                            else if (selectedTabIndex == 0) "لا توجد كروت معروضة للبيع حالياً\nكن أول من يعرض كارتة!"
-                            else "لا توجد طلبات شراء كروت حالياً\nاطلب الكارتة التي تبحث عنها!",
-                            textAlign = TextAlign.Center,
-                            style = MaterialTheme.typography.bodyMedium.copy(
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+
+                        DropdownMenu(
+                            expanded = showFilterDropdown,
+                            onDismissRequest = { showFilterDropdown = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("جميع المحافظات") },
+                                onClick = {
+                                    selectedGovernorateFilter = "الكل"
+                                    showFilterDropdown = false
+                                }
                             )
-                        )
+                            val egyptGovs = LocationData.countries.first().governorates.keys.toList()
+                            egyptGovs.forEach { gov ->
+                                DropdownMenuItem(
+                                    text = { Text(gov) },
+                                    onClick = {
+                                        selectedGovernorateFilter = gov
+                                        showFilterDropdown = false
+                                    }
+                                )
+                            }
+                        }
                     }
                 }
-            } else {
+            }
+
+            // TAB 3: FACEBOOK-STYLE PROFILE & USER POSTS
+            if (selectedTabIndex == 2) {
                 LazyColumn(
                     modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 80.dp),
+                    contentPadding = PaddingValues(16.dp),
                     verticalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
-                    items(filteredPosts, key = { it.id }) { post ->
-                        val isAuthor = post.userId == currentUserId ||
-                                (currentUserEmail != null && post.userEmail.equals(currentUserEmail, ignoreCase = true))
-                        val canManage = isAuthor || isAdmin
-
-                        MarketplacePostCard(
-                            post = post,
-                            canManage = canManage,
-                            onAuthorClick = {
-                                coroutineScope.launch {
-                                    val profile = MarketplaceRepository.fetchAuthorProfile(context, post.userEmail.ifBlank { post.userId })
-                                    profileToView = profile ?: UserProfile(
-                                        userId = post.userId,
-                                        email = post.userEmail,
-                                        displayName = post.userName,
-                                        phone = post.userPhone,
-                                        city = post.userCity,
-                                        profession = post.userProfession,
-                                        avatarUrl = post.userAvatarUrl
-                                    )
-                                }
-                            },
-                            onWhatsAppClick = {
-                                openWhatsApp(context, post.userPhone, "السلام عليكم، بخصوص إعلانك في سوق كروت البراء: ${post.title}")
-                            },
-                            onCallClick = {
-                                openDialer(context, post.userPhone)
-                            },
-                            onToggleStatus = {
-                                val nextCompleted = !post.isCompleted
-                                MarketplaceRepository.togglePostCompleted(context, post.id, nextCompleted) { success ->
-                                    if (success) {
-                                        val msg = if (nextCompleted) {
-                                            "تم تحديد الإعلان كمنجز بنجاح! سيتم حذفه تلقائياً بعد 3 أيام."
-                                        } else {
-                                            "تم إعادة تنشيط الإعلان."
-                                        }
-                                        coroutineScope.launch {
-                                            snackbarHostState.showSnackbar(msg)
+                    // Profile Header Card
+                    item {
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(18.dp),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                        ) {
+                            Column(modifier = Modifier.padding(16.dp)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    if (myProfile.avatarUrl.isNotBlank()) {
+                                        AsyncImage(
+                                            model = ImageRequest.Builder(context)
+                                                .data(ImageHelper.getCoilData(myProfile.avatarUrl))
+                                                .crossfade(true)
+                                                .build(),
+                                            contentDescription = myProfile.displayName,
+                                            contentScale = ContentScale.Crop,
+                                            modifier = Modifier
+                                                .size(60.dp)
+                                                .clip(CircleShape)
+                                                .border(2.dp, MaterialTheme.colorScheme.primary, CircleShape)
+                                        )
+                                    } else {
+                                        Surface(
+                                            shape = CircleShape,
+                                            color = MaterialTheme.colorScheme.primaryContainer,
+                                            modifier = Modifier.size(60.dp)
+                                        ) {
+                                            Box(contentAlignment = Alignment.Center) {
+                                                Icon(
+                                                    imageVector = Icons.Default.Person,
+                                                    contentDescription = null,
+                                                    modifier = Modifier.size(32.dp),
+                                                    tint = MaterialTheme.colorScheme.onPrimaryContainer
+                                                )
+                                            }
                                         }
                                     }
-                                }
-                            },
-                            onDeleteClick = {
-                                MarketplaceRepository.deletePost(context, post.id) { success ->
-                                    if (success) {
-                                        coroutineScope.launch {
-                                            snackbarHostState.showSnackbar("تم حذف الإعلان بنجاح")
+
+                                    Spacer(modifier = Modifier.width(14.dp))
+
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Text(
+                                                text = myProfile.displayName.ifBlank { "فني البراء" },
+                                                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                                            )
+                                            Spacer(modifier = Modifier.width(4.dp))
+                                            Icon(
+                                                imageVector = Icons.Default.Verified,
+                                                contentDescription = null,
+                                                tint = MaterialTheme.colorScheme.primary,
+                                                modifier = Modifier.size(16.dp)
+                                            )
                                         }
+
+                                        Text(
+                                            text = myProfile.profession.ifBlank { "فني صيانة غسالات" },
+                                            style = MaterialTheme.typography.bodySmall.copy(color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        )
+
+                                        if (myProfile.city.isNotBlank()) {
+                                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                                Icon(Icons.Default.LocationOn, contentDescription = null, modifier = Modifier.size(13.dp), tint = MaterialTheme.colorScheme.secondary)
+                                                Spacer(modifier = Modifier.width(2.dp))
+                                                Text(
+                                                    text = myProfile.city,
+                                                    fontSize = 11.sp,
+                                                    color = MaterialTheme.colorScheme.secondary
+                                                )
+                                            }
+                                        }
+                                    }
+
+                                    OutlinedButton(
+                                        onClick = {
+                                            if (isGuest) onAuthClick() else showProfileDialog = true
+                                        },
+                                        shape = RoundedCornerShape(10.dp)
+                                    ) {
+                                        Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(15.dp))
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text("تعديل", fontSize = 12.sp)
+                                    }
+                                }
+
+                                if (myProfile.bio.isNotBlank()) {
+                                    Spacer(modifier = Modifier.height(10.dp))
+                                    Surface(
+                                        shape = RoundedCornerShape(10.dp),
+                                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Text(
+                                            text = myProfile.bio,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            modifier = Modifier.padding(10.dp)
+                                        )
+                                    }
+                                }
+
+                                Spacer(modifier = Modifier.height(12.dp))
+                                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+                                Spacer(modifier = Modifier.height(10.dp))
+
+                                // Fast stats
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceAround
+                                ) {
+                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                        Text(text = "$myPostsCount", fontWeight = FontWeight.Bold, fontSize = 16.sp, color = MaterialTheme.colorScheme.primary)
+                                        Text(text = "إجمالي إعلاناتي", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    }
+                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                        val activeCount = posts.count { (it.userId == currentUserId || it.userEmail == currentUserEmail) && !it.isCompleted }
+                                        Text(text = "$activeCount", fontWeight = FontWeight.Bold, fontSize = 16.sp, color = Color(0xFF10B981))
+                                        Text(text = "معروضة ونشطة", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    }
+                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                        val doneCount = posts.count { (it.userId == currentUserId || it.userEmail == currentUserEmail) && it.isCompleted }
+                                        Text(text = "$doneCount", fontWeight = FontWeight.Bold, fontSize = 16.sp, color = Color(0xFF6366F1))
+                                        Text(text = "تم البيع / الشراء", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                     }
                                 }
                             }
+                        }
+                    }
+
+                    // Guest Login Prompt
+                    if (isGuest || currentUserEmail.isNullOrBlank()) {
+                        item {
+                            Card(
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(16.dp),
+                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f))
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(16.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally
+                                ) {
+                                    Icon(Icons.Default.Lock, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(32.dp))
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    Text(
+                                        text = "أنت تتصفح كزائر حالياً",
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 15.sp
+                                    )
+                                    Text(
+                                        text = "سجل دخولك بحساب Google أو بريدك الإلكتروني ليتم ربط كافة إعلاناتك بملفك الشخصي واسترجاعها تلقائياً على أي جهاز آخر.",
+                                        textAlign = TextAlign.Center,
+                                        fontSize = 12.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.padding(vertical = 6.dp)
+                                    )
+                                    Button(
+                                        onClick = onAuthClick,
+                                        shape = RoundedCornerShape(10.dp)
+                                    ) {
+                                        Text("تسجيل الدخول الآن")
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // User's Own Posts Header
+                    item {
+                        Text(
+                            text = "منشوراتي وإعلاناتي السابقة:",
+                            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
                         )
+                    }
+
+                    if (filteredPosts.isEmpty()) {
+                        item {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 32.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = "لم تنشر أي إعلانات بعد.\nانقر على زر (+) في تبويب البيع أو الشراء لنشر أول كارتة!",
+                                    textAlign = TextAlign.Center,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    fontSize = 13.sp
+                                )
+                            }
+                        }
+                    } else {
+                        items(filteredPosts, key = { it.id }) { post ->
+                            MarketplacePostCard(
+                                post = post,
+                                canManage = true,
+                                onAuthorClick = {},
+                                onWhatsAppClick = {
+                                    openWhatsApp(context, post.userPhone, "السلام عليكم، بخصوص إعلاني في سوق كروت البراء: ${post.title}")
+                                },
+                                onCallClick = {
+                                    openDialer(context, post.userPhone)
+                                },
+                                onToggleStatus = {
+                                    val nextCompleted = !post.isCompleted
+                                    MarketplaceRepository.togglePostCompleted(context, post.id, nextCompleted) { success ->
+                                        if (success) {
+                                            val msg = if (nextCompleted) "تم تحديد الإعلان كمنجز بنجاح!" else "تمت إعادة تنشيط الإعلان."
+                                            coroutineScope.launch { snackbarHostState.showSnackbar(msg) }
+                                        }
+                                    }
+                                },
+                                onDeleteClick = {
+                                    MarketplaceRepository.deletePost(context, post.id) { success ->
+                                        if (success) {
+                                            coroutineScope.launch { snackbarHostState.showSnackbar("تم حذف الإعلان بنجاح") }
+                                        }
+                                    }
+                                }
+                            )
+                        }
+                    }
+                }
+            } else {
+                // TABS 0 & 1: SELL OR BUY POSTS LIST
+                if (filteredPosts.isEmpty()) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(32.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Surface(
+                                shape = CircleShape,
+                                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f),
+                                modifier = Modifier.size(72.dp)
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        imageVector = Icons.Default.Storefront,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(36.dp)
+                                    )
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(16.dp))
+                            Text(
+                                text = if (searchQuery.isNotBlank() || selectedGovernorateFilter != "الكل") "لا توجد نتائج مطابقة لبحثك في هذه المنطقة"
+                                else if (selectedTabIndex == 0) "لا توجد كروت معروضة للبيع حالياً\nكن أول من يعرض كارتة!"
+                                else "لا توجد طلبات شراء كروت حالياً\nاطلب الكارتة التي تبحث عنها!",
+                                textAlign = TextAlign.Center,
+                                style = MaterialTheme.typography.bodyMedium.copy(
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            )
+                        }
+                    }
+                } else {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 80.dp),
+                        verticalArrangement = Arrangement.spacedBy(14.dp)
+                    ) {
+                        items(filteredPosts, key = { it.id }) { post ->
+                            val isAuthor = post.userId == currentUserId ||
+                                    (currentUserEmail != null && post.userEmail.equals(currentUserEmail, ignoreCase = true))
+                            val canManage = isAuthor || isAdmin
+
+                            MarketplacePostCard(
+                                post = post,
+                                canManage = canManage,
+                                onAuthorClick = {
+                                    coroutineScope.launch {
+                                        val profile = MarketplaceRepository.fetchAuthorProfile(context, post.userEmail.ifBlank { post.userId })
+                                        profileToView = profile ?: UserProfile(
+                                            userId = post.userId,
+                                            email = post.userEmail,
+                                            displayName = post.userName,
+                                            phone = post.userPhone,
+                                            city = post.userCity,
+                                            profession = post.userProfession,
+                                            avatarUrl = post.userAvatarUrl
+                                        )
+                                    }
+                                },
+                                onWhatsAppClick = {
+                                    openWhatsApp(context, post.userPhone, "السلام عليكم، بخصوص إعلانك في سوق كروت البراء: ${post.title}")
+                                },
+                                onCallClick = {
+                                    openDialer(context, post.userPhone)
+                                },
+                                onToggleStatus = {
+                                    val nextCompleted = !post.isCompleted
+                                    MarketplaceRepository.togglePostCompleted(context, post.id, nextCompleted) { success ->
+                                        if (success) {
+                                            val msg = if (nextCompleted) {
+                                                "تم تحديد الإعلان كمنجز بنجاح! سيتم حذفه تلقائياً بعد 3 أيام."
+                                            } else {
+                                                "تم إعادة تنشيط الإعلان."
+                                            }
+                                            coroutineScope.launch { snackbarHostState.showSnackbar(msg) }
+                                        }
+                                    }
+                                },
+                                onDeleteClick = {
+                                    MarketplaceRepository.deletePost(context, post.id) { success ->
+                                        if (success) {
+                                            coroutineScope.launch { snackbarHostState.showSnackbar("تم حذف الإعلان بنجاح") }
+                                        }
+                                    }
+                                }
+                            )
+                        }
                     }
                 }
             }
@@ -446,7 +782,7 @@ fun MarketplaceScreen(
                 MarketplaceRepository.savePost(context, newPost) { saved ->
                     if (saved) {
                         coroutineScope.launch {
-                            snackbarHostState.showSnackbar("تم نشر الإعلان في سوق الكروت بنجاح")
+                            snackbarHostState.showSnackbar("تم نشر الإعلان في سوق الكروت وحفظه بحسابك بنجاح")
                         }
                         showCreatePostDialog = false
                     } else {
@@ -459,7 +795,7 @@ fun MarketplaceScreen(
         )
     }
 
-    // Dialog: Edit My Profile
+    // Dialog: Edit My Profile with 3-Stage Location
     if (showProfileDialog) {
         EditUserProfileDialog(
             currentProfile = myProfile,
@@ -497,6 +833,9 @@ fun MarketplaceScreen(
     }
 }
 
+/**
+ * Single Marketplace Post Card with robust, non-wrapping action buttons
+ */
 @Composable
 fun MarketplacePostCard(
     post: MarketplacePost,
@@ -510,6 +849,7 @@ fun MarketplacePostCard(
 ) {
     val context = LocalContext.current
     val isCompleted = post.isCompleted
+    val isBuyRequest = post.postType.equals("BUY", ignoreCase = true)
 
     Card(
         modifier = modifier
@@ -548,8 +888,7 @@ fun MarketplacePostCard(
                         )
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
-                            text = if (post.postType.equals("SELL", ignoreCase = true)) "تم البيع بنجاح ✓ (سيحذف تلقائياً بعد 3 أيام)"
-                            else "تم الشراء وتوفير الكارتة بنجاح ✓",
+                            text = if (isBuyRequest) "تم الشراء وتوفير الكارتة بنجاح ✓" else "تم البيع بنجاح ✓ (سيحذف تلقائياً بعد 3 أيام)",
                             color = Color(0xFF047857),
                             fontWeight = FontWeight.Bold,
                             fontSize = 12.sp
@@ -558,7 +897,7 @@ fun MarketplacePostCard(
                 }
             }
 
-            // Top row: Author Info + Date
+            // Top row: Author Info + Date & Type Badge
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -571,7 +910,6 @@ fun MarketplacePostCard(
                         .clickable { onAuthorClick() }
                         .padding(2.dp)
                 ) {
-                    // Author Avatar
                     if (post.userAvatarUrl.isNotBlank()) {
                         AsyncImage(
                             model = ImageRequest.Builder(context)
@@ -581,7 +919,7 @@ fun MarketplacePostCard(
                             contentDescription = post.userName,
                             contentScale = ContentScale.Crop,
                             modifier = Modifier
-                                .size(40.dp)
+                                .size(42.dp)
                                 .clip(CircleShape)
                                 .border(1.dp, MaterialTheme.colorScheme.primary, CircleShape)
                         )
@@ -589,12 +927,13 @@ fun MarketplacePostCard(
                         Surface(
                             shape = CircleShape,
                             color = MaterialTheme.colorScheme.primaryContainer,
-                            modifier = Modifier.size(40.dp)
+                            modifier = Modifier.size(42.dp)
                         ) {
                             Box(contentAlignment = Alignment.Center) {
                                 Text(
                                     text = post.userName.take(1).ifBlank { "ف" },
                                     fontWeight = FontWeight.Bold,
+                                    fontSize = 16.sp,
                                     color = MaterialTheme.colorScheme.onPrimaryContainer
                                 )
                             }
@@ -639,6 +978,7 @@ fun MarketplacePostCard(
                                     modifier = Modifier.size(12.dp),
                                     tint = MaterialTheme.colorScheme.secondary
                                 )
+                                Spacer(modifier = Modifier.width(2.dp))
                                 Text(
                                     text = post.userCity,
                                     style = MaterialTheme.typography.labelSmall.copy(
@@ -651,18 +991,18 @@ fun MarketplacePostCard(
                     }
                 }
 
-                // Date & Type Badge
+                // Type Badge & Date
                 Column(horizontalAlignment = Alignment.End) {
                     Surface(
                         shape = RoundedCornerShape(6.dp),
-                        color = if (post.postType.equals("SELL", ignoreCase = true)) Color(0xFFE0F2FE) else Color(0xFFFEF3C7)
+                        color = if (isBuyRequest) Color(0xFFFEF3C7) else Color(0xFFE0F2FE)
                     ) {
                         Text(
-                            text = if (post.postType.equals("SELL", ignoreCase = true)) "بيع 🏷️" else "طلب شراء 🔍",
-                            color = if (post.postType.equals("SELL", ignoreCase = true)) Color(0xFF0369A1) else Color(0xFFB45309),
+                            text = if (isBuyRequest) "طلب شراء 🔍" else "بيع 🏷️",
+                            color = if (isBuyRequest) Color(0xFFB45309) else Color(0xFF0369A1),
                             fontWeight = FontWeight.Bold,
                             fontSize = 11.sp,
-                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
                         )
                     }
                     Spacer(modifier = Modifier.height(2.dp))
@@ -678,7 +1018,7 @@ fun MarketplacePostCard(
 
             Spacer(modifier = Modifier.height(10.dp))
 
-            // Post Title
+            // Title
             Text(
                 text = post.title,
                 style = MaterialTheme.typography.titleMedium.copy(
@@ -687,7 +1027,7 @@ fun MarketplacePostCard(
                 )
             )
 
-            // Post Description
+            // Description
             if (post.description.isNotBlank()) {
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
@@ -702,7 +1042,7 @@ fun MarketplacePostCard(
                 )
             }
 
-            // Image Preview (if present)
+            // Image Preview
             if (post.mediaUrl.isNotBlank()) {
                 Spacer(modifier = Modifier.height(10.dp))
                 Box(
@@ -724,29 +1064,44 @@ fun MarketplacePostCard(
                 }
             }
 
-            // Price section
+            // Price / Buy request status
             Spacer(modifier = Modifier.height(10.dp))
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        text = "السعر: ",
-                        style = MaterialTheme.typography.labelMedium.copy(color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    )
-                    Text(
-                        text = if (post.price.isNotBlank() && post.price != "0") "${post.price} ج.م" else "قابل للتفاوض",
-                        style = MaterialTheme.typography.titleSmall.copy(
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.primary,
-                            fontSize = 15.sp
+                if (isBuyRequest) {
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)
+                    ) {
+                        Text(
+                            text = "السعر: للتفاوض مع البائع 💬",
+                            style = MaterialTheme.typography.labelMedium.copy(
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary
+                            ),
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                         )
-                    )
+                    }
+                } else {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = "السعر: ",
+                            style = MaterialTheme.typography.labelMedium.copy(color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        )
+                        Text(
+                            text = if (post.price.isNotBlank() && post.price != "0") "${post.price} ج.م" else "قابل للتفاوض",
+                            style = MaterialTheme.typography.titleSmall.copy(
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary,
+                                fontSize = 15.sp
+                            )
+                        )
+                    }
                 }
 
-                // Phone/WhatsApp badge
                 Text(
                     text = "هاتف: ${post.userPhone}",
                     style = MaterialTheme.typography.labelSmall.copy(
@@ -758,16 +1113,15 @@ fun MarketplacePostCard(
 
             HorizontalDivider(modifier = Modifier.padding(vertical = 10.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
 
-            // Communication Buttons & Owner Actions
+            // Dedicated Contact Actions (Two wide buttons - Never wrap text vertically!)
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 // WhatsApp Button
                 Button(
                     onClick = onWhatsAppClick,
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier.weight(1f).height(42.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF25D366)),
                     shape = RoundedCornerShape(10.dp)
                 ) {
@@ -778,13 +1132,19 @@ fun MarketplacePostCard(
                         modifier = Modifier.size(16.dp)
                     )
                     Spacer(modifier = Modifier.width(6.dp))
-                    Text("واتساب", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                    Text(
+                        text = "واتساب",
+                        color = Color.White,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 13.sp,
+                        maxLines = 1
+                    )
                 }
 
-                // Direct Call Button
+                // Call Button
                 OutlinedButton(
                     onClick = onCallClick,
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier.weight(1f).height(42.dp),
                     shape = RoundedCornerShape(10.dp)
                 ) {
                     Icon(
@@ -793,38 +1153,46 @@ fun MarketplacePostCard(
                         modifier = Modifier.size(16.dp)
                     )
                     Spacer(modifier = Modifier.width(6.dp))
-                    Text("اتصال", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                    Text(
+                        text = "اتصال هاتف",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 13.sp,
+                        maxLines = 1
+                    )
                 }
+            }
 
-                // Status toggle for Author / Admin
-                if (canManage) {
+            // Owner / Admin Actions Row (Status toggle & delete)
+            if (canManage) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
                     Surface(
                         shape = RoundedCornerShape(10.dp),
-                        color = if (isCompleted) Color(0xFF10B981).copy(alpha = 0.2f) else MaterialTheme.colorScheme.secondaryContainer,
+                        color = if (isCompleted) Color(0xFF10B981).copy(alpha = 0.18f) else MaterialTheme.colorScheme.secondaryContainer,
                         modifier = Modifier
                             .clip(RoundedCornerShape(10.dp))
                             .clickable { onToggleStatus() }
-                            .padding(horizontal = 10.dp, vertical = 9.dp)
+                            .padding(horizontal = 12.dp, vertical = 7.dp)
                     ) {
                         Text(
-                            text = if (isCompleted) "إعادة تنشيط" else if (post.postType.equals("SELL", ignoreCase = true)) "تم البيع ✓" else "تم الشراء ✓",
+                            text = if (isCompleted) "إعادة تنشيط الإعلان 🔄" else if (isBuyRequest) "تم الشراء وتوفير الكارتة ✓" else "تم البيع بنجاح ✓",
                             color = if (isCompleted) Color(0xFF047857) else MaterialTheme.colorScheme.onSecondaryContainer,
                             fontWeight = FontWeight.Bold,
                             fontSize = 12.sp
                         )
                     }
 
-                    // Delete button
-                    IconButton(
+                    TextButton(
                         onClick = onDeleteClick,
-                        modifier = Modifier.size(36.dp)
+                        colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.Delete,
-                            contentDescription = "حذف الإعلان",
-                            tint = MaterialTheme.colorScheme.error,
-                            modifier = Modifier.size(20.dp)
-                        )
+                        Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("حذف الإعلان", fontSize = 12.sp)
                     }
                 }
             }
@@ -832,6 +1200,12 @@ fun MarketplacePostCard(
     }
 }
 
+/**
+ * Dialog to create or edit a post with:
+ * 1. Post type toggle (Sell vs Buy)
+ * 2. If Buy: NO price field!
+ * 3. 3-stage location selector: الدولة -> المحافظة -> الحي/المركز
+ */
 @Composable
 fun CreateOrEditPostDialog(
     initialPost: MarketplacePost?,
@@ -847,7 +1221,11 @@ fun CreateOrEditPostDialog(
     var postType by remember { mutableStateOf(initialPost?.postType ?: defaultPostType) }
     var mediaUrl by remember { mutableStateOf(initialPost?.mediaUrl ?: "") }
     var phone by remember { mutableStateOf(initialPost?.userPhone?.ifBlank { myProfile.phone } ?: myProfile.phone) }
-    var city by remember { mutableStateOf(initialPost?.userCity?.ifBlank { myProfile.city } ?: myProfile.city) }
+
+    // 3-Stage Location
+    var selectedCountry by remember { mutableStateOf("مصر") }
+    var selectedGovernorate by remember { mutableStateOf(myProfile.city.ifBlank { "القاهرة" }) }
+    var selectedDistrict by remember { mutableStateOf("") }
 
     val photoPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
@@ -874,8 +1252,8 @@ fun CreateOrEditPostDialog(
         },
         text = {
             LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                // Post Type Selection
                 item {
-                    // Type Selection: Sell or Buy
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -916,6 +1294,7 @@ fun CreateOrEditPostDialog(
                     }
                 }
 
+                // Title
                 item {
                     OutlinedTextField(
                         value = title,
@@ -927,11 +1306,12 @@ fun CreateOrEditPostDialog(
                     )
                 }
 
+                // Description
                 item {
                     OutlinedTextField(
                         value = description,
                         onValueChange = { description = it },
-                        label = { Text("تفاصيل الكارتة (الحالة، الموديل، الفحص)") },
+                        label = { Text("تفاصيل الكارتة (الموديل، الفحص، العيب إن وجد)") },
                         modifier = Modifier.fillMaxWidth(),
                         minLines = 3,
                         maxLines = 5,
@@ -939,38 +1319,41 @@ fun CreateOrEditPostDialog(
                     )
                 }
 
-                item {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
+                // Price (ONLY FOR SELL POSTS - HIDE COMPLETELY FOR BUY REQUESTS)
+                if (postType == "SELL") {
+                    item {
                         OutlinedTextField(
                             value = price,
                             onValueChange = { price = it },
-                            label = { Text("السعر بالجنيه (أو فارغ)") },
-                            modifier = Modifier.weight(1f),
-                            singleLine = true,
-                            shape = RoundedCornerShape(10.dp)
-                        )
-                        OutlinedTextField(
-                            value = city,
-                            onValueChange = { city = it },
-                            label = { Text("المدينة / المحافظة") },
-                            modifier = Modifier.weight(1f),
+                            label = { Text("السعر بالجنيه (أو اتركه فارغاً للتفاوض)") },
+                            modifier = Modifier.fillMaxWidth(),
                             singleLine = true,
                             shape = RoundedCornerShape(10.dp)
                         )
                     }
                 }
 
+                // Contact Phone / WhatsApp
                 item {
                     OutlinedTextField(
                         value = phone,
                         onValueChange = { phone = it },
-                        label = { Text("رقم الهاتف والواتساب للتواصل *") },
+                        label = { Text("رقم الهاتف والواتساب للتواصل المباشر *") },
                         modifier = Modifier.fillMaxWidth(),
                         singleLine = true,
                         shape = RoundedCornerShape(10.dp)
+                    )
+                }
+
+                // Three-Stage Location Selector
+                item {
+                    HierarchicalLocationSelector(
+                        selectedCountry = selectedCountry,
+                        onCountryChange = { selectedCountry = it },
+                        selectedGovernorate = selectedGovernorate,
+                        onGovernorateChange = { selectedGovernorate = it },
+                        selectedDistrict = selectedDistrict,
+                        onDistrictChange = { selectedDistrict = it }
                     )
                 }
 
@@ -1055,6 +1438,12 @@ fun CreateOrEditPostDialog(
                         return@Button
                     }
 
+                    val fullLocation = listOfNotNull(
+                        selectedDistrict.takeIf { it.isNotBlank() },
+                        selectedGovernorate.takeIf { it.isNotBlank() },
+                        selectedCountry.takeIf { it.isNotBlank() }
+                    ).joinToString(" • ")
+
                     val post = MarketplacePost(
                         id = initialPost?.id?.ifBlank { UUID.randomUUID().toString() } ?: UUID.randomUUID().toString(),
                         userId = myProfile.userId,
@@ -1062,11 +1451,11 @@ fun CreateOrEditPostDialog(
                         userName = myProfile.displayName.ifBlank { "فني البراء" },
                         userPhone = phone.trim(),
                         userAvatarUrl = myProfile.avatarUrl,
-                        userCity = city.trim().ifBlank { myProfile.city },
+                        userCity = fullLocation.ifBlank { myProfile.city },
                         userProfession = myProfile.profession,
                         title = title.trim(),
                         description = description.trim(),
-                        price = price.trim(),
+                        price = if (postType == "BUY") "" else price.trim(),
                         postType = postType,
                         mediaUrl = mediaUrl.trim(),
                         mediaType = if (mediaUrl.isNotBlank()) "IMAGE" else "NONE",
@@ -1081,13 +1470,14 @@ fun CreateOrEditPostDialog(
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("إلغاء")
-            }
+            TextButton(onClick = onDismiss) { Text("إلغاء") }
         }
     )
 }
 
+/**
+ * Edit User Profile with 3-Stage Location
+ */
 @Composable
 fun EditUserProfileDialog(
     currentProfile: UserProfile,
@@ -1098,10 +1488,13 @@ fun EditUserProfileDialog(
     val context = LocalContext.current
     var displayName by remember { mutableStateOf(currentProfile.displayName) }
     var phone by remember { mutableStateOf(currentProfile.phone) }
-    var city by remember { mutableStateOf(currentProfile.city) }
     var profession by remember { mutableStateOf(currentProfile.profession) }
     var bio by remember { mutableStateOf(currentProfile.bio) }
     var avatarUrl by remember { mutableStateOf(currentProfile.avatarUrl) }
+
+    var selectedCountry by remember { mutableStateOf("مصر") }
+    var selectedGovernorate by remember { mutableStateOf(currentProfile.city.split("•").getOrNull(1)?.trim() ?: "القاهرة") }
+    var selectedDistrict by remember { mutableStateOf(currentProfile.city.split("•").getOrNull(0)?.trim() ?: "") }
 
     val photoPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
@@ -1200,14 +1593,15 @@ fun EditUserProfileDialog(
                     )
                 }
 
+                // 3-Stage Location Selector
                 item {
-                    OutlinedTextField(
-                        value = city,
-                        onValueChange = { city = it },
-                        label = { Text("المحافظة / المدينة (مثل: القاهرة، المنصورة...)") },
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true,
-                        shape = RoundedCornerShape(10.dp)
+                    HierarchicalLocationSelector(
+                        selectedCountry = selectedCountry,
+                        onCountryChange = { selectedCountry = it },
+                        selectedGovernorate = selectedGovernorate,
+                        onGovernorateChange = { selectedGovernorate = it },
+                        selectedDistrict = selectedDistrict,
+                        onDistrictChange = { selectedDistrict = it }
                     )
                 }
 
@@ -1286,11 +1680,17 @@ fun EditUserProfileDialog(
         confirmButton = {
             Button(
                 onClick = {
+                    val fullLocation = listOfNotNull(
+                        selectedDistrict.takeIf { it.isNotBlank() },
+                        selectedGovernorate.takeIf { it.isNotBlank() },
+                        selectedCountry.takeIf { it.isNotBlank() }
+                    ).joinToString(" • ")
+
                     val updated = currentProfile.copy(
                         displayName = displayName.trim(),
                         email = currentEmail ?: currentProfile.email,
                         phone = phone.trim(),
-                        city = city.trim(),
+                        city = fullLocation.ifBlank { currentProfile.city },
                         profession = profession.trim(),
                         bio = bio.trim(),
                         avatarUrl = avatarUrl.trim()
@@ -1303,9 +1703,7 @@ fun EditUserProfileDialog(
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("إلغاء")
-            }
+            TextButton(onClick = onDismiss) { Text("إلغاء") }
         }
     )
 }
@@ -1462,9 +1860,7 @@ fun AuthorProfileDetailDialog(
             }
         },
         confirmButton = {
-            TextButton(onClick = onDismiss) {
-                Text("إغلاق")
-            }
+            TextButton(onClick = onDismiss) { Text("إغلاق") }
         }
     )
 }

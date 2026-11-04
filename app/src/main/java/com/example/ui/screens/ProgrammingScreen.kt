@@ -40,7 +40,15 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.PhotoLibrary
+import androidx.compose.ui.layout.ContentScale
+import coil.compose.AsyncImage
+import coil.request.ImageRequest
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Cable
 import androidx.compose.material.icons.filled.CheckCircle
@@ -1522,17 +1530,69 @@ fun ConnectionDiagramsTab(
                         }
                     }
 
-                    // Optional Board Image
-                    if (conn.boardImageUrl.isNotBlank()) {
+                    // Images for connection diagram (Single or Carousel)
+                    val connImages = conn.getAllImages()
+                    if (connImages.isNotEmpty()) {
                         Spacer(modifier = Modifier.height(10.dp))
-                        AsyncImage(
-                            model = conn.boardImageUrl,
-                            contentDescription = conn.boardName,
+                        var currentImgIdx by remember(conn.id) { mutableIntStateOf(0) }
+                        val safeImgIdx = currentImgIdx.coerceIn(0, connImages.size - 1)
+                        val activeImg = connImages[safeImgIdx]
+
+                        Box(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(160.dp)
+                                .height(170.dp)
                                 .clip(RoundedCornerShape(12.dp))
-                        )
+                                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                        ) {
+                            AsyncImage(
+                                model = ImageRequest.Builder(context)
+                                    .data(com.example.util.ImageHelper.getCoilData(activeImg))
+                                    .crossfade(true)
+                                    .build(),
+                                contentDescription = "${conn.boardName} - صورة ${safeImgIdx + 1}",
+                                contentScale = ContentScale.Fit,
+                                modifier = Modifier.fillMaxSize()
+                            )
+
+                            if (connImages.size > 1) {
+                                IconButton(
+                                    onClick = { currentImgIdx = if (safeImgIdx > 0) safeImgIdx - 1 else connImages.size - 1 },
+                                    modifier = Modifier
+                                        .align(Alignment.CenterStart)
+                                        .padding(6.dp)
+                                        .size(32.dp)
+                                        .background(Color.Black.copy(alpha = 0.55f), CircleShape)
+                                ) {
+                                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
+                                }
+                                IconButton(
+                                    onClick = { currentImgIdx = if (safeImgIdx < connImages.size - 1) safeImgIdx + 1 else 0 },
+                                    modifier = Modifier
+                                        .align(Alignment.CenterEnd)
+                                        .padding(6.dp)
+                                        .size(32.dp)
+                                        .background(Color.Black.copy(alpha = 0.55f), CircleShape)
+                                ) {
+                                    Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
+                                }
+                                Surface(
+                                    shape = RoundedCornerShape(10.dp),
+                                    color = Color.Black.copy(alpha = 0.65f),
+                                    modifier = Modifier
+                                        .align(Alignment.BottomCenter)
+                                        .padding(bottom = 6.dp)
+                                ) {
+                                    Text(
+                                        text = "${safeImgIdx + 1} / ${connImages.size}",
+                                        color = Color.White,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                                    )
+                                }
+                            }
+                        }
                     }
 
                     // Instructions
@@ -3017,10 +3077,32 @@ fun ConnectionEditDialog(
     onDismiss: () -> Unit,
     onSave: (ProgrammerConnection) -> Unit
 ) {
+    val context = LocalContext.current
     var programmerName by remember { mutableStateOf(initialItem?.programmerName ?: "RT809H") }
     var boardName by remember { mutableStateOf(initialItem?.boardName ?: "") }
     var voltageNote by remember { mutableStateOf(initialItem?.voltageNote ?: "3.3V DC") }
     var wiringInstructions by remember { mutableStateOf(initialItem?.wiringInstructions ?: "") }
+
+    val imageUrlsList = remember {
+        mutableStateListOf<String>().apply {
+            addAll(initialItem?.getAllImages() ?: emptyList())
+        }
+    }
+    var directImgUrl by remember { mutableStateOf("") }
+
+    val photoPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            try {
+                val localPath = com.example.util.ImageHelper.copyUriToLocalStorage(context, uri)
+                imageUrlsList.add(localPath)
+            } catch (_: Exception) {
+                imageUrlsList.add(uri.toString())
+            }
+        }
+    }
+
     val pinsList = remember {
         mutableStateListOf<ConnectionPinItem>().apply {
             if (initialItem != null && initialItem.pins.isNotEmpty()) {
@@ -3053,6 +3135,107 @@ fun ConnectionEditDialog(
                 OutlinedTextField(value = voltageNote, onValueChange = { voltageNote = it }, label = { Text("ملاحظة الجهد (مثل 3.3V DC)") }, modifier = Modifier.fillMaxWidth())
                 Spacer(modifier = Modifier.height(6.dp))
                 OutlinedTextField(value = wiringInstructions, onValueChange = { wiringInstructions = it }, label = { Text("تعليمات وخطوات التوصيل") }, modifier = Modifier.fillMaxWidth())
+                Spacer(modifier = Modifier.height(10.dp))
+
+                // Images Section (Multiple Photos Support)
+                Text("صور ومخططات الربط (${imageUrlsList.size}):", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                Spacer(modifier = Modifier.height(4.dp))
+
+                if (imageUrlsList.isNotEmpty()) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState())
+                            .padding(vertical = 4.dp)
+                    ) {
+                        imageUrlsList.forEachIndexed { index, imgItem ->
+                            Box(
+                                modifier = Modifier
+                                    .size(90.dp)
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(MaterialTheme.colorScheme.surfaceVariant)
+                            ) {
+                                AsyncImage(
+                                    model = ImageRequest.Builder(context)
+                                        .data(com.example.util.ImageHelper.getCoilData(imgItem))
+                                        .crossfade(true)
+                                        .build(),
+                                    contentDescription = "صورة $index",
+                                    contentScale = ContentScale.Crop,
+                                    modifier = Modifier.fillMaxSize()
+                                )
+
+                                Surface(
+                                    shape = CircleShape,
+                                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.85f),
+                                    modifier = Modifier
+                                        .padding(4.dp)
+                                        .align(Alignment.BottomEnd)
+                                ) {
+                                    IconButton(
+                                        onClick = { imageUrlsList.removeAt(index) },
+                                        modifier = Modifier.size(24.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Close,
+                                            contentDescription = "حذف الصورة",
+                                            tint = MaterialTheme.colorScheme.error,
+                                            modifier = Modifier.size(14.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = {
+                            photoPickerLauncher.launch(
+                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                            )
+                        },
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Icon(Icons.Default.PhotoLibrary, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("إضافة من المعرض", fontSize = 11.sp)
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(4.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    OutlinedTextField(
+                        value = directImgUrl,
+                        onValueChange = { directImgUrl = it },
+                        placeholder = { Text("أو مسار / رابط صورة...", fontSize = 10.sp) },
+                        modifier = Modifier.weight(1f),
+                        singleLine = true
+                    )
+                    Button(
+                        onClick = {
+                            if (directImgUrl.isNotBlank()) {
+                                imageUrlsList.add(directImgUrl.trim())
+                                directImgUrl = ""
+                            }
+                        },
+                        enabled = directImgUrl.isNotBlank(),
+                        contentPadding = PaddingValues(horizontal = 8.dp)
+                    ) {
+                        Text("+")
+                    }
+                }
+
                 Spacer(modifier = Modifier.height(10.dp))
 
                 Text("جدول الأطراف (${pinsList.size} طرف):", fontWeight = FontWeight.Bold, fontSize = 12.sp)
@@ -3092,11 +3275,14 @@ fun ConnectionEditDialog(
             Button(
                 onClick = {
                     if (boardName.isBlank()) return@Button
+                    val allImgs = imageUrlsList.toList()
                     val item = (initialItem ?: ProgrammerConnection()).copy(
                         programmerName = programmerName.trim(),
                         boardName = boardName.trim(),
                         voltageNote = voltageNote.trim(),
                         wiringInstructions = wiringInstructions.trim(),
+                        boardImageUrl = allImgs.firstOrNull() ?: "",
+                        imageUrls = allImgs,
                         pins = pinsList.toList()
                     )
                     onSave(item)

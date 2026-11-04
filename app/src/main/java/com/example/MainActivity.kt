@@ -380,8 +380,13 @@ fun AppContent(
     val harnesses by motorViewModel.harnesses.collectAsState()
     val parts by motorViewModel.parts.collectAsState()
 
-    val isSuperAdmin = !isGuest && (userRole == com.example.ui.viewmodel.UserRole.SUPER_ADMIN)
-    val isAdmin = !isGuest && (userRole == com.example.ui.viewmodel.UserRole.ADMIN || userRole == com.example.ui.viewmodel.UserRole.SUPER_ADMIN)
+    val isSuperAdmin = !isGuest && motorViewModel.isSuperAdmin
+    val canEditMotors = !isGuest && motorViewModel.canEditMotors
+    val canEditHarnesses = !isGuest && motorViewModel.canEditHarnesses
+    val canEditParts = !isGuest && motorViewModel.canEditParts
+    val canEditProgramming = !isGuest && motorViewModel.canEditProgramming
+    val canEditSettings = !isGuest && motorViewModel.canEditSettings
+    val isAdmin = !isGuest && motorViewModel.isAdmin
 
     val motorsList = when (val s = motorsState) {
         is MotorsUiState.Success -> s.motors
@@ -612,13 +617,13 @@ fun AppContent(
                                 navigateTo(Screen.DETAIL)
                             },
                             onAddNewMotorClick = {
-                                if (isAdmin) {
+                                if (canEditMotors) {
                                     motorToEdit = null
                                     navigateTo(Screen.ADMIN_EDIT)
                                 }
                             },
                             onAiStudioClick = {
-                                if (isAdmin) {
+                                if (canEditMotors) {
                                     navigateTo(Screen.AI_STUDIO)
                                 }
                             },
@@ -631,7 +636,7 @@ fun AppContent(
                                 }
                             },
                             userEmail = userEmail,
-                            isAdmin = isAdmin,
+                            isAdmin = canEditMotors,
                             isSuperAdmin = isSuperAdmin,
                             isGuest = isGuest,
                             onManageAdminsClick = {
@@ -640,16 +645,22 @@ fun AppContent(
                                 }
                             },
                             onEditMotorClick = { motor ->
-                                motorToEdit = motor
-                                navigateTo(Screen.ADMIN_EDIT)
+                                if (canEditMotors) {
+                                    motorToEdit = motor
+                                    navigateTo(Screen.ADMIN_EDIT)
+                                }
                             },
                             onDeleteMotorClick = { motor ->
-                                motorViewModel.deleteMotor(motor.id)
+                                if (canEditMotors) {
+                                    motorViewModel.deleteMotor(motor.id)
+                                }
                             },
                             onDuplicateMotor = { motor ->
-                                motorViewModel.duplicateMotor(motor) { cloned ->
-                                    motorToEdit = cloned
-                                    navigateTo(Screen.ADMIN_EDIT)
+                                if (canEditMotors) {
+                                    motorViewModel.duplicateMotor(motor) { cloned ->
+                                        motorToEdit = cloned
+                                        navigateTo(Screen.ADMIN_EDIT)
+                                    }
                                 }
                             },
                             onMoveMotor = { motorId, moveUp ->
@@ -667,27 +678,31 @@ fun AppContent(
                         }
                         HarnessListScreen(
                             harnesses = harnesses,
-                            isAdmin = isAdmin,
+                            isAdmin = canEditHarnesses,
                             onBackClick = { navigateBack() },
                             onAddHarnessClick = {
-                                if (isAdmin) {
+                                if (canEditHarnesses) {
                                     harnessToEdit = null
                                     navigateTo(Screen.ADMIN_HARNESS)
                                 }
                             },
                             onEditHarnessClick = { harness ->
-                                if (isAdmin) {
+                                if (canEditHarnesses) {
                                     harnessToEdit = harness
                                     navigateTo(Screen.ADMIN_HARNESS)
                                 }
                             },
                             onDeleteHarnessClick = { id ->
-                                motorViewModel.deleteHarness(id)
+                                if (canEditHarnesses) {
+                                    motorViewModel.deleteHarness(id)
+                                }
                             },
                             onDuplicateHarnessClick = { harness ->
-                                motorViewModel.duplicateHarness(harness) { cloned ->
-                                    harnessToEdit = cloned
-                                    navigateTo(Screen.ADMIN_HARNESS)
+                                if (canEditHarnesses) {
+                                    motorViewModel.duplicateHarness(harness) { cloned ->
+                                        harnessToEdit = cloned
+                                        navigateTo(Screen.ADMIN_HARNESS)
+                                    }
                                 }
                             },
                             onReorderHarnesses = { from, to ->
@@ -697,20 +712,24 @@ fun AppContent(
                     }
 
                     Screen.ADMIN_HARNESS -> {
-                        BackHandler {
+                        if (!canEditHarnesses) {
                             navigateBack()
-                        }
-                        AdminHarnessScreen(
-                            initialHarness = harnessToEdit,
-                            onSaveSuccess = { savedHarness ->
-                                motorViewModel.saveHarness(savedHarness) {
-                                    navigateBack()
-                                }
-                            },
-                            onBackClick = {
+                        } else {
+                            BackHandler {
                                 navigateBack()
                             }
-                        )
+                            AdminHarnessScreen(
+                                initialHarness = harnessToEdit,
+                                onSaveSuccess = { savedHarness ->
+                                    motorViewModel.saveHarness(savedHarness) {
+                                        navigateBack()
+                                    }
+                                },
+                                onBackClick = {
+                                    navigateBack()
+                                }
+                            )
+                        }
                     }
 
                     Screen.PARTS_LIST -> {
@@ -719,47 +738,55 @@ fun AppContent(
                         }
                         PartsListScreen(
                             parts = parts,
-                            isAdmin = isAdmin,
+                            isAdmin = canEditParts,
                             onBackClick = { navigateBack() },
                             onAddPartClick = {
-                                if (isAdmin) {
+                                if (canEditParts) {
                                     partToEdit = null
                                     navigateTo(Screen.ADMIN_PART)
                                 }
                             },
                             onEditPartClick = { part ->
-                                if (isAdmin) {
+                                if (canEditParts) {
                                     partToEdit = part
                                     navigateTo(Screen.ADMIN_PART)
                                 }
                             },
                             onDeletePartClick = { id ->
-                                motorViewModel.deletePart(id)
+                                if (canEditParts) {
+                                    motorViewModel.deletePart(id)
+                                }
                             },
                             onDuplicatePartClick = { part ->
-                                motorViewModel.duplicatePart(part) { cloned ->
-                                    partToEdit = cloned
-                                    navigateTo(Screen.ADMIN_PART)
+                                if (canEditParts) {
+                                    motorViewModel.duplicatePart(part) { cloned ->
+                                        partToEdit = cloned
+                                        navigateTo(Screen.ADMIN_PART)
+                                    }
                                 }
                             }
                         )
                     }
 
                     Screen.ADMIN_PART -> {
-                        BackHandler {
+                        if (!canEditParts) {
                             navigateBack()
-                        }
-                        AdminPartScreen(
-                            initialPart = partToEdit,
-                            onSaveSuccess = { savedPart ->
-                                motorViewModel.savePart(savedPart) {
-                                    navigateBack()
-                                }
-                            },
-                            onBackClick = {
+                        } else {
+                            BackHandler {
                                 navigateBack()
                             }
-                        )
+                            AdminPartScreen(
+                                initialPart = partToEdit,
+                                onSaveSuccess = { savedPart ->
+                                    motorViewModel.savePart(savedPart) {
+                                        navigateBack()
+                                    }
+                                },
+                                onBackClick = {
+                                    navigateBack()
+                                }
+                            )
+                        }
                     }
 
                     Screen.SYSTEM_INTEGRATOR -> {
@@ -789,7 +816,7 @@ fun AppContent(
                             navigateBack()
                         }
                         ProgrammingScreen(
-                            isAdmin = isAdmin,
+                            isAdmin = canEditProgramming,
                             currentUserEmail = userEmail,
                             onBackClick = { navigateBack() }
                         )
@@ -804,12 +831,12 @@ fun AppContent(
                                 motor = motor,
                                 onBackClick = { navigateBack() },
                                 onEditClick = {
-                                    if (isAdmin) {
+                                    if (canEditMotors) {
                                         motorToEdit = motor
                                         navigateTo(Screen.ADMIN_EDIT)
                                     }
                                 },
-                                onDuplicateClick = if (isAdmin) {
+                                onDuplicateClick = if (canEditMotors) {
                                     {
                                         motorViewModel.duplicateMotor(motor) { cloned ->
                                             motorToEdit = cloned
@@ -818,7 +845,7 @@ fun AppContent(
                                     }
                                 } else null,
                                 onAiGenerateForMotor = { m ->
-                                    if (isAdmin) {
+                                    if (canEditMotors) {
                                         motorToEdit = m
                                         aiViewModel.setPrompt("مخطط توصيل أطراف ماتور غسالة ${m.name} (${m.brand} - ${m.model}) موضحاً ألوان الأسلاك بدقة")
                                         onAiImageReceivedCallback = { generatedUri ->
@@ -828,7 +855,7 @@ fun AppContent(
                                         navigateTo(Screen.AI_STUDIO)
                                     }
                                 },
-                                isAdmin = isAdmin,
+                                isAdmin = canEditMotors,
                                 isFavorite = motorViewModel.isFavorite(motor.id),
                                 onToggleFavorite = { motorViewModel.toggleFavorite(motor.id) }
                             )
@@ -838,7 +865,7 @@ fun AppContent(
                     }
 
                     Screen.ADMIN_EDIT -> {
-                        if (!isAdmin) {
+                        if (!canEditMotors) {
                             navigateBack()
                         } else {
                             BackHandler {
@@ -879,7 +906,7 @@ fun AppContent(
                     }
 
                     Screen.AI_STUDIO -> {
-                        if (!isAdmin) {
+                        if (!canEditMotors) {
                             navigateBack()
                         } else {
                             BackHandler {
@@ -949,6 +976,10 @@ fun AppContent(
                             currentUserId = userId,
                             currentUserEmail = userEmail,
                             isAdmin = isAdmin,
+                            isGuest = isGuest,
+                            onAuthClick = {
+                                navigateTo(Screen.AUTH)
+                            },
                             onBackClick = {
                                 selectTab(Screen.DASHBOARD)
                             }

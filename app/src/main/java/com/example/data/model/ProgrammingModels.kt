@@ -179,18 +179,33 @@ data class ProgrammerConnection(
     val boardName: String = "", // e.g. "كارتة غسالة إل جي Direct Drive"
     val boardImageUrl: String = "",
     val programmerImageUrl: String = "",
+    val imageUrls: List<String> = emptyList(),
     val wiringInstructions: String = "",
     val pins: List<ConnectionPinItem> = emptyList(),
     val voltageNote: String = "3.3V DC",
     val createdTimestamp: Long = System.currentTimeMillis()
 ) {
+    fun getAllImages(): List<String> {
+        val list = mutableListOf<String>()
+        list.addAll(imageUrls.filter { it.isNotBlank() })
+        if (boardImageUrl.isNotBlank() && !list.contains(boardImageUrl)) {
+            list.add(0, boardImageUrl)
+        }
+        if (programmerImageUrl.isNotBlank() && !list.contains(programmerImageUrl)) {
+            list.add(programmerImageUrl)
+        }
+        return list.distinct()
+    }
+
     fun toMap(): Map<String, Any> {
+        val allImgs = getAllImages()
         return mapOf(
             "id" to id,
             "programmerName" to programmerName,
             "boardName" to boardName,
-            "boardImageUrl" to boardImageUrl,
-            "programmerImageUrl" to programmerImageUrl,
+            "boardImageUrl" to (allImgs.firstOrNull() ?: boardImageUrl),
+            "programmerImageUrl" to (if (allImgs.size > 1) allImgs[1] else programmerImageUrl),
+            "imageUrls" to allImgs,
             "wiringInstructions" to wiringInstructions,
             "pins" to pins.map { it.toMap() },
             "voltageNote" to voltageNote,
@@ -205,12 +220,18 @@ data class ProgrammerConnection(
                 ConnectionPinItem.fromMap(it)
             } ?: emptyList()
 
+            val rawImageUrls = (map["imageUrls"] as? List<*>)?.mapNotNull { it as? String } ?: emptyList()
+            val boardImg = map["boardImageUrl"] as? String ?: ""
+            val progImg = map["programmerImageUrl"] as? String ?: ""
+            val mergedImages = (rawImageUrls + listOf(boardImg, progImg)).filter { it.isNotBlank() }.distinct()
+
             return ProgrammerConnection(
                 id = id,
                 programmerName = map["programmerName"] as? String ?: "",
                 boardName = map["boardName"] as? String ?: "",
-                boardImageUrl = map["boardImageUrl"] as? String ?: "",
-                programmerImageUrl = map["programmerImageUrl"] as? String ?: "",
+                boardImageUrl = boardImg.ifBlank { mergedImages.firstOrNull() ?: "" },
+                programmerImageUrl = progImg,
+                imageUrls = mergedImages,
                 wiringInstructions = map["wiringInstructions"] as? String ?: "",
                 pins = pinsList,
                 voltageNote = map["voltageNote"] as? String ?: "3.3V DC",
