@@ -64,6 +64,7 @@ import androidx.compose.ui.unit.dp
 import com.example.data.model.Harness
 import com.example.ui.components.BreadcrumbBar
 import com.example.ui.components.BreadcrumbItem
+import com.example.ui.components.ConfirmDeleteDialog
 import com.example.ui.components.InteractiveHarnessMap
 import com.example.ui.components.SearchAutocompleteBox
 
@@ -261,8 +262,11 @@ fun HarnessListScreen(
                                     horizontalArrangement = Arrangement.SpaceBetween,
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Column {
+                                    Row(
+                                        modifier = Modifier.weight(1f),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Column(modifier = Modifier.padding(end = 8.dp)) {
                                             Text(
                                                 text = harness.name,
                                                 style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
@@ -271,7 +275,9 @@ fun HarnessListScreen(
                                             )
                                             Text(
                                                 text = "${harness.brand} • ${harness.model}",
-                                                style = MaterialTheme.typography.bodySmall.copy(color = MaterialTheme.colorScheme.outline)
+                                                style = MaterialTheme.typography.bodySmall.copy(color = MaterialTheme.colorScheme.outline),
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
                                             )
                                         }
                                     }
@@ -368,23 +374,15 @@ fun HarnessListScreen(
 
     if (harnessToDelete != null) {
         val h = harnessToDelete!!
-        AlertDialog(
-            onDismissRequest = { harnessToDelete = null },
-            title = { Text("حذف الضفيرة", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.error) },
-            text = { Text("هل أنت متأكد من رغبتك في حذف \"${h.name}\"؟") },
-            confirmButton = {
-                TextButton(onClick = {
-                    onDeleteHarnessClick(h.id)
-                    harnessToDelete = null
-                }) {
-                    Text("حذف", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold)
-                }
+        ConfirmDeleteDialog(
+            title = "تأكيد حذف الضفيرة",
+            message = "هل أنت متأكد من رغبتك في حذف هذه الضفيرة نهائياً؟ سيتم مسح جميع أطراف التوصيل المرتبطة بها.",
+            itemName = "${h.name} (${h.brand} - ${h.model})",
+            onConfirm = {
+                onDeleteHarnessClick(h.id)
+                harnessToDelete = null
             },
-            dismissButton = {
-                TextButton(onClick = { harnessToDelete = null }) {
-                    Text("إلغاء")
-                }
-            }
+            onDismiss = { harnessToDelete = null }
         )
     }
 }

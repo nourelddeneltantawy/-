@@ -7,6 +7,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -38,6 +39,7 @@ import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PhotoLibrary
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Storefront
 import androidx.compose.material.icons.filled.Verified
 import androidx.compose.material3.AlertDialog
@@ -63,6 +65,7 @@ import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -90,6 +93,7 @@ import com.example.data.model.UserProfile
 import com.example.data.repository.MarketplaceRepository
 import com.example.ui.components.BreadcrumbBar
 import com.example.ui.components.BreadcrumbItem
+import com.example.ui.components.ConfirmDeleteDialog
 import com.example.ui.components.SearchAutocompleteBox
 import com.example.util.HierarchicalLocationSelector
 import com.example.util.ImageHelper
@@ -132,6 +136,9 @@ fun MarketplaceScreen(
     var showCreatePostDialog by remember { mutableStateOf(false) }
     var postToEdit by remember { mutableStateOf<MarketplacePost?>(null) }
     var showProfileDialog by remember { mutableStateOf(false) }
+    var showTechniciansDialog by remember { mutableStateOf(false) }
+    var postToDelete by remember { mutableStateOf<MarketplacePost?>(null) }
+    var zoomedImageUrl by remember { mutableStateOf<String?>(null) }
     var profileToView by remember { mutableStateOf<UserProfile?>(null) }
     var showFilterDropdown by remember { mutableStateOf(false) }
 
@@ -278,31 +285,57 @@ fun MarketplaceScreen(
                             }
                         }
 
-                        // My Profile Button
-                        Surface(
-                            shape = RoundedCornerShape(12.dp),
-                            color = Color.White.copy(alpha = 0.22f),
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(12.dp))
-                                .clickable {
-                                    if (isGuest) onAuthClick() else showProfileDialog = true
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            // Admin Technicians Directory Button
+                            if (isAdmin) {
+                                Surface(
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = Color(0xFF10B981).copy(alpha = 0.35f),
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .clickable { showTechniciansDialog = true }
+                                        .padding(horizontal = 8.dp, vertical = 6.dp)
+                                ) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(
+                                            imageVector = Icons.Default.Verified,
+                                            contentDescription = null,
+                                            tint = Color.White,
+                                            modifier = Modifier.size(15.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text("الفنيون المسجلون 👥", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                                    }
                                 }
-                                .padding(horizontal = 10.dp, vertical = 6.dp)
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(
-                                    imageVector = if (isGuest) Icons.Default.Lock else Icons.Default.Person,
-                                    contentDescription = "الملف الشخصي",
-                                    tint = Color.White,
-                                    modifier = Modifier.size(17.dp)
-                                )
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text(
-                                    text = if (isGuest) "تسجيل الدخول" else "ملفي الشخصي",
-                                    color = Color.White,
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 12.sp
-                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                            }
+
+                            // My Profile Button
+                            Surface(
+                                shape = RoundedCornerShape(12.dp),
+                                color = Color.White.copy(alpha = 0.22f),
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .clickable {
+                                        if (isGuest) onAuthClick() else showProfileDialog = true
+                                    }
+                                    .padding(horizontal = 10.dp, vertical = 6.dp)
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(
+                                        imageVector = if (isGuest) Icons.Default.Lock else Icons.Default.Person,
+                                        contentDescription = "الملف الشخصي",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(17.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text(
+                                        text = if (isGuest) "تسجيل الدخول" else "ملفي الشخصي",
+                                        color = Color.White,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 12.sp
+                                    )
+                                }
                             }
                         }
                     }
@@ -662,12 +695,13 @@ fun MarketplaceScreen(
                                         }
                                     }
                                 },
+                                onEditClick = {
+                                    postToEdit = post
+                                    showCreatePostDialog = true
+                                },
+                                onImageClick = { zoomedImageUrl = it },
                                 onDeleteClick = {
-                                    MarketplaceRepository.deletePost(context, post.id) { success ->
-                                        if (success) {
-                                            coroutineScope.launch { snackbarHostState.showSnackbar("تم حذف الإعلان بنجاح") }
-                                        }
-                                    }
+                                    postToDelete = post
                                 }
                             )
                         }
@@ -756,12 +790,15 @@ fun MarketplaceScreen(
                                         }
                                     }
                                 },
-                                onDeleteClick = {
-                                    MarketplaceRepository.deletePost(context, post.id) { success ->
-                                        if (success) {
-                                            coroutineScope.launch { snackbarHostState.showSnackbar("تم حذف الإعلان بنجاح") }
-                                        }
+                                onEditClick = if (canManage) {
+                                    {
+                                        postToEdit = post
+                                        showCreatePostDialog = true
                                     }
+                                } else null,
+                                onImageClick = { zoomedImageUrl = it },
+                                onDeleteClick = {
+                                    postToDelete = post
                                 }
                             )
                         }
@@ -831,6 +868,39 @@ fun MarketplaceScreen(
             }
         )
     }
+
+    // Deletion Confirmation Dialog
+    if (postToDelete != null) {
+        ConfirmDeleteDialog(
+            title = "حذف الإعلان من سوق الكروت",
+            message = "هل أنت متأكد من رغبتك في حذف إعلان (${postToDelete!!.title}) بشكل نهائي؟",
+            onConfirm = {
+                val id = postToDelete!!.id
+                MarketplaceRepository.deletePost(context, id) { success ->
+                    if (success) {
+                        coroutineScope.launch { snackbarHostState.showSnackbar("تم حذف الإعلان بنجاح") }
+                    }
+                }
+                postToDelete = null
+            },
+            onDismiss = { postToDelete = null }
+        )
+    }
+
+    // Fullscreen Zoomable Image Dialog
+    if (zoomedImageUrl != null) {
+        FullscreenImageDialog(
+            imageUrl = zoomedImageUrl!!,
+            onDismiss = { zoomedImageUrl = null }
+        )
+    }
+
+    // Technicians Directory Dialog for Admins
+    if (showTechniciansDialog) {
+        TechniciansDirectoryDialog(
+            onDismiss = { showTechniciansDialog = false }
+        )
+    }
 }
 
 /**
@@ -845,6 +915,8 @@ fun MarketplacePostCard(
     onCallClick: () -> Unit,
     onToggleStatus: () -> Unit,
     onDeleteClick: () -> Unit,
+    onEditClick: (() -> Unit)? = null,
+    onImageClick: ((String) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -1042,7 +1114,7 @@ fun MarketplacePostCard(
                 )
             }
 
-            // Image Preview
+            // Image Preview (Clickable for fullscreen zoom)
             if (post.mediaUrl.isNotBlank()) {
                 Spacer(modifier = Modifier.height(10.dp))
                 Box(
@@ -1051,16 +1123,31 @@ fun MarketplacePostCard(
                         .height(180.dp)
                         .clip(RoundedCornerShape(12.dp))
                         .background(MaterialTheme.colorScheme.surfaceVariant)
+                        .clickable { onImageClick?.invoke(post.mediaUrl) }
                 ) {
                     AsyncImage(
                         model = ImageRequest.Builder(context)
                             .data(ImageHelper.getCoilData(post.mediaUrl))
                             .crossfade(true)
                             .build(),
-                        contentDescription = "صورة الكارتة",
+                        contentDescription = "صورة الكارتة (اضغط للتكبير)",
                         contentScale = ContentScale.Crop,
                         modifier = Modifier.fillMaxSize()
                     )
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = Color.Black.copy(alpha = 0.6f),
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(8.dp)
+                    ) {
+                        Text(
+                            text = "تكبير الصورة 🔍",
+                            color = Color.White,
+                            fontSize = 10.sp,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                        )
+                    }
                 }
             }
 
@@ -1162,7 +1249,7 @@ fun MarketplacePostCard(
                 }
             }
 
-            // Owner / Admin Actions Row (Status toggle & delete)
+            // Owner / Admin Actions Row (Status toggle, edit & delete)
             if (canManage) {
                 Spacer(modifier = Modifier.height(8.dp))
                 Row(
@@ -1176,23 +1263,36 @@ fun MarketplacePostCard(
                         modifier = Modifier
                             .clip(RoundedCornerShape(10.dp))
                             .clickable { onToggleStatus() }
-                            .padding(horizontal = 12.dp, vertical = 7.dp)
+                            .padding(horizontal = 10.dp, vertical = 7.dp)
                     ) {
                         Text(
-                            text = if (isCompleted) "إعادة تنشيط الإعلان 🔄" else if (isBuyRequest) "تم الشراء وتوفير الكارتة ✓" else "تم البيع بنجاح ✓",
+                            text = if (isCompleted) "إعادة تنشيط 🔄" else if (isBuyRequest) "تم الشراء ✓" else "تم البيع ✓",
                             color = if (isCompleted) Color(0xFF047857) else MaterialTheme.colorScheme.onSecondaryContainer,
                             fontWeight = FontWeight.Bold,
-                            fontSize = 12.sp
+                            fontSize = 11.sp
                         )
                     }
 
-                    TextButton(
-                        onClick = onDeleteClick,
-                        colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
-                    ) {
-                        Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("حذف الإعلان", fontSize = 12.sp)
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        if (onEditClick != null) {
+                            TextButton(
+                                onClick = onEditClick,
+                                colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.primary)
+                            ) {
+                                Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(14.dp))
+                                Spacer(modifier = Modifier.width(2.dp))
+                                Text("تعديل ✏️", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
+
+                        TextButton(
+                            onClick = onDeleteClick,
+                            colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
+                        ) {
+                            Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(14.dp))
+                            Spacer(modifier = Modifier.width(2.dp))
+                            Text("حذف", fontSize = 11.sp)
+                        }
                     }
                 }
             }
@@ -1896,3 +1996,188 @@ private fun openDialer(context: Context, phone: String) {
         // ignore
     }
 }
+
+@Composable
+fun FullscreenImageDialog(
+    imageUrl: String,
+    onDismiss: () -> Unit
+) {
+    val context = LocalContext.current
+    androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
+        Card(
+            shape = RoundedCornerShape(16.dp),
+            colors = CardDefaults.cardColors(containerColor = Color.Black),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(8.dp)
+        ) {
+            Column(
+                modifier = Modifier.padding(12.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("معاينة صورة الكارتة 🔍", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                    IconButton(onClick = onDismiss) {
+                        Icon(Icons.Default.Close, contentDescription = "إغلاق", tint = Color.White)
+                    }
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+                AsyncImage(
+                    model = ImageRequest.Builder(context)
+                        .data(ImageHelper.getCoilData(imageUrl))
+                        .crossfade(true)
+                        .build(),
+                    contentDescription = null,
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(350.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun TechniciansDirectoryDialog(
+    onDismiss: () -> Unit
+) {
+    val context = LocalContext.current
+    var technicians by remember { mutableStateOf<List<UserProfile>>(emptyList()) }
+    var isLoading by remember { mutableStateOf(true) }
+    var searchQuery by remember { mutableStateOf("") }
+
+    LaunchedEffect(Unit) {
+        technicians = MarketplaceRepository.fetchAllProfiles(context)
+        isLoading = false
+    }
+
+    val filtered = technicians.filter {
+        searchQuery.isBlank() ||
+        it.displayName.contains(searchQuery, ignoreCase = true) ||
+        it.city.contains(searchQuery, ignoreCase = true) ||
+        it.phone.contains(searchQuery, ignoreCase = true) ||
+        it.email.contains(searchQuery, ignoreCase = true)
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.Verified, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("دليل الفنيين والمهندسين المسجلين 👥", fontWeight = FontWeight.Bold, fontSize = 15.sp)
+            }
+        },
+        text = {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    text = "قائمة حسابات الفنيين المعتمدين المسجلين في التطبيق (${technicians.size} فني):",
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.outline
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+
+                OutlinedTextField(
+                    value = searchQuery,
+                    onValueChange = { searchQuery = it },
+                    placeholder = { Text("بحث باسم الفني، المدينة، الهاتف...", fontSize = 11.sp) },
+                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(16.dp)) },
+                    modifier = Modifier.fillMaxWidth().height(50.dp),
+                    singleLine = true,
+                    shape = RoundedCornerShape(10.dp)
+                )
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                if (isLoading) {
+                    Box(modifier = Modifier.fillMaxWidth().height(150.dp), contentAlignment = Alignment.Center) {
+                        Text("جاري تحميل قائمة الفنيين...", fontSize = 12.sp, color = MaterialTheme.colorScheme.outline)
+                    }
+                } else if (filtered.isEmpty()) {
+                    Box(modifier = Modifier.fillMaxWidth().height(150.dp), contentAlignment = Alignment.Center) {
+                        Text("لا يوجد فنيون مسجلون مطابقون للبحث", fontSize = 12.sp, color = Color.Gray)
+                    }
+                } else {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxWidth().height(280.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        items(filtered, key = { it.userId.ifBlank { it.email } }) { tech ->
+                            Surface(
+                                shape = RoundedCornerShape(10.dp),
+                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(10.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    if (tech.avatarUrl.isNotBlank()) {
+                                        AsyncImage(
+                                            model = ImageRequest.Builder(context)
+                                                .data(ImageHelper.getCoilData(tech.avatarUrl))
+                                                .crossfade(true)
+                                                .build(),
+                                            contentDescription = tech.displayName,
+                                            contentScale = ContentScale.Crop,
+                                            modifier = Modifier.size(40.dp).clip(CircleShape)
+                                        )
+                                    } else {
+                                        Surface(
+                                            shape = CircleShape,
+                                            color = MaterialTheme.colorScheme.primaryContainer,
+                                            modifier = Modifier.size(40.dp)
+                                        ) {
+                                            Box(contentAlignment = Alignment.Center) {
+                                                Text(tech.displayName.take(1).ifBlank { "ف" }, fontWeight = FontWeight.Bold)
+                                            }
+                                        }
+                                    }
+
+                                    Spacer(modifier = Modifier.width(10.dp))
+
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Text(tech.displayName.ifBlank { "فني" }, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                            Spacer(modifier = Modifier.width(4.dp))
+                                            Icon(Icons.Default.Verified, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(13.dp))
+                                        }
+                                        if (tech.city.isNotBlank()) {
+                                            Text("📍 ${tech.city}", fontSize = 10.sp, color = MaterialTheme.colorScheme.secondary)
+                                        }
+                                        if (tech.phone.isNotBlank()) {
+                                            Text("📞 ${tech.phone}", fontSize = 10.sp, color = MaterialTheme.colorScheme.outline)
+                                        }
+                                        if (tech.email.isNotBlank()) {
+                                            Text("✉️ ${tech.email}", fontSize = 9.sp, color = MaterialTheme.colorScheme.outline)
+                                        }
+                                    }
+
+                                    if (tech.phone.isNotBlank()) {
+                                        IconButton(
+                                            onClick = { openDialer(context, tech.phone) },
+                                            modifier = Modifier.size(32.dp)
+                                        ) {
+                                            Icon(Icons.Default.Call, contentDescription = "اتصال", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("إغلاق") }
+        }
+    )
+}
+

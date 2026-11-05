@@ -131,6 +131,23 @@ object MarketplaceRepository {
         }
     }
 
+    suspend fun fetchAllProfiles(context: Context): List<UserProfile> {
+        return try {
+            val db = FirebaseInitializer.getFirestore(context)
+            val snapshot = db.collection("user_profiles").get().await()
+            snapshot.documents.mapNotNull { doc ->
+                try {
+                    UserProfile.fromMap(doc.id, doc.data ?: emptyMap())
+                } catch (_: Throwable) {
+                    null
+                }
+            }
+        } catch (e: Throwable) {
+            Log.e(TAG, "Failed to fetch all profiles", e)
+            emptyList()
+        }
+    }
+
     fun saveUserProfile(
         context: Context,
         profile: UserProfile,

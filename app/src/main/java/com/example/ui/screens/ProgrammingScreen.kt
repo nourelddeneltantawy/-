@@ -133,6 +133,8 @@ import com.example.data.model.LicenseKeyRecord
 import com.example.data.model.ProgrammerConnection
 import com.example.data.model.ProgrammerSoftware
 import com.example.data.repository.ProgrammingRepository
+import com.example.ui.components.ConfirmDeleteDialog
+import com.example.util.ZipHelper
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -158,8 +160,11 @@ fun ProgrammingScreen(
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
 
-    LaunchedEffect(Unit) {
-        ProgrammingRepository.init(context)
+    LaunchedEffect(currentUserEmail) {
+        ProgrammingRepository.init(context, currentUserEmail)
+        if (!currentUserEmail.isNullOrBlank()) {
+            ProgrammingRepository.syncUserCloudLicenses(context, currentUserEmail)
+        }
     }
 
     val softwares by ProgrammingRepository.softwares.collectAsState()
@@ -198,6 +203,11 @@ fun ProgrammingScreen(
 
     var showAddConnectionDialog by remember { mutableStateOf(false) }
     var editingConnection by remember { mutableStateOf<ProgrammerConnection?>(null) }
+
+    // Deletion confirmation state
+    var itemToDeleteType by remember { mutableStateOf<String?>(null) } // "folder", "dump", "software", "connection", "key"
+    var itemToDeleteId by remember { mutableStateOf("") }
+    var itemToDeleteName by remember { mutableStateOf("") }
 
     // Real File Picker Launcher for firmware dumps
     val filePickerLauncher = rememberLauncherForActivityResult(
@@ -451,6 +461,65 @@ fun ProgrammingScreen(
                 }
             }
 
+            // Quick License Activation Banner (Single entry point to enter key and unlock all allowed items)
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 4.dp)
+                    .clickable {
+                        activationTargetScope = "ALL_FIRMWARE"
+                        activationTargetName = "تفعيل ترخيص جديد"
+                        showActivationDialog = true
+                    },
+                shape = RoundedCornerShape(12.dp),
+                color = Color(0xFFEAB308).copy(alpha = 0.12f),
+                border = BorderStroke(1.dp, Color(0xFFEAB308).copy(alpha = 0.4f))
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                        Surface(
+                            shape = CircleShape,
+                            color = Color(0xFFEAB308).copy(alpha = 0.2f),
+                            modifier = Modifier.size(32.dp)
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(Icons.Default.Key, contentDescription = null, tint = Color(0xFFCA8A04), modifier = Modifier.size(18.dp))
+                            }
+                        }
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Column {
+                            Text(
+                                text = "تفعيل مفتاح ترخيص جديد 🔑",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = "اضغط هنا للصق كود التفعيل وفتح كافة المجلدات والبرامج المصرح لك بها فوراً",
+                                fontSize = 10.sp,
+                                color = MaterialTheme.colorScheme.outline
+                            )
+                        }
+                    }
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = Color(0xFFEAB308)
+                    ) {
+                        Text(
+                            text = "إدخال المفتاح",
+                            color = Color.Black,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                        )
+                    }
+                }
+            }
+
             // CONTENT BY TAB
             when (selectedTabIndex) {
                 0 -> {
@@ -461,7 +530,11 @@ fun ProgrammingScreen(
                         },
                         isAdmin = isAdmin,
                         onEdit = { editingSoftware = it; showAddSoftwareDialog = true },
-                        onDelete = { ProgrammingRepository.deleteSoftware(context, it.id) },
+                        onDelete = {
+                            itemToDeleteType = "software"
+                            itemToDeleteId = it.id
+                            itemToDeleteName = it.name
+                        },
                         onRequestActivation = { scope, name ->
                             activationTargetScope = scope
                             activationTargetName = name
@@ -480,17 +553,14 @@ fun ProgrammingScreen(
                             },
                             isAdmin = isAdmin,
                             onFolderClick = { folder ->
-                                val isUnlocked = ProgrammingRepository.isUnlocked(folder.id, isFree = folder.isFree, isAdmin = isAdmin)
-                                if (!isUnlocked && folder.isLocked && !folder.isFree) {
-                                    activationTargetScope = folder.id
-                                    activationTargetName = "مجلد ${folder.name}"
-                                    showActivationDialog = true
-                                } else {
-                                    folderStack = listOf(folder)
-                                }
+                                folderStack = listOf(folder)
                             },
                             onEditFolder = { editingFolder = it; defaultParentFolderIdForNew = ""; showAddFolderDialog = true },
-                            onDeleteFolder = { ProgrammingRepository.deleteFolder(context, it.id) },
+                            onDeleteFolder = {
+                                itemToDeleteType = "folder"
+                                itemToDeleteId = it.id
+                                itemToDeleteName = it.name
+                            },
                             onRequestUnlockAll = {
                                 activationTargetScope = "ALL_FIRMWARE"
                                 activationTargetName = "جميع مجلدات وسوفتات البروسيسور"
@@ -518,29 +588,35 @@ fun ProgrammingScreen(
                                 folderStack = folderStack.dropLast(1)
                             },
                             onNavigateToSubFolder = { sub ->
-                                val isUnlocked = ProgrammingRepository.isUnlocked(sub.id, isFree = sub.isFree, isAdmin = isAdmin)
-                                if (!isUnlocked && sub.isLocked && !sub.isFree) {
-                                    activationTargetScope = sub.id
-                                    activationTargetName = "مجلد ${sub.name}"
-                                    showActivationDialog = true
-                                } else {
-                                    folderStack = folderStack + sub
-                                }
+                                folderStack = folderStack + sub
                             },
                             onNavigateToCrumb = { idx ->
                                 folderStack = if (idx < 0) emptyList() else folderStack.take(idx + 1)
                             },
                             onEditFolder = { editingFolder = it; defaultParentFolderIdForNew = it.parentFolderId; showAddFolderDialog = true },
-                            onDeleteFolder = { ProgrammingRepository.deleteFolder(context, it.id) },
+                            onDeleteFolder = {
+                                itemToDeleteType = "folder"
+                                itemToDeleteId = it.id
+                                itemToDeleteName = it.name
+                            },
                             onAddSubFolder = {
                                 editingFolder = null
                                 defaultParentFolderIdForNew = currentActive.id
                                 showAddFolderDialog = true
                             },
                             onEditDump = { editingDump = it; showAddDumpDialog = true },
-                            onDeleteDump = { ProgrammingRepository.deleteDump(context, it.id) },
+                            onDeleteDump = {
+                                itemToDeleteType = "dump"
+                                itemToDeleteId = it.id
+                                itemToDeleteName = it.title
+                            },
                             onAddDump = { editingDump = null; showAddDumpDialog = true },
-                            onUploadDumpFile = { filePickerLauncher.launch("*/*") }
+                            onUploadDumpFile = { filePickerLauncher.launch("*/*") },
+                            onRequestActivation = { scope, name ->
+                                activationTargetScope = scope
+                                activationTargetName = name
+                                showActivationDialog = true
+                            }
                         )
                     }
                 }
@@ -552,7 +628,11 @@ fun ProgrammingScreen(
                         },
                         isAdmin = isAdmin,
                         onEdit = { editingConnection = it; showAddConnectionDialog = true },
-                        onDelete = { ProgrammingRepository.deleteConnection(context, it.id) }
+                        onDelete = {
+                            itemToDeleteType = "connection"
+                            itemToDeleteId = it.id
+                            itemToDeleteName = it.boardName
+                        }
                     )
                 }
             }
@@ -562,6 +642,43 @@ fun ProgrammingScreen(
     // =========================================================================
     // MODALS: ACTIVATION, ADMIN LICENSE KEYS, CRUD
     // =========================================================================
+
+    // Deletion Confirmation Dialog
+    if (itemToDeleteType != null) {
+        val type = itemToDeleteType!!
+        val id = itemToDeleteId
+        val name = itemToDeleteName
+        val title = when (type) {
+            "folder" -> "حذف المجلد نهائياً"
+            "dump" -> "حذف ملف السوفت"
+            "software" -> "حذف البرنامج"
+            "connection" -> "حذف مخطط التوصيل"
+            "key" -> "حذف مفتاح الترخيص"
+            else -> "تأكيد الحذف"
+        }
+        val msg = when (type) {
+            "folder" -> "هل أنت متأكد من حذف المجلد وجميع الملفات التابعة له؟ لن يمكن استرجاعها بعد الحذف."
+            "key" -> "هل أنت متأكد من حذف هذا المفتاح؟ سيفقد العميل صلاحية الوصول إذا لم يكن مفعلاً."
+            else -> "هل أنت متأكد من حذف هذا العنصر نهائياً من النظام؟"
+        }
+        ConfirmDeleteDialog(
+            title = title,
+            itemName = name,
+            message = msg,
+            onConfirm = {
+                when (type) {
+                    "folder" -> ProgrammingRepository.deleteFolder(context, id)
+                    "dump" -> ProgrammingRepository.deleteDump(context, id)
+                    "software" -> ProgrammingRepository.deleteSoftware(context, id)
+                    "connection" -> ProgrammingRepository.deleteConnection(context, id)
+                    "key" -> ProgrammingRepository.deleteLicenseKey(context, id)
+                }
+                itemToDeleteType = null
+                Toast.makeText(context, "تم الحذف بنجاح ✓", Toast.LENGTH_SHORT).show()
+            },
+            onDismiss = { itemToDeleteType = null }
+        )
+    }
 
     // Activation Key Dialog
     if (showActivationDialog) {
@@ -603,7 +720,9 @@ fun ProgrammingScreen(
                 }
             },
             onDeleteKey = { keyId ->
-                ProgrammingRepository.deleteLicenseKey(context, keyId)
+                itemToDeleteType = "key"
+                itemToDeleteId = keyId
+                itemToDeleteName = keyId
             },
             onUpdateKey = { updatedKey ->
                 ProgrammingRepository.updateLicenseKey(context, updatedKey) { success ->
@@ -770,10 +889,11 @@ fun SoftwareListTab(
                                         )
                                     }
                                     // Quick Free / Lock Badge
+                                    val isSoftwareFreeOrUnlocked = item.isFree || isUnlocked
                                     Surface(
                                         shape = RoundedCornerShape(4.dp),
-                                        color = if (item.isFree) Color(0xFF10B981).copy(alpha = 0.2f) else Color(0xFFEAB308).copy(alpha = 0.2f),
-                                        border = BorderStroke(1.dp, if (item.isFree) Color(0xFF10B981) else Color(0xFFEAB308)),
+                                        color = if (isSoftwareFreeOrUnlocked) Color(0xFF10B981).copy(alpha = 0.2f) else Color(0xFFEAB308).copy(alpha = 0.2f),
+                                        border = BorderStroke(1.dp, if (isSoftwareFreeOrUnlocked) Color(0xFF10B981) else Color(0xFFEAB308)),
                                         modifier = Modifier.clickable(enabled = isAdmin) {
                                             ProgrammingRepository.toggleSoftwareFree(context, item.id)
                                             Toast.makeText(context, if (!item.isFree) "أصبح البرنامج متاحاً مجاناً للجميع 🔓" else "تم قفل البرنامج ليصبح للمشتركين فقط 🔒", Toast.LENGTH_SHORT).show()
@@ -784,17 +904,17 @@ fun SoftwareListTab(
                                             verticalAlignment = Alignment.CenterVertically
                                         ) {
                                             Icon(
-                                                imageVector = if (item.isFree) Icons.Default.LockOpen else Icons.Default.Lock,
+                                                imageVector = if (isSoftwareFreeOrUnlocked) Icons.Default.LockOpen else Icons.Default.Lock,
                                                 contentDescription = null,
-                                                tint = if (item.isFree) Color(0xFF10B981) else Color(0xFFCA8A04),
+                                                tint = if (isSoftwareFreeOrUnlocked) Color(0xFF10B981) else Color(0xFFCA8A04),
                                                 modifier = Modifier.size(10.dp)
                                             )
                                             Spacer(modifier = Modifier.width(3.dp))
                                             Text(
-                                                text = if (item.isFree) "مجاني 🔓" else "مدفوع 🔒",
+                                                text = if (item.isFree) "مجاني 🔓" else if (isUnlocked) "مفتوح ✓" else "مدفوع 🔒",
                                                 fontSize = 9.sp,
                                                 fontWeight = FontWeight.Bold,
-                                                color = if (item.isFree) Color(0xFF10B981) else Color(0xFFCA8A04)
+                                                color = if (isSoftwareFreeOrUnlocked) Color(0xFF10B981) else Color(0xFFCA8A04)
                                             )
                                         }
                                     }
@@ -1018,11 +1138,12 @@ fun FoldersGridTab(
                             )
                         }
 
-                        // Free / Locked Badge
+                        // Free / Locked / Unlocked Badge
+                        val isFolderFreeOrUnlocked = folder.isFree || isUnlocked
                         Surface(
                             shape = RoundedCornerShape(8.dp),
-                            color = if (folder.isFree) Color(0xFF10B981).copy(alpha = 0.2f) else Color(0xFFEAB308).copy(alpha = 0.2f),
-                            border = BorderStroke(1.dp, if (folder.isFree) Color(0xFF10B981) else Color(0xFFEAB308)),
+                            color = if (isFolderFreeOrUnlocked) Color(0xFF10B981).copy(alpha = 0.2f) else Color(0xFFEAB308).copy(alpha = 0.2f),
+                            border = BorderStroke(1.dp, if (isFolderFreeOrUnlocked) Color(0xFF10B981) else Color(0xFFEAB308)),
                             modifier = Modifier
                                 .align(Alignment.TopStart)
                                 .padding(8.dp)
@@ -1036,15 +1157,15 @@ fun FoldersGridTab(
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Icon(
-                                    imageVector = if (folder.isFree) Icons.Default.LockOpen else Icons.Default.Lock,
+                                    imageVector = if (isFolderFreeOrUnlocked) Icons.Default.LockOpen else Icons.Default.Lock,
                                     contentDescription = null,
-                                    tint = if (folder.isFree) Color(0xFF10B981) else Color(0xFFCA8A04),
+                                    tint = if (isFolderFreeOrUnlocked) Color(0xFF10B981) else Color(0xFFCA8A04),
                                     modifier = Modifier.size(10.dp)
                                 )
                                 Spacer(modifier = Modifier.width(3.dp))
                                 Text(
-                                    text = if (folder.isFree) "مجاني 🔓" else "مدفوع 🔒",
-                                    color = if (folder.isFree) Color(0xFF10B981) else Color(0xFFCA8A04),
+                                    text = if (folder.isFree) "مجاني 🔓" else if (isUnlocked) "مفتوح ✓" else "مدفوع 🔒",
+                                    color = if (isFolderFreeOrUnlocked) Color(0xFF10B981) else Color(0xFFCA8A04),
                                     fontSize = 10.sp,
                                     fontWeight = FontWeight.Bold
                                 )
@@ -1092,9 +1213,12 @@ fun DumpsListTab(
     onEditDump: (FirmwareDump) -> Unit,
     onDeleteDump: (FirmwareDump) -> Unit,
     onAddDump: () -> Unit,
-    onUploadDumpFile: () -> Unit = {}
+    onUploadDumpFile: () -> Unit = {},
+    onRequestActivation: (String, String) -> Unit = { _, _ -> }
 ) {
     val context = LocalContext.current
+    var isMultiSelectMode by remember { mutableStateOf(false) }
+    val selectedDumpIds = remember { mutableStateListOf<String>() }
 
     Column(modifier = Modifier.fillMaxSize()) {
         // Navigation & Breadcrumbs Bar (Computer File Explorer Style)
@@ -1267,21 +1391,88 @@ fun DumpsListTab(
 
             if (dumps.isNotEmpty()) {
                 item {
-                    Text(
-                        text = "ملفات السوفت والفلاشات (${dumps.size}) 💾",
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 13.sp,
-                        color = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.padding(bottom = 6.dp)
-                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "ملفات السوفت والفلاشات (${dumps.size}) 💾",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 13.sp,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+
+                        if (!isMultiSelectMode) {
+                            OutlinedButton(
+                                onClick = { isMultiSelectMode = true },
+                                shape = RoundedCornerShape(8.dp),
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                            ) {
+                                Text("تحديد متعدد / ضغط ZIP 📦", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            }
+                        } else {
+                            Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+                                TextButton(
+                                    onClick = {
+                                        if (selectedDumpIds.size == dumps.size) {
+                                            selectedDumpIds.clear()
+                                        } else {
+                                            selectedDumpIds.clear()
+                                            selectedDumpIds.addAll(dumps.map { it.id })
+                                        }
+                                    },
+                                    contentPadding = PaddingValues(horizontal = 4.dp, vertical = 2.dp)
+                                ) {
+                                    Text(if (selectedDumpIds.size == dumps.size) "إلغاء الكل" else "تحديد الكل", fontSize = 10.sp)
+                                }
+
+                                Button(
+                                    onClick = {
+                                        val chosen = dumps.filter { selectedDumpIds.contains(it.id) }
+                                        ZipHelper.zipAndShareDumps(
+                                            context = context,
+                                            archiveName = "${folder.name}_سوفتات",
+                                            dumps = chosen,
+                                            folders = listOf(folder)
+                                        )
+                                    },
+                                    enabled = selectedDumpIds.isNotEmpty(),
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0F766E)),
+                                    shape = RoundedCornerShape(8.dp),
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                                ) {
+                                    Text("مشاركة ZIP (${selectedDumpIds.size}) 📦", fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                                }
+
+                                IconButton(
+                                    onClick = {
+                                        isMultiSelectMode = false
+                                        selectedDumpIds.clear()
+                                    },
+                                    modifier = Modifier.size(28.dp)
+                                ) {
+                                    Icon(Icons.Default.Close, contentDescription = "إغلاق التحديد", modifier = Modifier.size(16.dp))
+                                }
+                            }
+                        }
+                    }
                 }
             }
 
             items(dumps, key = { it.id }) { dump ->
+                val isUnlocked = ProgrammingRepository.isUnlocked(folderId = dump.folderId, isFree = dump.isFree, isAdmin = isAdmin)
+                val isLocked = (dump.requiresLicense || !dump.isFree) && !isUnlocked && !dump.isFree
+                val isSelected = selectedDumpIds.contains(dump.id)
+                val isDumpFreeOrUnlocked = dump.isFree || isUnlocked
+
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(16.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    colors = CardDefaults.cardColors(
+                        containerColor = if (isSelected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f)
+                        else MaterialTheme.colorScheme.surface
+                    ),
                     elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
                 ) {
                     Column(modifier = Modifier.padding(14.dp)) {
@@ -1291,6 +1482,16 @@ fun DumpsListTab(
                             verticalAlignment = Alignment.Top
                         ) {
                             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                                if (isMultiSelectMode) {
+                                    androidx.compose.material3.Checkbox(
+                                        checked = isSelected,
+                                        onCheckedChange = { checked ->
+                                            if (checked) selectedDumpIds.add(dump.id) else selectedDumpIds.remove(dump.id)
+                                        }
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                }
+
                                 Surface(
                                     shape = RoundedCornerShape(10.dp),
                                     color = Color(0xFF0284C7).copy(alpha = 0.15f),
@@ -1309,20 +1510,20 @@ fun DumpsListTab(
                                             color = MaterialTheme.colorScheme.onSurface
                                         )
 
-                                        // Free / Locked Badge
+                                        // Free / Locked / Unlocked Badge
                                         Spacer(modifier = Modifier.width(6.dp))
                                         Surface(
                                             shape = RoundedCornerShape(6.dp),
-                                            color = if (dump.isFree) Color(0xFF10B981).copy(alpha = 0.2f) else Color(0xFFEAB308).copy(alpha = 0.2f),
-                                            border = BorderStroke(1.dp, if (dump.isFree) Color(0xFF10B981) else Color(0xFFEAB308)),
+                                            color = if (isDumpFreeOrUnlocked) Color(0xFF10B981).copy(alpha = 0.2f) else Color(0xFFEAB308).copy(alpha = 0.2f),
+                                            border = BorderStroke(1.dp, if (isDumpFreeOrUnlocked) Color(0xFF10B981) else Color(0xFFEAB308)),
                                             modifier = Modifier.clickable(enabled = isAdmin) {
                                                 ProgrammingRepository.toggleDumpFree(context, dump.id)
                                                 Toast.makeText(context, if (!dump.isFree) "أصبح السوفت متاحاً مجاناً للجميع 🔓" else "تم قفل السوفت ليصبح للمشتركين فقط 🔒", Toast.LENGTH_SHORT).show()
                                             }
                                         ) {
                                             Text(
-                                                text = if (dump.isFree) "مجاني 🔓" else "مدفوع 🔒",
-                                                color = if (dump.isFree) Color(0xFF10B981) else Color(0xFFCA8A04),
+                                                text = if (dump.isFree) "مجاني 🔓" else if (isUnlocked) "مفتوح ✓" else "مدفوع 🔒",
+                                                color = if (isDumpFreeOrUnlocked) Color(0xFF10B981) else Color(0xFFCA8A04),
                                                 fontSize = 9.sp,
                                                 fontWeight = FontWeight.Bold,
                                                 modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
@@ -1389,11 +1590,24 @@ fun DumpsListTab(
                         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
                         Spacer(modifier = Modifier.height(10.dp))
 
-                        // Action Button
+                        // Action Button (Gated if locked)
                         Row(
                             modifier = Modifier.fillMaxWidth()
                         ) {
-                            if (dump.localFilePath.isNotBlank()) {
+                            if (isLocked) {
+                                Button(
+                                    onClick = {
+                                        onRequestActivation(dump.folderId, dump.title)
+                                    },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD97706)),
+                                    shape = RoundedCornerShape(8.dp)
+                                ) {
+                                    Icon(Icons.Default.Lock, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("الملف محمي • اضغط لإدخال مفتاح التنشيط 🔑", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                }
+                            } else if (dump.localFilePath.isNotBlank()) {
                                 Button(
                                     onClick = {
                                         shareLocalFile(context, dump.localFilePath, dump.title)
@@ -1880,6 +2094,8 @@ fun GranularScopeSelectorDialog(
     softwares: List<ProgrammerSoftware>,
     initiallySelectedFolderIds: List<String>,
     initiallySelectedSoftwareIds: List<String>,
+    immutableFolderIds: Set<String> = emptySet(),
+    immutableSoftwareIds: Set<String> = emptySet(),
     onDismiss: () -> Unit,
     onConfirm: (selectedFolderIds: List<String>, selectedSoftwareIds: List<String>) -> Unit
 ) {
@@ -1892,6 +2108,18 @@ fun GranularScopeSelectorDialog(
     val childrenMap = remember(folders) { folders.groupBy { it.parentFolderId } }
     val allFolderIds = remember(folders) { folders.map { it.id }.toSet() }
     val roots = remember(folders) { folders.filter { it.parentFolderId.isBlank() || !allFolderIds.contains(it.parentFolderId) } }
+
+    fun getDescendantFolderIds(id: String): Set<String> {
+        val result = mutableSetOf<String>()
+        fun collect(currId: String) {
+            for (child in childrenMap[currId].orEmpty()) {
+                result.add(child.id)
+                collect(child.id)
+            }
+        }
+        collect(id)
+        return result
+    }
 
     val flattenedNodes = remember(folders, expandedFolderIds.toList(), filterText) {
         if (filterText.isNotBlank()) {
@@ -1929,7 +2157,7 @@ fun GranularScopeSelectorDialog(
         text = {
             Column(modifier = Modifier.fillMaxWidth()) {
                 Text(
-                    text = "حدد المجلدات أو البرامج التي يحق للمستخدم فتحها بهذا المفتاح",
+                    text = "حدد المجلدات أو البرامج التي يحق للمستخدم فتحها بهذا المفتاح (تحديد مجلد يحدد تفرعاته تلقائياً)",
                     fontSize = 11.sp,
                     color = MaterialTheme.colorScheme.outline
                 )
@@ -1997,6 +2225,7 @@ fun GranularScopeSelectorDialog(
                                 val allFIds = folders.map { it.id }
                                 if (tempFolderIds.containsAll(allFIds)) {
                                     tempFolderIds.clear()
+                                    tempFolderIds.addAll(immutableFolderIds)
                                 } else {
                                     tempFolderIds.clear()
                                     tempFolderIds.addAll(allFIds)
@@ -2005,6 +2234,7 @@ fun GranularScopeSelectorDialog(
                                 val allSIds = softwares.map { it.id }
                                 if (tempSoftwareIds.containsAll(allSIds)) {
                                     tempSoftwareIds.clear()
+                                    tempSoftwareIds.addAll(immutableSoftwareIds)
                                 } else {
                                     tempSoftwareIds.clear()
                                     tempSoftwareIds.addAll(allSIds)
@@ -2029,6 +2259,8 @@ fun GranularScopeSelectorDialog(
                                     val f = node.folder
                                     val isChecked = tempFolderIds.contains(f.id)
                                     val isExpanded = expandedFolderIds.contains(f.id)
+                                    val isImmutable = immutableFolderIds.contains(f.id)
+
                                     Surface(
                                         shape = RoundedCornerShape(8.dp),
                                         color = if (isChecked) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f) else MaterialTheme.colorScheme.surface,
@@ -2063,8 +2295,21 @@ fun GranularScopeSelectorDialog(
 
                                             androidx.compose.material3.Checkbox(
                                                 checked = isChecked,
+                                                enabled = !isImmutable,
                                                 onCheckedChange = { checked ->
-                                                    if (checked) tempFolderIds.add(f.id) else tempFolderIds.remove(f.id)
+                                                    if (isImmutable) return@Checkbox
+                                                    val descendants = setOf(f.id) + getDescendantFolderIds(f.id)
+                                                    if (checked) {
+                                                        descendants.forEach { id ->
+                                                            if (!tempFolderIds.contains(id)) tempFolderIds.add(id)
+                                                        }
+                                                    } else {
+                                                        descendants.forEach { id ->
+                                                            if (!immutableFolderIds.contains(id)) {
+                                                                tempFolderIds.remove(id)
+                                                            }
+                                                        }
+                                                    }
                                                 }
                                             )
                                             Spacer(modifier = Modifier.width(2.dp))
@@ -2078,11 +2323,26 @@ fun GranularScopeSelectorDialog(
                                             Column(
                                                 modifier = Modifier
                                                     .weight(1f)
-                                                    .clickable {
-                                                        if (isChecked) tempFolderIds.remove(f.id) else tempFolderIds.add(f.id)
+                                                    .clickable(enabled = !isImmutable) {
+                                                        val descendants = setOf(f.id) + getDescendantFolderIds(f.id)
+                                                        if (isChecked) {
+                                                            descendants.forEach { id ->
+                                                                if (!immutableFolderIds.contains(id)) tempFolderIds.remove(id)
+                                                            }
+                                                        } else {
+                                                            descendants.forEach { id ->
+                                                                if (!tempFolderIds.contains(id)) tempFolderIds.add(id)
+                                                            }
+                                                        }
                                                     }
                                             ) {
-                                                Text(f.name, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                                    Text(f.name, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                                    if (isImmutable) {
+                                                        Spacer(modifier = Modifier.width(4.dp))
+                                                        Text("(مفعل مسبقاً 🔒)", fontSize = 9.sp, color = Color(0xFF10B981), fontWeight = FontWeight.Bold)
+                                                    }
+                                                }
                                                 if (f.brand.isNotBlank()) Text(f.brand, fontSize = 10.sp, color = MaterialTheme.colorScheme.outline)
                                             }
                                         }
@@ -2100,6 +2360,8 @@ fun GranularScopeSelectorDialog(
                             LazyColumn(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                                 items(filteredSoftwares, key = { it.id }) { s ->
                                     val isChecked = tempSoftwareIds.contains(s.id)
+                                    val isImmutable = immutableSoftwareIds.contains(s.id)
+
                                     Surface(
                                         shape = RoundedCornerShape(8.dp),
                                         color = if (isChecked) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f) else MaterialTheme.colorScheme.surface,
@@ -2107,20 +2369,27 @@ fun GranularScopeSelectorDialog(
                                         modifier = Modifier
                                             .fillMaxWidth()
                                             .clip(RoundedCornerShape(8.dp))
-                                            .clickable {
+                                            .clickable(enabled = !isImmutable) {
                                                 if (isChecked) tempSoftwareIds.remove(s.id) else tempSoftwareIds.add(s.id)
                                             }
                                     ) {
                                         Row(modifier = Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
                                             androidx.compose.material3.Checkbox(
                                                 checked = isChecked,
-                                                onCheckedChange = { if (it) tempSoftwareIds.add(s.id) else tempSoftwareIds.remove(s.id) }
+                                                enabled = !isImmutable,
+                                                onCheckedChange = { if (!isImmutable) { if (it) tempSoftwareIds.add(s.id) else tempSoftwareIds.remove(s.id) } }
                                             )
                                             Spacer(modifier = Modifier.width(4.dp))
                                             Icon(Icons.Default.Laptop, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
                                             Spacer(modifier = Modifier.width(6.dp))
-                                            Column {
-                                                Text(s.name, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                            Column(modifier = Modifier.weight(1f)) {
+                                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                                    Text(s.name, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                                    if (isImmutable) {
+                                                        Spacer(modifier = Modifier.width(4.dp))
+                                                        Text("(مفعل مسبقاً 🔒)", fontSize = 9.sp, color = Color(0xFF10B981), fontWeight = FontWeight.Bold)
+                                                    }
+                                                }
                                                 Text(s.version, fontSize = 10.sp, color = MaterialTheme.colorScheme.outline)
                                             }
                                         }
@@ -2178,6 +2447,7 @@ fun AdminLicenseKeysManagerDialog(
     var notes by remember { mutableStateOf("") }
     var keySearchQuery by remember { mutableStateOf("") }
     var editingKeyRecord by remember { mutableStateOf<LicenseKeyRecord?>(null) }
+    var keyToDelete by remember { mutableStateOf<LicenseKeyRecord?>(null) }
 
     var isFullAccess by remember { mutableStateOf(true) }
     var showGranularScopePicker by remember { mutableStateOf(false) }
@@ -2368,7 +2638,7 @@ fun AdminLicenseKeysManagerDialog(
                 OutlinedTextField(
                     value = keySearchQuery,
                     onValueChange = { keySearchQuery = it },
-                    placeholder = { Text("بحث في المفاتيح بالرقم، الاسم، الإيميل...", fontSize = 11.sp) },
+                    placeholder = { Text("بحث برقم هاتف العميل، بالاسم، أو الإيميل...", fontSize = 11.sp) },
                     leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(18.dp)) },
                     trailingIcon = {
                         if (keySearchQuery.isNotBlank()) {
@@ -2453,18 +2723,34 @@ fun AdminLicenseKeysManagerDialog(
                                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    // WhatsApp Send to Client with formatted Egyptian/international number
+                                    // WhatsApp Send to Client with robust fallback
                                     Button(
                                         onClick = {
                                             val emailClause = if (keyRecord.clientEmail.isNotBlank()) "\nالحساب المرتبط: ${keyRecord.clientEmail}" else ""
                                             val clientMsg = "مرحباً يا باشمهندس ${keyRecord.clientName}،\nتم تفعيل اشتراكك في قسم ${keyRecord.targetScopeName} بتطبيق البراء إلكترونيك.$emailClause\n\nمفتاح التنشيط الخاص بك هو:\n${keyRecord.licenseKey}\n\nطريقة التفعيل: ادخل على قسم البرمجة والسوفت وير بالتطبيق، واضغط على فتح القسم، ثم الصق المفتاح واضغط تفعيل ✨\nمع تحيات م. البراء إلكترونيك ⚡"
                                             val cleanPhone = formatPhoneForWhatsApp(keyRecord.clientPhone)
+                                            val uri = if (cleanPhone.isNotBlank()) {
+                                                Uri.parse("https://wa.me/$cleanPhone?text=${Uri.encode(clientMsg)}")
+                                            } else {
+                                                Uri.parse("https://wa.me/?text=${Uri.encode(clientMsg)}")
+                                            }
+
                                             try {
-                                                val url = if (cleanPhone.isNotBlank()) "https://api.whatsapp.com/send?phone=$cleanPhone&text=${Uri.encode(clientMsg)}" else "https://api.whatsapp.com/send?text=${Uri.encode(clientMsg)}"
-                                                val i = Intent(Intent.ACTION_VIEW, Uri.parse(url))
-                                                context.startActivity(i)
+                                                val waIntent = Intent(Intent.ACTION_VIEW, uri).apply {
+                                                    setPackage("com.whatsapp")
+                                                }
+                                                context.startActivity(waIntent)
                                             } catch (_: Throwable) {
-                                                Toast.makeText(context, "تعذر فتح واتساب", Toast.LENGTH_SHORT).show()
+                                                try {
+                                                    val browserIntent = Intent(Intent.ACTION_VIEW, uri)
+                                                    context.startActivity(browserIntent)
+                                                } catch (_: Throwable) {
+                                                    val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                                                        type = "text/plain"
+                                                        putExtra(Intent.EXTRA_TEXT, clientMsg)
+                                                    }
+                                                    context.startActivity(Intent.createChooser(shareIntent, "إرسال بيانات المفتاح للعميل"))
+                                                }
                                             }
                                         },
                                         modifier = Modifier.weight(1f),
@@ -2497,9 +2783,9 @@ fun AdminLicenseKeysManagerDialog(
                                         Icon(Icons.Default.Edit, contentDescription = "تعديل بيانات المفتاح والصلاحيات", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(15.dp))
                                     }
 
-                                    // Delete Key
+                                    // Delete Key with Confirmation
                                     IconButton(
-                                        onClick = { onDeleteKey(keyRecord.id) },
+                                        onClick = { keyToDelete = keyRecord },
                                         modifier = Modifier.size(28.dp)
                                     ) {
                                         Icon(Icons.Default.Delete, contentDescription = "حذف", tint = Color(0xFFEF4444), modifier = Modifier.size(15.dp))
@@ -2517,6 +2803,18 @@ fun AdminLicenseKeysManagerDialog(
             }
         }
     )
+
+    if (keyToDelete != null) {
+        ConfirmDeleteDialog(
+            title = "حذف مفتاح الترخيص",
+            message = "هل أنت متأكد من حذف مفتاح الترخيص (${keyToDelete!!.licenseKey}) للعميل ${keyToDelete!!.clientName}؟ لن يتمكن العميل من استخدامه مجدداً.",
+            onConfirm = {
+                onDeleteKey(keyToDelete!!.id)
+                keyToDelete = null
+            },
+            onDismiss = { keyToDelete = null }
+        )
+    }
 
     if (showGranularScopePicker) {
         GranularScopeSelectorDialog(
@@ -2566,13 +2864,16 @@ fun EditCustomerKeyDialog(
     val editSelectedSoftwareIds = remember { mutableStateListOf<String>().apply { addAll(keyRecord.allowedSoftwareIds) } }
     var showScopePicker by remember { mutableStateOf(false) }
 
+    val foldersMap = remember(folders) { folders.associateBy { it.id } }
+    val softwaresMap = remember(softwares) { softwares.associateBy { it.id } }
+
     AlertDialog(
         onDismissRequest = onDismiss,
         title = {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(Icons.Default.Edit, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
                 Spacer(modifier = Modifier.width(8.dp))
-                Text("تعديل بيانات المفتاح والصلاحيات ✏️", fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                Text("تعديل بيانات العميل والمفتاح ✏️", fontWeight = FontWeight.Bold, fontSize = 15.sp)
             }
         },
         text = {
@@ -2650,17 +2951,37 @@ fun EditCustomerKeyDialog(
                             .clip(RoundedCornerShape(8.dp))
                             .clickable { showScopePicker = true }
                     ) {
-                        Row(
-                            modifier = Modifier.padding(10.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text(
-                                text = "محدد: ${editSelectedFolderIds.size} مجلد • ${editSelectedSoftwareIds.size} برنامج",
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                            Text("تعديل الصلاحيات ✍️", fontSize = 10.sp, color = MaterialTheme.colorScheme.primary)
+                        Column(modifier = Modifier.padding(10.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                    text = "الصلاحيات: ${editSelectedFolderIds.size} مجلد • ${editSelectedSoftwareIds.size} برنامج",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text("إضافة مجلدات / برامج أخرى ➕", fontSize = 10.sp, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                            }
+
+                            // Show list of unlocked items for this client
+                            if (editSelectedFolderIds.isNotEmpty() || editSelectedSoftwareIds.isNotEmpty()) {
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Text("العناصر المفتوحة للعميل حالياً (محمية من الحذف):", fontSize = 10.sp, color = MaterialTheme.colorScheme.outline)
+                                Spacer(modifier = Modifier.height(4.dp))
+                                editSelectedFolderIds.take(5).forEach { fId ->
+                                    val fName = foldersMap[fId]?.name ?: fId
+                                    Text("• مجلد: $fName", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                                if (editSelectedFolderIds.size > 5) {
+                                    Text("... ومجلدات أخرى (${editSelectedFolderIds.size - 5})", fontSize = 9.sp, color = MaterialTheme.colorScheme.outline)
+                                }
+                                editSelectedSoftwareIds.take(3).forEach { sId ->
+                                    val sName = softwaresMap[sId]?.name ?: sId
+                                    Text("• برنامج: $sName", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                            }
                         }
                     }
                 }
@@ -2700,6 +3021,8 @@ fun EditCustomerKeyDialog(
             softwares = softwares,
             initiallySelectedFolderIds = editSelectedFolderIds.toList(),
             initiallySelectedSoftwareIds = editSelectedSoftwareIds.toList(),
+            immutableFolderIds = keyRecord.allowedFolderIds.toSet(),
+            immutableSoftwareIds = keyRecord.allowedSoftwareIds.toSet(),
             onDismiss = { showScopePicker = false },
             onConfirm = { selectedF, selectedS ->
                 editSelectedFolderIds.clear()

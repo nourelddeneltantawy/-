@@ -54,29 +54,36 @@ object ProgrammingRepository {
     private var listeners = mutableListOf<ListenerRegistration>()
     private var isInitialized = false
 
-    fun init(context: Context) {
+    private var activeEmail: String? = null
+
+    fun init(context: Context, userEmail: String? = null) {
         val appContext = context.applicationContext ?: context
-        if (isInitialized) return
-        isInitialized = true
+        activeEmail = userEmail
+        if (!isInitialized) {
+            isInitialized = true
+            loadLocalCache(appContext)
 
-        loadLocalLicenses(appContext)
-        loadLocalCache(appContext)
+            if (_folders.value.isEmpty()) {
+                _folders.value = getInitialFolders()
+                saveFoldersToPrefs(appContext, _folders.value)
+            }
+            if (_softwares.value.isEmpty()) {
+                _softwares.value = getInitialSoftwares()
+                saveSoftwaresToPrefs(appContext, _softwares.value)
+            }
+            if (_connections.value.isEmpty()) {
+                _connections.value = getInitialConnections()
+                saveConnectionsToPrefs(appContext, _connections.value)
+            }
 
-        if (_folders.value.isEmpty()) {
-            _folders.value = getInitialFolders()
-            saveFoldersToPrefs(appContext, _folders.value)
-        }
-        if (_softwares.value.isEmpty()) {
-            _softwares.value = getInitialSoftwares()
-            saveSoftwaresToPrefs(appContext, _softwares.value)
-        }
-        if (_connections.value.isEmpty()) {
-            _connections.value = getInitialConnections()
-            saveConnectionsToPrefs(appContext, _connections.value)
+            bootstrapInitialDataToCloud(appContext)
+            startRealtimeSync(appContext)
         }
 
-        bootstrapInitialDataToCloud(appContext)
-        startRealtimeSync(appContext)
+        loadLocalLicenses(appContext, userEmail)
+        if (!userEmail.isNullOrBlank()) {
+            syncUserCloudLicenses(appContext, userEmail)
+        }
     }
 
     private fun bootstrapInitialDataToCloud(context: Context) {
@@ -107,10 +114,54 @@ object ProgrammingRepository {
         }
     }
 
-    private fun loadLocalLicenses(context: Context) {
+    fun loadLocalLicenses(context: Context, userEmail: String? = null) {
+        activeEmail = userEmail
+        val cleanEmail = userEmail?.trim()?.lowercase() ?: "guest"
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        val set = prefs.getStringSet(KEY_USER_ACTIVATED_LICENSES, emptySet()) ?: emptySet()
+        val set = prefs.getStringSet("${KEY_USER_ACTIVATED_LICENSES}_$cleanEmail", emptySet()) ?: emptySet()
         _unlockedScopes.value = set
+    }
+
+    /**
+     * Restore all purchased/activated licenses for this user email from Firestore!
+     * Ensures that when a user logs in on ANY device or reinstalls the app, all their
+     * bought keys and unlocked folders/softwares are automatically restored!
+     */
+    fun syncUserCloudLicenses(context: Context, userEmail: String) {
+        val cleanEmail = userEmail.trim().lowercase()
+        if (cleanEmail.isBlank()) return
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val db = FirebaseInitializer.getFirestore(context)
+                val snapshot = db.collection("license_keys")
+                    .whereEqualTo("clientEmail", cleanEmail)
+                    .get()
+                    .await()
+
+                if (!snapshot.isEmpty) {
+                    val newSet = _unlockedScopes.value.toMutableSet()
+                    for (doc in snapshot.documents) {
+                        val record = LicenseKeyRecord.fromMap(doc.id, doc.data ?: emptyMap())
+                        if (record.isActivated) {
+                            if (record.isFullAccess || record.targetScope == "ALL_FIRMWARE") {
+                                newSet.add("ALL_FIRMWARE")
+                            }
+                            if (record.targetScope.isNotBlank()) {
+                                newSet.add(record.targetScope)
+                            }
+                            newSet.addAll(record.allowedFolderIds)
+                            newSet.addAll(record.allowedSoftwareIds)
+                            newSet.add(record.licenseKey)
+                        }
+                    }
+                    _unlockedScopes.value = newSet
+                    val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                    prefs.edit().putStringSet("${KEY_USER_ACTIVATED_LICENSES}_$cleanEmail", newSet).apply()
+                }
+            } catch (e: Throwable) {
+                Log.w(TAG, "User cloud license sync error: ${e.message}")
+            }
+        }
     }
 
     fun isUnlocked(
@@ -260,8 +311,9 @@ object ProgrammingRepository {
         set.add(record.licenseKey)
         _unlockedScopes.value = set
 
+        val cleanEmail = (activeEmail ?: record.clientEmail).trim().lowercase().ifBlank { "guest" }
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        prefs.edit().putStringSet(KEY_USER_ACTIVATED_LICENSES, set).apply()
+        prefs.edit().putStringSet("${KEY_USER_ACTIVATED_LICENSES}_$cleanEmail", set).apply()
     }
 
     fun generateUniqueKey(
@@ -383,8 +435,12 @@ object ProgrammingRepository {
     fun saveSoftware(context: Context, item: ProgrammerSoftware, onComplete: ((Boolean) -> Unit)? = null) {
         val appContext = context.applicationContext ?: context
         val current = _softwares.value.toMutableList()
-        current.removeAll { it.id == item.id }
-        current.add(0, item)
+        val idx = current.indexOfFirst { it.id == item.id }
+        if (idx != -1) {
+            current[idx] = item
+        } else {
+            current.add(0, item)
+        }
         _softwares.value = current
         saveSoftwaresToPrefs(appContext, current)
 
@@ -422,8 +478,12 @@ object ProgrammingRepository {
     fun saveFolder(context: Context, item: FirmwareFolder, onComplete: ((Boolean) -> Unit)? = null) {
         val appContext = context.applicationContext ?: context
         val current = _folders.value.toMutableList()
-        current.removeAll { it.id == item.id }
-        current.add(item)
+        val idx = current.indexOfFirst { it.id == item.id }
+        if (idx != -1) {
+            current[idx] = item
+        } else {
+            current.add(item)
+        }
         _folders.value = current
         saveFoldersToPrefs(appContext, current)
 
@@ -467,8 +527,12 @@ object ProgrammingRepository {
     fun saveDump(context: Context, item: FirmwareDump, onComplete: ((Boolean) -> Unit)? = null) {
         val appContext = context.applicationContext ?: context
         val current = _dumps.value.toMutableList()
-        current.removeAll { it.id == item.id }
-        current.add(0, item)
+        val idx = current.indexOfFirst { it.id == item.id }
+        if (idx != -1) {
+            current[idx] = item
+        } else {
+            current.add(0, item)
+        }
         _dumps.value = current
         saveDumpsToPrefs(appContext, current)
 
@@ -506,8 +570,12 @@ object ProgrammingRepository {
     fun saveConnection(context: Context, item: ProgrammerConnection, onComplete: ((Boolean) -> Unit)? = null) {
         val appContext = context.applicationContext ?: context
         val current = _connections.value.toMutableList()
-        current.removeAll { it.id == item.id }
-        current.add(0, item)
+        val idx = current.indexOfFirst { it.id == item.id }
+        if (idx != -1) {
+            current[idx] = item
+        } else {
+            current.add(0, item)
+        }
         _connections.value = current
         saveConnectionsToPrefs(appContext, current)
 

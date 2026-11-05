@@ -380,13 +380,24 @@ fun AppContent(
     val harnesses by motorViewModel.harnesses.collectAsState()
     val parts by motorViewModel.parts.collectAsState()
 
-    val isSuperAdmin = !isGuest && motorViewModel.isSuperAdmin
-    val canEditMotors = !isGuest && motorViewModel.canEditMotors
-    val canEditHarnesses = !isGuest && motorViewModel.canEditHarnesses
-    val canEditParts = !isGuest && motorViewModel.canEditParts
-    val canEditProgramming = !isGuest && motorViewModel.canEditProgramming
-    val canEditSettings = !isGuest && motorViewModel.canEditSettings
-    val isAdmin = !isGuest && motorViewModel.isAdmin
+    val currentUserEmailClean = (userEmail ?: motorViewModel.currentUserEmail)?.trim()?.lowercase()
+    val isSuperAdmin = !isGuest && (motorViewModel.isSuperAdmin || AdminRepository.isSuperAdminEmail(currentUserEmailClean))
+    val currentAdminRecord = adminsList.firstOrNull { it.email.trim().lowercase() == currentUserEmailClean }
+    val currentUserPerms = if (isSuperAdmin) listOf("all", "motors", "harnesses", "parts", "programming", "settings")
+        else currentAdminRecord?.permissions ?: emptyList()
+
+    fun checkSectionPermission(section: String): Boolean {
+        if (isGuest) return false
+        if (isSuperAdmin) return true
+        return currentUserPerms.contains("all") || currentUserPerms.contains(section)
+    }
+
+    val canEditMotors = checkSectionPermission("motors")
+    val canEditHarnesses = checkSectionPermission("harnesses")
+    val canEditParts = checkSectionPermission("parts")
+    val canEditProgramming = checkSectionPermission("programming")
+    val canEditSettings = checkSectionPermission("settings")
+    val isAdmin = isSuperAdmin || (currentAdminRecord != null && currentUserPerms.isNotEmpty())
 
     val motorsList = when (val s = motorsState) {
         is MotorsUiState.Success -> s.motors

@@ -79,6 +79,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.model.Motor
 import com.example.data.model.MotorCategory
+import com.example.ui.components.ConfirmDeleteDialog
 import com.example.ui.components.MotorCard
 import com.example.ui.components.MotorCardSkeleton
 import com.example.ui.viewmodel.MotorsUiState
@@ -604,80 +605,30 @@ fun CatalogScreen(
     // Delete Category Confirmation Dialog (Admin only)
     if (isAdmin && categoryToDelete != null) {
         val cat = categoryToDelete!!
-        AlertDialog(
-            onDismissRequest = { categoryToDelete = null },
-            title = {
-                Text(
-                    text = "حذف القائمة (خاص بالمشرفين)",
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.error
-                )
+        ConfirmDeleteDialog(
+            title = "حذف القائمة (خاص بالمشرفين)",
+            message = "هل أنت متأكد من حذف قائمة \"${cat.name}\"؟ سيتم حذف هذه القائمة وتحديثها فوراً لدى جميع المستخدمين. (لن يتم حذف المواتير المسجلة بداخلها).",
+            confirmText = "حذف القائمة",
+            onConfirm = {
+                onDeleteCategory(cat.id)
+                categoryToDelete = null
             },
-            text = {
-                Text(
-                    text = "هل أنت متأكد من حذف قائمة \"${cat.name}\"؟ سيتم حذف هذه القائمة وتحديثها فوراً لدى جميع المستخدمين. (لن يتم حذف المواتير المسجلة بداخلها).",
-                    style = MaterialTheme.typography.bodyMedium
-                )
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        onDeleteCategory(cat.id)
-                        categoryToDelete = null
-                    }
-                ) {
-                    Text(
-                        text = "حذف القائمة من السحابة",
-                        color = MaterialTheme.colorScheme.error,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { categoryToDelete = null }) {
-                    Text("إلغاء")
-                }
-            }
+            onDismiss = { categoryToDelete = null }
         )
     }
 
     // Delete Motor Confirmation Dialog
     if (motorToDelete != null) {
         val motor = motorToDelete!!
-        AlertDialog(
-            onDismissRequest = { motorToDelete = null },
-            title = {
-                Text(
-                    text = "حذف الماتور نهائياً",
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.error
-                )
+        ConfirmDeleteDialog(
+            title = "حذف الماتور نهائياً",
+            message = "هل أنت متأكد من رغبتك في حذف \"${motor.name}\" (${motor.brand})؟ سيتم حذف جميع الأطراف والألوان الخاصة به نهائياً.",
+            confirmText = "حذف نهائي",
+            onConfirm = {
+                onDeleteMotorClick(motor)
+                motorToDelete = null
             },
-            text = {
-                Text(
-                    text = "هل أنت متأكد من رغبتك في حذف \"${motor.name}\" (${motor.brand})؟ سيتم حذف جميع الأطراف والألوان الخاصة به نهائياً.",
-                    style = MaterialTheme.typography.bodyMedium
-                )
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        onDeleteMotorClick(motor)
-                        motorToDelete = null
-                    }
-                ) {
-                    Text(
-                        text = "حذف نهائي",
-                        color = MaterialTheme.colorScheme.error,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { motorToDelete = null }) {
-                    Text("إلغاء")
-                }
-            }
+            onDismiss = { motorToDelete = null }
         )
     }
 }

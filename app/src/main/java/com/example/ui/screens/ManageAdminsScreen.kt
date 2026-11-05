@@ -69,6 +69,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.model.AdminRecord
 import com.example.data.repository.AdminRepository
+import com.example.ui.components.ConfirmDeleteDialog
 import kotlinx.coroutines.launch
 
 data class AdminPermissionOption(
@@ -139,7 +140,189 @@ fun ManageAdminsScreen(
             contentPadding = PaddingValues(16.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
-            // Item 1: Add New Admin Card (Collapsible for cleaner mobile UX)
+            // Section 1: Header for Registered Admins (PROMINENT AT TOP)
+            item {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Surface(
+                            shape = CircleShape,
+                            color = MaterialTheme.colorScheme.primaryContainer,
+                            modifier = Modifier.size(36.dp)
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(Icons.Default.Security, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+                            }
+                        }
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Column {
+                            Text(
+                                text = "المشرفون المعتمدون (${admins.size}) 🛡️",
+                                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                            )
+                            Text(
+                                text = "المشرفون المصرح لهم بالتحكم والتعديل في التطبيق",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.outline
+                            )
+                        }
+                    }
+
+                    Button(
+                        onClick = { isAddFormOpen = !isAddFormOpen },
+                        shape = RoundedCornerShape(10.dp),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+                    ) {
+                        Icon(
+                            imageVector = if (isAddFormOpen) Icons.Default.KeyboardArrowUp else Icons.Default.Add,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(if (isAddFormOpen) "إغلاق النموذج" else "إضافة مشرف +", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+
+            // Section 2: Admins List
+            if (admins.isEmpty()) {
+                item {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f))
+                    ) {
+                        Box(modifier = Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
+                            Text("جاري مزامنة قائمة المشرفين من السحاب...", fontSize = 12.sp, color = Color.Gray)
+                        }
+                    }
+                }
+            } else {
+                items(admins, key = { it.email }) { admin ->
+                    val isProtected = AdminRepository.isSuperAdminEmail(admin.email)
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(14.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                        border = BorderStroke(1.dp, if (isProtected) Color(0xFFEAB308).copy(alpha = 0.6f) else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)),
+                        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                    ) {
+                        Column(modifier = Modifier.padding(14.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Surface(
+                                    shape = RoundedCornerShape(10.dp),
+                                    color = if (isProtected) Color(0xFFEAB308).copy(alpha = 0.2f) else MaterialTheme.colorScheme.primaryContainer,
+                                    modifier = Modifier.size(42.dp)
+                                ) {
+                                    Box(contentAlignment = Alignment.Center) {
+                                        Icon(
+                                            imageVector = if (isProtected) Icons.Default.AdminPanelSettings else Icons.Default.Person,
+                                            contentDescription = null,
+                                            tint = if (isProtected) Color(0xFFCA8A04) else MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.size(22.dp)
+                                        )
+                                    }
+                                }
+
+                                Spacer(modifier = Modifier.width(12.dp))
+
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = admin.email,
+                                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                    )
+                                    Text(
+                                        text = if (isProtected) "👑 مشرف رئيسي (Super Admin)" else "🛡️ مشرف معتمد (Admin)",
+                                        style = MaterialTheme.typography.labelSmall.copy(
+                                            color = if (isProtected) Color(0xFFCA8A04) else MaterialTheme.colorScheme.primary,
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                    )
+                                }
+                            }
+
+                            // Permissions Badges
+                            Spacer(modifier = Modifier.height(8.dp))
+                            FlowRow(
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                val currentPerms = if (isProtected || admin.permissions.contains("all") || admin.permissions.isEmpty()) {
+                                    listOf("all")
+                                } else {
+                                    admin.permissions
+                                }
+
+                                currentPerms.forEach { pKey ->
+                                    val opt = AVAILABLE_ADMIN_PERMISSIONS.firstOrNull { it.key == pKey }
+                                    Surface(
+                                        shape = RoundedCornerShape(6.dp),
+                                        color = if (pKey == "all") Color(0xFF10B981).copy(alpha = 0.15f) else MaterialTheme.colorScheme.surfaceVariant,
+                                        border = BorderStroke(1.dp, if (pKey == "all") Color(0xFF10B981) else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+                                    ) {
+                                        Text(
+                                            text = opt?.title?.substringBefore("(") ?: pKey,
+                                            fontSize = 10.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = if (pKey == "all") Color(0xFF047857) else MaterialTheme.colorScheme.onSurfaceVariant,
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                        )
+                                    }
+                                }
+                            }
+
+                            // Action Buttons (Only for non-super admins)
+                            if (!isProtected) {
+                                Spacer(modifier = Modifier.height(10.dp))
+                                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    OutlinedButton(
+                                        onClick = { editingAdmin = admin },
+                                        modifier = Modifier.weight(1f),
+                                        shape = RoundedCornerShape(8.dp),
+                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Edit,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(15.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text("تعديل الصلاحيات ✏️", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                    }
+
+                                    Button(
+                                        onClick = { deletingAdmin = admin },
+                                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error.copy(alpha = 0.12f), contentColor = MaterialTheme.colorScheme.error),
+                                        shape = RoundedCornerShape(8.dp),
+                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Delete,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(15.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text("حذف 🗑️", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Section 3: Add New Admin Form (Collapsible / Toggleable)
             item {
                 Card(
                     modifier = Modifier.fillMaxWidth(),
@@ -168,11 +351,11 @@ fun ManageAdminsScreen(
                                 Spacer(modifier = Modifier.width(10.dp))
                                 Column {
                                     Text(
-                                        text = "إضافة مشرف جديد وتحديد صلاحياته",
+                                        text = "إضافة مشرف جديد وتحديد صلاحياته ➕",
                                         style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, fontSize = 14.sp)
                                     )
                                     Text(
-                                        text = if (isAddFormOpen) "انقر للطي" else "انقر لفتح نموذج إضافة مشرف جديد",
+                                        text = if (isAddFormOpen) "انقر للطي والإخفاء" else "انقر لفتح نموذج إضافة مشرف جديد وتحديد أقسامه",
                                         fontSize = 11.sp,
                                         color = MaterialTheme.colorScheme.outline
                                     )
@@ -288,149 +471,6 @@ fun ManageAdminsScreen(
                     }
                 }
             }
-
-            // Item 2: Header for Registered Admins
-            item {
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = "المشرفون المعتمدون (${admins.size}) 🛡️",
-                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, fontSize = 15.sp)
-                    )
-                    if (!isAddFormOpen) {
-                        OutlinedButton(
-                            onClick = { isAddFormOpen = true },
-                            shape = RoundedCornerShape(8.dp),
-                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
-                        ) {
-                            Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(14.dp))
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("إضافة مشرف", fontSize = 11.sp)
-                        }
-                    }
-                }
-            }
-
-            // Items: Admins List
-            if (admins.isEmpty()) {
-                item {
-                    Card(
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(12.dp),
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f))
-                    ) {
-                        Box(modifier = Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
-                            Text("جاري مزامنة قائمة المشرفين من السحاب...", fontSize = 12.sp, color = Color.Gray)
-                        }
-                    }
-                }
-            } else {
-                items(admins, key = { it.email }) { admin ->
-                    val isProtected = AdminRepository.isSuperAdminEmail(admin.email)
-                    Card(
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(14.dp),
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
-                    ) {
-                        Column(modifier = Modifier.padding(14.dp)) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Surface(
-                                    shape = RoundedCornerShape(10.dp),
-                                    color = if (isProtected) Color(0xFFEAB308).copy(alpha = 0.2f) else MaterialTheme.colorScheme.primaryContainer,
-                                    modifier = Modifier.size(42.dp)
-                                ) {
-                                    Box(contentAlignment = Alignment.Center) {
-                                        Icon(
-                                            imageVector = if (isProtected) Icons.Default.AdminPanelSettings else Icons.Default.Person,
-                                            contentDescription = null,
-                                            tint = if (isProtected) Color(0xFFCA8A04) else MaterialTheme.colorScheme.primary,
-                                            modifier = Modifier.size(22.dp)
-                                        )
-                                    }
-                                }
-
-                                Spacer(modifier = Modifier.width(12.dp))
-
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(
-                                        text = admin.email,
-                                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                                    )
-                                    Text(
-                                        text = if (isProtected) "👑 مشرف رئيسي (Super Admin)" else "🛡️ مشرف معتمد (Admin)",
-                                        style = MaterialTheme.typography.labelSmall.copy(
-                                            color = if (isProtected) Color(0xFFCA8A04) else MaterialTheme.colorScheme.primary,
-                                            fontWeight = FontWeight.SemiBold
-                                        )
-                                    )
-                                }
-
-                                if (!isProtected) {
-                                    IconButton(
-                                        onClick = { editingAdmin = admin },
-                                        modifier = Modifier.size(36.dp)
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.Edit,
-                                            contentDescription = "تعديل الصلاحيات",
-                                            tint = MaterialTheme.colorScheme.primary,
-                                            modifier = Modifier.size(20.dp)
-                                        )
-                                    }
-                                    IconButton(
-                                        onClick = { deletingAdmin = admin },
-                                        modifier = Modifier.size(36.dp)
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.Delete,
-                                            contentDescription = "حذف المشرف",
-                                            tint = MaterialTheme.colorScheme.error,
-                                            modifier = Modifier.size(20.dp)
-                                        )
-                                    }
-                                }
-                            }
-
-                            // Permissions Badges
-                            Spacer(modifier = Modifier.height(8.dp))
-                            FlowRow(
-                                horizontalArrangement = Arrangement.spacedBy(4.dp),
-                                verticalArrangement = Arrangement.spacedBy(4.dp)
-                            ) {
-                                val currentPerms = if (isProtected || admin.permissions.contains("all") || admin.permissions.isEmpty()) {
-                                    listOf("all")
-                                } else {
-                                    admin.permissions
-                                }
-
-                                currentPerms.forEach { pKey ->
-                                    val opt = AVAILABLE_ADMIN_PERMISSIONS.firstOrNull { it.key == pKey }
-                                    Surface(
-                                        shape = RoundedCornerShape(6.dp),
-                                        color = if (pKey == "all") Color(0xFF10B981).copy(alpha = 0.15f) else MaterialTheme.colorScheme.surfaceVariant,
-                                        border = BorderStroke(1.dp, if (pKey == "all") Color(0xFF10B981) else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
-                                    ) {
-                                        Text(
-                                            text = opt?.title?.substringBefore("(") ?: pKey,
-                                            fontSize = 10.sp,
-                                            fontWeight = FontWeight.Bold,
-                                            color = if (pKey == "all") Color(0xFF047857) else MaterialTheme.colorScheme.onSurfaceVariant,
-                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
         }
     }
 
@@ -454,57 +494,59 @@ fun ManageAdminsScreen(
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
-                        text = "البريد: ${admin.email}",
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.primary
+                        text = "المشرف: ${admin.email}",
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary,
+                        fontSize = 13.sp
                     )
-                    Text("اختر الأقسام المصرح له بتعديلها:", fontSize = 11.sp, color = MaterialTheme.colorScheme.outline)
+                    Text("حدد الأقسام المسموح له بتعديلها:", fontSize = 12.sp, color = MaterialTheme.colorScheme.outline)
 
-                    AVAILABLE_ADMIN_PERMISSIONS.forEach { opt ->
-                        val isChecked = editPermissions.contains(opt.key) || (opt.key != "all" && editPermissions.contains("all"))
-                        Surface(
-                            shape = RoundedCornerShape(8.dp),
-                            color = if (isChecked) MaterialTheme.colorScheme.primary.copy(alpha = 0.08f) else MaterialTheme.colorScheme.surface,
-                            border = BorderStroke(1.dp, if (isChecked) MaterialTheme.colorScheme.primary.copy(alpha = 0.4f) else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f)),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(8.dp))
-                                .clickable {
-                                    if (opt.key == "all") {
-                                        editPermissions.clear()
-                                        editPermissions.add("all")
-                                    } else {
-                                        editPermissions.remove("all")
-                                        if (editPermissions.contains(opt.key)) {
-                                            editPermissions.remove(opt.key)
-                                            if (editPermissions.isEmpty()) editPermissions.add("motors")
-                                        } else {
-                                            editPermissions.add(opt.key)
-                                        }
-                                    }
-                                }
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Checkbox(
-                                    checked = isChecked,
-                                    onCheckedChange = {
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        AVAILABLE_ADMIN_PERMISSIONS.forEach { opt ->
+                            val isChecked = editPermissions.contains(opt.key) || (opt.key != "all" && editPermissions.contains("all"))
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = if (isChecked) MaterialTheme.colorScheme.primary.copy(alpha = 0.08f) else MaterialTheme.colorScheme.surface,
+                                border = BorderStroke(1.dp, if (isChecked) MaterialTheme.colorScheme.primary.copy(alpha = 0.4f) else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f)),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .clickable {
                                         if (opt.key == "all") {
                                             editPermissions.clear()
                                             editPermissions.add("all")
                                         } else {
                                             editPermissions.remove("all")
-                                            if (it) editPermissions.add(opt.key) else editPermissions.remove(opt.key)
+                                            if (editPermissions.contains(opt.key)) {
+                                                editPermissions.remove(opt.key)
+                                                if (editPermissions.isEmpty()) editPermissions.add("motors")
+                                            } else {
+                                                editPermissions.add(opt.key)
+                                            }
                                         }
                                     }
-                                )
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Column {
-                                    Text(opt.title, fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
-                                    Text(opt.description, fontSize = 9.sp, color = MaterialTheme.colorScheme.outline)
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Checkbox(
+                                        checked = isChecked,
+                                        onCheckedChange = {
+                                            if (opt.key == "all") {
+                                                editPermissions.clear()
+                                                editPermissions.add("all")
+                                            } else {
+                                                editPermissions.remove("all")
+                                                if (it) editPermissions.add(opt.key) else editPermissions.remove(opt.key)
+                                            }
+                                        }
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Column {
+                                        Text(opt.title, fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
+                                        Text(opt.description, fontSize = 10.sp, color = MaterialTheme.colorScheme.outline)
+                                    }
                                 }
                             }
                         }
@@ -539,32 +581,19 @@ fun ManageAdminsScreen(
         )
     }
 
-    // Modal: Delete Admin Confirmation
-    deletingAdmin?.let { admin ->
-        AlertDialog(
-            onDismissRequest = { deletingAdmin = null },
-            title = { Text("تأكيد حذف المشرف ⚠️", fontWeight = FontWeight.Bold) },
-            text = { Text("هل تود بالتأكيد إزالة صلاحيات الإشراف عن الحساب (${admin.email})؟ لن يتمكن من تعديل أو إضافة أي بيانات بعد الآن.") },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        val email = admin.email
-                        deletingAdmin = null
-                        onRemoveAdmin(email) { _, msg ->
-                            coroutineScope.launch { snackbarHostState.showSnackbar(msg) }
-                        }
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
-                ) {
-                    Text("حذف المشرف")
+    // Modal: Delete Admin Confirmation with ConfirmDeleteDialog
+    if (deletingAdmin != null) {
+        ConfirmDeleteDialog(
+            title = "تأكيد حذف المشرف ⚠️",
+            message = "هل تود بالتأكيد إزالة صلاحيات الإشراف عن الحساب (${deletingAdmin!!.email})؟ لن يتمكن من تعديل أو إضافة أي بيانات بعد الآن.",
+            onConfirm = {
+                val email = deletingAdmin!!.email
+                deletingAdmin = null
+                onRemoveAdmin(email) { _, msg ->
+                    coroutineScope.launch { snackbarHostState.showSnackbar(msg) }
                 }
             },
-            dismissButton = {
-                TextButton(onClick = { deletingAdmin = null }) {
-                    Text("إلغاء")
-                }
-            },
-            shape = RoundedCornerShape(16.dp)
+            onDismiss = { deletingAdmin = null }
         )
     }
 }

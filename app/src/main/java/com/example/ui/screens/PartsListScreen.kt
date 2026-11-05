@@ -66,6 +66,7 @@ import androidx.compose.ui.unit.sp
 import com.example.data.model.AppliancePart
 import com.example.ui.components.BreadcrumbBar
 import com.example.ui.components.BreadcrumbItem
+import com.example.ui.components.ConfirmDeleteDialog
 import com.example.ui.components.SearchAutocompleteBox
 import com.example.ui.components.WireColorBadge
 
@@ -436,23 +437,15 @@ fun PartsListScreen(
 
     if (partToDelete != null) {
         val p = partToDelete!!
-        AlertDialog(
-            onDismissRequest = { partToDelete = null },
-            title = { Text("حذف القطعة", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.error) },
-            text = { Text("هل أنت متأكد من حذف \"${p.name}\"؟") },
-            confirmButton = {
-                TextButton(onClick = {
-                    onDeletePartClick(p.id)
-                    partToDelete = null
-                }) {
-                    Text("حذف", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold)
-                }
+        ConfirmDeleteDialog(
+            title = "حذف القطعة",
+            message = "هل أنت متأكد من حذف \"${p.name}\" (${p.brand} • ${p.model})؟ لن يمكن التراجع عن هذا الإجراء.",
+            confirmText = "حذف القطعة",
+            onConfirm = {
+                onDeletePartClick(p.id)
+                partToDelete = null
             },
-            dismissButton = {
-                TextButton(onClick = { partToDelete = null }) {
-                    Text("إلغاء")
-                }
-            }
+            onDismiss = { partToDelete = null }
         )
     }
 }
