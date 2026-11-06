@@ -419,38 +419,13 @@ fun MotorCard(
                 }
             }
 
-            // Pinouts Badges
+            // Visual Interactive Terminal Strip (without color text badges)
             if (motor.pinouts.isNotEmpty()) {
-                Spacer(modifier = Modifier.height(12.dp))
-                FlowRow(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    motor.pinouts.take(6).forEach { pin ->
-                        WireColorBadge(
-                            wireColor = pin.wireColor,
-                            colorHex = pin.colorHex,
-                            secondaryColorHex = pin.secondaryColorHex,
-                            secondaryColorName = pin.secondaryColorName
-                        )
-                    }
-                    if (motor.pinouts.size > 6) {
-                        Surface(
-                            shape = RoundedCornerShape(12.dp),
-                            color = MaterialTheme.colorScheme.surfaceVariant
-                        ) {
-                            Text(
-                                text = "+${motor.pinouts.size - 6}",
-                                style = MaterialTheme.typography.labelSmall.copy(
-                                    fontWeight = FontWeight.Bold,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                ),
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                            )
-                        }
-                    }
-                }
+                Spacer(modifier = Modifier.height(10.dp))
+                CompactMotorConnectorStrip(
+                    pinouts = motor.pinouts,
+                    modifier = Modifier.fillMaxWidth()
+                )
             }
 
             // Visual Interactive Terminal Connector button & expandable view

@@ -35,22 +35,39 @@ object MarketplaceRepository {
     private val _currentUserProfile = MutableStateFlow<UserProfile?>(null)
     val currentUserProfile: StateFlow<UserProfile?> = _currentUserProfile.asStateFlow()
 
+    private fun getProfilePrefKey(email: String?): String {
+        val clean = email?.trim()?.lowercase() ?: "anonymous"
+        return "user_profile_${clean.replace(".", "_")}"
+    }
+
     private var listenerRegistration: ListenerRegistration? = null
     private var isInitialized = false
 
     fun init(context: Context, currentUserEmail: String?, currentUserId: String?) {
         val appContext = context.applicationContext ?: context
         loadCachedPosts(appContext)
-        loadCachedProfile(appContext)
 
         if (!isInitialized) {
             isInitialized = true
             startRealtimePostsSync(appContext)
         }
 
-        if (!currentUserEmail.isNullOrBlank() || !currentUserId.isNullOrBlank()) {
-            loadUserProfileFromCloud(appContext, currentUserEmail, currentUserId)
+        switchUser(appContext, currentUserEmail, currentUserId)
+    }
+
+    fun switchUser(context: Context, currentUserEmail: String?, currentUserId: String?) {
+        val appContext = context.applicationContext ?: context
+        val email = currentUserEmail?.trim()?.lowercase()
+        if (email.isNullOrBlank()) {
+            _currentUserProfile.value = null
+            return
         }
+
+        // 1. Immediately load local cache for THIS specific email
+        loadCachedProfileForEmail(appContext, email)
+
+        // 2. Fetch fresh profile from cloud
+        loadUserProfileFromCloud(appContext, email, currentUserId)
     }
 
     private fun startRealtimePostsSync(context: Context) {
@@ -318,6 +335,7 @@ object MarketplaceRepository {
     }
 
     private fun saveCachedProfile(context: Context, profile: UserProfile) {
+        val key = getProfilePrefKey(profile.email.ifBlank { profile.userId })
         try {
             val obj = JSONObject()
             obj.put("userId", profile.userId)
@@ -329,18 +347,23 @@ object MarketplaceRepository {
             obj.put("profession", profile.profession)
             obj.put("bio", profile.bio)
             context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-                .edit().putString(KEY_USER_PROFILE, obj.toString()).apply()
+                .edit().putString(key, obj.toString()).apply()
         } catch (_: Throwable) {}
     }
 
-    private fun loadCachedProfile(context: Context) {
+    private fun loadCachedProfileForEmail(context: Context, email: String) {
+        val key = getProfilePrefKey(email)
         val json = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .getString(KEY_USER_PROFILE, null) ?: return
+            .getString(key, null)
+        if (json.isNullOrBlank()) {
+            _currentUserProfile.value = null
+            return
+        }
         try {
             val obj = JSONObject(json)
-            _currentUserProfile.value = UserProfile(
+            val p = UserProfile(
                 userId = obj.optString("userId", ""),
-                email = obj.optString("email", ""),
+                email = obj.optString("email", email),
                 displayName = obj.optString("displayName", ""),
                 phone = obj.optString("phone", ""),
                 avatarUrl = obj.optString("avatarUrl", ""),
@@ -348,6 +371,14 @@ object MarketplaceRepository {
                 profession = obj.optString("profession", "فني صيانة غسالات"),
                 bio = obj.optString("bio", "")
             )
-        } catch (_: Throwable) {}
+            // Ensure the cached profile really belongs to this email
+            if (p.email.equals(email, ignoreCase = true) || p.email.isBlank()) {
+                _currentUserProfile.value = p
+            } else {
+                _currentUserProfile.value = null
+            }
+        } catch (_: Throwable) {
+            _currentUserProfile.value = null
+        }
     }
 }

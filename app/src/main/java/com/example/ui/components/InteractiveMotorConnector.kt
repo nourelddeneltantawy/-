@@ -32,10 +32,13 @@ import androidx.compose.material.icons.filled.Cable
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ElectricBolt
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.TouchApp
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -486,6 +489,440 @@ fun InteractiveMotorConnector(
                                             lineHeight = 18.sp
                                         )
                                     )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Compact horizontal connector strip displayed directly on motor cards in the catalog.
+ * Shows terminal sockets, wire stubs, pin numbers, and color indicators without text clutter.
+ */
+@Composable
+fun CompactMotorConnectorStrip(
+    pinouts: List<Pinout>,
+    modifier: Modifier = Modifier
+) {
+    if (pinouts.isEmpty()) return
+
+    Surface(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp)),
+        shape = RoundedCornerShape(12.dp),
+        color = Color(0xFF0F172A),
+        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF334155))
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 8.dp, horizontal = 10.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Default.Cable,
+                        contentDescription = null,
+                        tint = Color(0xFF38BDF8),
+                        modifier = Modifier.size(13.dp)
+                    )
+                    Spacer(modifier = Modifier.width(5.dp))
+                    Text(
+                        text = "ترتيب أطراف فيشة الماتور (${pinouts.size})",
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFF94A3B8)
+                        )
+                    )
+                }
+                Text(
+                    text = "فحص الفيشة ⚡",
+                    style = MaterialTheme.typography.labelSmall.copy(
+                        fontSize = 9.sp,
+                        color = Color(0xFF38BDF8)
+                    )
+                )
+            }
+
+            Spacer(modifier = Modifier.height(6.dp))
+
+            // Horizontal row of compact pin terminals
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                pinouts.forEach { pin ->
+                    val (pColor, sColor) = resolveWireColors(
+                        colorHex = pin.colorHex,
+                        wireColorName = pin.wireColor,
+                        secondaryColorHex = pin.secondaryColorHex,
+                        secondaryColorName = pin.secondaryColorName
+                    )
+                    val wireBrush = getWireBrush(pColor, sColor)
+
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.width(36.dp)
+                    ) {
+                        // Wire stub extending from terminal
+                        if (pin.isBlankPin) {
+                            Box(modifier = Modifier.width(6.dp).height(8.dp))
+                        } else {
+                            Box(
+                                modifier = Modifier
+                                    .width(6.dp)
+                                    .height(8.dp)
+                                    .clip(RoundedCornerShape(topStart = 2.dp, topEnd = 2.dp))
+                                    .background(wireBrush)
+                            )
+                        }
+
+                        // Terminal socket block
+                        Box(
+                            modifier = Modifier
+                                .size(width = 36.dp, height = 38.dp)
+                                .clip(RoundedCornerShape(6.dp))
+                                .background(Color(0xFF1E293B))
+                                .border(1.dp, if (pin.isBlankPin) Color(0xFF475569) else pColor.copy(alpha = 0.7f), RoundedCornerShape(6.dp)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.Center
+                            ) {
+                                Text(
+                                    text = "${pin.pinNumber}",
+                                    style = MaterialTheme.typography.labelMedium.copy(
+                                        fontWeight = FontWeight.Black,
+                                        fontSize = 12.sp,
+                                        color = Color.White
+                                    )
+                                )
+
+                                Spacer(modifier = Modifier.height(2.dp))
+
+                                if (pin.isBlankPin) {
+                                    Text(
+                                        text = "∅",
+                                        fontSize = 8.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color(0xFF94A3B8)
+                                    )
+                                } else {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(7.dp)
+                                            .clip(CircleShape)
+                                            .background(wireBrush)
+                                            .border(0.8.dp, Color.White.copy(alpha = 0.8f), CircleShape)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Vertical interactive connector displayed on the Motor Detail Screen.
+ * Arranged top to bottom (Pin 1, Pin 2, Pin 3...), where clicking any pin expands
+ * its specifications and resistance values right underneath it.
+ */
+@Composable
+fun VerticalInteractiveMotorConnector(
+    pinouts: List<Pinout>,
+    modifier: Modifier = Modifier
+) {
+    if (pinouts.isEmpty()) return
+
+    // Track which pin is currently expanded (or null if none)
+    var expandedPinIndex by remember { mutableStateOf<Int?>(0) }
+
+    Card(
+        modifier = modifier
+            .testTag("vertical_motor_connector")
+            .fillMaxWidth()
+            .animateContentSize(),
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = Color(0xFF111827) // Dark futuristic connector chassis
+        ),
+        elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp)
+        ) {
+            // Header
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Surface(
+                        shape = CircleShape,
+                        color = Color(0xFF1E293B),
+                        modifier = Modifier.size(32.dp)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = Icons.Default.Cable,
+                                contentDescription = null,
+                                tint = Color(0xFF38BDF8),
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Column {
+                        Text(
+                            text = "فيشة أطراف الماتور التفاعلية (رأسي)",
+                            style = MaterialTheme.typography.titleSmall.copy(
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White
+                            )
+                        )
+                        Text(
+                            text = "${pinouts.size} أطراف • اضغط على أي طرف لعرض وظائفه ومقاومته",
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                color = Color(0xFF94A3B8),
+                                fontSize = 10.sp
+                            )
+                        )
+                    }
+                }
+
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = Color(0xFF1E293B)
+                ) {
+                    Text(
+                        text = "من 1 إلى ${pinouts.size}",
+                        color = Color(0xFF38BDF8),
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 11.sp,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(14.dp))
+
+            // Vertical list of pins from top to bottom
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                pinouts.forEachIndexed { index, pin ->
+                    val isExpanded = expandedPinIndex == index
+                    val (pColor, sColor) = resolveWireColors(
+                        colorHex = pin.colorHex,
+                        wireColorName = pin.wireColor,
+                        secondaryColorHex = pin.secondaryColorHex,
+                        secondaryColorName = pin.secondaryColorName
+                    )
+                    val wireBrush = getWireBrush(pColor, sColor)
+
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .clickable {
+                                expandedPinIndex = if (isExpanded) null else index
+                            },
+                        shape = RoundedCornerShape(12.dp),
+                        color = if (isExpanded) Color(0xFF1F2937) else Color(0xFF161F2E),
+                        border = androidx.compose.foundation.BorderStroke(
+                            1.dp,
+                            if (isExpanded) pColor else Color(0xFF374151)
+                        )
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(12.dp)
+                                .animateContentSize()
+                        ) {
+                            // Main Pin Row
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    // Terminal Socket Pin Number
+                                    Box(
+                                        modifier = Modifier
+                                            .size(width = 38.dp, height = 38.dp)
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .background(
+                                                if (isExpanded) pColor.copy(alpha = 0.25f)
+                                                else Color(0xFF0F172A)
+                                            )
+                                            .border(
+                                                1.5.dp,
+                                                if (isExpanded) pColor else Color(0xFF4B5563),
+                                                RoundedCornerShape(8.dp)
+                                            ),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Text(
+                                            text = "${pin.pinNumber}",
+                                            style = MaterialTheme.typography.titleMedium.copy(
+                                                fontWeight = FontWeight.Black,
+                                                color = if (isExpanded) Color.White else Color(0xFFD1D5DB)
+                                            )
+                                        )
+                                    }
+
+                                    Spacer(modifier = Modifier.width(10.dp))
+
+                                    // Color Dot Indicator or Blank slot
+                                    if (pin.isBlankPin) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(16.dp)
+                                                .clip(CircleShape)
+                                                .background(Color(0xFF374151)),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Text("∅", fontSize = 10.sp, color = Color(0xFF9CA3AF), fontWeight = FontWeight.Bold)
+                                        }
+                                    } else {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(16.dp)
+                                                .clip(CircleShape)
+                                                .background(wireBrush)
+                                                .border(1.2.dp, Color.White.copy(alpha = 0.85f), CircleShape)
+                                        )
+                                    }
+
+                                    Spacer(modifier = Modifier.width(10.dp))
+
+                                    // Function name & wire label
+                                    Column {
+                                        Text(
+                                            text = if (pin.isBlankPin) "مكان فاضي بدون سلك (NC)" else pin.name.ifBlank { "طرف توصيل" },
+                                            style = MaterialTheme.typography.bodyMedium.copy(
+                                                fontWeight = FontWeight.Bold,
+                                                color = Color.White
+                                            )
+                                        )
+                                        if (!pin.isBlankPin) {
+                                            Text(
+                                                text = if (sColor != null) "${pin.wireColor} (مخطط)" else pin.wireColor,
+                                                style = MaterialTheme.typography.labelSmall.copy(
+                                                    color = pColor,
+                                                    fontWeight = FontWeight.SemiBold,
+                                                    fontSize = 11.sp
+                                                )
+                                            )
+                                        }
+                                    }
+                                }
+
+                                // Interactive indicator
+                                Icon(
+                                    imageVector = if (isExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                                    contentDescription = if (isExpanded) "طي" else "توسيع",
+                                    tint = if (isExpanded) pColor else Color(0xFF9CA3AF),
+                                    modifier = Modifier.size(22.dp)
+                                )
+                            }
+
+                            // Expanded Details directly beneath this pin
+                            if (isExpanded) {
+                                Spacer(modifier = Modifier.height(10.dp))
+                                HorizontalDivider(color = Color(0xFF374151), thickness = 0.8.dp)
+                                Spacer(modifier = Modifier.height(10.dp))
+
+                                Surface(
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = Color(0xFF0F172A),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Column(modifier = Modifier.padding(10.dp)) {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Icon(
+                                                imageVector = Icons.Default.Info,
+                                                contentDescription = null,
+                                                tint = Color(0xFF38BDF8),
+                                                modifier = Modifier.size(15.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text(
+                                                text = "بيانات ومقاومة الطرف #${pin.pinNumber}:",
+                                                style = MaterialTheme.typography.labelSmall.copy(
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = Color(0xFF38BDF8)
+                                                )
+                                            )
+                                        }
+
+                                        Spacer(modifier = Modifier.height(6.dp))
+
+                                        Text(
+                                            text = if (pin.functionDesc.isNotBlank()) pin.functionDesc
+                                            else if (pin.isBlankPin) "هذا الطرف غير متصل بأي سلك داخلي (Not Connected)."
+                                            else "طرف كهربائي مخصص لتوصيل ${pin.name}.",
+                                            style = MaterialTheme.typography.bodySmall.copy(
+                                                color = Color(0xFFE5E7EB),
+                                                lineHeight = 18.sp
+                                            )
+                                        )
+
+                                        if (!pin.isBlankPin) {
+                                            Spacer(modifier = Modifier.height(8.dp))
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.SpaceBetween,
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Text(
+                                                    text = "كود اللون: ${pin.colorHex}",
+                                                    style = MaterialTheme.typography.labelSmall.copy(
+                                                        color = Color(0xFF9CA3AF),
+                                                        fontSize = 10.sp
+                                                    )
+                                                )
+                                                Surface(
+                                                    shape = RoundedCornerShape(4.dp),
+                                                    color = pColor.copy(alpha = 0.2f),
+                                                    border = androidx.compose.foundation.BorderStroke(1.dp, pColor)
+                                                ) {
+                                                    Text(
+                                                        text = "سليم ✓",
+                                                        color = pColor,
+                                                        fontSize = 9.sp,
+                                                        fontWeight = FontWeight.Bold,
+                                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }

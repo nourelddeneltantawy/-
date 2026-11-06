@@ -900,7 +900,19 @@ fun AdminMotorScreen(
                                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                                 verticalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
-                                MotorPinPresets.PRESETS.forEach { preset ->
+                                val availablePresets = MotorPinPresets.PRESETS.filter { preset ->
+                                    if (preset.isBlank) {
+                                        true
+                                    } else {
+                                        !pinouts.indices.any { otherIdx ->
+                                            otherIdx != index &&
+                                            !pinouts[otherIdx].isBlankPin &&
+                                            (pinouts[otherIdx].wireColor.trim().equals(preset.colorName.trim(), ignoreCase = true) ||
+                                             pinouts[otherIdx].name.trim().equals(preset.functionName.trim(), ignoreCase = true))
+                                        }
+                                    }
+                                }
+                                availablePresets.forEach { preset ->
                                     val isSelected = if (preset.isBlank) {
                                         pin.isBlankPin
                                     } else {

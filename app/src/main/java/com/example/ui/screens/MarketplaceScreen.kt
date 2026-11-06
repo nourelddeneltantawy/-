@@ -142,6 +142,11 @@ fun MarketplaceScreen(
     var profileToView by remember { mutableStateOf<UserProfile?>(null) }
     var showFilterDropdown by remember { mutableStateOf(false) }
 
+    // Account isolation: sync active user on email changes
+    LaunchedEffect(currentUserEmail) {
+        MarketplaceRepository.switchUser(context, currentUserEmail, currentUserId)
+    }
+
     // Dynamic autocomplete suggestions from current posts
     val autocompleteSuggestions = remember(posts) {
         val list = mutableListOf<String>()
@@ -229,11 +234,11 @@ fun MarketplaceScreen(
                 .fillMaxSize()
                 .padding(bottom = innerPadding.calculateBottomPadding())
         ) {
-            // Top Header Box
+            // Sleek Compact Top Header Box (Requirement 4)
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(bottomStart = 24.dp, bottomEnd = 24.dp))
+                    .clip(RoundedCornerShape(bottomStart = 20.dp, bottomEnd = 20.dp))
                     .background(
                         Brush.verticalGradient(
                             listOf(
@@ -242,7 +247,7 @@ fun MarketplaceScreen(
                             )
                         )
                     )
-                    .padding(top = innerPadding.calculateTopPadding() + 6.dp, bottom = 14.dp, start = 16.dp, end = 16.dp)
+                    .padding(top = innerPadding.calculateTopPadding() + 4.dp, bottom = 8.dp, start = 14.dp, end = 14.dp)
             ) {
                 Column {
                     Row(
@@ -254,93 +259,84 @@ fun MarketplaceScreen(
                             Surface(
                                 shape = CircleShape,
                                 color = MaterialTheme.colorScheme.surface,
-                                modifier = Modifier.size(44.dp)
+                                modifier = Modifier.size(34.dp)
                             ) {
                                 Box(contentAlignment = Alignment.Center) {
                                     Icon(
                                         imageVector = Icons.Default.Storefront,
                                         contentDescription = null,
                                         tint = MaterialTheme.colorScheme.primary,
-                                        modifier = Modifier.size(26.dp)
+                                        modifier = Modifier.size(20.dp)
                                     )
                                 }
                             }
-                            Spacer(modifier = Modifier.width(12.dp))
-                            Column {
-                                Text(
-                                    text = "سوق الكروت والصيانة",
-                                    style = MaterialTheme.typography.titleMedium.copy(
-                                        color = Color.White,
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 18.sp
-                                    )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "سوق الكروت والصيانة",
+                                style = MaterialTheme.typography.titleMedium.copy(
+                                    color = Color.White,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 17.sp
                                 )
-                                Text(
-                                    text = "بيع وشراء كروت الغسالات بين الفنيين والمهندسين",
-                                    style = MaterialTheme.typography.bodySmall.copy(
-                                        color = Color.White.copy(alpha = 0.85f),
-                                        fontSize = 11.sp
-                                    )
-                                )
-                            }
+                            )
                         }
 
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             // Admin Technicians Directory Button
                             if (isAdmin) {
                                 Surface(
-                                    shape = RoundedCornerShape(12.dp),
+                                    shape = RoundedCornerShape(8.dp),
                                     color = Color(0xFF10B981).copy(alpha = 0.35f),
                                     modifier = Modifier
-                                        .clip(RoundedCornerShape(12.dp))
+                                        .clip(RoundedCornerShape(8.dp))
                                         .clickable { showTechniciansDialog = true }
-                                        .padding(horizontal = 8.dp, vertical = 6.dp)
+                                        .padding(horizontal = 7.dp, vertical = 5.dp)
                                 ) {
                                     Row(verticalAlignment = Alignment.CenterVertically) {
                                         Icon(
                                             imageVector = Icons.Default.Verified,
                                             contentDescription = null,
                                             tint = Color.White,
-                                            modifier = Modifier.size(15.dp)
+                                            modifier = Modifier.size(13.dp)
                                         )
-                                        Spacer(modifier = Modifier.width(4.dp))
-                                        Text("الفنيون المسجلون 👥", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                                        Spacer(modifier = Modifier.width(3.dp))
+                                        Text("الفنيون", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 11.sp)
                                     }
                                 }
                                 Spacer(modifier = Modifier.width(6.dp))
                             }
 
-                            // My Profile Button
+                            // My Profile Button (compact, single line)
                             Surface(
-                                shape = RoundedCornerShape(12.dp),
+                                shape = RoundedCornerShape(8.dp),
                                 color = Color.White.copy(alpha = 0.22f),
                                 modifier = Modifier
-                                    .clip(RoundedCornerShape(12.dp))
+                                    .clip(RoundedCornerShape(8.dp))
                                     .clickable {
                                         if (isGuest) onAuthClick() else showProfileDialog = true
                                     }
-                                    .padding(horizontal = 10.dp, vertical = 6.dp)
+                                    .padding(horizontal = 8.dp, vertical = 5.dp)
                             ) {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Icon(
                                         imageVector = if (isGuest) Icons.Default.Lock else Icons.Default.Person,
                                         contentDescription = "الملف الشخصي",
                                         tint = Color.White,
-                                        modifier = Modifier.size(17.dp)
+                                        modifier = Modifier.size(15.dp)
                                     )
                                     Spacer(modifier = Modifier.width(4.dp))
                                     Text(
-                                        text = if (isGuest) "تسجيل الدخول" else "ملفي الشخصي",
+                                        text = if (isGuest) "دخول" else "ملفي",
                                         color = Color.White,
                                         fontWeight = FontWeight.Bold,
-                                        fontSize = 12.sp
+                                        fontSize = 11.sp
                                     )
                                 }
                             }
                         }
                     }
 
-                    Spacer(modifier = Modifier.height(12.dp))
+                    Spacer(modifier = Modifier.height(8.dp))
 
                     // Predictive Search Autocomplete Box
                     SearchAutocompleteBox(
@@ -938,7 +934,7 @@ fun MarketplacePostCard(
         ),
         elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
     ) {
-        Column(modifier = Modifier.padding(14.dp)) {
+        Column(modifier = Modifier.padding(10.dp)) {
             // Completed banner
             if (isCompleted) {
                 Surface(
@@ -946,24 +942,24 @@ fun MarketplacePostCard(
                     color = Color(0xFF10B981).copy(alpha = 0.15f),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(bottom = 10.dp)
+                        .padding(bottom = 6.dp)
                 ) {
                     Row(
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Icon(
                             imageVector = Icons.Default.CheckCircle,
                             contentDescription = null,
                             tint = Color(0xFF10B981),
-                            modifier = Modifier.size(16.dp)
+                            modifier = Modifier.size(14.dp)
                         )
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
-                            text = if (isBuyRequest) "تم الشراء وتوفير الكارتة بنجاح ✓" else "تم البيع بنجاح ✓ (سيحذف تلقائياً بعد 3 أيام)",
+                            text = if (isBuyRequest) "تم الشراء وتوفير الكارتة بنجاح ✓" else "تم البيع بنجاح ✓",
                             color = Color(0xFF047857),
                             fontWeight = FontWeight.Bold,
-                            fontSize = 12.sp
+                            fontSize = 11.sp
                         )
                     }
                 }
@@ -991,7 +987,7 @@ fun MarketplacePostCard(
                             contentDescription = post.userName,
                             contentScale = ContentScale.Crop,
                             modifier = Modifier
-                                .size(42.dp)
+                                .size(34.dp)
                                 .clip(CircleShape)
                                 .border(1.dp, MaterialTheme.colorScheme.primary, CircleShape)
                         )
@@ -999,20 +995,20 @@ fun MarketplacePostCard(
                         Surface(
                             shape = CircleShape,
                             color = MaterialTheme.colorScheme.primaryContainer,
-                            modifier = Modifier.size(42.dp)
+                            modifier = Modifier.size(34.dp)
                         ) {
                             Box(contentAlignment = Alignment.Center) {
                                 Text(
                                     text = post.userName.take(1).ifBlank { "ف" },
                                     fontWeight = FontWeight.Bold,
-                                    fontSize = 16.sp,
+                                    fontSize = 14.sp,
                                     color = MaterialTheme.colorScheme.onPrimaryContainer
                                 )
                             }
                         }
                     }
 
-                    Spacer(modifier = Modifier.width(10.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
 
                     Column {
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1020,7 +1016,7 @@ fun MarketplacePostCard(
                                 text = post.userName.ifBlank { "فني معتمد" },
                                 style = MaterialTheme.typography.titleSmall.copy(
                                     fontWeight = FontWeight.Bold,
-                                    fontSize = 14.sp
+                                    fontSize = 13.sp
                                 )
                             )
                             Spacer(modifier = Modifier.width(4.dp))
@@ -1028,7 +1024,7 @@ fun MarketplacePostCard(
                                 imageVector = Icons.Default.Verified,
                                 contentDescription = "معتمد",
                                 tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(14.dp)
+                                modifier = Modifier.size(13.dp)
                             )
                         }
 
@@ -1038,16 +1034,16 @@ fun MarketplacePostCard(
                                     text = post.userProfession,
                                     style = MaterialTheme.typography.labelSmall.copy(
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        fontSize = 11.sp
+                                        fontSize = 10.sp
                                     )
                                 )
-                                Text(" • ", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text(" • ", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                             if (post.userCity.isNotBlank()) {
                                 Icon(
                                     imageVector = Icons.Default.LocationOn,
                                     contentDescription = null,
-                                    modifier = Modifier.size(12.dp),
+                                    modifier = Modifier.size(11.dp),
                                     tint = MaterialTheme.colorScheme.secondary
                                 )
                                 Spacer(modifier = Modifier.width(2.dp))
@@ -1055,7 +1051,7 @@ fun MarketplacePostCard(
                                     text = post.userCity,
                                     style = MaterialTheme.typography.labelSmall.copy(
                                         color = MaterialTheme.colorScheme.secondary,
-                                        fontSize = 11.sp
+                                        fontSize = 10.sp
                                     )
                                 )
                             }
@@ -1073,8 +1069,8 @@ fun MarketplacePostCard(
                             text = if (isBuyRequest) "طلب شراء 🔍" else "بيع 🏷️",
                             color = if (isBuyRequest) Color(0xFFB45309) else Color(0xFF0369A1),
                             fontWeight = FontWeight.Bold,
-                            fontSize = 11.sp,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                            fontSize = 10.sp,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                         )
                     }
                     Spacer(modifier = Modifier.height(2.dp))
@@ -1082,46 +1078,46 @@ fun MarketplacePostCard(
                         text = formatPostDate(post.createdTimestamp),
                         style = MaterialTheme.typography.labelSmall.copy(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            fontSize = 10.sp
+                            fontSize = 9.sp
                         )
                     )
                 }
             }
 
-            Spacer(modifier = Modifier.height(10.dp))
+            Spacer(modifier = Modifier.height(6.dp))
 
             // Title
             Text(
                 text = post.title,
                 style = MaterialTheme.typography.titleMedium.copy(
                     fontWeight = FontWeight.Bold,
-                    fontSize = 16.sp
+                    fontSize = 15.sp
                 )
             )
 
             // Description
             if (post.description.isNotBlank()) {
-                Spacer(modifier = Modifier.height(4.dp))
+                Spacer(modifier = Modifier.height(3.dp))
                 Text(
                     text = post.description,
                     style = MaterialTheme.typography.bodyMedium.copy(
                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.85f),
-                        fontSize = 13.sp,
-                        lineHeight = 18.sp
+                        fontSize = 12.sp,
+                        lineHeight = 16.sp
                     ),
-                    maxLines = 4,
+                    maxLines = 2,
                     overflow = TextOverflow.Ellipsis
                 )
             }
 
-            // Image Preview (Clickable for fullscreen zoom)
-            if (post.mediaUrl.isNotBlank()) {
-                Spacer(modifier = Modifier.height(10.dp))
+            // Image Preview (compact height, only shown if mediaUrl is non-empty)
+            if (post.mediaUrl.isNotBlank() && post.mediaUrl != "null" && post.mediaUrl != "DEFAULT") {
+                Spacer(modifier = Modifier.height(6.dp))
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(180.dp)
-                        .clip(RoundedCornerShape(12.dp))
+                        .height(115.dp)
+                        .clip(RoundedCornerShape(10.dp))
                         .background(MaterialTheme.colorScheme.surfaceVariant)
                         .clickable { onImageClick?.invoke(post.mediaUrl) }
                 ) {
@@ -1130,29 +1126,29 @@ fun MarketplacePostCard(
                             .data(ImageHelper.getCoilData(post.mediaUrl))
                             .crossfade(true)
                             .build(),
-                        contentDescription = "صورة الكارتة (اضغط للتكبير)",
+                        contentDescription = "صورة الكارتة",
                         contentScale = ContentScale.Crop,
                         modifier = Modifier.fillMaxSize()
                     )
                     Surface(
-                        shape = RoundedCornerShape(6.dp),
+                        shape = RoundedCornerShape(4.dp),
                         color = Color.Black.copy(alpha = 0.6f),
                         modifier = Modifier
                             .align(Alignment.BottomEnd)
-                            .padding(8.dp)
+                            .padding(6.dp)
                     ) {
                         Text(
-                            text = "تكبير الصورة 🔍",
+                            text = "تكبير 🔍",
                             color = Color.White,
-                            fontSize = 10.sp,
-                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            fontSize = 9.sp,
+                            modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
                         )
                     }
                 }
             }
 
             // Price / Buy request status
-            Spacer(modifier = Modifier.height(10.dp))
+            Spacer(modifier = Modifier.height(6.dp))
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -1160,30 +1156,34 @@ fun MarketplacePostCard(
             ) {
                 if (isBuyRequest) {
                     Surface(
-                        shape = RoundedCornerShape(8.dp),
+                        shape = RoundedCornerShape(6.dp),
                         color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)
                     ) {
                         Text(
                             text = "السعر: للتفاوض مع البائع 💬",
-                            style = MaterialTheme.typography.labelMedium.copy(
+                            style = MaterialTheme.typography.labelSmall.copy(
                                 fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.primary
+                                color = MaterialTheme.colorScheme.primary,
+                                fontSize = 11.sp
                             ),
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
                         )
                     }
                 } else {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
                             text = "السعر: ",
-                            style = MaterialTheme.typography.labelMedium.copy(color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontSize = 11.sp
+                            )
                         )
                         Text(
                             text = if (post.price.isNotBlank() && post.price != "0") "${post.price} ج.م" else "قابل للتفاوض",
                             style = MaterialTheme.typography.titleSmall.copy(
                                 fontWeight = FontWeight.Bold,
                                 color = MaterialTheme.colorScheme.primary,
-                                fontSize = 15.sp
+                                fontSize = 14.sp
                             )
                         )
                     }
@@ -1193,37 +1193,41 @@ fun MarketplacePostCard(
                     text = "هاتف: ${post.userPhone}",
                     style = MaterialTheme.typography.labelSmall.copy(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontSize = 11.sp
+                        fontSize = 10.sp
                     )
                 )
             }
 
-            HorizontalDivider(modifier = Modifier.padding(vertical = 10.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+            HorizontalDivider(
+                modifier = Modifier.padding(vertical = 6.dp),
+                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
+            )
 
-            // Dedicated Contact Actions (Two wide buttons - Never wrap text vertically!)
+            // Dedicated Contact Actions (Two wide buttons - Sleek and compact)
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 // WhatsApp Button
                 Button(
                     onClick = onWhatsAppClick,
-                    modifier = Modifier.weight(1f).height(42.dp),
+                    modifier = Modifier.weight(1f).height(36.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF25D366)),
-                    shape = RoundedCornerShape(10.dp)
+                    shape = RoundedCornerShape(8.dp),
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
                 ) {
                     Icon(
                         imageVector = Icons.Default.Call,
                         contentDescription = null,
                         tint = Color.White,
-                        modifier = Modifier.size(16.dp)
+                        modifier = Modifier.size(14.dp)
                     )
-                    Spacer(modifier = Modifier.width(6.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
                     Text(
                         text = "واتساب",
                         color = Color.White,
                         fontWeight = FontWeight.Bold,
-                        fontSize = 13.sp,
+                        fontSize = 12.sp,
                         maxLines = 1
                     )
                 }
@@ -1231,19 +1235,20 @@ fun MarketplacePostCard(
                 // Call Button
                 OutlinedButton(
                     onClick = onCallClick,
-                    modifier = Modifier.weight(1f).height(42.dp),
-                    shape = RoundedCornerShape(10.dp)
+                    modifier = Modifier.weight(1f).height(36.dp),
+                    shape = RoundedCornerShape(8.dp),
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
                 ) {
                     Icon(
                         imageVector = Icons.Default.Call,
                         contentDescription = null,
-                        modifier = Modifier.size(16.dp)
+                        modifier = Modifier.size(14.dp)
                     )
-                    Spacer(modifier = Modifier.width(6.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
                     Text(
-                        text = "اتصال هاتف",
+                        text = "اتصال",
                         fontWeight = FontWeight.Bold,
-                        fontSize = 13.sp,
+                        fontSize = 12.sp,
                         maxLines = 1
                     )
                 }
@@ -1251,7 +1256,7 @@ fun MarketplacePostCard(
 
             // Owner / Admin Actions Row (Status toggle, edit & delete)
             if (canManage) {
-                Spacer(modifier = Modifier.height(8.dp))
+                Spacer(modifier = Modifier.height(6.dp))
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,

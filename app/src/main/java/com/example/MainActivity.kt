@@ -409,6 +409,7 @@ fun AppContent(
 
     androidx.compose.runtime.LaunchedEffect(userEmail) {
         motorViewModel.refreshUserRole(userEmail)
+        com.example.data.repository.MarketplaceRepository.switchUser(context, userEmail, userId)
     }
 
     // 1. Startup In-App Update Check (runs on launch in background, non-blocking)

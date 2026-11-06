@@ -64,6 +64,11 @@ import com.example.data.model.Motor
 import com.example.ui.components.InteractiveMotorConnector
 import com.example.ui.components.parseWireColorToComposeColor
 
+import androidx.compose.material.icons.filled.Share
+import androidx.compose.ui.text.style.TextOverflow
+import com.example.ui.components.VerticalInteractiveMotorConnector
+import com.example.util.MotorShareHelper
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MotorDetailScreen(
@@ -83,13 +88,33 @@ fun MotorDetailScreen(
         modifier = modifier.testTag("motor_detail_screen"),
         topBar = {
             TopAppBar(
-                title = { Text(motor.name) },
+                title = {
+                    Text(
+                        text = motor.name,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                    )
+                },
                 navigationIcon = {
                     IconButton(onClick = onBackClick) {
                         Icon(imageVector = Icons.AutoMirrored.Filled.ArrowForward, contentDescription = "رجوع")
                     }
                 },
                 actions = {
+                    // Share Motor as Image Action (Requirement 3)
+                    IconButton(
+                        onClick = {
+                            MotorShareHelper.shareMotorAsImage(context, motor)
+                        }
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Share,
+                            contentDescription = "مشاركة الماتور كصورة",
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                    }
+
                     // Favorite Toggle
                     IconButton(onClick = onToggleFavorite) {
                         Icon(
@@ -325,9 +350,34 @@ fun MotorDetailScreen(
                 }
             }
 
-            // Interactive Virtual Connector Section (Requirement 3: Automatic interactive connector display)
+            // Action: Share Motor as Image
             item {
-                InteractiveMotorConnector(
+                Button(
+                    onClick = { MotorShareHelper.shareMotorAsImage(context, motor) },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(14.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.primary
+                    )
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Share,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "مشاركة مخطط وأطراف الماتور كصورة 📸",
+                        style = MaterialTheme.typography.labelLarge.copy(
+                            fontWeight = FontWeight.Bold
+                        )
+                    )
+                }
+            }
+
+            // Vertical Interactive Terminal Connector (Requirement 3: Arranged vertically from top to bottom)
+            item {
+                VerticalInteractiveMotorConnector(
                     pinouts = motor.pinouts,
                     modifier = Modifier.fillMaxWidth()
                 )
@@ -339,107 +389,12 @@ fun MotorDetailScreen(
                     Button(
                         onClick = { onAiGenerateForMotor(motor) },
                         modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(14.dp),
                         colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.tertiary)
                     ) {
                         Icon(imageVector = Icons.Default.AutoAwesome, contentDescription = null)
                         Spacer(modifier = Modifier.width(8.dp))
                         Text("توليد أو تحديث مخطط الماتور بالذكاء الاصطناعي")
-                    }
-                }
-            }
-
-            // Pinouts Section Header
-            item {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.padding(top = 8.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.ElectricBolt,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = "جدول أطراف التوصيل التفصيلي (${motor.pinouts.size} طرف)",
-                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
-                    )
-                }
-            }
-
-            // Pinouts list
-            itemsIndexed(motor.pinouts) { _, pin ->
-                val (primaryColor, secondaryColor) = com.example.ui.components.resolveWireColors(
-                    colorHex = pin.colorHex,
-                    wireColorName = pin.wireColor,
-                    secondaryColorHex = pin.secondaryColorHex,
-                    secondaryColorName = pin.secondaryColorName
-                )
-                val wireBrush = com.example.ui.components.getWireBrush(primaryColor, secondaryColor)
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(12.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
-                ) {
-                    Row(
-                        modifier = Modifier.padding(14.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Surface(
-                            shape = CircleShape,
-                            color = MaterialTheme.colorScheme.primaryContainer,
-                            modifier = Modifier.size(36.dp)
-                        ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Text(
-                                    text = "${pin.pinNumber}",
-                                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                                    color = MaterialTheme.colorScheme.onPrimaryContainer
-                                )
-                            }
-                        }
-
-                        Spacer(modifier = Modifier.width(14.dp))
-
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = pin.name,
-                                style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Bold)
-                            )
-                            if (pin.functionDesc.isNotBlank()) {
-                                Text(
-                                    text = pin.functionDesc,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                        }
-
-                        Spacer(modifier = Modifier.width(8.dp))
-
-                        // Color pill
-                        Surface(
-                            shape = RoundedCornerShape(8.dp),
-                            color = MaterialTheme.colorScheme.surfaceVariant
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(13.dp)
-                                        .clip(CircleShape)
-                                        .background(wireBrush)
-                                        .border(1.dp, Color.White.copy(alpha = 0.6f), CircleShape)
-                                )
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text(
-                                    text = pin.wireColor,
-                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold)
-                                )
-                            }
-                        }
                     }
                 }
             }
