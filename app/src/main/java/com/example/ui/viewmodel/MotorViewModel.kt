@@ -80,6 +80,9 @@ class MotorViewModel(application: Application) : AndroidViewModel(application) {
     private val _userRole = MutableStateFlow(UserRole.REGULAR)
     val userRole: StateFlow<UserRole> = _userRole.asStateFlow()
 
+    private val _activeUserEmail = MutableStateFlow<String?>(null)
+    val activeUserEmail: StateFlow<String?> = _activeUserEmail.asStateFlow()
+
     val isSuperAdmin: Boolean
         get() = _userRole.value == UserRole.SUPER_ADMIN || AdminRepository.isSuperAdminEmail(currentUserEmail)
 
@@ -180,12 +183,10 @@ class MotorViewModel(application: Application) : AndroidViewModel(application) {
         checkUserRoleAndInitialize()
     }
 
-    private val _activeUserEmail = MutableStateFlow<String?>(null)
-    val activeUserEmail = _activeUserEmail.asStateFlow()
-
     private fun loadFavorites(email: String? = null): Set<String> {
-        val userKey = (email ?: _activeUserEmail.value ?: currentUserEmail ?: "guest").trim().lowercase()
         return try {
+            val userEmailToUse = email ?: _activeUserEmail?.value ?: currentUserEmail ?: "guest"
+            val userKey = userEmailToUse.trim().lowercase()
             sharedPrefs.getStringSet("favorite_motors_$userKey", emptySet()) ?: emptySet()
         } catch (_: Throwable) {
             emptySet()
@@ -193,8 +194,9 @@ class MotorViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun saveFavorites(set: Set<String>, email: String? = null) {
-        val userKey = (email ?: _activeUserEmail.value ?: currentUserEmail ?: "guest").trim().lowercase()
         try {
+            val userEmailToUse = email ?: _activeUserEmail?.value ?: currentUserEmail ?: "guest"
+            val userKey = userEmailToUse.trim().lowercase()
             sharedPrefs.edit().putStringSet("favorite_motors_$userKey", set).apply()
         } catch (_: Throwable) {}
     }

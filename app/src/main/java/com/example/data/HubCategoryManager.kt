@@ -301,11 +301,10 @@ object HubCategoryManager {
         return result
     }
 
-    @Suppress("UNCHECKED_CAST")
     private fun parseFirestoreOrder(data: Map<String, Any>, map: Map<String, HubCategoryCustomization>): List<String> {
-        val explicitOrder = data["order_list"] as? List<String>
+        val explicitOrder = (data["order_list"] as? List<*>)?.mapNotNull { it?.toString()?.trim() }?.filter { it.isNotBlank() }
         if (!explicitOrder.isNullOrEmpty()) {
-            return explicitOrder.filter { it.isNotBlank() }
+            return explicitOrder
         }
         val byOrderIndex = map.values.sortedBy { it.orderIndex }.map { it.id }
         return byOrderIndex
