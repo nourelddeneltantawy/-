@@ -58,6 +58,7 @@ import androidx.compose.material.icons.filled.PrecisionManufacturing
 import androidx.compose.material.icons.filled.RestartAlt
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SystemUpdate
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.filled.WaterDamage
@@ -153,6 +154,7 @@ fun DashboardHubScreen(
     onCheckForUpdates: () -> Unit,
     onPublishUpdate: () -> Unit = {},
     onManageAdmins: () -> Unit,
+    onManageBottomNav: () -> Unit = {},
     onAuthClick: () -> Unit,
     onNavigateToProfile: () -> Unit = {},
     modifier: Modifier = Modifier
@@ -300,6 +302,14 @@ fun DashboardHubScreen(
                                 Icon(
                                     imageVector = Icons.Default.CloudUpload,
                                     contentDescription = "نشر تحديث جديد للتطبيق",
+                                    tint = Color.White
+                                )
+                            }
+
+                            IconButton(onClick = onManageBottomNav) {
+                                Icon(
+                                    imageVector = Icons.Default.Tune,
+                                    contentDescription = "إدارة الشريط السفلي والتبويبات",
                                     tint = Color.White
                                 )
                             }

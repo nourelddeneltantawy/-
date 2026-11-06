@@ -81,6 +81,12 @@ import com.example.ui.screens.ProgrammingScreen
 import com.example.ui.screens.MarketplaceScreen
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Storefront
+import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
+import android.widget.Toast
+import com.example.data.BottomNavManager
+import com.example.ui.components.AdminBottomNavDialog
 
 enum class Screen {
     DASHBOARD,
@@ -107,6 +113,7 @@ class MainActivity : ComponentActivity() {
         com.example.util.ThemeManager.init(this)
         com.example.data.ContactInfoManager.init(this)
         com.example.data.HubCategoryManager.init(this)
+        com.example.data.BottomNavManager.init(this)
         com.example.data.repository.MarketplaceRepository.init(this, null, null)
         enableEdgeToEdge()
         setContent {
@@ -368,6 +375,7 @@ fun AppContent(
     var onAiImageReceivedCallback by remember { mutableStateOf<((String) -> Unit)?>(null) }
     var activeUpdateInfo by remember { mutableStateOf<com.example.data.model.AppUpdateInfo?>(null) }
     var showAdminPublishDialog by remember { mutableStateOf(false) }
+    var showAdminBottomNavDialog by remember { mutableStateOf(false) }
 
     val motorsState by motorViewModel.motorsState.collectAsState()
     val searchQuery by motorViewModel.searchQuery.collectAsState()
@@ -398,6 +406,19 @@ fun AppContent(
     val canEditProgramming = checkSectionPermission("programming")
     val canEditSettings = checkSectionPermission("settings")
     val isAdmin = isSuperAdmin || (currentAdminRecord != null && currentUserPerms.isNotEmpty())
+
+    val bottomNavTabs by BottomNavManager.tabs.collectAsState()
+    val isMarketplaceVisible = isSuperAdmin || isAdmin || BottomNavManager.isTabVisible(BottomNavManager.TAB_MARKETPLACE, isAdmin)
+    val isHomeVisible = isSuperAdmin || isAdmin || BottomNavManager.isTabVisible(BottomNavManager.TAB_HOME, isAdmin)
+    val isDashboardVisible = isSuperAdmin || isAdmin || BottomNavManager.isTabVisible(BottomNavManager.TAB_DASHBOARD, isAdmin)
+    val isMarketplaceHiddenForUsers = BottomNavManager.isTabHiddenForUsers(BottomNavManager.TAB_MARKETPLACE)
+
+    LaunchedEffect(isMarketplaceVisible, currentScreen) {
+        if (!isMarketplaceVisible && currentScreen == Screen.MARKETPLACE && !isAdmin) {
+            currentScreen = Screen.DASHBOARD
+            Toast.makeText(context, "تم قفل قسم سوق الكروت من قبل الإدارة", Toast.LENGTH_SHORT).show()
+        }
+    }
 
     val motorsList = when (val s = motorsState) {
         is MotorsUiState.Success -> s.motors
@@ -477,6 +498,13 @@ fun AppContent(
         )
     }
 
+    // Admin Bottom Navigation Bar Management Dialog
+    if (showAdminBottomNavDialog) {
+        AdminBottomNavDialog(
+            onDismiss = { showAdminBottomNavDialog = false }
+        )
+    }
+
     val showBottomBar = currentScreen in setOf(
         Screen.DASHBOARD,
         Screen.MARKETPLACE
@@ -490,62 +518,110 @@ fun AppContent(
                     tonalElevation = 8.dp
                 ) {
                     // Item 1: شاشة البدء
-                    NavigationBarItem(
-                        selected = false,
-                        onClick = { onOpenWelcomeProfile() },
-                        icon = { Icon(Icons.Default.Home, contentDescription = "شاشة البدء") },
-                        label = {
-                            Text(
-                                "شاشة البدء",
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Normal
+                    if (isHomeVisible) {
+                        val isHomeHidden = BottomNavManager.isTabHiddenForUsers(BottomNavManager.TAB_HOME)
+                        NavigationBarItem(
+                            selected = false,
+                            onClick = { onOpenWelcomeProfile() },
+                            icon = { Icon(Icons.Default.Home, contentDescription = "شاشة البدء") },
+                            label = {
+                                Text(
+                                    if (isAdmin && isHomeHidden) "البدء (مخفية)" else "شاشة البدء",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Normal
+                                )
+                            },
+                            colors = NavigationBarItemDefaults.colors(
+                                selectedIconColor = MaterialTheme.colorScheme.primary,
+                                unselectedIconColor = if (isAdmin && isHomeHidden) Color(0xFFEF4444) else MaterialTheme.colorScheme.onSurfaceVariant,
+                                selectedTextColor = MaterialTheme.colorScheme.primary,
+                                unselectedTextColor = if (isAdmin && isHomeHidden) Color(0xFFEF4444) else MaterialTheme.colorScheme.onSurfaceVariant
                             )
-                        },
-                        colors = NavigationBarItemDefaults.colors(
-                            selectedIconColor = MaterialTheme.colorScheme.primary,
-                            unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                            selectedTextColor = MaterialTheme.colorScheme.primary,
-                            unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant
                         )
-                    )
+                    }
 
                     // Item 2: الأقسام
-                    NavigationBarItem(
-                        selected = currentScreen == Screen.DASHBOARD,
-                        onClick = { selectTab(Screen.DASHBOARD) },
-                        icon = { Icon(Icons.Default.GridView, contentDescription = "الأقسام") },
-                        label = {
-                            Text(
-                                "الأقسام",
-                                fontSize = 11.sp,
-                                fontWeight = if (currentScreen == Screen.DASHBOARD) FontWeight.Bold else FontWeight.Normal
+                    if (isDashboardVisible) {
+                        NavigationBarItem(
+                            selected = currentScreen == Screen.DASHBOARD,
+                            onClick = { selectTab(Screen.DASHBOARD) },
+                            icon = { Icon(Icons.Default.GridView, contentDescription = "الأقسام") },
+                            label = {
+                                Text(
+                                    "الأقسام",
+                                    fontSize = 11.sp,
+                                    fontWeight = if (currentScreen == Screen.DASHBOARD) FontWeight.Bold else FontWeight.Normal
+                                )
+                            },
+                            colors = NavigationBarItemDefaults.colors(
+                                selectedIconColor = MaterialTheme.colorScheme.primary,
+                                selectedTextColor = MaterialTheme.colorScheme.primary,
+                                indicatorColor = MaterialTheme.colorScheme.primaryContainer
                             )
-                        },
-                        colors = NavigationBarItemDefaults.colors(
-                            selectedIconColor = MaterialTheme.colorScheme.primary,
-                            selectedTextColor = MaterialTheme.colorScheme.primary,
-                            indicatorColor = MaterialTheme.colorScheme.primaryContainer
                         )
-                    )
+                    }
 
-                    // Item 3: سوق الكروت
-                    NavigationBarItem(
-                        selected = currentScreen == Screen.MARKETPLACE,
-                        onClick = { selectTab(Screen.MARKETPLACE) },
-                        icon = { Icon(Icons.Default.Storefront, contentDescription = "سوق الكروت") },
-                        label = {
-                            Text(
-                                "سوق الكروت",
-                                fontSize = 11.sp,
-                                fontWeight = if (currentScreen == Screen.MARKETPLACE) FontWeight.Bold else FontWeight.Normal
+                    // Item 3: سوق الكروت (البيع والشراء)
+                    if (isMarketplaceVisible) {
+                        NavigationBarItem(
+                            selected = currentScreen == Screen.MARKETPLACE,
+                            onClick = {
+                                if (isMarketplaceHiddenForUsers && !isAdmin) {
+                                    Toast.makeText(context, "قسم سوق الكروت مغلق حالياً من قبل الإدارة للصيانة والتحديث", Toast.LENGTH_SHORT).show()
+                                } else {
+                                    selectTab(Screen.MARKETPLACE)
+                                }
+                            },
+                            icon = {
+                                BadgedBox(
+                                    badge = {
+                                        if (isAdmin && isMarketplaceHiddenForUsers) {
+                                            Badge(containerColor = Color(0xFFEF4444)) {
+                                                Text("مغلق", fontSize = 8.sp, color = Color.White)
+                                            }
+                                        }
+                                    }
+                                ) {
+                                    Icon(
+                                        imageVector = if (isAdmin && isMarketplaceHiddenForUsers) Icons.Default.Lock else Icons.Default.Storefront,
+                                        contentDescription = "سوق الكروت"
+                                    )
+                                }
+                            },
+                            label = {
+                                Text(
+                                    if (isAdmin && isMarketplaceHiddenForUsers) "سوق الكروت (مغلق)" else "سوق الكروت",
+                                    fontSize = 11.sp,
+                                    fontWeight = if (currentScreen == Screen.MARKETPLACE) FontWeight.Bold else FontWeight.Normal
+                                )
+                            },
+                            colors = NavigationBarItemDefaults.colors(
+                                selectedIconColor = if (isAdmin && isMarketplaceHiddenForUsers) Color(0xFFEF4444) else Color(0xFF10B981),
+                                selectedTextColor = if (isAdmin && isMarketplaceHiddenForUsers) Color(0xFFEF4444) else Color(0xFF10B981),
+                                indicatorColor = if (isAdmin && isMarketplaceHiddenForUsers) Color(0xFFFEE2E2) else Color(0xFFD1FAE5)
                             )
-                        },
-                        colors = NavigationBarItemDefaults.colors(
-                            selectedIconColor = Color(0xFF10B981),
-                            selectedTextColor = Color(0xFF10B981),
-                            indicatorColor = Color(0xFFD1FAE5)
                         )
-                    )
+                    }
+
+                    // Item 4 for Admins: إدارة الشريط
+                    if (isAdmin) {
+                        NavigationBarItem(
+                            selected = false,
+                            onClick = { showAdminBottomNavDialog = true },
+                            icon = { Icon(Icons.Default.Tune, contentDescription = "إدارة الشريط") },
+                            label = {
+                                Text(
+                                    "إدارة الشريط",
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Normal
+                                )
+                            },
+                            colors = NavigationBarItemDefaults.colors(
+                                unselectedIconColor = Color(0xFFF59E0B),
+                                unselectedTextColor = Color(0xFFF59E0B)
+                            )
+                        )
+                    }
                 }
             }
         }
@@ -592,6 +668,7 @@ fun AppContent(
                             },
                             onCheckForUpdates = { handleManualUpdateCheck() },
                             onPublishUpdate = { showAdminPublishDialog = true },
+                            onManageBottomNav = { showAdminBottomNavDialog = true },
                             onManageAdmins = {
                                 if (isSuperAdmin) {
                                     navigateTo(Screen.MANAGE_ADMINS)

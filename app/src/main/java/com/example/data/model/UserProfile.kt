@@ -11,6 +11,7 @@ data class UserProfile(
     val city: String = "",
     val profession: String = "فني صيانة غسالات", // فني صيانة غسالات، مهندس إلكترونيات، تاجر قطع غيار، مركز صيانة
     val bio: String = "",
+    val isVerified: Boolean = false,
     val createdAt: Timestamp? = null,
     val updatedAt: Timestamp? = null
 ) {
@@ -24,6 +25,7 @@ data class UserProfile(
             "city" to city,
             "profession" to profession,
             "bio" to bio,
+            "isVerified" to isVerified,
             "updatedAt" to (updatedAt ?: Timestamp.now())
         )
     }
@@ -39,6 +41,7 @@ data class UserProfile(
                 city = map["city"] as? String ?: "",
                 profession = map["profession"] as? String ?: "فني صيانة غسالات",
                 bio = map["bio"] as? String ?: "",
+                isVerified = (map["isVerified"] as? Boolean) ?: false,
                 createdAt = map["createdAt"] as? Timestamp,
                 updatedAt = map["updatedAt"] as? Timestamp
             )

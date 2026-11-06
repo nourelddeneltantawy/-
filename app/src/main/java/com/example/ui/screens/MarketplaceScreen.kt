@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -42,6 +43,15 @@ import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Storefront
 import androidx.compose.material.icons.filled.Verified
+import androidx.compose.material.icons.filled.Engineering
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Remove
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -527,13 +537,15 @@ fun MarketplaceScreen(
                                                 text = myProfile.displayName.ifBlank { "فني البراء" },
                                                 style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
                                             )
-                                            Spacer(modifier = Modifier.width(4.dp))
-                                            Icon(
-                                                imageVector = Icons.Default.Verified,
-                                                contentDescription = null,
-                                                tint = MaterialTheme.colorScheme.primary,
-                                                modifier = Modifier.size(16.dp)
-                                            )
+                                            if (myProfile.isVerified) {
+                                                Spacer(modifier = Modifier.width(4.dp))
+                                                Icon(
+                                                    imageVector = Icons.Default.Verified,
+                                                    contentDescription = "موثق معتمد",
+                                                    tint = Color(0xFF10B981),
+                                                    modifier = Modifier.size(16.dp)
+                                                )
+                                            }
                                         }
 
                                         Text(
@@ -894,6 +906,7 @@ fun MarketplaceScreen(
     // Technicians Directory Dialog for Admins
     if (showTechniciansDialog) {
         TechniciansDirectoryDialog(
+            isAdmin = isAdmin,
             onDismiss = { showTechniciansDialog = false }
         )
     }
@@ -1019,13 +1032,15 @@ fun MarketplacePostCard(
                                     fontSize = 13.sp
                                 )
                             )
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Icon(
-                                imageVector = Icons.Default.Verified,
-                                contentDescription = "معتمد",
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(13.dp)
-                            )
+                            if (post.isUserVerified) {
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Icon(
+                                    imageVector = Icons.Default.Verified,
+                                    contentDescription = "معتمد",
+                                    tint = Color(0xFF10B981),
+                                    modifier = Modifier.size(13.dp)
+                                )
+                            }
                         }
 
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1558,6 +1573,7 @@ fun CreateOrEditPostDialog(
                         userAvatarUrl = myProfile.avatarUrl,
                         userCity = fullLocation.ifBlank { myProfile.city },
                         userProfession = myProfile.profession,
+                        isUserVerified = initialPost?.isUserVerified ?: myProfile.isVerified,
                         title = title.trim(),
                         description = description.trim(),
                         price = if (postType == "BUY") "" else price.trim(),
@@ -1865,13 +1881,15 @@ fun AuthorProfileDetailDialog(
                             fontWeight = FontWeight.Bold,
                             fontSize = 16.sp
                         )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Icon(
-                            imageVector = Icons.Default.Verified,
-                            contentDescription = "موثوق",
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(16.dp)
-                        )
+                        if (profile.isVerified) {
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Icon(
+                                imageVector = Icons.Default.Verified,
+                                contentDescription = "موثوق",
+                                tint = Color(0xFF10B981),
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
                     }
 
                     if (profile.profession.isNotBlank()) {
@@ -2008,41 +2026,191 @@ fun FullscreenImageDialog(
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
-    androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
+    var scale by remember { mutableFloatStateOf(1f) }
+    var offsetX by remember { mutableFloatStateOf(0f) }
+    var offsetY by remember { mutableFloatStateOf(0f) }
+
+    androidx.compose.ui.window.Dialog(
+        onDismissRequest = onDismiss,
+        properties = androidx.compose.ui.window.DialogProperties(
+            usePlatformDefaultWidth = false
+        )
+    ) {
         Card(
             shape = RoundedCornerShape(16.dp),
-            colors = CardDefaults.cardColors(containerColor = Color.Black),
+            colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
             modifier = Modifier
-                .fillMaxWidth()
-                .padding(8.dp)
+                .fillMaxWidth(0.95f)
+                .fillMaxHeight(0.85f)
+                .padding(4.dp)
         ) {
             Column(
-                modifier = Modifier.padding(12.dp),
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(12.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
+                // Top Header Row
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("معاينة صورة الكارتة 🔍", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                    IconButton(onClick = onDismiss) {
-                        Icon(Icons.Default.Close, contentDescription = "إغلاق", tint = Color.White)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Surface(
+                            shape = CircleShape,
+                            color = Color(0xFF1E293B),
+                            modifier = Modifier.size(32.dp)
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(Icons.Default.Search, contentDescription = null, tint = Color(0xFF38BDF8), modifier = Modifier.size(18.dp))
+                            }
+                        }
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Column {
+                            Text("معاينة صورة الكارتة", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                            Text("نسبة التكبير: ${(scale * 100).toInt()}%", color = Color(0xFF94A3B8), fontSize = 11.sp)
+                        }
+                    }
+
+                    IconButton(
+                        onClick = onDismiss,
+                        modifier = Modifier
+                            .size(36.dp)
+                            .background(Color(0xFF334155), CircleShape)
+                    ) {
+                        Icon(Icons.Default.Close, contentDescription = "إغلاق", tint = Color.White, modifier = Modifier.size(20.dp))
                     }
                 }
+
                 Spacer(modifier = Modifier.height(8.dp))
-                AsyncImage(
-                    model = ImageRequest.Builder(context)
-                        .data(ImageHelper.getCoilData(imageUrl))
-                        .crossfade(true)
-                        .build(),
-                    contentDescription = null,
-                    contentScale = ContentScale.Fit,
+
+                // Image Container with interactive zoom, double-tap, and pan
+                Box(
                     modifier = Modifier
+                        .weight(1f)
                         .fillMaxWidth()
-                        .height(350.dp)
-                        .clip(RoundedCornerShape(8.dp))
-                )
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(Color.Black)
+                        .pointerInput(Unit) {
+                            detectTransformGestures { _, pan, zoom, _ ->
+                                scale = (scale * zoom).coerceIn(1f, 6f)
+                                if (scale > 1f) {
+                                    val maxOffsetX = (size.width * (scale - 1f)) / 2f
+                                    val maxOffsetY = (size.height * (scale - 1f)) / 2f
+                                    offsetX = (offsetX + pan.x).coerceIn(-maxOffsetX, maxOffsetX)
+                                    offsetY = (offsetY + pan.y).coerceIn(-maxOffsetY, maxOffsetY)
+                                } else {
+                                    offsetX = 0f
+                                    offsetY = 0f
+                                }
+                            }
+                        }
+                        .pointerInput(Unit) {
+                            detectTapGestures(
+                                onDoubleTap = {
+                                    if (scale > 1.2f) {
+                                        scale = 1f
+                                        offsetX = 0f
+                                        offsetY = 0f
+                                    } else {
+                                        scale = 2.5f
+                                    }
+                                }
+                            )
+                        },
+                    contentAlignment = Alignment.Center
+                ) {
+                    AsyncImage(
+                        model = ImageRequest.Builder(context)
+                            .data(ImageHelper.getCoilData(imageUrl))
+                            .crossfade(true)
+                            .build(),
+                        contentDescription = "صورة الكارتة المكبرة",
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .graphicsLayer {
+                                scaleX = scale
+                                scaleY = scale
+                                translationX = offsetX
+                                translationY = offsetY
+                            }
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                // Bottom Zoom Controls Bar
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = Color(0xFF1E293B),
+                    border = BorderStroke(1.dp, Color(0xFF334155)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 8.dp, vertical = 6.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        // Quick Reset Button
+                        TextButton(
+                            onClick = {
+                                scale = 1f
+                                offsetX = 0f
+                                offsetY = 0f
+                            },
+                            enabled = scale > 1f || offsetX != 0f || offsetY != 0f
+                        ) {
+                            Icon(Icons.Default.Refresh, contentDescription = null, tint = if (scale > 1f) Color(0xFF38BDF8) else Color.Gray, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("إعادة الضبط", fontSize = 11.sp, color = if (scale > 1f) Color(0xFF38BDF8) else Color.Gray)
+                        }
+
+                        // Hint
+                        Text(
+                            text = "💡 اسحب بإصبعين للتكبير أو انقر نقرتين",
+                            color = Color(0xFF94A3B8),
+                            fontSize = 10.sp
+                        )
+
+                        // Plus / Minus Buttons
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            IconButton(
+                                onClick = {
+                                    scale = (scale - 0.5f).coerceAtLeast(1f)
+                                    if (scale == 1f) {
+                                        offsetX = 0f
+                                        offsetY = 0f
+                                    }
+                                },
+                                enabled = scale > 1f,
+                                modifier = Modifier
+                                    .size(32.dp)
+                                    .background(if (scale > 1f) Color(0xFF334155) else Color(0xFF1E293B), CircleShape)
+                            ) {
+                                Icon(Icons.Default.Remove, contentDescription = "تصغير", tint = if (scale > 1f) Color.White else Color.Gray, modifier = Modifier.size(16.dp))
+                            }
+
+                            IconButton(
+                                onClick = {
+                                    scale = (scale + 0.5f).coerceAtMost(6f)
+                                },
+                                enabled = scale < 6f,
+                                modifier = Modifier
+                                    .size(32.dp)
+                                    .background(Color(0xFF0284C7), CircleShape)
+                            ) {
+                                Icon(Icons.Default.Add, contentDescription = "تكبير", tint = Color.White, modifier = Modifier.size(16.dp))
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -2050,16 +2218,24 @@ fun FullscreenImageDialog(
 
 @Composable
 fun TechniciansDirectoryDialog(
+    isAdmin: Boolean = false,
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
     var technicians by remember { mutableStateOf<List<UserProfile>>(emptyList()) }
     var isLoading by remember { mutableStateOf(true) }
     var searchQuery by remember { mutableStateOf("") }
+    val coroutineScope = rememberCoroutineScope()
+
+    fun reload() {
+        coroutineScope.launch {
+            technicians = MarketplaceRepository.fetchAllProfiles(context)
+            isLoading = false
+        }
+    }
 
     LaunchedEffect(Unit) {
-        technicians = MarketplaceRepository.fetchAllProfiles(context)
-        isLoading = false
+        reload()
     }
 
     val filtered = technicians.filter {
@@ -2074,7 +2250,7 @@ fun TechniciansDirectoryDialog(
         onDismissRequest = onDismiss,
         title = {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Default.Verified, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                Icon(Icons.Default.Engineering, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
                 Spacer(modifier = Modifier.width(8.dp))
                 Text("دليل الفنيين والمهندسين المسجلين 👥", fontWeight = FontWeight.Bold, fontSize = 15.sp)
             }
@@ -2082,7 +2258,7 @@ fun TechniciansDirectoryDialog(
         text = {
             Column(modifier = Modifier.fillMaxWidth()) {
                 Text(
-                    text = "قائمة حسابات الفنيين المعتمدين المسجلين في التطبيق (${technicians.size} فني):",
+                    text = if (isAdmin) "قائمة الفنيين المسجلين (يمكنك كمسؤول توثيق أي فني أو إلغاء توثيقه):" else "قائمة حسابات الفنيين المسجلين في التطبيق (${technicians.size} فني):",
                     fontSize = 11.sp,
                     color = MaterialTheme.colorScheme.outline
                 )
@@ -2110,67 +2286,147 @@ fun TechniciansDirectoryDialog(
                     }
                 } else {
                     LazyColumn(
-                        modifier = Modifier.fillMaxWidth().height(280.dp),
+                        modifier = Modifier.fillMaxWidth().height(320.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         items(filtered, key = { it.userId.ifBlank { it.email } }) { tech ->
                             Surface(
                                 shape = RoundedCornerShape(10.dp),
                                 color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
+                                border = BorderStroke(1.dp, if (tech.isVerified) Color(0xFF10B981).copy(alpha = 0.5f) else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
                                 modifier = Modifier.fillMaxWidth()
                             ) {
-                                Row(
-                                    modifier = Modifier.padding(10.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    if (tech.avatarUrl.isNotBlank()) {
-                                        AsyncImage(
-                                            model = ImageRequest.Builder(context)
-                                                .data(ImageHelper.getCoilData(tech.avatarUrl))
-                                                .crossfade(true)
-                                                .build(),
-                                            contentDescription = tech.displayName,
-                                            contentScale = ContentScale.Crop,
-                                            modifier = Modifier.size(40.dp).clip(CircleShape)
-                                        )
-                                    } else {
-                                        Surface(
-                                            shape = CircleShape,
-                                            color = MaterialTheme.colorScheme.primaryContainer,
-                                            modifier = Modifier.size(40.dp)
-                                        ) {
-                                            Box(contentAlignment = Alignment.Center) {
-                                                Text(tech.displayName.take(1).ifBlank { "ف" }, fontWeight = FontWeight.Bold)
+                                Column(modifier = Modifier.padding(10.dp)) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        if (tech.avatarUrl.isNotBlank()) {
+                                            AsyncImage(
+                                                model = ImageRequest.Builder(context)
+                                                    .data(ImageHelper.getCoilData(tech.avatarUrl))
+                                                    .crossfade(true)
+                                                    .build(),
+                                                contentDescription = tech.displayName,
+                                                contentScale = ContentScale.Crop,
+                                                modifier = Modifier.size(40.dp).clip(CircleShape)
+                                            )
+                                        } else {
+                                            Surface(
+                                                shape = CircleShape,
+                                                color = MaterialTheme.colorScheme.primaryContainer,
+                                                modifier = Modifier.size(40.dp)
+                                            ) {
+                                                Box(contentAlignment = Alignment.Center) {
+                                                    Text(tech.displayName.take(1).ifBlank { "ف" }, fontWeight = FontWeight.Bold)
+                                                }
+                                            }
+                                        }
+
+                                        Spacer(modifier = Modifier.width(10.dp))
+
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                                Text(tech.displayName.ifBlank { "فني" }, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                                if (tech.isVerified) {
+                                                    Spacer(modifier = Modifier.width(4.dp))
+                                                    Icon(
+                                                        Icons.Default.Verified,
+                                                        contentDescription = "موثق معتمد",
+                                                        tint = Color(0xFF10B981),
+                                                        modifier = Modifier.size(14.dp)
+                                                    )
+                                                    Spacer(modifier = Modifier.width(2.dp))
+                                                    Text("معتمد", fontSize = 10.sp, color = Color(0xFF10B981), fontWeight = FontWeight.Bold)
+                                                }
+                                            }
+                                            if (tech.city.isNotBlank()) {
+                                                Text("📍 ${tech.city}", fontSize = 10.sp, color = MaterialTheme.colorScheme.secondary)
+                                            }
+                                            if (tech.phone.isNotBlank()) {
+                                                Text("📞 ${tech.phone}", fontSize = 10.sp, color = MaterialTheme.colorScheme.outline)
+                                            }
+                                            if (tech.email.isNotBlank()) {
+                                                Text("✉️ ${tech.email}", fontSize = 9.sp, color = MaterialTheme.colorScheme.outline)
+                                            }
+                                        }
+
+                                        if (tech.phone.isNotBlank()) {
+                                            IconButton(
+                                                onClick = { openDialer(context, tech.phone) },
+                                                modifier = Modifier.size(32.dp)
+                                            ) {
+                                                Icon(Icons.Default.Call, contentDescription = "اتصال", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
                                             }
                                         }
                                     }
 
-                                    Spacer(modifier = Modifier.width(10.dp))
-
-                                    Column(modifier = Modifier.weight(1f)) {
-                                        Row(verticalAlignment = Alignment.CenterVertically) {
-                                            Text(tech.displayName.ifBlank { "فني" }, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                                            Spacer(modifier = Modifier.width(4.dp))
-                                            Icon(Icons.Default.Verified, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(13.dp))
-                                        }
-                                        if (tech.city.isNotBlank()) {
-                                            Text("📍 ${tech.city}", fontSize = 10.sp, color = MaterialTheme.colorScheme.secondary)
-                                        }
-                                        if (tech.phone.isNotBlank()) {
-                                            Text("📞 ${tech.phone}", fontSize = 10.sp, color = MaterialTheme.colorScheme.outline)
-                                        }
-                                        if (tech.email.isNotBlank()) {
-                                            Text("✉️ ${tech.email}", fontSize = 9.sp, color = MaterialTheme.colorScheme.outline)
-                                        }
-                                    }
-
-                                    if (tech.phone.isNotBlank()) {
-                                        IconButton(
-                                            onClick = { openDialer(context, tech.phone) },
-                                            modifier = Modifier.size(32.dp)
+                                    // Admin Verification Toggle Section
+                                    if (isAdmin) {
+                                        Spacer(modifier = Modifier.height(6.dp))
+                                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f), thickness = 0.5.dp)
+                                        Spacer(modifier = Modifier.height(6.dp))
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
                                         ) {
-                                            Icon(Icons.Default.Call, contentDescription = "اتصال", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+                                            Text(
+                                                text = if (tech.isVerified) "حالة التوثيق: موثق ومعتمد ✓" else "حالة التوثيق: غير موثق",
+                                                fontSize = 11.sp,
+                                                color = if (tech.isVerified) Color(0xFF10B981) else MaterialTheme.colorScheme.outline,
+                                                fontWeight = FontWeight.Medium
+                                            )
+
+                                            if (tech.isVerified) {
+                                                FilledTonalButton(
+                                                    onClick = {
+                                                        MarketplaceRepository.setTechnicianVerified(context, tech.email, false) { success ->
+                                                            if (success) {
+                                                                technicians = technicians.map {
+                                                                    if (it.email.equals(tech.email, ignoreCase = true)) it.copy(isVerified = false) else it
+                                                                }
+                                                                android.widget.Toast.makeText(context, "تم إلغاء توثيق الفني ${tech.displayName}", android.widget.Toast.LENGTH_SHORT).show()
+                                                            }
+                                                        }
+                                                    },
+                                                    colors = ButtonDefaults.filledTonalButtonColors(
+                                                        containerColor = Color(0xFFEF4444).copy(alpha = 0.15f),
+                                                        contentColor = Color(0xFFEF4444)
+                                                    ),
+                                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                                    modifier = Modifier.height(28.dp),
+                                                    shape = RoundedCornerShape(6.dp)
+                                                ) {
+                                                    Icon(Icons.Default.Close, contentDescription = null, modifier = Modifier.size(12.dp))
+                                                    Spacer(modifier = Modifier.width(3.dp))
+                                                    Text("إلغاء التوثيق", fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                                                }
+                                            } else {
+                                                Button(
+                                                    onClick = {
+                                                        MarketplaceRepository.setTechnicianVerified(context, tech.email, true) { success ->
+                                                            if (success) {
+                                                                technicians = technicians.map {
+                                                                    if (it.email.equals(tech.email, ignoreCase = true)) it.copy(isVerified = true) else it
+                                                                }
+                                                                android.widget.Toast.makeText(context, "تم توثيق الفني ${tech.displayName} بنجاح ✓", android.widget.Toast.LENGTH_SHORT).show()
+                                                            }
+                                                        }
+                                                    },
+                                                    colors = ButtonDefaults.buttonColors(
+                                                        containerColor = Color(0xFF10B981),
+                                                        contentColor = Color.White
+                                                    ),
+                                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                                    modifier = Modifier.height(28.dp),
+                                                    shape = RoundedCornerShape(6.dp)
+                                                ) {
+                                                    Icon(Icons.Default.Verified, contentDescription = null, modifier = Modifier.size(12.dp))
+                                                    Spacer(modifier = Modifier.width(3.dp))
+                                                    Text("توثيق الفني", fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                                                }
+                                            }
                                         }
                                     }
                                 }

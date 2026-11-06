@@ -330,17 +330,19 @@ fun InteractiveMotorConnector(
 
                             Spacer(modifier = Modifier.height(4.dp))
 
-                            // Wire color label under pin
-                            Text(
-                                text = if (pin.isBlankPin) "فاضي" else pin.wireColor,
-                                style = MaterialTheme.typography.labelSmall.copy(
-                                    fontSize = 10.sp,
-                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                                    color = if (isSelected) pColor else Color(0xFF94A3B8)
-                                ),
-                                textAlign = TextAlign.Center,
-                                maxLines = 1
-                            )
+                            // Role label or Blank symbol (No wire color text!)
+                            if (pin.isBlankPin) {
+                                Text(
+                                    text = "فاضي",
+                                    style = MaterialTheme.typography.labelSmall.copy(
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Normal,
+                                        color = Color(0xFF94A3B8)
+                                    ),
+                                    textAlign = TextAlign.Center,
+                                    maxLines = 1
+                                )
+                            }
                         }
                     }
                 }
@@ -412,18 +414,10 @@ fun InteractiveMotorConnector(
                                 } else {
                                     Box(
                                         modifier = Modifier
-                                            .size(14.dp)
+                                            .size(16.dp)
                                             .clip(CircleShape)
                                             .background(wireBrush)
-                                            .border(1.dp, Color.White.copy(alpha = 0.8f), CircleShape)
-                                    )
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text(
-                                        text = pin.wireColor,
-                                        style = MaterialTheme.typography.bodyMedium.copy(
-                                            fontWeight = FontWeight.Bold,
-                                            color = Color.White
-                                        )
+                                            .border(1.2.dp, Color.White.copy(alpha = 0.85f), CircleShape)
                                     )
                                 }
                                 if (sColor != null) {
@@ -510,6 +504,8 @@ fun CompactMotorConnectorStrip(
 ) {
     if (pinouts.isEmpty()) return
 
+    val activePinsCount = pinouts.count { !it.isBlankPin }
+
     Surface(
         modifier = modifier
             .fillMaxWidth()
@@ -537,7 +533,7 @@ fun CompactMotorConnectorStrip(
                     )
                     Spacer(modifier = Modifier.width(5.dp))
                     Text(
-                        text = "ترتيب أطراف فيشة الماتور (${pinouts.size})",
+                        text = "ترتيب سوكيت الماتور ($activePinsCount طرف توصيل)",
                         style = MaterialTheme.typography.labelSmall.copy(
                             fontSize = 10.sp,
                             fontWeight = FontWeight.Bold,
@@ -651,6 +647,8 @@ fun VerticalInteractiveMotorConnector(
 ) {
     if (pinouts.isEmpty()) return
 
+    val activePinsCount = pinouts.count { !it.isBlankPin }
+
     // Track which pin is currently expanded (or null if none)
     var expandedPinIndex by remember { mutableStateOf<Int?>(0) }
 
@@ -701,7 +699,7 @@ fun VerticalInteractiveMotorConnector(
                             )
                         )
                         Text(
-                            text = "${pinouts.size} أطراف • اضغط على أي طرف لعرض وظائفه ومقاومته",
+                            text = "$activePinsCount أطراف توصيل • اضغط على أي طرف لعرض وظائفه ومقاومته",
                             style = MaterialTheme.typography.labelSmall.copy(
                                 color = Color(0xFF94A3B8),
                                 fontSize = 10.sp
@@ -715,7 +713,7 @@ fun VerticalInteractiveMotorConnector(
                     color = Color(0xFF1E293B)
                 ) {
                     Text(
-                        text = "من 1 إلى ${pinouts.size}",
+                        text = "$activePinsCount طرف",
                         color = Color(0xFF38BDF8),
                         fontWeight = FontWeight.Bold,
                         fontSize = 11.sp,
@@ -752,7 +750,7 @@ fun VerticalInteractiveMotorConnector(
                         color = if (isExpanded) Color(0xFF1F2937) else Color(0xFF161F2E),
                         border = androidx.compose.foundation.BorderStroke(
                             1.dp,
-                            if (isExpanded) pColor else Color(0xFF374151)
+                            if (isExpanded) (if (pin.isBlankPin) Color(0xFF64748B) else pColor) else Color(0xFF374151)
                         )
                     ) {
                         Column(
@@ -777,12 +775,12 @@ fun VerticalInteractiveMotorConnector(
                                             .size(width = 38.dp, height = 38.dp)
                                             .clip(RoundedCornerShape(8.dp))
                                             .background(
-                                                if (isExpanded) pColor.copy(alpha = 0.25f)
+                                                if (isExpanded) (if (pin.isBlankPin) Color(0xFF334155) else pColor.copy(alpha = 0.25f))
                                                 else Color(0xFF0F172A)
                                             )
                                             .border(
                                                 1.5.dp,
-                                                if (isExpanded) pColor else Color(0xFF4B5563),
+                                                if (isExpanded) (if (pin.isBlankPin) Color(0xFF64748B) else pColor) else Color(0xFF4B5563),
                                                 RoundedCornerShape(8.dp)
                                             ),
                                         contentAlignment = Alignment.Center
@@ -798,7 +796,7 @@ fun VerticalInteractiveMotorConnector(
 
                                     Spacer(modifier = Modifier.width(10.dp))
 
-                                    // Color Dot Indicator or Blank slot
+                                    // Color Dot Indicator or Blank slot symbol
                                     if (pin.isBlankPin) {
                                         Box(
                                             modifier = Modifier
@@ -821,21 +819,20 @@ fun VerticalInteractiveMotorConnector(
 
                                     Spacer(modifier = Modifier.width(10.dp))
 
-                                    // Function name & wire label
+                                    // Function name (No wire color name written as text!)
                                     Column {
                                         Text(
-                                            text = if (pin.isBlankPin) "مكان فاضي بدون سلك (NC)" else pin.name.ifBlank { "طرف توصيل" },
+                                            text = if (pin.isBlankPin) "مكان فاضي في السوكيت (NC)" else pin.name.ifBlank { "طرف توصيل" },
                                             style = MaterialTheme.typography.bodyMedium.copy(
                                                 fontWeight = FontWeight.Bold,
                                                 color = Color.White
                                             )
                                         )
-                                        if (!pin.isBlankPin) {
+                                        if (pin.isBlankPin) {
                                             Text(
-                                                text = if (sColor != null) "${pin.wireColor} (مخطط)" else pin.wireColor,
+                                                text = "خانة فارغة بدون سلك",
                                                 style = MaterialTheme.typography.labelSmall.copy(
-                                                    color = pColor,
-                                                    fontWeight = FontWeight.SemiBold,
+                                                    color = Color(0xFF94A3B8),
                                                     fontSize = 11.sp
                                                 )
                                             )
@@ -847,7 +844,7 @@ fun VerticalInteractiveMotorConnector(
                                 Icon(
                                     imageVector = if (isExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
                                     contentDescription = if (isExpanded) "طي" else "توسيع",
-                                    tint = if (isExpanded) pColor else Color(0xFF9CA3AF),
+                                    tint = if (isExpanded) (if (pin.isBlankPin) Color(0xFF94A3B8) else pColor) else Color(0xFF9CA3AF),
                                     modifier = Modifier.size(22.dp)
                                 )
                             }
@@ -873,7 +870,7 @@ fun VerticalInteractiveMotorConnector(
                                             )
                                             Spacer(modifier = Modifier.width(6.dp))
                                             Text(
-                                                text = "بيانات ومقاومة الطرف #${pin.pinNumber}:",
+                                                text = if (pin.isBlankPin) "بيانات الخانة بالسوكيت #${pin.pinNumber}:" else "بيانات ومقاومة الطرف #${pin.pinNumber}:",
                                                 style = MaterialTheme.typography.labelSmall.copy(
                                                     fontWeight = FontWeight.Bold,
                                                     color = Color(0xFF38BDF8)
@@ -885,43 +882,13 @@ fun VerticalInteractiveMotorConnector(
 
                                         Text(
                                             text = if (pin.functionDesc.isNotBlank()) pin.functionDesc
-                                            else if (pin.isBlankPin) "هذا الطرف غير متصل بأي سلك داخلي (Not Connected)."
+                                            else if (pin.isBlankPin) "مكان فاضي في السوكيت غير متصل بأي سلك داخلي (Not Connected)."
                                             else "طرف كهربائي مخصص لتوصيل ${pin.name}.",
                                             style = MaterialTheme.typography.bodySmall.copy(
                                                 color = Color(0xFFE5E7EB),
                                                 lineHeight = 18.sp
                                             )
                                         )
-
-                                        if (!pin.isBlankPin) {
-                                            Spacer(modifier = Modifier.height(8.dp))
-                                            Row(
-                                                modifier = Modifier.fillMaxWidth(),
-                                                horizontalArrangement = Arrangement.SpaceBetween,
-                                                verticalAlignment = Alignment.CenterVertically
-                                            ) {
-                                                Text(
-                                                    text = "كود اللون: ${pin.colorHex}",
-                                                    style = MaterialTheme.typography.labelSmall.copy(
-                                                        color = Color(0xFF9CA3AF),
-                                                        fontSize = 10.sp
-                                                    )
-                                                )
-                                                Surface(
-                                                    shape = RoundedCornerShape(4.dp),
-                                                    color = pColor.copy(alpha = 0.2f),
-                                                    border = androidx.compose.foundation.BorderStroke(1.dp, pColor)
-                                                ) {
-                                                    Text(
-                                                        text = "سليم ✓",
-                                                        color = pColor,
-                                                        fontSize = 9.sp,
-                                                        fontWeight = FontWeight.Bold,
-                                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                                    )
-                                                }
-                                            }
-                                        }
                                     }
                                 }
                             }

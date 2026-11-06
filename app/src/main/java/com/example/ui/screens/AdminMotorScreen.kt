@@ -642,6 +642,7 @@ fun AdminMotorScreen(
                 Column(
                     modifier = Modifier.fillMaxWidth()
                 ) {
+                    val activePinsCount = pinouts.count { !it.isBlankPin }
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically
@@ -653,7 +654,7 @@ fun AdminMotorScreen(
                         ) {
                             Box(contentAlignment = Alignment.Center) {
                                 Text(
-                                    text = "${pinouts.size}",
+                                    text = "$activePinsCount",
                                     style = MaterialTheme.typography.labelMedium.copy(
                                         fontWeight = FontWeight.Bold,
                                         color = MaterialTheme.colorScheme.onPrimaryContainer
@@ -663,7 +664,7 @@ fun AdminMotorScreen(
                         }
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            text = "أطراف التوصيل والأسلاك",
+                            text = "أطراف التوصيل ($activePinsCount أطراف توصيل)",
                             style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
                         )
                     }
@@ -707,12 +708,12 @@ fun AdminMotorScreen(
                                 pinouts.add(
                                     Pinout(
                                         pinNumber = nextNum,
-                                        name = "طرف فارغ",
-                                        wireColor = "فارغ (بدون سلك)",
+                                        name = "مكان فاضي في السوكيت (NC)",
+                                        wireColor = "فارغ",
                                         colorHex = "#94A3B8",
                                         secondaryColorHex = null,
                                         secondaryColorName = null,
-                                        functionDesc = "مكان فاضي في الفيشة بدون سلك (NC)",
+                                        functionDesc = "خانة فارغة في السوكيت بدون توصيل سلك (NC)",
                                         isBlank = true
                                     )
                                 )
@@ -720,7 +721,7 @@ fun AdminMotorScreen(
                             modifier = Modifier.weight(1f),
                             shape = RoundedCornerShape(10.dp)
                         ) {
-                            Text("طرف فارغ (فاضي) +", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                            Text("مكان فاضي بالسوكيت ∅", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
                         }
                     }
                 }

@@ -50,7 +50,7 @@ object MotorShareHelper {
                         putExtra(Intent.EXTRA_STREAM, contentUri)
                         putExtra(
                             Intent.EXTRA_TEXT,
-                            "مخطط وأطراف ماتور: ${motor.name}\n${motor.brand} ${motor.model}\nتطبيق صيانة وبرمجة مواتير الغسالات"
+                            "مخطط وأطراف ماتور: ${motor.name}\n${motor.brand} ${motor.model}\nالبراء إلكترونيك"
                         )
                         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                     }
@@ -120,11 +120,12 @@ object MotorShareHelper {
         paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
         canvas.drawText(motor.name, (width - 70).toFloat(), 148f, paint)
 
-        // Brand & Model & Pin count
+        // Brand & Model & Active Pin count
         paint.color = android.graphics.Color.parseColor("#94A3B8")
         paint.textSize = 28f
         paint.typeface = Typeface.DEFAULT
-        val metaText = "${motor.brand} • ${motor.model} • ${motor.motorType.ifBlank { "ماتور غسالة" }} (${pinouts.size} أطراف)"
+        val activePinsCount = pinouts.count { !it.isBlankPin }
+        val metaText = "${motor.brand} • ${motor.model} • ${motor.motorType.ifBlank { "ماتور غسالة" }} ($activePinsCount أطراف)"
         canvas.drawText(metaText, (width - 70).toFloat(), 196f, paint)
 
         // Vertical Pins Section
@@ -231,24 +232,21 @@ object MotorShareHelper {
             paint.color = android.graphics.Color.WHITE
             paint.textSize = 30f
             paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-            val funcName = if (pin.isBlankPin) "مكان فاضي بدون سلك (NC)" else pin.name.ifBlank { "طرف توصيل" }
+            val funcName = if (pin.isBlankPin) "مكان فاضي في السوكيت (NC)" else pin.name.ifBlank { "طرف توصيل" }
             canvas.drawText(funcName, circleCenterX - 36f, currentY + 42f, paint)
 
-            // Pin Wire Color Label & Details
+            // Pin Details (NO color names written as text!)
             paint.color = android.graphics.Color.parseColor("#94A3B8")
             paint.textSize = 22f
             paint.typeface = Typeface.DEFAULT
-            val subDetails = buildString {
-                if (!pin.isBlankPin) {
-                    append("لون السلك: ${pin.wireColor}")
-                    if (pin.functionDesc.isNotBlank()) {
-                        append(" • ${pin.functionDesc}")
-                    }
-                } else if (pin.functionDesc.isNotBlank()) {
-                    append(pin.functionDesc)
-                }
+            val subDetails = if (pin.isBlankPin) {
+                "خانة فارغة في السوكيت بدون توصيل"
+            } else {
+                pin.functionDesc
             }
-            canvas.drawText(subDetails, circleCenterX - 36f, currentY + 74f, paint)
+            if (subDetails.isNotBlank()) {
+                canvas.drawText(subDetails, circleCenterX - 36f, currentY + 74f, paint)
+            }
 
             currentY += pinRowHeight.toFloat()
         }
@@ -273,13 +271,13 @@ object MotorShareHelper {
             currentY += 125f
         }
 
-        // Footer Branding
-        paint.color = android.graphics.Color.parseColor("#64748B")
-        paint.textSize = 22f
+        // Footer Branding (Simply "البراء إلكترونيك")
+        paint.color = android.graphics.Color.parseColor("#94A3B8")
+        paint.textSize = 34f
         paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
         paint.textAlign = Paint.Align.CENTER
         canvas.drawText(
-            "تم الاستخراج عبر تطبيق صيانة وبرمجة مواتير الغسالات • Al-Baraa App",
+            "البراء إلكترونيك",
             (width / 2).toFloat(),
             totalHeight - 40f,
             paint

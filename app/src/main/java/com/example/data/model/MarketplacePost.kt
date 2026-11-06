@@ -9,6 +9,7 @@ data class MarketplacePost(
     val userAvatarUrl: String = "",
     val userCity: String = "",
     val userProfession: String = "",
+    val isUserVerified: Boolean = false,
     val postType: String = "SELL", // "SELL" (بيع كارتة) or "BUY" (طلب شراء)
     val title: String = "",
     val description: String = "",
@@ -29,6 +30,7 @@ data class MarketplacePost(
             "userAvatarUrl" to userAvatarUrl,
             "userCity" to userCity,
             "userProfession" to userProfession,
+            "isUserVerified" to isUserVerified,
             "postType" to postType,
             "title" to title,
             "description" to description,
@@ -52,6 +54,7 @@ data class MarketplacePost(
                 userAvatarUrl = map["userAvatarUrl"] as? String ?: "",
                 userCity = map["city"] as? String ?: (map["userCity"] as? String ?: ""),
                 userProfession = map["profession"] as? String ?: (map["userProfession"] as? String ?: ""),
+                isUserVerified = (map["isUserVerified"] as? Boolean) ?: false,
                 postType = map["postType"] as? String ?: "SELL",
                 title = map["title"] as? String ?: "",
                 description = map["description"] as? String ?: "",

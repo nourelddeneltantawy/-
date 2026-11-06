@@ -124,20 +124,21 @@ fun MotorCard(
             ) {
                 // Motor Title & Subtitle
                 Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = motor.name,
+                        style = MaterialTheme.typography.titleMedium.copy(
+                            fontWeight = FontWeight.Bold
+                        ),
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+
+                    Spacer(modifier = Modifier.height(4.dp))
+
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        Text(
-                            text = motor.name,
-                            style = MaterialTheme.typography.titleMedium.copy(
-                                fontWeight = FontWeight.Bold
-                            ),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f, fill = false)
-                        )
-
                         // Category Badge if set
                         if (motor.category.isNotBlank()) {
                             Surface(
@@ -447,9 +448,10 @@ fun MotorCard(
                         tint = MaterialTheme.colorScheme.primary,
                         modifier = Modifier.size(18.dp)
                     )
+                    val activePinsCount = motor.pinouts.count { !it.isBlankPin }
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = if (isConnectorExpanded) "إغلاق فيشة الأطراف التفاعلية" else "عرض فيشة أطراف الماتور التفاعلية (${motor.pinouts.size} أطراف)",
+                        text = if (isConnectorExpanded) "إغلاق فيشة الأطراف" else "عرض فيشة أطراف الماتور التفاعلية ($activePinsCount طرف)",
                         style = MaterialTheme.typography.labelLarge.copy(
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.primary
@@ -484,6 +486,7 @@ fun MotorCard(
             Spacer(modifier = Modifier.height(10.dp))
 
             // Footer Details
+            val activePinsCount = motor.pinouts.count { !it.isBlankPin }
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -498,7 +501,7 @@ fun MotorCard(
                     )
                     Spacer(modifier = Modifier.width(4.dp))
                     Text(
-                        text = if (motor.pinouts.isEmpty()) "لا توجد أطراف مسجلة" else "${motor.pinouts.size} أطراف توصيل",
+                        text = if (activePinsCount == 0) "لا توجد أطراف مسجلة" else "$activePinsCount أطراف توصيل",
                         style = MaterialTheme.typography.bodySmall.copy(
                             color = MaterialTheme.colorScheme.primary,
                             fontWeight = FontWeight.Medium

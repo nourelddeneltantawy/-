@@ -276,7 +276,7 @@ fun CatalogScreen(
             SearchAutocompleteBox(
                 query = searchQuery,
                 onQueryChange = onSearchQueryChange,
-                placeholder = "ابحث باسم الماتور، الموديل، لون السلك أو الوظيفة...",
+                placeholder = "ابحث باسم الماتور، الموديل، أو الوظيفة...",
                 allSuggestions = motorSuggestions,
                 modifier = Modifier
                     .fillMaxWidth()

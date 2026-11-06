@@ -274,6 +274,74 @@ object MarketplaceRepository {
         }
     }
 
+    fun setTechnicianVerified(
+        context: Context,
+        targetEmail: String,
+        isVerified: Boolean,
+        onComplete: ((Boolean) -> Unit)? = null
+    ) {
+        val appContext = context.applicationContext ?: context
+        val cleanEmail = targetEmail.trim().lowercase()
+        if (cleanEmail.isBlank()) {
+            onComplete?.invoke(false)
+            return
+        }
+
+        // Update in-memory user profile if currently active
+        val currentProfile = _currentUserProfile.value
+        if (currentProfile?.email?.trim()?.lowercase() == cleanEmail) {
+            val updated = currentProfile.copy(isVerified = isVerified)
+            _currentUserProfile.value = updated
+            saveCachedProfile(appContext, updated)
+        }
+
+        // Update in-memory posts from this user
+        val currentPosts = _posts.value.toMutableList()
+        var postsChanged = false
+        currentPosts.forEachIndexed { index, post ->
+            if (post.userEmail.trim().lowercase() == cleanEmail) {
+                currentPosts[index] = post.copy(isUserVerified = isVerified)
+                postsChanged = true
+            }
+        }
+        if (postsChanged) {
+            _posts.value = currentPosts
+            saveCachedPosts(appContext, currentPosts)
+        }
+
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val db = FirebaseInitializer.getFirestore(appContext)
+                // 1. Update user_profiles document
+                db.collection("user_profiles").document(cleanEmail)
+                    .update("isVerified", isVerified)
+                    .await()
+
+                // 2. Also update all posts by this user in marketplace_posts
+                val userPostsSnapshot = db.collection("marketplace_posts")
+                    .whereEqualTo("userEmail", cleanEmail)
+                    .get()
+                    .await()
+                for (doc in userPostsSnapshot.documents) {
+                    try {
+                        db.collection("marketplace_posts").document(doc.id)
+                            .update("isUserVerified", isVerified)
+                            .await()
+                    } catch (_: Throwable) {}
+                }
+
+                withContext(Dispatchers.Main) {
+                    onComplete?.invoke(true)
+                }
+            } catch (e: Throwable) {
+                Log.e(TAG, "Error setting technician verified status", e)
+                withContext(Dispatchers.Main) {
+                    onComplete?.invoke(false)
+                }
+            }
+        }
+    }
+
     private fun saveCachedPosts(context: Context, list: List<MarketplacePost>) {
         try {
             val arr = JSONArray()
@@ -287,6 +355,7 @@ object MarketplaceRepository {
                 obj.put("userAvatarUrl", p.userAvatarUrl)
                 obj.put("userCity", p.userCity)
                 obj.put("userProfession", p.userProfession)
+                obj.put("isUserVerified", p.isUserVerified)
                 obj.put("postType", p.postType)
                 obj.put("title", p.title)
                 obj.put("description", p.description)
@@ -319,6 +388,7 @@ object MarketplaceRepository {
                     userAvatarUrl = obj.optString("userAvatarUrl", ""),
                     userCity = obj.optString("userCity", ""),
                     userProfession = obj.optString("userProfession", ""),
+                    isUserVerified = obj.optBoolean("isUserVerified", false),
                     postType = obj.optString("postType", "SELL"),
                     title = obj.optString("title", ""),
                     description = obj.optString("description", ""),
@@ -346,6 +416,7 @@ object MarketplaceRepository {
             obj.put("city", profile.city)
             obj.put("profession", profile.profession)
             obj.put("bio", profile.bio)
+            obj.put("isVerified", profile.isVerified)
             context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
                 .edit().putString(key, obj.toString()).apply()
         } catch (_: Throwable) {}
@@ -369,7 +440,8 @@ object MarketplaceRepository {
                 avatarUrl = obj.optString("avatarUrl", ""),
                 city = obj.optString("city", ""),
                 profession = obj.optString("profession", "فني صيانة غسالات"),
-                bio = obj.optString("bio", "")
+                bio = obj.optString("bio", ""),
+                isVerified = obj.optBoolean("isVerified", false)
             )
             // Ensure the cached profile really belongs to this email
             if (p.email.equals(email, ignoreCase = true) || p.email.isBlank()) {
