@@ -174,45 +174,7 @@ fun CatalogScreen(
                         }
                     }
                 },
-                actions = {
-                    // AI Studio shortcut (Admins only)
-                    if (isAdmin) {
-                        IconButton(
-                            onClick = onAiStudioClick,
-                            modifier = Modifier.testTag("ai_studio_button")
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.AutoAwesome,
-                                contentDescription = "استوديو الذكاء الاصطناعي للمخططات",
-                                tint = MaterialTheme.colorScheme.tertiary
-                            )
-                        }
-                    }
-
-                    // Check for Updates action
-                    IconButton(
-                        onClick = onCheckForUpdates,
-                        modifier = Modifier.testTag("check_updates_button")
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.SystemUpdate,
-                            contentDescription = "التحقق من وجود تحديثات للتطبيق",
-                            tint = MaterialTheme.colorScheme.primary
-                        )
-                    }
-
-                    // Sign Out or Sign In
-                    IconButton(
-                        onClick = onSignOutClick,
-                        modifier = Modifier.testTag("sign_out_button")
-                    ) {
-                        Icon(
-                            imageVector = if (isGuest) Icons.AutoMirrored.Filled.Login else Icons.AutoMirrored.Filled.Logout,
-                            contentDescription = if (isGuest) "تسجيل الدخول" else "تسجيل الخروج",
-                            tint = if (isGuest) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                },
+                actions = {},
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.surface
                 )

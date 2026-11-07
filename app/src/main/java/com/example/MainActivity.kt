@@ -79,6 +79,8 @@ import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.runtime.mutableStateListOf
 import com.example.ui.screens.ProgrammingScreen
 import com.example.ui.screens.MarketplaceScreen
+import com.example.ui.screens.WalletRouterScreen
+import com.example.data.repository.WalletRoutingRepository
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Storefront
 import androidx.compose.material.icons.filled.Tune
@@ -100,6 +102,7 @@ enum class Screen {
     SYSTEM_INTEGRATOR,
     DIAGNOSTICS,
     PROGRAMMING,
+    WALLET_ROUTER,
     AI_STUDIO,
     MANAGE_ADMINS,
     MARKETPLACE,
@@ -114,6 +117,7 @@ class MainActivity : ComponentActivity() {
         com.example.data.ContactInfoManager.init(this)
         com.example.data.HubCategoryManager.init(this)
         com.example.data.BottomNavManager.init(this)
+        WalletRoutingRepository.init(this)
         com.example.data.repository.MarketplaceRepository.init(this, null, null)
         enableEdgeToEdge()
         setContent {
@@ -662,6 +666,7 @@ fun AppContent(
                             onNavigateToParts = { navigateTo(Screen.PARTS_LIST) },
                             onNavigateToIntegrator = { navigateTo(Screen.SYSTEM_INTEGRATOR) },
                             onNavigateToProgramming = { navigateTo(Screen.PROGRAMMING) },
+                            onNavigateToWalletRouter = { navigateTo(Screen.WALLET_ROUTER) },
                             onNavigateToDiagnostics = { title ->
                                 diagnosticsCategoryTitle = title
                                 navigateTo(Screen.DIAGNOSTICS)
@@ -906,6 +911,17 @@ fun AppContent(
                         }
                         ProgrammingScreen(
                             isAdmin = canEditProgramming,
+                            currentUserEmail = userEmail,
+                            onBackClick = { navigateBack() }
+                        )
+                    }
+
+                    Screen.WALLET_ROUTER -> {
+                        BackHandler {
+                            navigateBack()
+                        }
+                        WalletRouterScreen(
+                            isAdmin = isAdmin,
                             currentUserEmail = userEmail,
                             onBackClick = { navigateBack() }
                         )

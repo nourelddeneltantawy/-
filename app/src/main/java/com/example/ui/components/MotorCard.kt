@@ -117,204 +117,216 @@ fun MotorCard(
                 .padding(16.dp)
         ) {
             // Top Section: Title, Badges, Favorite & Corner Action Icons
+            // 1. Title Row: Full width title with Favorite Heart
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.Top
             ) {
-                // Motor Title & Subtitle
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = motor.name,
-                        style = MaterialTheme.typography.titleMedium.copy(
-                            fontWeight = FontWeight.Bold
-                        ),
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis
-                    )
+                Text(
+                    text = motor.name,
+                    style = MaterialTheme.typography.titleMedium.copy(
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 16.sp
+                    ),
+                    modifier = Modifier.weight(1f),
+                    softWrap = true,
+                    maxLines = 4
+                )
 
-                    Spacer(modifier = Modifier.height(4.dp))
+                if (onToggleFavorite != null) {
+                    IconButton(
+                        onClick = onToggleFavorite,
+                        modifier = Modifier
+                            .size(34.dp)
+                            .testTag("fav_btn_${motor.id}")
+                    ) {
+                        Icon(
+                            imageVector = if (isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                            contentDescription = if (isFavorite) "إزالة من المفضلة" else "إضافة للمفضلة",
+                            tint = if (isFavorite) Color(0xFFEF4444) else MaterialTheme.colorScheme.outline,
+                            modifier = Modifier.size(22.dp)
+                        )
+                    }
+                }
+            }
 
+            Spacer(modifier = Modifier.height(6.dp))
+
+            // 2. Badges, Brand/Model & Admin Toolbar Row
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                // Badges & Model
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier.weight(1f, fill = false)
+                ) {
+                    // Category Badge if set
+                    if (motor.category.isNotBlank()) {
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = MaterialTheme.colorScheme.secondaryContainer
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Folder,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                                    modifier = Modifier.size(12.dp)
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(
+                                    text = motor.category,
+                                    style = MaterialTheme.typography.labelSmall.copy(
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.onSecondaryContainer
+                                    )
+                                )
+                            }
+                        }
+                    }
+
+                    // Motor type badge
+                    if (motor.motorType.isNotBlank()) {
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = MaterialTheme.colorScheme.primaryContainer
+                        ) {
+                            Text(
+                                text = motor.motorType,
+                                style = MaterialTheme.typography.labelSmall.copy(
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                                ),
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                            )
+                        }
+                    }
+
+                    if (motor.brand.isNotBlank() || motor.model.isNotBlank()) {
+                        Text(
+                            text = listOfNotNull(motor.brand.takeIf { it.isNotBlank() }, motor.model.takeIf { it.isNotBlank() }).joinToString(" • "),
+                            style = MaterialTheme.typography.bodySmall.copy(
+                                color = MaterialTheme.colorScheme.outline
+                            ),
+                            maxLines = 1
+                        )
+                    }
+                }
+
+                // Action Bar for Admins
+                if (isAdmin) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        // Category Badge if set
-                        if (motor.category.isNotBlank()) {
-                            Surface(
-                                shape = RoundedCornerShape(8.dp),
-                                color = MaterialTheme.colorScheme.secondaryContainer
+                        // Quick Move Up
+                        if (canMoveUp) {
+                            IconButton(
+                                onClick = { onMoveUp?.invoke() },
+                                modifier = Modifier
+                                    .size(28.dp)
+                                    .testTag("move_up_${motor.id}")
                             ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                                    verticalAlignment = Alignment.CenterVertically
+                                Icon(
+                                    imageVector = Icons.Default.KeyboardArrowUp,
+                                    contentDescription = "تحريك لأعلى",
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        }
+
+                        // Quick Move Down
+                        if (canMoveDown) {
+                            IconButton(
+                                onClick = { onMoveDown?.invoke() },
+                                modifier = Modifier
+                                    .size(28.dp)
+                                    .testTag("move_down_${motor.id}")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.KeyboardArrowDown,
+                                    contentDescription = "تحريك لأسفل",
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        }
+
+                        // Duplicate / Clone Motor Action
+                        if (onDuplicateClick != null) {
+                            Surface(
+                                shape = CircleShape,
+                                color = MaterialTheme.colorScheme.secondary.copy(alpha = 0.12f),
+                                modifier = Modifier.size(28.dp)
+                            ) {
+                                IconButton(
+                                    onClick = onDuplicateClick,
+                                    modifier = Modifier
+                                    .size(28.dp)
+                                    .testTag("duplicate_motor_btn_${motor.id}")
                                 ) {
                                     Icon(
-                                        imageVector = Icons.Default.Folder,
-                                        contentDescription = null,
-                                        tint = MaterialTheme.colorScheme.onSecondaryContainer,
-                                        modifier = Modifier.size(12.dp)
-                                    )
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                    Text(
-                                        text = motor.category,
-                                        style = MaterialTheme.typography.labelSmall.copy(
-                                            fontWeight = FontWeight.Bold,
-                                            color = MaterialTheme.colorScheme.onSecondaryContainer
-                                        )
+                                        imageVector = Icons.Default.ContentCopy,
+                                        contentDescription = "نسخ وتكرار الماتور",
+                                        tint = MaterialTheme.colorScheme.secondary,
+                                        modifier = Modifier.size(14.dp)
                                     )
                                 }
                             }
                         }
 
-                        // Motor type badge
-                        if (motor.motorType.isNotBlank()) {
+                        // Quick Edit Icon in the corner
+                        if (onEditClick != null) {
                             Surface(
-                                shape = RoundedCornerShape(8.dp),
-                                color = MaterialTheme.colorScheme.primaryContainer
+                                shape = CircleShape,
+                                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
+                                modifier = Modifier.size(28.dp)
                             ) {
-                                Text(
-                                    text = motor.motorType,
-                                    style = MaterialTheme.typography.labelSmall.copy(
-                                        fontWeight = FontWeight.SemiBold,
-                                        color = MaterialTheme.colorScheme.onPrimaryContainer
-                                    ),
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
-                                )
+                                IconButton(
+                                    onClick = onEditClick,
+                                    modifier = Modifier
+                                        .size(28.dp)
+                                        .testTag("edit_motor_btn_${motor.id}")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Edit,
+                                        contentDescription = "تعديل الماتور",
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                }
                             }
                         }
-                    }
 
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = "${motor.brand} • ${motor.model}",
-                        style = MaterialTheme.typography.bodySmall.copy(
-                            color = MaterialTheme.colorScheme.outline
-                        )
-                    )
-                }
-
-                // Action Bar: Favorite, Reorder, Copy, Edit, Delete
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    // Favorite Toggle Heart
-                    if (onToggleFavorite != null) {
-                        IconButton(
-                            onClick = onToggleFavorite,
-                            modifier = Modifier
-                                .size(34.dp)
-                                .testTag("fav_btn_${motor.id}")
-                        ) {
-                            Icon(
-                                imageVector = if (isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
-                                contentDescription = if (isFavorite) "إزالة من المفضلة" else "إضافة للمفضلة",
-                                tint = if (isFavorite) Color(0xFFEF4444) else MaterialTheme.colorScheme.outline,
-                                modifier = Modifier.size(20.dp)
-                            )
-                        }
-                    }
-
-                    // Quick Move Up
-                    if (isAdmin && canMoveUp) {
-                        IconButton(
-                            onClick = { onMoveUp?.invoke() },
-                            modifier = Modifier
-                                .size(32.dp)
-                                .testTag("move_up_${motor.id}")
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.KeyboardArrowUp,
-                                contentDescription = "تحريك لأعلى",
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(20.dp)
-                            )
-                        }
-                    }
-
-                    // Quick Move Down
-                    if (isAdmin && canMoveDown) {
-                        IconButton(
-                            onClick = { onMoveDown?.invoke() },
-                            modifier = Modifier
-                                .size(32.dp)
-                                .testTag("move_down_${motor.id}")
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.KeyboardArrowDown,
-                                contentDescription = "تحريك لأسفل",
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(20.dp)
-                            )
-                        }
-                    }
-
-                    // Duplicate / Clone Motor Action
-                    if (isAdmin && onDuplicateClick != null) {
-                        Surface(
-                            shape = CircleShape,
-                            color = MaterialTheme.colorScheme.secondary.copy(alpha = 0.12f),
-                            modifier = Modifier.size(32.dp)
-                        ) {
-                            IconButton(
-                                onClick = onDuplicateClick,
-                                modifier = Modifier
-                                    .size(32.dp)
-                                    .testTag("duplicate_motor_btn_${motor.id}")
+                        // Quick Delete Icon in the corner
+                        if (onDeleteClick != null) {
+                            Surface(
+                                shape = CircleShape,
+                                color = MaterialTheme.colorScheme.error.copy(alpha = 0.12f),
+                                modifier = Modifier.size(28.dp)
                             ) {
-                                Icon(
-                                    imageVector = Icons.Default.ContentCopy,
-                                    contentDescription = "نسخ وتكرار الماتور",
-                                    tint = MaterialTheme.colorScheme.secondary,
-                                    modifier = Modifier.size(16.dp)
-                                )
-                            }
-                        }
-                    }
-
-                    // Quick Edit Icon in the corner
-                    if (isAdmin && onEditClick != null) {
-                        Surface(
-                            shape = CircleShape,
-                            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
-                            modifier = Modifier.size(32.dp)
-                        ) {
-                            IconButton(
-                                onClick = onEditClick,
-                                modifier = Modifier
-                                    .size(32.dp)
-                                    .testTag("edit_motor_btn_${motor.id}")
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.Edit,
-                                    contentDescription = "تعديل الماتور",
-                                    tint = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.size(16.dp)
-                                )
-                            }
-                        }
-                    }
-
-                    // Quick Delete Icon in the corner
-                    if (isAdmin && onDeleteClick != null) {
-                        Surface(
-                            shape = CircleShape,
-                            color = MaterialTheme.colorScheme.error.copy(alpha = 0.12f),
-                            modifier = Modifier.size(32.dp)
-                        ) {
-                            IconButton(
-                                onClick = onDeleteClick,
-                                modifier = Modifier
-                                    .size(32.dp)
-                                    .testTag("delete_motor_btn_${motor.id}")
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.DeleteOutline,
-                                    contentDescription = "حذف الماتور",
-                                    tint = MaterialTheme.colorScheme.error,
-                                    modifier = Modifier.size(17.dp)
-                                )
+                                IconButton(
+                                    onClick = onDeleteClick,
+                                    modifier = Modifier
+                                        .size(28.dp)
+                                        .testTag("delete_motor_btn_${motor.id}")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.DeleteOutline,
+                                        contentDescription = "حذف الماتور",
+                                        tint = MaterialTheme.colorScheme.error,
+                                        modifier = Modifier.size(15.dp)
+                                    )
+                                }
                             }
                         }
                     }

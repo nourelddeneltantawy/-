@@ -233,6 +233,22 @@ object ProgrammingRepository {
     // LICENSE KEY ACTIVATION & GENERATION
     // =========================================================================
 
+    fun maskEmail(email: String): String {
+        val clean = email.trim()
+        val atIdx = clean.indexOf('@')
+        if (atIdx <= 0) return "***"
+        val name = clean.substring(0, atIdx)
+        val domain = clean.substring(atIdx)
+        val visibleCount = when {
+            name.length <= 3 -> 1
+            name.length == 4 -> 2
+            name.length <= 6 -> 3
+            else -> 4
+        }
+        val prefix = name.take(visibleCount)
+        return "$prefix***$domain"
+    }
+
     suspend fun activateLicenseKey(
         context: Context,
         rawKey: String,
@@ -265,10 +281,10 @@ object ProgrammingRepository {
                 val userEmail = currentUserEmail?.trim()?.lowercase() ?: ""
                 val boundEmail = keyRecord.clientEmail.trim().lowercase()
                 if (userEmail.isBlank()) {
-                    return Result.failure(Exception("هذا المفتاح مرتبط بحساب إلكتروني (${keyRecord.clientEmail}). يرجى تسجيل الدخول بنفس الحساب أولاً لتفعيله."))
+                    return Result.failure(Exception("هذا المفتاح مرتبط بحساب إلكتروني (${maskEmail(keyRecord.clientEmail)}). يرجى تسجيل الدخول بنفس الحساب أولاً لتفعيله."))
                 }
                 if (userEmail != boundEmail) {
-                    return Result.failure(Exception("هذا المفتاح مخصص للحساب ($boundEmail) ولا يتطابق مع بريدك الحالي ($userEmail)."))
+                    return Result.failure(Exception("هذا المفتاح مخصص للحساب (${maskEmail(boundEmail)}) ولا يتطابق مع بريدك الحالي (${maskEmail(userEmail)})."))
                 }
             }
 

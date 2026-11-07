@@ -36,6 +36,8 @@ import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.automirrored.filled.Sort
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.AccountBalance
+import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.AdminPanelSettings
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Cable
@@ -132,6 +134,7 @@ fun resolveCategoryIcon(iconName: String, fallback: ImageVector): ImageVector {
         "electric", "كهرباء" -> Icons.Default.ElectricBolt
         "manufacturing", "صناعي" -> Icons.Default.PrecisionManufacturing
         "grid", "قائمة" -> Icons.Default.GridView
+        "wallet", "محفظة", "تحويل", "كاش" -> Icons.Default.AccountBalance
         else -> fallback
     }
 }
@@ -150,6 +153,7 @@ fun DashboardHubScreen(
     onNavigateToParts: () -> Unit,
     onNavigateToIntegrator: () -> Unit,
     onNavigateToProgramming: () -> Unit = {},
+    onNavigateToWalletRouter: () -> Unit = {},
     onNavigateToDiagnostics: (String) -> Unit,
     onCheckForUpdates: () -> Unit,
     onPublishUpdate: () -> Unit = {},
@@ -204,6 +208,15 @@ fun DashboardHubScreen(
             iconTint = Color(0xFF10B981),
             circleBackground = Color(0xFFD1FAE5),
             onClick = onNavigateToProgramming
+        ),
+        HubCategoryItem(
+            id = "wallet_router",
+            defaultTitle = "توجيه المحافظ والتحويلات",
+            defaultSubtitle = "فودافون كاش • إنستاباي الذكي",
+            defaultIcon = Icons.Default.AccountBalance,
+            iconTint = Color(0xFF8B5CF6),
+            circleBackground = Color(0xFFF3E8FF),
+            onClick = onNavigateToWalletRouter
         )
     )
 

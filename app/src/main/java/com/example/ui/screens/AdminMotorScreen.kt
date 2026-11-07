@@ -905,12 +905,14 @@ fun AdminMotorScreen(
                                     if (preset.isBlank) {
                                         true
                                     } else {
-                                        !pinouts.indices.any { otherIdx ->
+                                        // Hide preset only if chosen in a different pin, keeping this pin's current selection visible
+                                        val isChosenInOtherPin = pinouts.indices.any { otherIdx ->
                                             otherIdx != index &&
                                             !pinouts[otherIdx].isBlankPin &&
-                                            (pinouts[otherIdx].wireColor.trim().equals(preset.colorName.trim(), ignoreCase = true) ||
-                                             pinouts[otherIdx].name.trim().equals(preset.functionName.trim(), ignoreCase = true))
+                                            (pinouts[otherIdx].colorHex.equals(preset.colorHex, ignoreCase = true) ||
+                                             pinouts[otherIdx].wireColor.trim().equals(preset.colorName.trim(), ignoreCase = true))
                                         }
+                                        !isChosenInOtherPin
                                     }
                                 }
                                 availablePresets.forEach { preset ->
