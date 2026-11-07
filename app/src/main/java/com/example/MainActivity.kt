@@ -84,6 +84,7 @@ import com.example.data.repository.WalletRoutingRepository
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Storefront
 import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material.icons.filled.ElectricBolt
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
 import android.widget.Toast
@@ -413,14 +414,23 @@ fun AppContent(
 
     val bottomNavTabs by BottomNavManager.tabs.collectAsState()
     val isMarketplaceVisible = isSuperAdmin || isAdmin || BottomNavManager.isTabVisible(BottomNavManager.TAB_MARKETPLACE, isAdmin)
+    val isToolsVisible = isSuperAdmin || isAdmin || BottomNavManager.isTabVisible(BottomNavManager.TAB_TOOLS, isAdmin)
     val isHomeVisible = isSuperAdmin || isAdmin || BottomNavManager.isTabVisible(BottomNavManager.TAB_HOME, isAdmin)
     val isDashboardVisible = isSuperAdmin || isAdmin || BottomNavManager.isTabVisible(BottomNavManager.TAB_DASHBOARD, isAdmin)
     val isMarketplaceHiddenForUsers = BottomNavManager.isTabHiddenForUsers(BottomNavManager.TAB_MARKETPLACE)
+    val isToolsHiddenForUsers = BottomNavManager.isTabHiddenForUsers(BottomNavManager.TAB_TOOLS)
 
     LaunchedEffect(isMarketplaceVisible, currentScreen) {
         if (!isMarketplaceVisible && currentScreen == Screen.MARKETPLACE && !isAdmin) {
             currentScreen = Screen.DASHBOARD
             Toast.makeText(context, "تم قفل قسم سوق الكروت من قبل الإدارة", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    LaunchedEffect(isToolsVisible, currentScreen) {
+        if (!isToolsVisible && currentScreen == Screen.WALLET_ROUTER && !isAdmin) {
+            currentScreen = Screen.DASHBOARD
+            Toast.makeText(context, "تم قفل قسم الأدوات من قبل الإدارة", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -511,6 +521,7 @@ fun AppContent(
 
     val showBottomBar = currentScreen in setOf(
         Screen.DASHBOARD,
+        Screen.WALLET_ROUTER,
         Screen.MARKETPLACE
     )
 
@@ -561,6 +572,48 @@ fun AppContent(
                                 selectedIconColor = MaterialTheme.colorScheme.primary,
                                 selectedTextColor = MaterialTheme.colorScheme.primary,
                                 indicatorColor = MaterialTheme.colorScheme.primaryContainer
+                            )
+                        )
+                    }
+
+                    // Item 3: الأدوات (توجيه المحافظ وغيرها)
+                    if (isToolsVisible) {
+                        NavigationBarItem(
+                            selected = currentScreen == Screen.WALLET_ROUTER,
+                            onClick = {
+                                if (isToolsHiddenForUsers && !isAdmin) {
+                                    Toast.makeText(context, "قسم الأدوات مغلق حالياً من قبل الإدارة", Toast.LENGTH_SHORT).show()
+                                } else {
+                                    selectTab(Screen.WALLET_ROUTER)
+                                }
+                            },
+                            icon = {
+                                BadgedBox(
+                                    badge = {
+                                        if (isAdmin && isToolsHiddenForUsers) {
+                                            Badge(containerColor = Color(0xFFEF4444)) {
+                                                Text("مغلق", fontSize = 8.sp, color = Color.White)
+                                            }
+                                        }
+                                    }
+                                ) {
+                                    Icon(
+                                        imageVector = if (isAdmin && isToolsHiddenForUsers) Icons.Default.Lock else Icons.Default.ElectricBolt,
+                                        contentDescription = "الأدوات"
+                                    )
+                                }
+                            },
+                            label = {
+                                Text(
+                                    if (isAdmin && isToolsHiddenForUsers) "الأدوات (مغلق)" else "الأدوات",
+                                    fontSize = 11.sp,
+                                    fontWeight = if (currentScreen == Screen.WALLET_ROUTER) FontWeight.Bold else FontWeight.Normal
+                                )
+                            },
+                            colors = NavigationBarItemDefaults.colors(
+                                selectedIconColor = if (isAdmin && isToolsHiddenForUsers) Color(0xFFEF4444) else Color(0xFF8B5CF6),
+                                selectedTextColor = if (isAdmin && isToolsHiddenForUsers) Color(0xFFEF4444) else Color(0xFF8B5CF6),
+                                indicatorColor = if (isAdmin && isToolsHiddenForUsers) Color(0xFFFEE2E2) else Color(0xFFEDE9FE)
                             )
                         )
                     }
@@ -918,12 +971,14 @@ fun AppContent(
 
                     Screen.WALLET_ROUTER -> {
                         BackHandler {
-                            navigateBack()
+                            if (navigationStack.size > 1) navigateBack() else selectTab(Screen.DASHBOARD)
                         }
                         WalletRouterScreen(
                             isAdmin = isAdmin,
                             currentUserEmail = userEmail,
-                            onBackClick = { navigateBack() }
+                            onBackClick = {
+                                if (navigationStack.size > 1) navigateBack() else selectTab(Screen.DASHBOARD)
+                            }
                         )
                     }
 

@@ -1,7 +1,6 @@
 package com.example.data.repository
 
 import android.content.Context
-import android.net.Uri
 import android.util.Log
 import com.example.data.model.SmartWallet
 import com.example.data.model.WalletRouteResult
@@ -36,36 +35,45 @@ object WalletRoutingRepository {
             phoneNumber = "01012345678",
             name = "محفظة فودافون كاش 1 (الرئيسية)",
             provider = "VODAFONE_CASH",
-            monthlyLimit = 200000.0,
+            monthlyReceiveLimit = 200000.0,
+            monthlySendLimit = 200000.0,
+            maxHoldingBalance = 100000.0,
+            currentBalance = 12000.0,
+            currentReceivedThisMonth = 15000.0,
             safetyMargin = 3000.0,
-            currentReceived = 15000.0,
             priority = 1,
             status = "ACTIVE",
-            notes = "شريحة المحفظة الأولى"
+            notes = "شريحة المحفظة الأولى الأساسية"
         ),
         SmartWallet(
             id = "wallet_vf_2",
             phoneNumber = "01098765432",
             name = "محفظة فودافون كاش 2 (الاحتياطية)",
             provider = "VODAFONE_CASH",
-            monthlyLimit = 200000.0,
+            monthlyReceiveLimit = 200000.0,
+            monthlySendLimit = 200000.0,
+            maxHoldingBalance = 100000.0,
+            currentBalance = 0.0,
+            currentReceivedThisMonth = 0.0,
             safetyMargin = 3000.0,
-            currentReceived = 0.0,
             priority = 2,
             status = "ACTIVE",
-            notes = "شريحة المحفظة الثانية"
+            notes = "شريحة المحفظة الثانية الاحتياطية"
         ),
         SmartWallet(
             id = "wallet_instapay_1",
             phoneNumber = "01012345678",
             name = "حساب إنستاباي الرئيسي (InstaPay)",
             provider = "INSTAPAY",
-            monthlyLimit = 500000.0,
+            monthlyReceiveLimit = 500000.0,
+            monthlySendLimit = 500000.0,
+            maxHoldingBalance = 500000.0,
+            currentBalance = 20000.0,
+            currentReceivedThisMonth = 20000.0,
             safetyMargin = 5000.0,
-            currentReceived = 20000.0,
             priority = 1,
             status = "ACTIVE",
-            notes = "معرف إنستاباي للتحويل الفوري"
+            notes = "معرف إنستاباي للتحويل الفوري المباشر"
         )
     )
 
@@ -107,7 +115,6 @@ object WalletRoutingRepository {
                         saveCachedWallets(context, list)
                         Log.i(TAG, "Synced ${list.size} wallets from Firestore")
                     } else if (snapshot != null && snapshot.isEmpty) {
-                        // Seed initial wallets if remote collection is empty
                         seedDefaultWallets(context)
                     }
                 }
@@ -130,9 +137,10 @@ object WalletRoutingRepository {
     }
 
     /**
-     * Smart Routing Engine:
-     * Available Capacity = monthly_limit - safety_margin - current_received
-     * Filters active wallets by priority ascending where Available Capacity >= amount
+     * محرك وخوارزمية التوجيه الذكي (Vodafone Cash Rules):
+     * المحفظة تكون صالحة فقط إذا تحققت الشروط التالية معاً:
+     * 1. (monthly_receive_limit - safety_margin - current_received_this_month) >= amount
+     * 2. (max_holding_balance - current_balance) >= amount
      */
     fun routePayment(amount: Double, paymentMethod: String): WalletRouteResult {
         if (amount <= 0) {
@@ -142,25 +150,21 @@ object WalletRoutingRepository {
             )
         }
 
-        val allActiveWallets = _wallets.value.filter { it.status == "ACTIVE" }
-
-        // Filter by requested payment method if applicable (or all active if generic)
+        val allWallets = _wallets.value
         val methodWallets = when (paymentMethod) {
-            "VODAFONE_CASH" -> allActiveWallets.filter { it.provider == "VODAFONE_CASH" }
-            "INSTAPAY" -> allActiveWallets.filter { it.provider == "INSTAPAY" }
-            else -> allActiveWallets
+            "VODAFONE_CASH" -> allWallets.filter { it.provider == "VODAFONE_CASH" }
+            "INSTAPAY" -> allWallets.filter { it.provider == "INSTAPAY" }
+            else -> allWallets
         }.sortedBy { it.priority }
 
-        // Find the first wallet with available capacity >= amount
-        val candidate = methodWallets.firstOrNull { it.availableCapacity >= amount }
+        // Find first active wallet that satisfies both conditions
+        val candidate = methodWallets.firstOrNull { it.canAccept(amount) }
 
         if (candidate != null) {
             val phone = candidate.phoneNumber.trim()
             val amountFormatted = if (amount % 1.0 == 0.0) amount.toLong().toString() else amount.toString()
 
-            // Prepare USSD for Vodafone Cash: *9*7*phone*amount#
             val ussdCode = "*9*7*$phone*$amountFormatted#"
-            // URL-encode '#' as '%23' for Android Intent.ACTION_DIAL so dialer opens with full code
             val ussdUri = "tel:*9*7*$phone*${amountFormatted}%23"
             val deepLink = if (paymentMethod == "INSTAPAY") "instapay://" else ""
 
@@ -172,32 +176,98 @@ object WalletRoutingRepository {
                 ussdCode = ussdCode,
                 ussdDialerUri = ussdUri,
                 deepLink = deepLink,
-                availableCapacity = candidate.availableCapacity
+                availableCapacity = candidate.availableCapacity,
+                availableMonthlyCapacity = candidate.availableMonthlyCapacity,
+                availableHoldingCapacity = candidate.availableHoldingCapacity
             )
         } else {
-            // No single wallet fits the entire amount
-            val maxAvailable = methodWallets.maxOfOrNull { it.availableCapacity } ?: 0.0
-            val totalCapacity = methodWallets.sumOf { it.availableCapacity }
+            // Diagnostic reason for failure
+            val maxAvailable = methodWallets.filter { it.status == "ACTIVE" }
+                .maxOfOrNull { it.availableCapacity } ?: 0.0
+
+            val hasHoldingMax = methodWallets.any { it.isHoldingMaxReached }
+            val hasMonthlyFull = methodWallets.any { it.isFullMonthly }
+
+            val reason = when {
+                hasHoldingMax && !hasMonthlyFull -> "المحافظ بلغت الحد الأقصى للرصيد الحجمي (100 ألف ج)، بانتظار سحب الرصيد من قبل الإدارة لتفعيلها فوراً."
+                hasMonthlyFull && !hasHoldingMax -> "المحافظ بلغت الحد الشهري المسموح للاستلام."
+                else -> "لا توجد محفظة تتسع لكامل المبلغ دفعة واحدة."
+            }
 
             val errorMsg = if (maxAvailable > 0) {
-                "عذراً، لا توجد محفظة نشطة تتسع لمبلغ ${amount.toLong()} ج.م دفعة واحدة.\nأقصى مبلغ متاح حالياً في محفظة واحدة هو ${maxAvailable.toLong()} ج.م.\n💡 يرجى تجزئة المبلغ للتحويل على دفعات."
+                "عذراً، المبلغ المطلوب (${amount.toLong()} ج.م) أكبر من السعة المتاحة دفعة واحدة.\nأقصى مبلغ متاح للتحويل في محفظة واحدة حالياً هو ${maxAvailable.toLong()} ج.م.\n💡 $reason\nيرجى تجزئة المبلغ للتحويل على دفعات."
             } else {
-                "عذراً، جميع المحافظ وصلت للحد الشهري الأقصى (${methodWallets.size} محافظ ممتلئة).\nيرجى التواصل مع الإدارة لإتاحة محافظ جديدة."
+                "عذراً، جميع المحافظ ممتلئة حالياً وغير متاحة لاستقبال مبالغ جديدة.\n💡 $reason\nيرجى التواصل مع الإدارة لإتاحة محافظ جديدة."
             }
 
             return WalletRouteResult(
                 isSuccess = false,
                 paymentMethod = paymentMethod,
                 amount = amount,
-                availableCapacity = totalCapacity,
+                availableCapacity = methodWallets.sumOf { it.availableCapacity },
                 errorMessage = errorMsg
             )
         }
     }
 
     /**
-     * Records an incoming transaction (manually or via SMS sync)
-     * Automatically increments currentReceived and marks FULL if available capacity exhausted.
+     * زر: "تم سحب رصيد المحفظة"
+     * يصفر current_balance إلى 0 ويحول الحالة من HOLDING_MAX_REACHED إلى ACTIVE فوراً
+     */
+    fun withdrawHoldingBalance(
+        context: Context,
+        walletId: String,
+        onComplete: ((Boolean) -> Unit)? = null
+    ) {
+        val appContext = context.applicationContext ?: context
+        val currentList = _wallets.value.toMutableList()
+        val index = currentList.indexOfFirst { it.id == walletId }
+        if (index == -1) {
+            onComplete?.invoke(false)
+            return
+        }
+
+        val target = currentList[index]
+        val newStatus = if (target.status == "HOLDING_MAX_REACHED" && target.availableMonthlyCapacity > 0) "ACTIVE" else target.status
+
+        val updatedWallet = target.copy(
+            currentBalance = 0.0,
+            status = newStatus,
+            updatedAt = System.currentTimeMillis()
+        )
+
+        currentList[index] = updatedWallet
+        _wallets.value = currentList
+        saveCachedWallets(appContext, currentList)
+
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val db = FirebaseInitializer.getFirestore(appContext)
+                db.collection("wallets").document(walletId).update(
+                    "currentBalance", 0.0,
+                    "current_balance", 0.0,
+                    "status", newStatus,
+                    "updatedAt", System.currentTimeMillis()
+                ).await()
+
+                withContext(Dispatchers.Main) {
+                    onComplete?.invoke(true)
+                }
+            } catch (e: Throwable) {
+                Log.e(TAG, "Error withdrawing holding balance", e)
+                withContext(Dispatchers.Main) {
+                    onComplete?.invoke(false)
+                }
+            }
+        }
+    }
+
+    /**
+     * تسجيل عملية استلام جديدة (يدوياً أو عبر خلفية الـ SMS تلقائياً):
+     * 1. زيادة current_received_this_month
+     * 2. زيادة current_balance
+     * 3. إذا current_balance >= max_holding_balance -> HOLDING_MAX_REACHED
+     * 4. إذا الشهرية ممتلئة -> FULL
      */
     fun recordTransaction(
         context: Context,
@@ -215,12 +285,21 @@ object WalletRoutingRepository {
         }
 
         val target = currentList[index]
-        val updatedReceived = target.currentReceived + amount
-        val newCapacity = (target.monthlyLimit - target.safetyMargin - updatedReceived).coerceAtLeast(0.0)
-        val newStatus = if (newCapacity <= 0.0) "FULL" else target.status
+        val updatedReceived = target.currentReceivedThisMonth + amount
+        val updatedBalance = target.currentBalance + amount
+
+        val isHoldingFull = (target.maxHoldingBalance - updatedBalance) <= 0.0
+        val isMonthlyFull = (target.monthlyReceiveLimit - target.safetyMargin - updatedReceived) <= 0.0
+
+        val newStatus = when {
+            isHoldingFull -> "HOLDING_MAX_REACHED"
+            isMonthlyFull -> "FULL"
+            else -> target.status
+        }
 
         val updatedWallet = target.copy(
-            currentReceived = updatedReceived,
+            currentReceivedThisMonth = updatedReceived,
+            currentBalance = updatedBalance,
             status = newStatus,
             updatedAt = System.currentTimeMillis()
         )
@@ -234,12 +313,15 @@ object WalletRoutingRepository {
                 val db = FirebaseInitializer.getFirestore(appContext)
                 db.collection("wallets").document(walletId)
                     .update(
+                        "currentReceivedThisMonth", updatedReceived,
+                        "current_received_this_month", updatedReceived,
                         "currentReceived", updatedReceived,
+                        "currentBalance", updatedBalance,
+                        "current_balance", updatedBalance,
                         "status", newStatus,
                         "updatedAt", System.currentTimeMillis()
                     ).await()
 
-                // Log transaction
                 val logEntry = mapOf(
                     "id" to UUID.randomUUID().toString(),
                     "walletId" to walletId,
@@ -263,9 +345,6 @@ object WalletRoutingRepository {
         }
     }
 
-    /**
-     * Admin: Save or update a wallet
-     */
     fun saveWallet(
         context: Context,
         wallet: SmartWallet,
@@ -307,9 +386,6 @@ object WalletRoutingRepository {
         }
     }
 
-    /**
-     * Admin: Delete a wallet
-     */
     fun deleteWallet(
         context: Context,
         walletId: String,
@@ -337,18 +413,16 @@ object WalletRoutingRepository {
         }
     }
 
-    /**
-     * Admin: Reset monthly received balances (Cron / Beginning of month)
-     */
     fun resetMonthlyBalances(
         context: Context,
         onComplete: ((Boolean) -> Unit)? = null
     ) {
         val appContext = context.applicationContext ?: context
         val currentList = _wallets.value.map {
+            val newStatus = if (it.status == "FULL") "ACTIVE" else it.status
             it.copy(
-                currentReceived = 0.0,
-                status = if (it.status == "FULL") "ACTIVE" else it.status,
+                currentReceivedThisMonth = 0.0,
+                status = newStatus,
                 updatedAt = System.currentTimeMillis()
             )
         }
@@ -361,6 +435,8 @@ object WalletRoutingRepository {
                 val db = FirebaseInitializer.getFirestore(appContext)
                 for (w in currentList) {
                     db.collection("wallets").document(w.id).update(
+                        "currentReceivedThisMonth", 0.0,
+                        "current_received_this_month", 0.0,
                         "currentReceived", 0.0,
                         "status", w.status,
                         "updatedAt", System.currentTimeMillis()
@@ -387,9 +463,12 @@ object WalletRoutingRepository {
                 obj.put("phoneNumber", w.phoneNumber)
                 obj.put("name", w.name)
                 obj.put("provider", w.provider)
-                obj.put("monthlyLimit", w.monthlyLimit)
+                obj.put("monthlyReceiveLimit", w.monthlyReceiveLimit)
+                obj.put("monthlySendLimit", w.monthlySendLimit)
+                obj.put("maxHoldingBalance", w.maxHoldingBalance)
+                obj.put("currentBalance", w.currentBalance)
+                obj.put("currentReceivedThisMonth", w.currentReceivedThisMonth)
                 obj.put("safetyMargin", w.safetyMargin)
-                obj.put("currentReceived", w.currentReceived)
                 obj.put("priority", w.priority)
                 obj.put("status", w.status)
                 obj.put("notes", w.notes)
@@ -413,9 +492,12 @@ object WalletRoutingRepository {
                     phoneNumber = obj.optString("phoneNumber", ""),
                     name = obj.optString("name", ""),
                     provider = obj.optString("provider", "VODAFONE_CASH"),
-                    monthlyLimit = obj.optDouble("monthlyLimit", 200000.0),
+                    monthlyReceiveLimit = obj.optDouble("monthlyReceiveLimit", 200000.0),
+                    monthlySendLimit = obj.optDouble("monthlySendLimit", 200000.0),
+                    maxHoldingBalance = obj.optDouble("maxHoldingBalance", 100000.0),
+                    currentBalance = obj.optDouble("currentBalance", 0.0),
+                    currentReceivedThisMonth = obj.optDouble("currentReceivedThisMonth", 0.0),
                     safetyMargin = obj.optDouble("safetyMargin", 3000.0),
-                    currentReceived = obj.optDouble("currentReceived", 0.0),
                     priority = obj.optInt("priority", 1),
                     status = obj.optString("status", "ACTIVE"),
                     notes = obj.optString("notes", ""),

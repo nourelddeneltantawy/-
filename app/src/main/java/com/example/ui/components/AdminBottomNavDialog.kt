@@ -164,6 +164,57 @@ fun AdminBottomNavDialog(
                         }
                     }
                 }
+
+                // Tab 3: Tools (الأدوات والمحافظ)
+                val toolsTab = tabsMap[BottomNavManager.TAB_TOOLS]
+                    ?: BottomNavCustomization(id = BottomNavManager.TAB_TOOLS, title = "الأدوات")
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = if (toolsTab.isHidden) Color(0xFFEF4444).copy(alpha = 0.08f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                    border = BorderStroke(1.dp, if (toolsTab.isHidden) Color(0xFFEF4444).copy(alpha = 0.4f) else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(
+                                modifier = Modifier.weight(1f),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Tune,
+                                    contentDescription = null,
+                                    tint = if (toolsTab.isHidden) Color(0xFFEF4444) else Color(0xFF8B5CF6),
+                                    modifier = Modifier.size(22.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Column {
+                                    Text("الأدوات (توجيه المحافظ وغيرها)", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                    Text(
+                                        text = if (toolsTab.isHidden) "مخفية عن المستخدمين" else "ظاهرة للجميع",
+                                        fontSize = 11.sp,
+                                        color = if (toolsTab.isHidden) Color(0xFFEF4444) else Color(0xFF8B5CF6)
+                                    )
+                                }
+                            }
+
+                            Switch(
+                                checked = !toolsTab.isHidden,
+                                onCheckedChange = { isVisible ->
+                                    BottomNavManager.setTabVisibility(context, BottomNavManager.TAB_TOOLS, !isVisible) { success ->
+                                        if (success) {
+                                            val state = if (isVisible) "إظهار" else "إخفاء"
+                                            Toast.makeText(context, "تم $state تبويب الأدوات", Toast.LENGTH_SHORT).show()
+                                        }
+                                    }
+                                }
+                            )
+                        }
+                    }
+                }
             }
         },
         confirmButton = {
