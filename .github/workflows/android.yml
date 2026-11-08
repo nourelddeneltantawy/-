@@ -13,26 +13,46 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
 
-    - name: Set up JDK 17
+    - name: Set up JDK 21
       uses: actions/setup-java@v4
       with:
         distribution: 'temurin'
-        java-version: '17'
+        java-version: '21'
 
     - name: Install Gradle
       uses: gradle/actions/setup-gradle@v3
 
-    - name: Build Release APK with Gradle
+    - name: Prepare Keystore and Environment
+      run: |
+        if [ ! -f ".env" ]; then
+          touch .env
+        fi
+        if [ ! -f "my-upload-key.jks" ]; then
+          echo "Generating consistent upload keystore for signing..."
+          keytool -genkeypair -v \
+            -keystore my-upload-key.jks \
+            -alias upload \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -storepass "WasherMotor2026@Key" \
+            -keypass "WasherMotor2026@Key" \
+            -dname "CN=AlBaraaElectronics, OU=Engineering, O=AlBaraa, L=Cairo, S=Cairo, C=EG"
+        fi
+
+    - name: Build APKs with Gradle
       env:
         KEYSTORE_PATH: ${{ github.workspace }}/my-upload-key.jks
         STORE_PASSWORD: ${{ secrets.STORE_PASSWORD || 'WasherMotor2026@Key' }}
         KEY_ALIAS: ${{ secrets.KEY_ALIAS || 'upload' }}
         KEY_PASSWORD: ${{ secrets.KEY_PASSWORD || 'WasherMotor2026@Key' }}
-      run: gradle assembleRelease
+      run: gradle assembleRelease assembleDebug --stacktrace
 
-    - name: Upload Release APK
+    - name: Upload APKs
       uses: actions/upload-artifact@v4
       with:
-        name: app-release-apk
-        path: app/build/outputs/apk/release/*.apk
+        name: albaraa-electronics-apks
+        path: |
+          app/build/outputs/apk/release/*.apk
+          app/build/outputs/apk/debug/*.apk
         if-no-files-found: warn
