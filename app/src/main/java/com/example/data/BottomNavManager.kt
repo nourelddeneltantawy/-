@@ -22,12 +22,14 @@ object BottomNavManager {
 
     const val TAB_HOME = "home"
     const val TAB_DASHBOARD = "dashboard"
+    const val TAB_TOOLS = "tools"
     const val TAB_MARKETPLACE = "marketplace"
 
     private val defaultTabs = mapOf(
         TAB_HOME to BottomNavCustomization(id = TAB_HOME, title = "شاشة البدء", isHidden = false, isLocked = false),
         TAB_DASHBOARD to BottomNavCustomization(id = TAB_DASHBOARD, title = "الأقسام", isHidden = false, isLocked = false),
-        TAB_MARKETPLACE to BottomNavCustomization(id = TAB_MARKETPLACE, title = "سوق الكروت والصيانة (البيع والشراء)", isHidden = false, isLocked = false)
+        TAB_TOOLS to BottomNavCustomization(id = TAB_TOOLS, title = "الأدوات", isHidden = false, isLocked = false),
+        TAB_MARKETPLACE to BottomNavCustomization(id = TAB_MARKETPLACE, title = "سوق الكروت", isHidden = false, isLocked = false)
     )
 
     private val _tabs = MutableStateFlow<Map<String, BottomNavCustomization>>(defaultTabs)

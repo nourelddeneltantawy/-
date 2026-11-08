@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Storefront
@@ -114,7 +115,58 @@ fun AdminBottomNavDialog(
                     }
                 }
 
-                // Tab 2: Home / Welcome (شاشة البدء)
+                // Tab 2: Tools (الأدوات)
+                val toolsTab = tabsMap[BottomNavManager.TAB_TOOLS]
+                    ?: BottomNavCustomization(id = BottomNavManager.TAB_TOOLS, title = "الأدوات")
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = if (toolsTab.isHidden) Color(0xFFEF4444).copy(alpha = 0.08f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                    border = BorderStroke(1.dp, if (toolsTab.isHidden) Color(0xFFEF4444).copy(alpha = 0.4f) else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(
+                                modifier = Modifier.weight(1f),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Bolt,
+                                    contentDescription = null,
+                                    tint = if (toolsTab.isHidden) Color(0xFFEF4444) else Color(0xFFF59E0B),
+                                    modifier = Modifier.size(22.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Column {
+                                    Text("الأدوات وسجل الصيانة", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                    Text(
+                                        text = if (toolsTab.isHidden) "مغلقة ومخفية عن المستخدمين 🔒" else "متاحة ونشطة لجميع المستخدمين ✓",
+                                        fontSize = 11.sp,
+                                        color = if (toolsTab.isHidden) Color(0xFFEF4444) else Color(0xFF10B981)
+                                    )
+                                }
+                            }
+
+                            Switch(
+                                checked = !toolsTab.isHidden,
+                                onCheckedChange = { isVisible ->
+                                    BottomNavManager.setTabVisibility(context, BottomNavManager.TAB_TOOLS, !isVisible) { success ->
+                                        if (success) {
+                                            val state = if (isVisible) "تفعيل وإظهار" else "إخفاء وقفل"
+                                            Toast.makeText(context, "تم $state قسم الأدوات بنجاح", Toast.LENGTH_SHORT).show()
+                                        }
+                                    }
+                                }
+                            )
+                        }
+                    }
+                }
+
+                // Tab 3: Home / Welcome (شاشة البدء)
                 val homeTab = tabsMap[BottomNavManager.TAB_HOME]
                     ?: BottomNavCustomization(id = BottomNavManager.TAB_HOME, title = "شاشة البدء")
                 Surface(

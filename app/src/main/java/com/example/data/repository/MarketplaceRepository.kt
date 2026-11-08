@@ -240,6 +240,20 @@ object MarketplaceRepository {
     ) {
         val appContext = context.applicationContext ?: context
         val post = _posts.value.firstOrNull { it.id == postId } ?: return
+
+        // Security check: Only the author who posted can toggle sold/bought status
+        val authUser = try { com.google.firebase.auth.FirebaseAuth.getInstance().currentUser } catch (_: Throwable) { null }
+        val currentUid = authUser?.uid ?: _currentUserProfile.value?.userId ?: ""
+        val currentEmail = authUser?.email ?: _currentUserProfile.value?.email ?: ""
+
+        val isAuthor = (currentUid.isNotBlank() && post.userId == currentUid) ||
+                (currentEmail.isNotBlank() && post.userEmail.equals(currentEmail, ignoreCase = true))
+        if (!isAuthor && (currentUid.isNotBlank() || currentEmail.isNotBlank())) {
+            Log.w(TAG, "Blocked togglePostCompleted: Only the author can toggle post status")
+            onComplete?.invoke(false)
+            return
+        }
+
         val updated = post.copy(
             isCompleted = isCompleted,
             completedTimestamp = if (isCompleted) System.currentTimeMillis() else null

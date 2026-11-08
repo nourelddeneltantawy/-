@@ -153,7 +153,6 @@ fun DashboardHubScreen(
     onNavigateToParts: () -> Unit,
     onNavigateToIntegrator: () -> Unit,
     onNavigateToProgramming: () -> Unit = {},
-    onNavigateToWalletRouter: () -> Unit = {},
     onNavigateToDiagnostics: (String) -> Unit,
     onCheckForUpdates: () -> Unit,
     onPublishUpdate: () -> Unit = {},
@@ -208,15 +207,6 @@ fun DashboardHubScreen(
             iconTint = Color(0xFF10B981),
             circleBackground = Color(0xFFD1FAE5),
             onClick = onNavigateToProgramming
-        ),
-        HubCategoryItem(
-            id = "wallet_router",
-            defaultTitle = "توجيه المحافظ والتحويلات",
-            defaultSubtitle = "فودافون كاش • إنستاباي الذكي",
-            defaultIcon = Icons.Default.AccountBalance,
-            iconTint = Color(0xFF8B5CF6),
-            circleBackground = Color(0xFFF3E8FF),
-            onClick = onNavigateToWalletRouter
         )
     )
 

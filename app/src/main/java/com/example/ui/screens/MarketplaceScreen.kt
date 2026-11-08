@@ -687,6 +687,7 @@ fun MarketplaceScreen(
                             MarketplacePostCard(
                                 post = post,
                                 canManage = true,
+                                isAuthor = true,
                                 onAuthorClick = {},
                                 onWhatsAppClick = {
                                     openWhatsApp(context, post.userPhone, "السلام عليكم، بخصوص إعلاني في سوق كروت البراء: ${post.title}")
@@ -765,6 +766,7 @@ fun MarketplaceScreen(
                             MarketplacePostCard(
                                 post = post,
                                 canManage = canManage,
+                                isAuthor = isAuthor,
                                 onAuthorClick = {
                                     coroutineScope.launch {
                                         val profile = MarketplaceRepository.fetchAuthorProfile(context, post.userEmail.ifBlank { post.userId })
@@ -919,6 +921,7 @@ fun MarketplaceScreen(
 fun MarketplacePostCard(
     post: MarketplacePost,
     canManage: Boolean,
+    isAuthor: Boolean = false,
     onAuthorClick: () -> Unit,
     onWhatsAppClick: () -> Unit,
     onCallClick: () -> Unit,
@@ -1277,20 +1280,24 @@ fun MarketplacePostCard(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Surface(
-                        shape = RoundedCornerShape(10.dp),
-                        color = if (isCompleted) Color(0xFF10B981).copy(alpha = 0.18f) else MaterialTheme.colorScheme.secondaryContainer,
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(10.dp))
-                            .clickable { onToggleStatus() }
-                            .padding(horizontal = 10.dp, vertical = 7.dp)
-                    ) {
-                        Text(
-                            text = if (isCompleted) "إعادة تنشيط 🔄" else if (isBuyRequest) "تم الشراء ✓" else "تم البيع ✓",
-                            color = if (isCompleted) Color(0xFF047857) else MaterialTheme.colorScheme.onSecondaryContainer,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 11.sp
-                        )
+                    if (isAuthor) {
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = if (isCompleted) Color(0xFF10B981).copy(alpha = 0.18f) else MaterialTheme.colorScheme.secondaryContainer,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(10.dp))
+                                .clickable { onToggleStatus() }
+                                .padding(horizontal = 10.dp, vertical = 7.dp)
+                        ) {
+                            Text(
+                                text = if (isCompleted) "إعادة تنشيط 🔄" else if (isBuyRequest) "تم الشراء ✓" else "تم البيع ✓",
+                                color = if (isCompleted) Color(0xFF047857) else MaterialTheme.colorScheme.onSecondaryContainer,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 11.sp
+                            )
+                        }
+                    } else {
+                        Spacer(modifier = Modifier.width(4.dp))
                     }
 
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
