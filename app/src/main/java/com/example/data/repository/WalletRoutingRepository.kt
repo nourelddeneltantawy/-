@@ -28,6 +28,31 @@ object WalletRoutingRepository {
 
     private var listenerRegistration: ListenerRegistration? = null
     private var isInitialized = false
+    private var activeUserId: String? = null
+    private var activeUserEmail: String? = null
+
+    private fun getPrefsName(): String {
+        val uid = activeUserId?.trim()
+        return if (!uid.isNullOrBlank()) "albaraa_wallets_prefs_${uid.replace("[^a-zA-Z0-9_]".toRegex(), "_")}" else PREFS_NAME
+    }
+
+    private fun getWalletsCollectionPath(): String {
+        val uid = activeUserId?.trim()
+        return if (!uid.isNullOrBlank()) "users/$uid/wallets" else "wallets"
+    }
+
+    fun setUser(context: Context, userId: String?, userEmail: String?) {
+        val cleanId = userId?.trim()
+        val cleanEmail = userEmail?.trim()
+        if (cleanId == activeUserId && cleanEmail == activeUserEmail && isInitialized) return
+        activeUserId = cleanId
+        activeUserEmail = cleanEmail
+        listenerRegistration?.remove()
+        listenerRegistration = null
+        isInitialized = false
+        _wallets.value = emptyList()
+        init(context)
+    }
 
     private val defaultSeedWallets = listOf(
         SmartWallet(
@@ -95,10 +120,11 @@ object WalletRoutingRepository {
     private fun startRealtimeSync(context: Context) {
         try {
             val db = FirebaseInitializer.getFirestore(context)
-            listenerRegistration = db.collection("wallets")
+            val path = getWalletsCollectionPath()
+            listenerRegistration = db.collection(path)
                 .addSnapshotListener { snapshot, error ->
                     if (error != null) {
-                        Log.w(TAG, "Wallets listener error: ${error.message}")
+                        Log.w(TAG, "Wallets listener error ($path): ${error.message}")
                         return@addSnapshotListener
                     }
 
@@ -113,7 +139,7 @@ object WalletRoutingRepository {
 
                         _wallets.value = list
                         saveCachedWallets(context, list)
-                        Log.i(TAG, "Synced ${list.size} wallets from Firestore")
+                        Log.i(TAG, "Synced ${list.size} wallets from $path")
                     } else if (snapshot != null && snapshot.isEmpty) {
                         seedDefaultWallets(context)
                     }
@@ -127,8 +153,9 @@ object WalletRoutingRepository {
         CoroutineScope(Dispatchers.IO).launch {
             try {
                 val db = FirebaseInitializer.getFirestore(context)
+                val path = getWalletsCollectionPath()
                 for (w in defaultSeedWallets) {
-                    db.collection("wallets").document(w.id).set(w.toMap()).await()
+                    db.collection(path).document(w.id).set(w.toMap()).await()
                 }
             } catch (e: Throwable) {
                 Log.w(TAG, "Failed to seed default wallets: ${e.message}")
@@ -243,7 +270,7 @@ object WalletRoutingRepository {
         CoroutineScope(Dispatchers.IO).launch {
             try {
                 val db = FirebaseInitializer.getFirestore(appContext)
-                db.collection("wallets").document(walletId).update(
+                db.collection(getWalletsCollectionPath()).document(walletId).update(
                     "currentBalance", 0.0,
                     "current_balance", 0.0,
                     "status", newStatus,
@@ -311,7 +338,7 @@ object WalletRoutingRepository {
         CoroutineScope(Dispatchers.IO).launch {
             try {
                 val db = FirebaseInitializer.getFirestore(appContext)
-                db.collection("wallets").document(walletId)
+                db.collection(getWalletsCollectionPath()).document(walletId)
                     .update(
                         "currentReceivedThisMonth", updatedReceived,
                         "current_received_this_month", updatedReceived,
@@ -372,7 +399,7 @@ object WalletRoutingRepository {
         CoroutineScope(Dispatchers.IO).launch {
             try {
                 val db = FirebaseInitializer.getFirestore(appContext)
-                db.collection("wallets").document(id)
+                db.collection(getWalletsCollectionPath()).document(id)
                     .set(readyWallet.toMap()).await()
                 withContext(Dispatchers.Main) {
                     onComplete?.invoke(true)
@@ -400,7 +427,7 @@ object WalletRoutingRepository {
         CoroutineScope(Dispatchers.IO).launch {
             try {
                 val db = FirebaseInitializer.getFirestore(appContext)
-                db.collection("wallets").document(walletId).delete().await()
+                db.collection(getWalletsCollectionPath()).document(walletId).delete().await()
                 withContext(Dispatchers.Main) {
                     onComplete?.invoke(true)
                 }
@@ -434,7 +461,7 @@ object WalletRoutingRepository {
             try {
                 val db = FirebaseInitializer.getFirestore(appContext)
                 for (w in currentList) {
-                    db.collection("wallets").document(w.id).update(
+                    db.collection(getWalletsCollectionPath()).document(w.id).update(
                         "currentReceivedThisMonth", 0.0,
                         "current_received_this_month", 0.0,
                         "currentReceived", 0.0,
@@ -475,13 +502,13 @@ object WalletRoutingRepository {
                 obj.put("updatedAt", w.updatedAt)
                 arr.put(obj)
             }
-            context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            context.getSharedPreferences(getPrefsName(), Context.MODE_PRIVATE)
                 .edit().putString(KEY_CACHED_WALLETS, arr.toString()).apply()
         } catch (_: Throwable) {}
     }
 
     private fun loadCachedWallets(context: Context) {
-        val json = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val json = context.getSharedPreferences(getPrefsName(), Context.MODE_PRIVATE)
             .getString(KEY_CACHED_WALLETS, null) ?: return
         try {
             val arr = JSONArray(json)

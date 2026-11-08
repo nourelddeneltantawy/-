@@ -684,9 +684,13 @@ fun MarketplaceScreen(
                         }
                     } else {
                         items(filteredPosts, key = { it.id }) { post ->
+                            val isAuthor = (currentUserId.isNotBlank() && post.userId == currentUserId) ||
+                                    (!currentUserEmail.isNullOrBlank() && post.userEmail.equals(currentUserEmail, ignoreCase = true))
+                            val canManage = isAuthor || isAdmin
+
                             MarketplacePostCard(
                                 post = post,
-                                canManage = true,
+                                canManage = canManage,
                                 onAuthorClick = {},
                                 onWhatsAppClick = {
                                     openWhatsApp(context, post.userPhone, "السلام عليكم، بخصوص إعلاني في سوق كروت البراء: ${post.title}")
@@ -703,10 +707,12 @@ fun MarketplaceScreen(
                                         }
                                     }
                                 },
-                                onEditClick = {
-                                    postToEdit = post
-                                    showCreatePostDialog = true
-                                },
+                                onEditClick = if (canManage) {
+                                    {
+                                        postToEdit = post
+                                        showCreatePostDialog = true
+                                    }
+                                } else null,
                                 onImageClick = { zoomedImageUrl = it },
                                 onDeleteClick = {
                                     postToDelete = post

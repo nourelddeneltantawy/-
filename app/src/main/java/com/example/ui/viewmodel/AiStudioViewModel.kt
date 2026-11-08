@@ -1,11 +1,14 @@
 package com.example.ui.viewmodel
 
+import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.example.BuildConfig
+import com.example.util.AiMotorDiagramGenerator
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 sealed interface AiGenerationState {
     data object Idle : AiGenerationState
@@ -26,7 +29,7 @@ class AiStudioViewModel : ViewModel() {
         _prompt.value = text
     }
 
-    fun generateDiagram() {
+    fun generateDiagram(context: Context) {
         val currentPrompt = _prompt.value.trim()
         if (currentPrompt.isBlank()) {
             _generationState.value = AiGenerationState.Error("يرجى إدخال وصف المخطط أولاً")
@@ -36,11 +39,10 @@ class AiStudioViewModel : ViewModel() {
         viewModelScope.launch {
             _generationState.value = AiGenerationState.Loading
             try {
-                // Generates diagram visual URL or placeholder
-                kotlinx.coroutines.delay(1000)
-                _generationState.value = AiGenerationState.Success(
-                    "https://images.unsplash.com/photo-1581092160607-ee22621dd758?auto=format&fit=crop&w=800&q=80"
-                )
+                val filePath = withContext(Dispatchers.IO) {
+                    AiMotorDiagramGenerator.generateSchematicForPrompt(context.applicationContext ?: context, currentPrompt)
+                }
+                _generationState.value = AiGenerationState.Success(filePath)
             } catch (e: Exception) {
                 _generationState.value = AiGenerationState.Error(e.message ?: "فشل توليد المخطط")
             }

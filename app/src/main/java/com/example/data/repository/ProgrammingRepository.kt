@@ -236,17 +236,9 @@ object ProgrammingRepository {
     fun maskEmail(email: String): String {
         val clean = email.trim()
         val atIdx = clean.indexOf('@')
-        if (atIdx <= 0) return "***"
-        val name = clean.substring(0, atIdx)
-        val domain = clean.substring(atIdx)
-        val visibleCount = when {
-            name.length <= 3 -> 1
-            name.length == 4 -> 2
-            name.length <= 6 -> 3
-            else -> 4
-        }
-        val prefix = name.take(visibleCount)
-        return "$prefix***$domain"
+        val name = if (atIdx > 0) clean.substring(0, atIdx) else clean
+        val prefix = name.take(3)
+        return "$prefix***"
     }
 
     suspend fun activateLicenseKey(

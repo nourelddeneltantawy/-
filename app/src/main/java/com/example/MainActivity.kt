@@ -80,6 +80,7 @@ import androidx.compose.runtime.mutableStateListOf
 import com.example.ui.screens.ProgrammingScreen
 import com.example.ui.screens.MarketplaceScreen
 import com.example.ui.screens.WalletRouterScreen
+import com.example.ui.screens.ToolsHubScreen
 import com.example.data.repository.WalletRoutingRepository
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Storefront
@@ -103,6 +104,7 @@ enum class Screen {
     SYSTEM_INTEGRATOR,
     DIAGNOSTICS,
     PROGRAMMING,
+    TOOLS,
     WALLET_ROUTER,
     AI_STUDIO,
     MANAGE_ADMINS,
@@ -428,10 +430,14 @@ fun AppContent(
     }
 
     LaunchedEffect(isToolsVisible, currentScreen) {
-        if (!isToolsVisible && currentScreen == Screen.WALLET_ROUTER && !isAdmin) {
+        if (!isToolsVisible && (currentScreen == Screen.TOOLS || currentScreen == Screen.WALLET_ROUTER) && !isAdmin) {
             currentScreen = Screen.DASHBOARD
             Toast.makeText(context, "تم قفل قسم الأدوات من قبل الإدارة", Toast.LENGTH_SHORT).show()
         }
+    }
+
+    LaunchedEffect(userEmail, userId) {
+        WalletRoutingRepository.setUser(context, userId, userEmail)
     }
 
     val motorsList = when (val s = motorsState) {
@@ -576,15 +582,16 @@ fun AppContent(
                         )
                     }
 
-                    // Item 3: الأدوات (توجيه المحافظ وغيرها)
+                    // Item 3: الأدوات (منصة الأدوات الذكية والمحافظ)
                     if (isToolsVisible) {
+                        val isToolsActive = currentScreen == Screen.TOOLS || currentScreen == Screen.WALLET_ROUTER
                         NavigationBarItem(
-                            selected = currentScreen == Screen.WALLET_ROUTER,
+                            selected = isToolsActive,
                             onClick = {
                                 if (isToolsHiddenForUsers && !isAdmin) {
                                     Toast.makeText(context, "قسم الأدوات مغلق حالياً من قبل الإدارة", Toast.LENGTH_SHORT).show()
                                 } else {
-                                    selectTab(Screen.WALLET_ROUTER)
+                                    selectTab(Screen.TOOLS)
                                 }
                             },
                             icon = {
@@ -607,7 +614,7 @@ fun AppContent(
                                 Text(
                                     if (isAdmin && isToolsHiddenForUsers) "الأدوات (مغلق)" else "الأدوات",
                                     fontSize = 11.sp,
-                                    fontWeight = if (currentScreen == Screen.WALLET_ROUTER) FontWeight.Bold else FontWeight.Normal
+                                    fontWeight = if (isToolsActive) FontWeight.Bold else FontWeight.Normal
                                 )
                             },
                             colors = NavigationBarItemDefaults.colors(
@@ -969,15 +976,35 @@ fun AppContent(
                         )
                     }
 
+                    Screen.TOOLS -> {
+                        BackHandler {
+                            selectTab(Screen.DASHBOARD)
+                        }
+                        ToolsHubScreen(
+                            userEmail = userEmail,
+                            isAdmin = isAdmin,
+                            isSuperAdmin = isSuperAdmin,
+                            isGuest = isGuest,
+                            onNavigateToWalletRouter = { navigateTo(Screen.WALLET_ROUTER) },
+                            onNavigateToAiStudio = { navigateTo(Screen.AI_STUDIO) },
+                            onNavigateToIntegrator = { navigateTo(Screen.SYSTEM_INTEGRATOR) },
+                            onNavigateToDiagnostics = { title ->
+                                diagnosticsCategoryTitle = title
+                                navigateTo(Screen.DIAGNOSTICS)
+                            },
+                            onNavigateToProfile = onOpenWelcomeProfile
+                        )
+                    }
+
                     Screen.WALLET_ROUTER -> {
                         BackHandler {
-                            if (navigationStack.size > 1) navigateBack() else selectTab(Screen.DASHBOARD)
+                            if (navigationStack.size > 1) navigateBack() else selectTab(Screen.TOOLS)
                         }
                         WalletRouterScreen(
                             isAdmin = isAdmin,
                             currentUserEmail = userEmail,
                             onBackClick = {
-                                if (navigationStack.size > 1) navigateBack() else selectTab(Screen.DASHBOARD)
+                                if (navigationStack.size > 1) navigateBack() else selectTab(Screen.TOOLS)
                             }
                         )
                     }

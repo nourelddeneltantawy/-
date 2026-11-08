@@ -9,6 +9,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.IBinder
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.example.MainActivity
 import com.example.R
@@ -29,7 +30,19 @@ class WalletSmsCompanionService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val notification = buildForegroundNotification()
-        startForeground(NOTIFICATION_ID, notification)
+        try {
+            if (Build.VERSION.SDK_INT >= 34) {
+                startForeground(
+                    NOTIFICATION_ID,
+                    notification,
+                    android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+                )
+            } else {
+                startForeground(NOTIFICATION_ID, notification)
+            }
+        } catch (e: Throwable) {
+            Log.e("WalletSmsCompanion", "Failed to startForeground: ${e.message}", e)
+        }
         return START_STICKY
     }
 
@@ -74,17 +87,25 @@ class WalletSmsCompanionService : Service() {
         const val NOTIFICATION_ID = 9021
 
         fun startService(context: Context) {
-            val intent = Intent(context, WalletSmsCompanionService::class.java)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(intent)
-            } else {
-                context.startService(intent)
+            try {
+                val intent = Intent(context, WalletSmsCompanionService::class.java)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    context.startForegroundService(intent)
+                } else {
+                    context.startService(intent)
+                }
+            } catch (e: Throwable) {
+                Log.e("WalletSmsCompanion", "Error starting WalletSmsCompanionService: ${e.message}", e)
             }
         }
 
         fun stopService(context: Context) {
-            val intent = Intent(context, WalletSmsCompanionService::class.java)
-            context.stopService(intent)
+            try {
+                val intent = Intent(context, WalletSmsCompanionService::class.java)
+                context.stopService(intent)
+            } catch (e: Throwable) {
+                Log.e("WalletSmsCompanion", "Error stopping WalletSmsCompanionService: ${e.message}", e)
+            }
         }
     }
 }

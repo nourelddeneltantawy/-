@@ -70,7 +70,7 @@ object MotorShareHelper {
         }
     }
 
-    private fun createMotorBitmap(context: Context, motor: Motor): Bitmap {
+    fun createMotorBitmap(context: Context, motor: Motor): Bitmap {
         val width = 1080
         val pinouts = motor.pinouts
 

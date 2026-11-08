@@ -117,7 +117,7 @@ fun WalletRouterScreen(
     val wallets by WalletRoutingRepository.wallets.collectAsState()
 
     var selectedTabIndex by remember { mutableIntStateOf(0) }
-    val tabs = if (isAdmin) listOf("التحويل والدفع الذكي ⚡", "إدارة المحافظ ⚙️") else listOf("التحويل والدفع الذكي ⚡")
+    val tabs = listOf("التحويل والدفع الذكي ⚡", "إدارة المحافظ ⚙️")
 
     var showAddWalletDialog by remember { mutableStateOf(false) }
     var walletToEdit by remember { mutableStateOf<SmartWallet?>(null) }
@@ -526,25 +526,40 @@ fun CustomerTransferFlow(
                     ) {
                         OutlinedButton(
                             onClick = {
+                                val activeWallet = wallets.firstOrNull { it.status == "ACTIVE" } ?: wallets.firstOrNull()
+                                val copyText = if (activeWallet != null) {
+                                    "رقم تحويل فودافون كاش / إنستاباي: ${activeWallet.phoneNumber}"
+                                } else {
+                                    publicWebLink
+                                }
                                 val cb = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                                cb.setPrimaryClip(ClipData.newPlainText("Pay Link", publicWebLink))
-                                Toast.makeText(context, "تم نسخ رابط الدفع المباشر 📋", Toast.LENGTH_SHORT).show()
+                                cb.setPrimaryClip(ClipData.newPlainText("Pay Info", copyText))
+                                Toast.makeText(context, "تم نسخ بيانات التحويل 📋", Toast.LENGTH_SHORT).show()
                             },
                             modifier = Modifier.weight(1f),
                             shape = RoundedCornerShape(10.dp)
                         ) {
                             Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(15.dp))
                             Spacer(modifier = Modifier.width(4.dp))
-                            Text("نسخ الرابط", fontSize = 12.sp)
+                            Text("نسخ البيانات", fontSize = 12.sp)
                         }
 
                         Button(
                             onClick = {
+                                val activeWallet = wallets.firstOrNull { it.status == "ACTIVE" } ?: wallets.firstOrNull()
+                                val phone = activeWallet?.phoneNumber ?: "01012345678"
+                                val shareText = buildString {
+                                    append("بيانات التحويل والدفع السريع - م. البراء إلكترونيك ⚡\n\n")
+                                    append("• رقم المحفظة / الحساب: $phone\n")
+                                    append("• كود فودافون كاش المباشر: *9*7*$phone*المبلغ#\n")
+                                    append("• تطبيق إنستاباي (InstaPay): $phone\n\n")
+                                    append("يتم تأكيد استلام التحويل أوتوماتيكياً فور وصول الرسالة النصية SMS.")
+                                }
                                 val shareIntent = Intent(Intent.ACTION_SEND).apply {
                                     type = "text/plain"
-                                    putExtra(Intent.EXTRA_TEXT, "رابط التحويل والدفع السريع من م. البراء إلكترونيك:\n$publicWebLink")
+                                    putExtra(Intent.EXTRA_TEXT, shareText)
                                 }
-                                context.startActivity(Intent.createChooser(shareIntent, "مشاركة رابط الدفع"))
+                                context.startActivity(Intent.createChooser(shareIntent, "مشاركة بيانات الدفع"))
                             },
                             modifier = Modifier.weight(1f),
                             shape = RoundedCornerShape(10.dp),
@@ -960,13 +975,35 @@ fun SuccessRouteCard(
             } else if (isInstaPay) {
                 Button(
                     onClick = {
-                        try {
-                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse("instapay://"))
-                            context.startActivity(intent)
-                        } catch (e: Throwable) {
-                            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                            clipboard.setPrimaryClip(ClipData.newPlainText("InstaPay Number", wallet.phoneNumber))
-                            Toast.makeText(context, "تم نسخ رقم إنستاباي، يمكنك لصقه في التطبيق", Toast.LENGTH_LONG).show()
+                        // 1. Copy number to clipboard for instant pasting
+                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        clipboard.setPrimaryClip(ClipData.newPlainText("InstaPay Number", wallet.phoneNumber))
+
+                        // 2. Launch InstaPay app by package name "eg.instapay"
+                        val pm = context.packageManager
+                        val launchIntent = pm.getLaunchIntentForPackage("eg.instapay")
+                        if (launchIntent != null) {
+                            launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            try {
+                                context.startActivity(launchIntent)
+                                Toast.makeText(context, "تم فتح تطبيق InstaPay ونسخ رقم التحويل تلقائياً 📋", Toast.LENGTH_LONG).show()
+                            } catch (e: Exception) {
+                                Toast.makeText(context, "تم نسخ رقم إنستاباي: ${wallet.phoneNumber}", Toast.LENGTH_SHORT).show()
+                            }
+                        } else {
+                            try {
+                                val marketIntent = Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=eg.instapay")).apply {
+                                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                }
+                                context.startActivity(marketIntent)
+                                Toast.makeText(context, "تطبيق InstaPay غير مثبت، تم فتح المتجر ونسخ الرقم", Toast.LENGTH_LONG).show()
+                            } catch (_: Exception) {
+                                val webIntent = Intent(Intent.ACTION_VIEW, Uri.parse("https://play.google.com/store/apps/details?id=eg.instapay")).apply {
+                                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                }
+                                context.startActivity(webIntent)
+                                Toast.makeText(context, "تم نسخ رقم التحويل: ${wallet.phoneNumber}", Toast.LENGTH_SHORT).show()
+                            }
                         }
                     },
                     modifier = Modifier
@@ -1007,7 +1044,8 @@ fun SuccessRouteCard(
 
             Surface(
                 shape = RoundedCornerShape(12.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Row(
@@ -1017,63 +1055,24 @@ fun SuccessRouteCard(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Icon(
-                        imageVector = Icons.Default.Info,
+                        imageVector = Icons.Default.CheckCircle,
                         contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(20.dp)
+                        tint = Color(0xFF10B981),
+                        modifier = Modifier.size(24.dp)
                     )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = "بعد إتمام الاتصال أو التحويل وإدخال الرقم السري لمحفظتك، اضغط أدناه لتأكيد المعاملة.",
-                        style = MaterialTheme.typography.bodySmall.copy(
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            lineHeight = 17.sp
-                        )
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.height(12.dp))
-
-            if (!isConfirmed) {
-                Button(
-                    onClick = onConfirm,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(46.dp),
-                    shape = RoundedCornerShape(10.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF10B981))
-                ) {
-                    Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color.White)
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(
-                        text = "تأكيد إتمام التحويل بنجاح ✅",
-                        fontWeight = FontWeight.Bold,
-                        color = Color.White,
-                        fontSize = 13.sp
-                    )
-                }
-            } else {
-                Surface(
-                    shape = RoundedCornerShape(10.dp),
-                    color = Color(0xFF10B981).copy(alpha = 0.15f),
-                    border = BorderStroke(1.dp, Color(0xFF10B981)),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(10.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.Center
-                    ) {
-                        Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFF10B981), modifier = Modifier.size(18.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Column {
                         Text(
-                            text = "تم تأكيد التحويل وتسجيله بالنظام بنجاح!",
+                            text = "التأكيد أوتوماتيكي عبر الرسائل النصية SMS ⚡",
                             fontWeight = FontWeight.Bold,
-                            color = Color(0xFF10B981),
-                            fontSize = 12.sp
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Text(
+                            text = "لا داعي للضغط على تأكيد أو إرسال إيصال. بمجرد تنفيذ التحويل، تلتقط الخدمة رسالة البنك لتحديث السعة والرصيد تلقائياً.",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            lineHeight = 16.sp
                         )
                     }
                 }
