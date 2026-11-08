@@ -24,10 +24,34 @@ jobs:
       with:
         cache-read-only: false
 
-    - name: Prepare Keystore and Environment
+    - name: Prepare Keystores and Environment
       run: |
         if [ ! -f ".env" ]; then
           touch .env
+        fi
+
+        # Restore debug.keystore if base64 exists, otherwise generate standard debug key
+        if [ -f "debug.keystore.base64" ] && [ ! -f "debug.keystore" ]; then
+          echo "Restoring debug.keystore from base64..."
+          base64 -d debug.keystore.base64 > debug.keystore
+        fi
+        if [ ! -f "debug.keystore" ]; then
+          echo "Generating debug.keystore..."
+          keytool -genkeypair -v \
+            -keystore debug.keystore \
+            -storepass android \
+            -alias androiddebugkey \
+            -keypass android \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -dname "CN=Android Debug,O=Android,C=US"
+        fi
+
+        # Restore upload keystore if base64 exists, otherwise generate consistent key
+        if [ -f "my-upload-key.jks.base64" ] && [ ! -f "my-upload-key.jks" ]; then
+          echo "Restoring my-upload-key.jks from base64..."
+          base64 -d my-upload-key.jks.base64 > my-upload-key.jks
         fi
         if [ ! -f "my-upload-key.jks" ]; then
           echo "Generating consistent upload keystore for signing..."
@@ -42,15 +66,21 @@ jobs:
             -dname "CN=AlBaraaElectronics, OU=Engineering, O=AlBaraa, L=Cairo, S=Cairo, C=EG"
         fi
 
-    - name: Build APKs with Gradle
+    - name: Build Release APK with Gradle
       env:
         KEYSTORE_PATH: ${{ github.workspace }}/my-upload-key.jks
         STORE_PASSWORD: ${{ secrets.STORE_PASSWORD || 'WasherMotor2026@Key' }}
         KEY_ALIAS: ${{ secrets.KEY_ALIAS || 'upload' }}
         KEY_PASSWORD: ${{ secrets.KEY_PASSWORD || 'WasherMotor2026@Key' }}
-        GRADLE_OPTS: "-Dorg.gradle.internal.http.socketTimeout=180000 -Dorg.gradle.internal.http.connectionTimeout=180000 -Dorg.gradle.internal.repository.max.retries=10 -Dorg.gradle.internal.repository.max.tentatives=10"
+        GRADLE_OPTS: "-Dorg.gradle.internal.http.socketTimeout=180000 -Dorg.gradle.internal.http.connectionTimeout=180000"
       run: |
-        gradle assembleRelease assembleDebug --stacktrace || (echo "Retrying build after transient network timeout..." && sleep 10 && gradle assembleRelease assembleDebug --stacktrace)
+        gradle assembleRelease --stacktrace
+
+    - name: Build Debug APK with Gradle
+      env:
+        GRADLE_OPTS: "-Dorg.gradle.internal.http.socketTimeout=180000 -Dorg.gradle.internal.http.connectionTimeout=180000"
+      run: |
+        gradle assembleDebug --stacktrace
 
     - name: Upload APKs
       uses: actions/upload-artifact@v4
