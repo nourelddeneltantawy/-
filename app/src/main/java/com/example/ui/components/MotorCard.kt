@@ -127,12 +127,11 @@ fun MotorCard(
                     text = motor.name,
                     style = MaterialTheme.typography.titleMedium.copy(
                         fontWeight = FontWeight.Bold,
-                        fontSize = 16.sp,
-                        lineHeight = 22.sp
+                        fontSize = 16.sp
                     ),
                     modifier = Modifier.weight(1f),
                     softWrap = true,
-                    maxLines = Int.MAX_VALUE
+                    maxLines = 4
                 )
 
                 if (onToggleFavorite != null) {

@@ -11,8 +11,8 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -44,13 +44,13 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.ElectricBolt
 import androidx.compose.material.icons.filled.Info
-import androidx.compose.material.icons.filled.MoneyOff
-import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Security
+import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Sms
+import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -58,7 +58,6 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ElevatedCard
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.HorizontalDivider
@@ -76,18 +75,19 @@ import androidx.compose.material3.TabRowDefaults
 import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -96,16 +96,16 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.model.SmartWallet
 import com.example.data.model.WalletRouteResult
 import com.example.data.repository.WalletRoutingRepository
-import com.example.receiver.WalletSmsCompanionService
 import com.example.receiver.WalletSmsReceiver
+import kotlinx.coroutines.launch
+import java.text.NumberFormat
+import java.util.Locale
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun WalletRouterScreen(
     isAdmin: Boolean,
@@ -114,16 +114,17 @@ fun WalletRouterScreen(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
     val wallets by WalletRoutingRepository.wallets.collectAsState()
 
     var selectedTabIndex by remember { mutableIntStateOf(0) }
-    val tabs = listOf("التحويل والدفع الذكي ⚡", "إدارة المحافظ ⚙️")
+    val tabs = if (isAdmin) listOf("التحويل والدفع الذكي ⚡", "إدارة المحافظ ⚙️") else listOf("التحويل والدفع الذكي ⚡")
 
+    // Dialog states for admin
     var showAddWalletDialog by remember { mutableStateOf(false) }
     var walletToEdit by remember { mutableStateOf<SmartWallet?>(null) }
     var showMonthlyResetDialog by remember { mutableStateOf(false) }
     var showSmsSimulatorDialog by remember { mutableStateOf(false) }
-    var walletToWithdraw by remember { mutableStateOf<SmartWallet?>(null) }
 
     Scaffold(
         modifier = modifier
@@ -132,57 +133,57 @@ fun WalletRouterScreen(
         topBar = {
             Surface(
                 color = MaterialTheme.colorScheme.surface,
-                shadowElevation = 3.dp
+                shadowElevation = 4.dp
             ) {
                 Column {
-                    TopAppBar(
-                        title = {
-                            Column {
-                                Text(
-                                    text = "توجيه المحافظ والتحويلات الذكية",
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        IconButton(onClick = onBackClick) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                contentDescription = "رجوع"
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "توجيه المحافظ والتحويلات الذكية",
+                                style = MaterialTheme.typography.titleMedium.copy(
                                     fontWeight = FontWeight.Bold,
-                                    fontSize = 16.sp,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                                Text(
-                                    text = "تخطي الحدود الشهرية والحجمية وتسهيل الدفع الفوري",
-                                    fontSize = 11.sp,
+                                    fontSize = 17.sp
+                                ),
+                                maxLines = 1
+                            )
+                            Text(
+                                text = "تخطي الحدود الشهرية للمحافظ وتسهيل الدفع المباشر",
+                                style = MaterialTheme.typography.bodySmall.copy(
                                     color = MaterialTheme.colorScheme.outline,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
+                                    fontSize = 11.sp
+                                ),
+                                maxLines = 1
+                            )
+                        }
+
+                        if (isAdmin) {
+                            Surface(
+                                shape = RoundedCornerShape(12.dp),
+                                color = MaterialTheme.colorScheme.primaryContainer,
+                                modifier = Modifier.padding(start = 4.dp)
+                            ) {
+                                Text(
+                                    text = "إشراف",
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                                 )
                             }
-                        },
-                        navigationIcon = {
-                            IconButton(onClick = onBackClick) {
-                                Icon(
-                                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                                    contentDescription = "رجوع"
-                                )
-                            }
-                        },
-                        actions = {
-                            if (isAdmin) {
-                                Surface(
-                                    shape = RoundedCornerShape(8.dp),
-                                    color = MaterialTheme.colorScheme.primaryContainer,
-                                    modifier = Modifier.padding(end = 12.dp)
-                                ) {
-                                    Text(
-                                        text = "إشراف",
-                                        color = MaterialTheme.colorScheme.onPrimaryContainer,
-                                        fontSize = 11.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                                    )
-                                }
-                            }
-                        },
-                        colors = TopAppBarDefaults.topAppBarColors(
-                            containerColor = MaterialTheme.colorScheme.surface
-                        )
-                    )
+                        }
+                    }
 
                     if (tabs.size > 1) {
                         TabRow(
@@ -232,14 +233,13 @@ fun WalletRouterScreen(
                     onAddWalletClick = { showAddWalletDialog = true },
                     onEditWalletClick = { walletToEdit = it },
                     onResetMonthlyClick = { showMonthlyResetDialog = true },
-                    onOpenSmsSimulator = { showSmsSimulatorDialog = true },
-                    onWithdrawBalanceClick = { walletToWithdraw = it }
+                    onOpenSmsSimulator = { showSmsSimulatorDialog = true }
                 )
             }
         }
     }
 
-    // Add / Edit Wallet Dialog
+    // Add/Edit Wallet Dialog
     if (showAddWalletDialog || walletToEdit != null) {
         val editing = walletToEdit
         AddEditWalletDialog(
@@ -262,57 +262,6 @@ fun WalletRouterScreen(
         )
     }
 
-    // Withdraw Balance Confirmation Dialog
-    walletToWithdraw?.let { w ->
-        AlertDialog(
-            onDismissRequest = { walletToWithdraw = null },
-            icon = {
-                Icon(
-                    imageVector = Icons.Default.MoneyOff,
-                    contentDescription = null,
-                    tint = Color(0xFF10B981),
-                    modifier = Modifier.size(36.dp)
-                )
-            },
-            title = {
-                Text(
-                    text = "تأكيد سحب كاش المحفظة؟",
-                    fontWeight = FontWeight.Bold,
-                    textAlign = TextAlign.Center
-                )
-            },
-            text = {
-                Text(
-                    text = "سيتم تصفير الرصيد الفعلي الحالي لمحفظة (${w.name}) من ${w.currentBalance.toLong()} ج.م إلى 0 ج.م، وإعادة تنشيط المحفظة فوراً لاستقبال تحويلات حتى 100 ألف ج.\n\nهل تم سحب الكاش من ماكينة ATM أو الفرع؟",
-                    textAlign = TextAlign.Center,
-                    lineHeight = 22.sp
-                )
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        WalletRoutingRepository.withdrawHoldingBalance(context, w.id) { success ->
-                            Toast.makeText(
-                                context,
-                                if (success) "تم تصفير الرصيد الحالي للمحفظة وتنشيطها بنجاح 🎉" else "فشلت العملية",
-                                Toast.LENGTH_SHORT
-                            ).show()
-                        }
-                        walletToWithdraw = null
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF10B981))
-                ) {
-                    Text("نعم، تم السحب وتصفير الرصيد")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { walletToWithdraw = null }) {
-                    Text("إلغاء")
-                }
-            }
-        )
-    }
-
     // Monthly Reset Confirmation Dialog
     if (showMonthlyResetDialog) {
         AlertDialog(
@@ -327,16 +276,16 @@ fun WalletRouterScreen(
             },
             title = {
                 Text(
-                    text = "تصفير عدادات المبالغ المستلمة الشهرية؟",
+                    text = "تصفير عدادات المبالغ المستلمة؟",
                     fontWeight = FontWeight.Bold,
                     textAlign = TextAlign.Center
                 )
             },
             text = {
                 Text(
-                    text = "سيتم تصفير حقل المستلم الشهري (currentReceivedThisMonth = 0) لجميع المحافظ وتنشيط المحافظ المكتملة شهرياً لبدء شهر جديد.\n\nملاحظة: هذا التصفير لا يؤثر على الرصيد الفعلي الحالي للمحفظة.",
+                    text = "سيتم تصفير حقل المبالغ المستلمة (currentReceived = 0) لجميع المحافظ وتنشيط المحافظ الممتلئة لاستقبال شهر جديد من التحويلات.\nهل أنت متأكد؟",
                     textAlign = TextAlign.Center,
-                    lineHeight = 22.sp
+                    lineHeight = 20.sp
                 )
             },
             confirmButton = {
@@ -353,7 +302,7 @@ fun WalletRouterScreen(
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFEF4444))
                 ) {
-                    Text("نعم، تصفير شهري الآن")
+                    Text("نعم، تصفير الآن")
                 }
             },
             dismissButton = {
@@ -367,31 +316,27 @@ fun WalletRouterScreen(
     // SMS Simulator Dialog
     if (showSmsSimulatorDialog) {
         SmsSimulatorDialog(
-            wallets = wallets,
             onDismiss = { showSmsSimulatorDialog = false },
-            onSimulate = { smsText, targetWalletId ->
+            onSimulate = { smsText ->
                 val result = WalletSmsReceiver.parseSms(smsText)
                 if (result != null) {
                     val (amount, ref) = result
-                    val targetWallet = wallets.firstOrNull { it.id == targetWalletId }
-                        ?: wallets.firstOrNull { it.status == "ACTIVE" }
-                        ?: wallets.firstOrNull()
-
-                    if (targetWallet != null) {
+                    val activeWallet = wallets.firstOrNull { it.status == "ACTIVE" } ?: wallets.firstOrNull()
+                    if (activeWallet != null) {
                         WalletRoutingRepository.recordTransaction(
                             context = context,
-                            walletId = targetWallet.id,
+                            walletId = activeWallet.id,
                             amount = amount,
                             referenceText = "محاكاة SMS: $ref"
                         ) { success ->
                             Toast.makeText(
                                 context,
-                                if (success) "تم بنجاح تسجيل تحويل $amount ج.م لمحفظة (${targetWallet.name})!" else "فشل التحديث",
+                                if (success) "تم بنجاح استخراج مبلغ $amount ج.م وتحديث محفظة (${activeWallet.name})" else "فشل التحديث",
                                 Toast.LENGTH_LONG
                             ).show()
                         }
                     } else {
-                        Toast.makeText(context, "لا توجد محافظ لتحديثها", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, "لا توجد محافظ مسجلة لتحديثها", Toast.LENGTH_SHORT).show()
                     }
                 } else {
                     Toast.makeText(context, "لم يتم التعرف على مبلغ داخل نص الرسالة، تأكد من الصيغة", Toast.LENGTH_LONG).show()
@@ -403,7 +348,7 @@ fun WalletRouterScreen(
 }
 
 /**
- * Step 1 & Step 2 Customer Payment Flow + Public Web Link Share
+ * Step 1 & Step 2 Customer Payment Flow
  */
 @Composable
 fun CustomerTransferFlow(
@@ -413,12 +358,11 @@ fun CustomerTransferFlow(
 ) {
     val context = LocalContext.current
     var amountText by remember { mutableStateOf("") }
-    var selectedMethod by remember { mutableStateOf("VODAFONE_CASH") }
+    var selectedMethod by remember { mutableStateOf("VODAFONE_CASH") } // "VODAFONE_CASH", "INSTAPAY", "ALL"
     var routeResult by remember { mutableStateOf<WalletRouteResult?>(null) }
     var isConfirmedByCustomer by remember { mutableStateOf(false) }
 
     val quickAmounts = listOf(100, 250, 500, 1000, 2000, 5000)
-    val publicWebLink = "https://albaraa-electronics.web.app/pay"
 
     LazyColumn(
         modifier = modifier
@@ -465,110 +409,12 @@ fun CustomerTransferFlow(
                             )
                         )
                         Text(
-                            text = "يختار النظام أنسب محفظة نشطة غير ممتلئة حجمياً أو شهرياً، مع تجهيز كود التحويل المباشر بنقرة واحدة.",
+                            text = "أدخل المبلغ المطلوب وسيقوم النظام باختيار أنسب محفظة نشطة غير ممتلئة وتجهيز كود التحويل المباشر بنقرة واحدة.",
                             style = MaterialTheme.typography.bodySmall.copy(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 lineHeight = 18.sp
                             )
                         )
-                    }
-                }
-            }
-        }
-
-        // Public Redirector Link Card
-        item {
-            Card(
-                shape = RoundedCornerShape(18.dp),
-                colors = CardDefaults.cardColors(
-                    containerColor = Color(0xFF8B5CF6).copy(alpha = 0.1f)
-                ),
-                border = BorderStroke(1.dp, Color(0xFF8B5CF6).copy(alpha = 0.3f)),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(14.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                imageVector = Icons.Default.OpenInNew,
-                                contentDescription = null,
-                                tint = Color(0xFF8B5CF6),
-                                modifier = Modifier.size(18.dp)
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(
-                                text = "رابط الدفع العام المباشر للعملاء (/pay)",
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 13.sp,
-                                color = Color(0xFF8B5CF6)
-                            )
-                        }
-                    }
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Text(
-                        text = "يمكنك إرسال هذا الرابط للعميل لفتحه في أي متصفح هاتف للدفع المباشر دون الحاجة لتثبيت التطبيق.",
-                        fontSize = 11.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        lineHeight = 16.sp
-                    )
-                    Spacer(modifier = Modifier.height(10.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        OutlinedButton(
-                            onClick = {
-                                val activeWallet = wallets.firstOrNull { it.status == "ACTIVE" } ?: wallets.firstOrNull()
-                                val copyText = if (activeWallet != null) {
-                                    "رقم تحويل فودافون كاش / إنستاباي: ${activeWallet.phoneNumber}"
-                                } else {
-                                    publicWebLink
-                                }
-                                val cb = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                                cb.setPrimaryClip(ClipData.newPlainText("Pay Info", copyText))
-                                Toast.makeText(context, "تم نسخ بيانات التحويل 📋", Toast.LENGTH_SHORT).show()
-                            },
-                            modifier = Modifier.weight(1f),
-                            shape = RoundedCornerShape(10.dp)
-                        ) {
-                            Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(15.dp))
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("نسخ البيانات", fontSize = 12.sp)
-                        }
-
-                        Button(
-                            onClick = {
-                                val activeWallet = wallets.firstOrNull { it.status == "ACTIVE" } ?: wallets.firstOrNull()
-                                val phone = activeWallet?.phoneNumber ?: "01012345678"
-                                val shareText = buildString {
-                                    append("بيانات التحويل والدفع السريع - م. البراء إلكترونيك ⚡\n\n")
-                                    append("• رقم المحفظة / الحساب: $phone\n")
-                                    append("• كود فودافون كاش المباشر: *9*7*$phone*المبلغ#\n")
-                                    append("• تطبيق إنستاباي (InstaPay): $phone\n\n")
-                                    append("يتم تأكيد استلام التحويل أوتوماتيكياً فور وصول الرسالة النصية SMS.")
-                                }
-                                val shareIntent = Intent(Intent.ACTION_SEND).apply {
-                                    type = "text/plain"
-                                    putExtra(Intent.EXTRA_TEXT, shareText)
-                                }
-                                context.startActivity(Intent.createChooser(shareIntent, "مشاركة بيانات الدفع"))
-                            },
-                            modifier = Modifier.weight(1f),
-                            shape = RoundedCornerShape(10.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF8B5CF6))
-                        ) {
-                            Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(15.dp))
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("إرسال للعميل", fontSize = 12.sp)
-                        }
                     }
                 }
             }
@@ -643,6 +489,7 @@ fun CustomerTransferFlow(
 
                     Spacer(modifier = Modifier.height(10.dp))
 
+                    // Quick Chips
                     Text(
                         text = "مبالغ سريعة:",
                         style = MaterialTheme.typography.labelSmall.copy(color = MaterialTheme.colorScheme.outline)
@@ -674,6 +521,7 @@ fun CustomerTransferFlow(
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
                     Spacer(modifier = Modifier.height(14.dp))
 
+                    // Method Selection
                     Text(
                         text = "٢. اختر وسيلة الدفع المفضلة:",
                         style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
@@ -713,6 +561,7 @@ fun CustomerTransferFlow(
 
                     Spacer(modifier = Modifier.height(18.dp))
 
+                    // Action: Route Wallet
                     Button(
                         onClick = {
                             val amt = amountText.toDoubleOrNull() ?: 0.0
@@ -735,10 +584,9 @@ fun CustomerTransferFlow(
                         Icon(Icons.Default.ElectricBolt, contentDescription = null, modifier = Modifier.size(20.dp))
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            text = "توجيه واختيار المحفظة ⚡",
+                            text = "توجيه واختيار المحفظة المناسبة تلقائياً ⚡",
                             fontWeight = FontWeight.Bold,
-                            fontSize = 15.sp,
-                            maxLines = 1
+                            fontSize = 15.sp
                         )
                     }
                 }
@@ -805,7 +653,7 @@ fun SuccessRouteCard(
         colors = CardDefaults.cardColors(
             containerColor = brandColor.copy(alpha = 0.08f)
         ),
-        border = BorderStroke(1.5.dp, brandColor.copy(alpha = 0.4f)),
+        border = androidx.compose.foundation.BorderStroke(1.5.dp, brandColor.copy(alpha = 0.4f)),
         modifier = Modifier
             .fillMaxWidth()
             .testTag("success_route_card")
@@ -813,8 +661,9 @@ fun SuccessRouteCard(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(18.dp)
+                .padding(20.dp)
         ) {
+            // Header status
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -829,16 +678,17 @@ fun SuccessRouteCard(
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = "تم اختيار المحفظة المطابقة للشروط!",
+                        text = "تم توجيه المحفظة المناسبة بنجاح!",
                         fontWeight = FontWeight.Bold,
                         color = Color(0xFF10B981),
-                        fontSize = 14.sp
+                        fontSize = 15.sp
                     )
                 }
 
                 Surface(
-                    shape = RoundedCornerShape(8.dp),
-                    color = brandColor
+                    shape = RoundedCornerShape(10.dp),
+                    color = brandColor,
+                    modifier = Modifier.padding(start = 4.dp)
                 ) {
                     Text(
                         text = if (isVodafone) "فودافون كاش" else "InstaPay",
@@ -852,6 +702,7 @@ fun SuccessRouteCard(
 
             Spacer(modifier = Modifier.height(14.dp))
 
+            // Wallet details container
             Surface(
                 shape = RoundedCornerShape(16.dp),
                 color = MaterialTheme.colorScheme.surface,
@@ -869,7 +720,7 @@ fun SuccessRouteCard(
                         fontSize = 15.sp,
                         color = MaterialTheme.colorScheme.onSurface
                     )
-                    Spacer(modifier = Modifier.height(6.dp))
+                    Spacer(modifier = Modifier.height(4.dp))
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -908,8 +759,9 @@ fun SuccessRouteCard(
                 }
             }
 
-            Spacer(modifier = Modifier.height(14.dp))
+            Spacer(modifier = Modifier.height(16.dp))
 
+            // ACTION 1: For Vodafone Cash -> Direct USSD dialer button
             if (isVodafone) {
                 Button(
                     onClick = {
@@ -922,9 +774,9 @@ fun SuccessRouteCard(
                     },
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(50.dp)
+                        .height(52.dp)
                         .testTag("dial_ussd_button"),
-                    shape = RoundedCornerShape(12.dp),
+                    shape = RoundedCornerShape(14.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = brandColor)
                 ) {
                     Icon(Icons.Default.Call, contentDescription = null, tint = Color.White)
@@ -932,9 +784,8 @@ fun SuccessRouteCard(
                     Text(
                         text = "اتصال بالرمز المباشر 📞 (${result.ussdCode})",
                         fontWeight = FontWeight.Bold,
-                        fontSize = 13.sp,
-                        color = Color.White,
-                        maxLines = 1
+                        fontSize = 14.sp,
+                        color = Color.White
                     )
                 }
 
@@ -951,9 +802,9 @@ fun SuccessRouteCard(
                             Toast.makeText(context, "تم نسخ كود التحويل بالكامل بنجاح 📋", Toast.LENGTH_SHORT).show()
                         },
                         modifier = Modifier.weight(1f),
-                        shape = RoundedCornerShape(10.dp)
+                        shape = RoundedCornerShape(12.dp)
                     ) {
-                        Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(15.dp))
+                        Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(4.dp))
                         Text("نسخ الكود", fontSize = 12.sp)
                     }
@@ -965,52 +816,31 @@ fun SuccessRouteCard(
                             Toast.makeText(context, "تم نسخ رقم المحفظة: ${wallet.phoneNumber}", Toast.LENGTH_SHORT).show()
                         },
                         modifier = Modifier.weight(1f),
-                        shape = RoundedCornerShape(10.dp)
+                        shape = RoundedCornerShape(12.dp)
                     ) {
-                        Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(15.dp))
+                        Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(4.dp))
                         Text("نسخ الرقم", fontSize = 12.sp)
                     }
                 }
             } else if (isInstaPay) {
+                // InstaPay Flow
                 Button(
                     onClick = {
-                        // 1. Copy number to clipboard for instant pasting
-                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                        clipboard.setPrimaryClip(ClipData.newPlainText("InstaPay Number", wallet.phoneNumber))
-
-                        // 2. Launch InstaPay app by package name "eg.instapay"
-                        val pm = context.packageManager
-                        val launchIntent = pm.getLaunchIntentForPackage("eg.instapay")
-                        if (launchIntent != null) {
-                            launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                            try {
-                                context.startActivity(launchIntent)
-                                Toast.makeText(context, "تم فتح تطبيق InstaPay ونسخ رقم التحويل تلقائياً 📋", Toast.LENGTH_LONG).show()
-                            } catch (e: Exception) {
-                                Toast.makeText(context, "تم نسخ رقم إنستاباي: ${wallet.phoneNumber}", Toast.LENGTH_SHORT).show()
-                            }
-                        } else {
-                            try {
-                                val marketIntent = Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=eg.instapay")).apply {
-                                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                }
-                                context.startActivity(marketIntent)
-                                Toast.makeText(context, "تطبيق InstaPay غير مثبت، تم فتح المتجر ونسخ الرقم", Toast.LENGTH_LONG).show()
-                            } catch (_: Exception) {
-                                val webIntent = Intent(Intent.ACTION_VIEW, Uri.parse("https://play.google.com/store/apps/details?id=eg.instapay")).apply {
-                                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                }
-                                context.startActivity(webIntent)
-                                Toast.makeText(context, "تم نسخ رقم التحويل: ${wallet.phoneNumber}", Toast.LENGTH_SHORT).show()
-                            }
+                        try {
+                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse("instapay://"))
+                            context.startActivity(intent)
+                        } catch (e: Throwable) {
+                            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                            clipboard.setPrimaryClip(ClipData.newPlainText("InstaPay Number", wallet.phoneNumber))
+                            Toast.makeText(context, "تم نسخ رقم إنستاباي، يمكنك لصقه في التطبيق", Toast.LENGTH_LONG).show()
                         }
                     },
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(50.dp)
+                        .height(52.dp)
                         .testTag("open_instapay_button"),
-                    shape = RoundedCornerShape(12.dp),
+                    shape = RoundedCornerShape(14.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = brandColor)
                 ) {
                     Icon(Icons.Default.OpenInNew, contentDescription = null, tint = Color.White)
@@ -1018,7 +848,7 @@ fun SuccessRouteCard(
                     Text(
                         text = "فتح تطبيق InstaPay 🚀",
                         fontWeight = FontWeight.Bold,
-                        fontSize = 14.sp,
+                        fontSize = 15.sp,
                         color = Color.White
                     )
                 }
@@ -1032,20 +862,20 @@ fun SuccessRouteCard(
                         Toast.makeText(context, "تم نسخ رقم التحويل: ${wallet.phoneNumber}", Toast.LENGTH_SHORT).show()
                     },
                     modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(10.dp)
+                    shape = RoundedCornerShape(12.dp)
                 ) {
-                    Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(15.dp))
+                    Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp))
                     Spacer(modifier = Modifier.width(6.dp))
-                    Text("نسخ رقم الحساب / المحفظة", fontSize = 12.sp)
+                    Text("نسخ رقم الحساب / المحفظة", fontSize = 13.sp)
                 }
             }
 
-            Spacer(modifier = Modifier.height(14.dp))
+            Spacer(modifier = Modifier.height(16.dp))
 
+            // Instructions notice
             Surface(
                 shape = RoundedCornerShape(12.dp),
-                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f),
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)),
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Row(
@@ -1055,24 +885,62 @@ fun SuccessRouteCard(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Icon(
-                        imageVector = Icons.Default.CheckCircle,
+                        imageVector = Icons.Default.Info,
                         contentDescription = null,
-                        tint = Color(0xFF10B981),
-                        modifier = Modifier.size(24.dp)
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(20.dp)
                     )
-                    Spacer(modifier = Modifier.width(10.dp))
-                    Column {
-                        Text(
-                            text = "التأكيد أوتوماتيكي عبر الرسائل النصية SMS ⚡",
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 12.sp,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                        Text(
-                            text = "لا داعي للضغط على تأكيد أو إرسال إيصال. بمجرد تنفيذ التحويل، تلتقط الخدمة رسالة البنك لتحديث السعة والرصيد تلقائياً.",
-                            fontSize = 11.sp,
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "بعد إتمام الاتصال أو التحويل وإدخال الرقم السري لمحفظتك، اضغط أدناه لتأكيد التحويل وإشعار النظام.",
+                        style = MaterialTheme.typography.bodySmall.copy(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            lineHeight = 16.sp
+                            lineHeight = 18.sp
+                        )
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(14.dp))
+
+            // Confirm Completion
+            if (!isConfirmed) {
+                Button(
+                    onClick = onConfirm,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(48.dp),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF10B981))
+                ) {
+                    Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color.White)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "تأكيد إتمام التحويل بنجاح ✅",
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White
+                    )
+                }
+            } else {
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = Color(0xFF10B981).copy(alpha = 0.15f),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF10B981)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center
+                    ) {
+                        Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFF10B981))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "تم تأكيد التحويل وتسجيله بالنظام بنجاح!",
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFF10B981)
                         )
                     }
                 }
@@ -1093,51 +961,50 @@ fun FailureRouteCard(
         colors = CardDefaults.cardColors(
             containerColor = Color(0xFFFEF2F2)
         ),
-        border = BorderStroke(1.5.dp, Color(0xFFEF4444)),
+        border = androidx.compose.foundation.BorderStroke(1.5.dp, Color(0xFFEF4444)),
         modifier = Modifier.fillMaxWidth()
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(18.dp)
+                .padding(20.dp)
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(
                     imageVector = Icons.Default.Warning,
                     contentDescription = null,
                     tint = Color(0xFFEF4444),
-                    modifier = Modifier.size(26.dp)
+                    modifier = Modifier.size(28.dp)
                 )
-                Spacer(modifier = Modifier.width(8.dp))
+                Spacer(modifier = Modifier.width(10.dp))
                 Text(
-                    text = "تعذر التوجيه - قيود فودافون كاش",
+                    text = "تعذر التوجيه - تجاوز السعة المتاحة",
                     fontWeight = FontWeight.Bold,
                     color = Color(0xFFEF4444),
-                    fontSize = 15.sp
+                    fontSize = 16.sp
                 )
             }
 
-            Spacer(modifier = Modifier.height(10.dp))
+            Spacer(modifier = Modifier.height(12.dp))
 
             Text(
                 text = errorMessage,
                 style = MaterialTheme.typography.bodyMedium.copy(
                     color = Color(0xFF7F1D1D),
-                    lineHeight = 22.sp,
-                    fontSize = 13.sp
+                    lineHeight = 22.sp
                 )
             )
 
             if (onOpenAdmin != null) {
-                Spacer(modifier = Modifier.height(12.dp))
+                Spacer(modifier = Modifier.height(14.dp))
                 OutlinedButton(
                     onClick = onOpenAdmin,
                     colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFEF4444)),
-                    shape = RoundedCornerShape(10.dp)
+                    shape = RoundedCornerShape(12.dp)
                 ) {
-                    Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(15.dp))
+                    Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(16.dp))
                     Spacer(modifier = Modifier.width(6.dp))
-                    Text("إدارة المحافظ وسحب الكاش", fontSize = 12.sp)
+                    Text("إدارة المحافظ وزيادة السعة")
                 }
             }
         }
@@ -1157,7 +1024,7 @@ fun PaymentMethodChip(
     Surface(
         shape = RoundedCornerShape(16.dp),
         color = if (isSelected) activeColor.copy(alpha = 0.12f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
-        border = BorderStroke(
+        border = androidx.compose.foundation.BorderStroke(
             width = if (isSelected) 2.dp else 1.dp,
             color = if (isSelected) activeColor else MaterialTheme.colorScheme.outline.copy(alpha = 0.2f)
         ),
@@ -1181,8 +1048,7 @@ fun PaymentMethodChip(
                     text = title,
                     fontWeight = FontWeight.Bold,
                     fontSize = 13.sp,
-                    color = if (isSelected) activeColor else MaterialTheme.colorScheme.onSurface,
-                    maxLines = 1
+                    color = if (isSelected) activeColor else MaterialTheme.colorScheme.onSurface
                 )
             }
             Spacer(modifier = Modifier.height(4.dp))
@@ -1197,7 +1063,7 @@ fun PaymentMethodChip(
 }
 
 /**
- * Admin Wallets Dashboard (Completely polished without any text overflow)
+ * Admin Wallets Dashboard
  */
 @Composable
 fun AdminWalletsDashboard(
@@ -1206,16 +1072,12 @@ fun AdminWalletsDashboard(
     onEditWalletClick: (SmartWallet) -> Unit,
     onResetMonthlyClick: () -> Unit,
     onOpenSmsSimulator: () -> Unit,
-    onWithdrawBalanceClick: (SmartWallet) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
-    var isCompanionServiceRunning by remember { mutableStateOf(false) }
-
-    val totalCurrentBalance = wallets.sumOf { it.currentBalance }
-    val totalReceivedThisMonth = wallets.sumOf { it.currentReceivedThisMonth }
-    val totalAvailableHolding = wallets.sumOf { it.availableHoldingCapacity }
-    val totalAvailableMonthly = wallets.sumOf { it.availableMonthlyCapacity }
+    val totalLimit = wallets.sumOf { it.monthlyLimit }
+    val totalReceived = wallets.sumOf { it.currentReceived }
+    val totalAvailable = wallets.sumOf { it.availableCapacity }
     val activeCount = wallets.count { it.status == "ACTIVE" }
 
     LazyColumn(
@@ -1229,14 +1091,14 @@ fun AdminWalletsDashboard(
             Card(
                 shape = RoundedCornerShape(20.dp),
                 colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)
+                    containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f)
                 ),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(16.dp)
+                        .padding(18.dp)
                 ) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -1244,11 +1106,10 @@ fun AdminWalletsDashboard(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = "نظرة عامة على المحافظ والأرصدة",
+                            text = "نظرة عامة على المحافظ الشهرية",
                             style = MaterialTheme.typography.titleMedium.copy(
                                 fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.primary,
-                                fontSize = 15.sp
+                                color = MaterialTheme.colorScheme.primary
                             )
                         )
 
@@ -1257,7 +1118,7 @@ fun AdminWalletsDashboard(
                             color = MaterialTheme.colorScheme.primary
                         ) {
                             Text(
-                                text = "$activeCount نشطة من ${wallets.size}",
+                                text = "$activeCount نشطة من أصل ${wallets.size}",
                                 color = Color.White,
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.Bold,
@@ -1268,50 +1129,30 @@ fun AdminWalletsDashboard(
 
                     Spacer(modifier = Modifier.height(14.dp))
 
-                    // 4 Clean Stat Boxes in 2 Rows to prevent crowding
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         StatBox(
-                            title = "الكاش الفعلي الموجود",
-                            value = "${(totalCurrentBalance).toLong()} ج",
-                            color = Color(0xFFF59E0B),
-                            modifier = Modifier.weight(1f)
+                            title = "إجمالي السعة المتاحة",
+                            value = "${(totalAvailable / 1000).toInt()}k ج.م",
+                            color = Color(0xFF10B981)
                         )
-                        StatBox(
-                            title = "السعة الحجمية المتبقية",
-                            value = "${(totalAvailableHolding / 1000).toInt()}k ج",
-                            color = Color(0xFF10B981),
-                            modifier = Modifier.weight(1f)
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.height(10.dp))
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
                         StatBox(
                             title = "المستلم هذا الشهر",
-                            value = "${(totalReceivedThisMonth / 1000).toInt()}k ج",
-                            color = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.weight(1f)
+                            value = "${(totalReceived / 1000).toInt()}k ج.م",
+                            color = Color(0xFFD97706)
                         )
                         StatBox(
-                            title = "السعة الشهرية المتبقية",
-                            value = "${(totalAvailableMonthly / 1000).toInt()}k ج",
-                            color = Color(0xFF8B5CF6),
-                            modifier = Modifier.weight(1f)
+                            title = "الحد الشهري الكلي",
+                            value = "${(totalLimit / 1000).toInt()}k ج.م",
+                            color = MaterialTheme.colorScheme.primary
                         )
                     }
 
-                    Spacer(modifier = Modifier.height(16.dp))
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
                     Spacer(modifier = Modifier.height(14.dp))
 
-                    // Action Buttons arranged in 2 neat rows to guarantee ZERO letter overflow!
+                    // Admin Quick Action Buttons
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -1319,78 +1160,39 @@ fun AdminWalletsDashboard(
                         Button(
                             onClick = onAddWalletClick,
                             modifier = Modifier.weight(1f),
-                            shape = RoundedCornerShape(10.dp),
-                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp)
+                            shape = RoundedCornerShape(12.dp)
                         ) {
                             Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.width(4.dp))
-                            Text("إضافة محفظة", fontSize = 12.sp, maxLines = 1)
+                            Text("إضافة محفظة", fontSize = 12.sp)
                         }
 
                         OutlinedButton(
                             onClick = onOpenSmsSimulator,
                             modifier = Modifier.weight(1f),
-                            shape = RoundedCornerShape(10.dp),
-                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp)
+                            shape = RoundedCornerShape(12.dp)
                         ) {
                             Icon(Icons.Default.Sms, contentDescription = null, modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.width(4.dp))
-                            Text("محاكي SMS", fontSize = 12.sp, maxLines = 1)
+                            Text("محاكي SMS", fontSize = 12.sp)
                         }
-                    }
 
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
                         OutlinedButton(
                             onClick = onResetMonthlyClick,
                             modifier = Modifier.weight(1f),
-                            shape = RoundedCornerShape(10.dp),
-                            colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFEF4444)),
-                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp)
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFEF4444))
                         ) {
                             Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.width(4.dp))
-                            Text("تصفير شهري", fontSize = 12.sp, maxLines = 1)
-                        }
-
-                        // Background SMS Service toggle button
-                        OutlinedButton(
-                            onClick = {
-                                if (isCompanionServiceRunning) {
-                                    WalletSmsCompanionService.stopService(context)
-                                    isCompanionServiceRunning = false
-                                    Toast.makeText(context, "تم إيقاف خدمة المراقبة في الخلفية", Toast.LENGTH_SHORT).show()
-                                } else {
-                                    WalletSmsCompanionService.startService(context)
-                                    isCompanionServiceRunning = true
-                                    Toast.makeText(context, "تم تشغيل خدمة المراقبة التلقائية في الخلفية ⚡", Toast.LENGTH_LONG).show()
-                                }
-                            },
-                            modifier = Modifier.weight(1f),
-                            shape = RoundedCornerShape(10.dp),
-                            colors = ButtonDefaults.outlinedButtonColors(
-                                contentColor = if (isCompanionServiceRunning) Color(0xFF10B981) else MaterialTheme.colorScheme.primary
-                            ),
-                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp)
-                        ) {
-                            Icon(Icons.Default.NotificationsActive, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text(
-                                text = if (isCompanionServiceRunning) "المراقبة نشطة ✓" else "تشغيل المراقبة",
-                                fontSize = 12.sp,
-                                maxLines = 1
-                            )
+                            Text("تصفير شهري", fontSize = 12.sp)
                         }
                     }
                 }
             }
         }
 
-        // List Header
+        // Wallets List Header
         item {
             Row(
                 modifier = Modifier
@@ -1400,8 +1202,8 @@ fun AdminWalletsDashboard(
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Text(
-                    text = "قائمة المحافظ وحدودها (${wallets.size})",
-                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                    text = "قائمة المحافظ النشطة والاحتياطية (${wallets.size})",
+                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
                 )
                 Text(
                     text = "مرتبة حسب الأولوية ⇅",
@@ -1410,7 +1212,7 @@ fun AdminWalletsDashboard(
             }
         }
 
-        // Wallet Cards
+        // Wallet Items
         items(wallets, key = { it.id }) { wallet ->
             AdminWalletCard(
                 wallet = wallet,
@@ -1420,7 +1222,6 @@ fun AdminWalletsDashboard(
                         Toast.makeText(context, if (ok) "تم حذف المحفظة" else "فشل الحذف", Toast.LENGTH_SHORT).show()
                     }
                 },
-                onWithdraw = { onWithdrawBalanceClick(wallet) },
                 onQuickDeposit = { addAmount ->
                     WalletRoutingRepository.recordTransaction(
                         context = context,
@@ -1441,7 +1242,6 @@ fun AdminWalletCard(
     wallet: SmartWallet,
     onEdit: () -> Unit,
     onDelete: () -> Unit,
-    onWithdraw: () -> Unit,
     onQuickDeposit: (Double) -> Unit
 ) {
     val context = LocalContext.current
@@ -1450,20 +1250,11 @@ fun AdminWalletCard(
     val isVf = wallet.provider == "VODAFONE_CASH"
     val brandColor = if (isVf) Color(0xFFE60000) else Color(0xFF6B21A8)
 
-    // Holding balance progress
-    val holdingProgress = (wallet.currentBalance / wallet.maxHoldingBalance).toFloat().coerceIn(0f, 1f)
-    val holdingColor = when {
-        holdingProgress >= 0.95f -> Color(0xFFEF4444)
-        holdingProgress >= 0.75f -> Color(0xFFF59E0B)
+    val progress = (wallet.currentReceived / wallet.monthlyLimit).toFloat().coerceIn(0f, 1f)
+    val progressColor = when {
+        progress >= 0.95f -> Color(0xFFEF4444)
+        progress >= 0.70f -> Color(0xFFF59E0B)
         else -> Color(0xFF10B981)
-    }
-
-    // Monthly receive progress
-    val monthlyProgress = (wallet.currentReceivedThisMonth / wallet.monthlyReceiveLimit).toFloat().coerceIn(0f, 1f)
-    val monthlyColor = when {
-        monthlyProgress >= 0.95f -> Color(0xFFEF4444)
-        monthlyProgress >= 0.75f -> Color(0xFFF59E0B)
-        else -> MaterialTheme.colorScheme.primary
     }
 
     ElevatedCard(
@@ -1477,27 +1268,24 @@ fun AdminWalletCard(
                 .fillMaxWidth()
                 .padding(16.dp)
         ) {
-            // Header Row: Icon + Name + Badges
+            // Header Row
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.weight(1f)
-                ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
                     Surface(
                         shape = CircleShape,
                         color = brandColor.copy(alpha = 0.15f),
-                        modifier = Modifier.size(36.dp)
+                        modifier = Modifier.size(38.dp)
                     ) {
                         Box(contentAlignment = Alignment.Center) {
                             Icon(
                                 imageVector = if (isVf) Icons.Default.PhoneAndroid else Icons.Default.AccountBalance,
                                 contentDescription = null,
                                 tint = brandColor,
-                                modifier = Modifier.size(18.dp)
+                                modifier = Modifier.size(20.dp)
                             )
                         }
                     }
@@ -1508,14 +1296,13 @@ fun AdminWalletCard(
                         Text(
                             text = wallet.name,
                             fontWeight = FontWeight.Bold,
-                            fontSize = 14.sp,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
+                            fontSize = 15.sp,
+                            maxLines = 1
                         )
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(
                                 text = wallet.phoneNumber,
-                                fontSize = 12.sp,
+                                fontSize = 13.sp,
                                 fontWeight = FontWeight.SemiBold,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -1525,24 +1312,23 @@ fun AdminWalletCard(
                                     cb.setPrimaryClip(ClipData.newPlainText("phone", wallet.phoneNumber))
                                     Toast.makeText(context, "تم نسخ الرقم", Toast.LENGTH_SHORT).show()
                                 },
-                                modifier = Modifier.size(22.dp)
+                                modifier = Modifier.size(24.dp)
                             ) {
-                                Icon(Icons.Default.ContentCopy, contentDescription = "نسخ", modifier = Modifier.size(12.dp))
+                                Icon(Icons.Default.ContentCopy, contentDescription = "نسخ", modifier = Modifier.size(13.dp))
                             }
                         }
                     }
                 }
 
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    // Priority Badge
                     Surface(
                         shape = RoundedCornerShape(6.dp),
-                        color = Color(0xFF0284C7).copy(alpha = 0.15f)
+                        color = Color(0xFF0284C7).copy(alpha = 0.15f),
+                        modifier = Modifier.padding(end = 6.dp)
                     ) {
                         Text(
-                            text = "#${wallet.priority}",
+                            text = "أولوية #${wallet.priority}",
                             color = Color(0xFF0284C7),
                             fontWeight = FontWeight.Bold,
                             fontSize = 10.sp,
@@ -1550,11 +1336,16 @@ fun AdminWalletCard(
                         )
                     }
 
-                    val (statusLabel, statusColor) = when (wallet.status) {
-                        "ACTIVE" -> Pair("نشطة", Color(0xFF10B981))
-                        "HOLDING_MAX_REACHED" -> Pair("سقف 100ك ⚠️", Color(0xFFEF4444))
-                        "FULL" -> Pair("ممتلئة شهرياً", Color(0xFFDC2626))
-                        else -> Pair("معطلة", Color(0xFF6B7280))
+                    // Status Badge
+                    val statusColor = when (wallet.status) {
+                        "ACTIVE" -> Color(0xFF10B981)
+                        "FULL" -> Color(0xFFEF4444)
+                        else -> Color(0xFF6B7280)
+                    }
+                    val statusLabel = when (wallet.status) {
+                        "ACTIVE" -> "نشطة"
+                        "FULL" -> "ممتلئة"
+                        else -> "معطلة"
                     }
                     Surface(
                         shape = RoundedCornerShape(6.dp),
@@ -1573,128 +1364,62 @@ fun AdminWalletCard(
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            // 1. Holding Balance Section (سقف الـ 100 ألف)
-            Surface(
-                shape = RoundedCornerShape(12.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
-                modifier = Modifier.fillMaxWidth()
+            // Capacity & Usage Progress
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Column(modifier = Modifier.padding(10.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text(
-                            text = "الرصيد الفعلي الحالي (الكاش):",
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                        Text(
-                            text = "${wallet.currentBalance.toLong()} / ${wallet.maxHoldingBalance.toLong()} ج",
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = holdingColor
-                        )
-                    }
-                    Spacer(modifier = Modifier.height(4.dp))
-                    LinearProgressIndicator(
-                        progress = { holdingProgress },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(6.dp)
-                            .clip(RoundedCornerShape(3.dp)),
-                        color = holdingColor,
-                        trackColor = MaterialTheme.colorScheme.surface,
-                        strokeCap = StrokeCap.Round
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = "السعة الحجمية المتبقية: ${wallet.availableHoldingCapacity.toLong()} ج.م",
-                        fontSize = 10.sp,
-                        color = if (wallet.availableHoldingCapacity > 0) Color(0xFF10B981) else Color(0xFFEF4444),
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.height(8.dp))
-
-            // 2. Monthly Receive Section (الحد الشهري 200 ألف)
-            Surface(
-                shape = RoundedCornerShape(12.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(modifier = Modifier.padding(10.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text(
-                            text = "المستلم هذا الشهر:",
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                        Text(
-                            text = "${wallet.currentReceivedThisMonth.toLong()} / ${wallet.monthlyReceiveLimit.toLong()} ج",
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = monthlyColor
-                        )
-                    }
-                    Spacer(modifier = Modifier.height(4.dp))
-                    LinearProgressIndicator(
-                        progress = { monthlyProgress },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(6.dp)
-                            .clip(RoundedCornerShape(3.dp)),
-                        color = monthlyColor,
-                        trackColor = MaterialTheme.colorScheme.surface,
-                        strokeCap = StrokeCap.Round
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = "السعة الشهرية المتبقية: ${wallet.availableMonthlyCapacity.toLong()} ج.م (أمان: ${wallet.safetyMargin.toLong()} ج)",
-                        fontSize = 10.sp,
-                        color = if (wallet.availableMonthlyCapacity > 0) Color(0xFF10B981) else Color(0xFFEF4444),
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.height(10.dp))
-
-            // 3. Dedicated Cash Withdrawal Action Button
-            Button(
-                onClick = onWithdraw,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(38.dp),
-                shape = RoundedCornerShape(10.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = if (wallet.currentBalance > 0) Color(0xFF10B981) else MaterialTheme.colorScheme.surfaceVariant,
-                    contentColor = if (wallet.currentBalance > 0) Color.White else MaterialTheme.colorScheme.outline
-                ),
-                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
-            ) {
-                Icon(Icons.Default.MoneyOff, contentDescription = null, modifier = Modifier.size(16.dp))
-                Spacer(modifier = Modifier.width(6.dp))
                 Text(
-                    text = "تم سحب كاش المحفظة (تصفير الرصيد 💰)",
+                    text = "المستلم: ${wallet.currentReceived.toLong()} ج.م / ${wallet.monthlyLimit.toLong()} ج.م",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    text = "${wallet.usagePercentage.toInt()}%",
                     fontSize = 12.sp,
                     fontWeight = FontWeight.Bold,
-                    maxLines = 1
+                    color = progressColor
                 )
             }
 
-            Spacer(modifier = Modifier.height(8.dp))
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
             Spacer(modifier = Modifier.height(6.dp))
 
-            // Bottom Actions: Quick test + Edit + Delete
+            LinearProgressIndicator(
+                progress = { progress },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(8.dp)
+                    .clip(RoundedCornerShape(4.dp)),
+                color = progressColor,
+                trackColor = MaterialTheme.colorScheme.surfaceVariant,
+                strokeCap = StrokeCap.Round
+            )
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(
+                    text = "السعة المتاحة: ${wallet.availableCapacity.toLong()} ج.م",
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = if (wallet.availableCapacity > 0) Color(0xFF10B981) else Color(0xFFEF4444)
+                )
+                Text(
+                    text = "هامش الأمان: ${wallet.safetyMargin.toLong()} ج.م",
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.outline
+                )
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // Actions row
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -1706,7 +1431,7 @@ fun AdminWalletCard(
                         shape = RoundedCornerShape(8.dp),
                         contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
                     ) {
-                        Text("+100 ج", fontSize = 11.sp)
+                        Text("+100 ج.م", fontSize = 11.sp)
                     }
 
                     OutlinedButton(
@@ -1714,7 +1439,7 @@ fun AdminWalletCard(
                         shape = RoundedCornerShape(8.dp),
                         contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
                     ) {
-                        Text("+500 ج", fontSize = 11.sp)
+                        Text("+500 ج.م", fontSize = 11.sp)
                     }
                 }
 
@@ -1759,39 +1484,25 @@ fun AdminWalletCard(
 fun StatBox(
     title: String,
     value: String,
-    color: Color,
-    modifier: Modifier = Modifier
+    color: Color
 ) {
-    Surface(
-        shape = RoundedCornerShape(12.dp),
-        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.7f),
-        modifier = modifier.padding(horizontal = 4.dp)
-    ) {
-        Column(
-            modifier = Modifier.padding(horizontal = 8.dp, vertical = 8.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            Text(
-                text = value,
-                fontWeight = FontWeight.Bold,
-                fontSize = 14.sp,
-                color = color,
-                maxLines = 1
-            )
-            Spacer(modifier = Modifier.height(2.dp))
-            Text(
-                text = title,
-                fontSize = 10.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-        }
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(
+            text = value,
+            fontWeight = FontWeight.Bold,
+            fontSize = 15.sp,
+            color = color
+        )
+        Text(
+            text = title,
+            fontSize = 10.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
     }
 }
 
 /**
- * Add / Edit Wallet Dialog (Includes maxHoldingBalance, monthlyReceiveLimit, and currentBalance)
+ * Add / Edit Wallet Dialog
  */
 @Composable
 fun AddEditWalletDialog(
@@ -1802,9 +1513,7 @@ fun AddEditWalletDialog(
     var name by remember { mutableStateOf(initialWallet?.name ?: "") }
     var phone by remember { mutableStateOf(initialWallet?.phoneNumber ?: "") }
     var provider by remember { mutableStateOf(initialWallet?.provider ?: "VODAFONE_CASH") }
-    var maxHoldingBalanceText by remember { mutableStateOf(initialWallet?.maxHoldingBalance?.toLong()?.toString() ?: "100000") }
-    var monthlyReceiveLimitText by remember { mutableStateOf(initialWallet?.monthlyReceiveLimit?.toLong()?.toString() ?: "200000") }
-    var currentBalanceText by remember { mutableStateOf(initialWallet?.currentBalance?.toLong()?.toString() ?: "0") }
+    var monthlyLimitText by remember { mutableStateOf(initialWallet?.monthlyLimit?.toLong()?.toString() ?: "200000") }
     var safetyMarginText by remember { mutableStateOf(initialWallet?.safetyMargin?.toLong()?.toString() ?: "3000") }
     var priorityText by remember { mutableStateOf(initialWallet?.priority?.toString() ?: "1") }
     var status by remember { mutableStateOf(initialWallet?.status ?: "ACTIVE") }
@@ -1816,18 +1525,18 @@ fun AddEditWalletDialog(
             Text(
                 text = if (initialWallet == null) "إضافة محفظة ذكية جديدة" else "تعديل بيانات المحفظة",
                 fontWeight = FontWeight.Bold,
-                fontSize = 16.sp
+                fontSize = 17.sp
             )
         },
         text = {
             Column(
                 modifier = Modifier.fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+                verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 OutlinedTextField(
                     value = name,
                     onValueChange = { name = it },
-                    label = { Text("اسم المحفظة") },
+                    label = { Text("اسم المحفظة (التعريفي)") },
                     placeholder = { Text("مثال: محفظة فودافون كاش 1") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
@@ -1837,7 +1546,7 @@ fun AddEditWalletDialog(
                 OutlinedTextField(
                     value = phone,
                     onValueChange = { phone = WalletSmsReceiver.normalizeDigits(it).filter { c -> c.isDigit() } },
-                    label = { Text("رقم المحفظة (010..)") },
+                    label = { Text("رقم المحفظة (الهاتف)") },
                     placeholder = { Text("010XXXXXXXX") },
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
@@ -1845,6 +1554,8 @@ fun AddEditWalletDialog(
                     shape = RoundedCornerShape(12.dp)
                 )
 
+                // Provider Choice
+                Text("مزود الخدمة:", fontSize = 12.sp, fontWeight = FontWeight.Bold)
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -1852,12 +1563,12 @@ fun AddEditWalletDialog(
                     FilterChip(
                         selected = provider == "VODAFONE_CASH",
                         onClick = { provider = "VODAFONE_CASH" },
-                        label = { Text("فودافون كاش", fontSize = 11.sp) }
+                        label = { Text("فودافون كاش") }
                     )
                     FilterChip(
                         selected = provider == "INSTAPAY",
                         onClick = { provider = "INSTAPAY" },
-                        label = { Text("InstaPay", fontSize = 11.sp) }
+                        label = { Text("InstaPay") }
                     )
                 }
 
@@ -1866,31 +1577,9 @@ fun AddEditWalletDialog(
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     OutlinedTextField(
-                        value = maxHoldingBalanceText,
-                        onValueChange = { maxHoldingBalanceText = it.filter { c -> c.isDigit() } },
-                        label = { Text("سقف الرصيد (100ك)") },
-                        modifier = Modifier.weight(1f),
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        shape = RoundedCornerShape(12.dp)
-                    )
-                    OutlinedTextField(
-                        value = monthlyReceiveLimitText,
-                        onValueChange = { monthlyReceiveLimitText = it.filter { c -> c.isDigit() } },
-                        label = { Text("الحد الشهري (200ك)") },
-                        modifier = Modifier.weight(1f),
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        shape = RoundedCornerShape(12.dp)
-                    )
-                }
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    OutlinedTextField(
-                        value = currentBalanceText,
-                        onValueChange = { currentBalanceText = it.filter { c -> c.isDigit() } },
-                        label = { Text("الرصيد الفعلي حالياً") },
+                        value = monthlyLimitText,
+                        onValueChange = { monthlyLimitText = it.filter { c -> c.isDigit() } },
+                        label = { Text("الحد الأقصى (ج)") },
                         modifier = Modifier.weight(1f),
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                         shape = RoundedCornerShape(12.dp)
@@ -1898,7 +1587,7 @@ fun AddEditWalletDialog(
                     OutlinedTextField(
                         value = safetyMarginText,
                         onValueChange = { safetyMarginText = it.filter { c -> c.isDigit() } },
-                        label = { Text("هامش أمان (3000ج)") },
+                        label = { Text("هامش أمان (ج)") },
                         modifier = Modifier.weight(1f),
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                         shape = RoundedCornerShape(12.dp)
@@ -1912,7 +1601,7 @@ fun AddEditWalletDialog(
                     OutlinedTextField(
                         value = priorityText,
                         onValueChange = { priorityText = it.filter { c -> c.isDigit() } },
-                        label = { Text("الأولوية (1, 2..)") },
+                        label = { Text("الأولوية (1, 2...)") },
                         modifier = Modifier.weight(1f),
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                         shape = RoundedCornerShape(12.dp)
@@ -1939,19 +1628,14 @@ fun AddEditWalletDialog(
         confirmButton = {
             Button(
                 onClick = {
-                    val holding = maxHoldingBalanceText.toDoubleOrNull() ?: 100000.0
-                    val monthly = monthlyReceiveLimitText.toDoubleOrNull() ?: 200000.0
-                    val balance = currentBalanceText.toDoubleOrNull() ?: 0.0
+                    val limit = monthlyLimitText.toDoubleOrNull() ?: 200000.0
                     val margin = safetyMarginText.toDoubleOrNull() ?: 3000.0
                     val prio = priorityText.toIntOrNull() ?: 1
-
                     val w = (initialWallet ?: SmartWallet()).copy(
                         name = name.ifBlank { "محفظة جديدة" },
                         phoneNumber = phone.ifBlank { "01000000000" },
                         provider = provider,
-                        maxHoldingBalance = holding,
-                        monthlyReceiveLimit = monthly,
-                        currentBalance = balance,
+                        monthlyLimit = limit,
                         safetyMargin = margin,
                         priority = prio,
                         status = status,
@@ -1977,15 +1661,11 @@ fun AddEditWalletDialog(
  */
 @Composable
 fun SmsSimulatorDialog(
-    wallets: List<SmartWallet>,
     onDismiss: () -> Unit,
-    onSimulate: (smsText: String, targetWalletId: String) -> Unit
+    onSimulate: (String) -> Unit
 ) {
     var smsText by remember {
         mutableStateOf("تم استلام مبلغ 500.00 جنيه من 01012345678 بنجاح في محفظتك فودافون كاش.")
-    }
-    var selectedWalletId by remember {
-        mutableStateOf(wallets.firstOrNull()?.id ?: "")
     }
 
     val sample1 = "تم استلام مبلغ 500.00 جنيه من 01012345678 بنجاح في محفظتك فودافون كاش."
@@ -2011,7 +1691,7 @@ fun SmsSimulatorDialog(
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 Text(
-                    text = "جرب استخراج المبالغ وتحديث الرصيد الفعلي والمستلم الشهري تلقائياً:",
+                    text = "جرب استخراج المبالغ المالية تلقائياً من رسائل التأكيد مثل فودافون كاش وإنستاباي لتحديث رصيد المحافظ فورياً:",
                     fontSize = 12.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -2025,7 +1705,7 @@ fun SmsSimulatorDialog(
                     minLines = 3
                 )
 
-                Text("نماذج جاهزة:", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                Text("نماذج جاهزة للاختبار:", fontSize = 11.sp, fontWeight = FontWeight.Bold)
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
@@ -2047,6 +1727,7 @@ fun SmsSimulatorDialog(
                     )
                 }
 
+                // Parser preview
                 Surface(
                     shape = RoundedCornerShape(10.dp),
                     color = if (parsedPreview != null) Color(0xFF10B981).copy(alpha = 0.15f) else Color(0xFFEF4444).copy(alpha = 0.15f),
@@ -2075,11 +1756,11 @@ fun SmsSimulatorDialog(
         },
         confirmButton = {
             Button(
-                onClick = { onSimulate(smsText, selectedWalletId) },
+                onClick = { onSimulate(smsText) },
                 enabled = parsedPreview != null,
                 shape = RoundedCornerShape(10.dp)
             ) {
-                Text("تطبيق وتحديث المحفظة")
+                Text("تطبيق التحديث على المحفظة")
             }
         },
         dismissButton = {

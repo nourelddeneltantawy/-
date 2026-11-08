@@ -91,8 +91,8 @@ fun MotorDetailScreen(
                 title = {
                     Text(
                         text = motor.name,
-                        maxLines = 4,
-                        softWrap = true,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
                         style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
                     )
                 },

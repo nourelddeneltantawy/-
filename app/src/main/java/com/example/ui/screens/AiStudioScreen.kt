@@ -102,7 +102,7 @@ fun AiStudioScreen(
                         shape = RoundedCornerShape(12.dp)
                     )
                     Button(
-                        onClick = { viewModel.generateDiagram(context) },
+                        onClick = { viewModel.generateDiagram() },
                         enabled = generationState !is AiGenerationState.Loading,
                         modifier = Modifier.align(Alignment.End),
                         shape = RoundedCornerShape(10.dp)

@@ -7,12 +7,6 @@ import android.provider.Telephony
 import android.util.Log
 import android.widget.Toast
 import com.example.data.repository.WalletRoutingRepository
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import org.json.JSONObject
-import java.net.HttpURLConnection
-import java.net.URL
 
 /**
  * Android SMS Collector Companion
@@ -48,37 +42,25 @@ class WalletSmsReceiver : BroadcastReceiver() {
 
                 // Ensure repository initialized
                 WalletRoutingRepository.init(context)
+
+                // Match wallet by active state or highest priority
                 val wallets = WalletRoutingRepository.wallets.value
+                val matchedWallet = wallets.firstOrNull { it.status == "ACTIVE" } ?: wallets.firstOrNull()
 
-                // Try to match wallet by phone number if mentioned in SMS
-                val matchedByPhone = wallets.firstOrNull { w ->
-                    w.phoneNumber.isNotBlank() && body.contains(w.phoneNumber.takeLast(8))
-                }
-                val targetWallet = matchedByPhone
-                    ?: wallets.firstOrNull { it.status == "ACTIVE" }
-                    ?: wallets.firstOrNull()
-
-                if (targetWallet != null) {
+                if (matchedWallet != null) {
                     WalletRoutingRepository.recordTransaction(
                         context = context,
-                        walletId = targetWallet.id,
+                        walletId = matchedWallet.id,
                         amount = amount,
                         referenceText = "SMS تلقائي [$sender]: $reference"
                     ) { success ->
                         if (success) {
                             Toast.makeText(
                                 context,
-                                "تم تسجيل تحويل $amount ج.م تلقائياً لمحفظة (${targetWallet.name})",
+                                "تم تسجيل تحويل $amount ج.م تلقائياً لمحفظة (${matchedWallet.name})",
                                 Toast.LENGTH_LONG
                             ).show()
                         }
-                    }
-
-                    // Optional: Dispatch to remote Backend API if configured
-                    val remoteBackendUrl = context.getSharedPreferences("albaraa_wallets_prefs", Context.MODE_PRIVATE)
-                        .getString("backend_api_url", "") ?: ""
-                    if (remoteBackendUrl.isNotBlank()) {
-                        dispatchToRemoteBackend(remoteBackendUrl, sender, body, targetWallet.phoneNumber, amount)
                     }
                 }
             }
@@ -87,41 +69,12 @@ class WalletSmsReceiver : BroadcastReceiver() {
         }
     }
 
-    private fun dispatchToRemoteBackend(apiUrl: String, sender: String, body: String, recipientPhone: String, amount: Double) {
-        CoroutineScope(Dispatchers.IO).launch {
-            try {
-                val endpoint = if (apiUrl.endsWith("/")) "${apiUrl}api/wallet/sms-auto-sync" else "$apiUrl/api/wallet/sms-auto-sync"
-                val url = URL(endpoint)
-                val conn = url.openConnection() as HttpURLConnection
-                conn.requestMethod = "POST"
-                conn.setRequestProperty("Content-Type", "application/json; charset=UTF-8")
-                conn.doOutput = true
-                conn.connectTimeout = 10000
-                conn.readTimeout = 10000
-
-                val payload = JSONObject().apply {
-                    put("sender", sender)
-                    put("messageBody", body)
-                    put("recipientSim", recipientPhone)
-                    put("amount", amount)
-                    put("timestamp", System.currentTimeMillis())
-                }
-
-                conn.outputStream.use { os ->
-                    os.write(payload.toString().toByteArray(Charsets.UTF_8))
-                }
-
-                val code = conn.responseCode
-                Log.i(TAG, "Remote backend sync response: $code")
-            } catch (e: Throwable) {
-                Log.w(TAG, "Failed to send SMS sync to remote backend: ${e.message}")
-            }
-        }
-    }
-
     companion object {
         private const val TAG = "WalletSmsReceiver"
 
+        /**
+         * Normalizes Arabic numerals (٠١٢٣٤٥٦٧٨٩) to standard ASCII digits (0-9)
+         */
         fun normalizeDigits(input: String): String {
             val arabicChars = charArrayOf('٠', '١', '٢', '٣', '٤', '٥', '٦', '٧', '٨', '٩')
             var result = input
@@ -131,6 +84,10 @@ class WalletSmsReceiver : BroadcastReceiver() {
             return result
         }
 
+        /**
+         * Parses Vodafone Cash, InstaPay, Etisalat Cash, or Orange Cash confirmation SMS.
+         * Returns Pair(amount, reference) or null if not a matching receipt SMS.
+         */
         fun parseSms(rawBody: String): Pair<Double, String>? {
             val text = normalizeDigits(rawBody)
 
@@ -150,6 +107,7 @@ class WalletSmsReceiver : BroadcastReceiver() {
             }
 
             // Pattern 2: English Cash / Transfer
+            // "You have received EGP 500.00 from 010..." or "received 500 EGP"
             val vfEnglishRegex = Regex(
                 """(?:received|transferred|deposited)\s*(?:EGP|LE)?\s*([\d,.]+)\s*(?:EGP|LE)?""",
                 RegexOption.IGNORE_CASE
@@ -164,6 +122,7 @@ class WalletSmsReceiver : BroadcastReceiver() {
             }
 
             // Pattern 3: InstaPay Arabic
+            // "تم تحويل 250.00 جم بنجاح إلى حسابك عبر انستاباي"
             val instaArabicRegex = Regex(
                 """(?:تم\s*تحويل|تمت\s*إضافة)\s*([\d,.]+)\s*(?:جم|ج\.م|جنيه|EGP)""",
                 RegexOption.IGNORE_CASE

@@ -16,8 +16,8 @@ android {
     applicationId = "com.aistudio.washermotors.mptkqa"
     minSdk = 24
     targetSdk = 36
-    versionCode = 3
-    versionName = "1.2"
+    versionCode = 2
+    versionName = "1.1"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
@@ -64,10 +64,6 @@ android {
   dependenciesInfo {
     includeInApk = false
     includeInBundle = true
-  }
-  lint {
-    checkReleaseBuilds = false
-    abortOnError = false
   }
 }
 

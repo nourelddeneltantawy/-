@@ -679,9 +679,7 @@ fun AdminMotorScreen(
                         Button(
                             onClick = {
                                 val nextNum = pinouts.size + 1
-                                val usedColors = pinouts.filter { !it.isBlankPin }.map { it.colorHex.lowercase() }.toSet()
-                                val defaultPreset = MotorPinPresets.PRESETS.firstOrNull { !it.isBlank && !usedColors.contains(it.colorHex.lowercase()) }
-                                    ?: MotorPinPresets.PRESETS.firstOrNull { !it.isBlank } ?: MotorPinPresets.PRESETS.first()
+                                val defaultPreset = MotorPinPresets.PRESETS.firstOrNull { !it.isBlank } ?: MotorPinPresets.PRESETS.first()
                                 pinouts.add(
                                     Pinout(
                                         pinNumber = nextNum,
@@ -907,23 +905,14 @@ fun AdminMotorScreen(
                                     if (preset.isBlank) {
                                         true
                                     } else {
-                                        // Current selection for THIS pin MUST stay visible so user sees their choice
-                                        val isThisPinCurrentSelection = !pin.isBlankPin &&
-                                                (pin.colorHex.equals(preset.colorHex, ignoreCase = true) ||
-                                                 pin.wireColor.trim().equals(preset.colorName.trim(), ignoreCase = true))
-
-                                        if (isThisPinCurrentSelection) {
-                                            true
-                                        } else {
-                                            // Hide preset if already chosen in a different pin
-                                            val isChosenInOtherPin = pinouts.indices.any { otherIdx ->
-                                                otherIdx != index &&
-                                                !pinouts[otherIdx].isBlankPin &&
-                                                (pinouts[otherIdx].colorHex.equals(preset.colorHex, ignoreCase = true) ||
-                                                 pinouts[otherIdx].wireColor.trim().equals(preset.colorName.trim(), ignoreCase = true))
-                                            }
-                                            !isChosenInOtherPin
+                                        // Hide preset only if chosen in a different pin, keeping this pin's current selection visible
+                                        val isChosenInOtherPin = pinouts.indices.any { otherIdx ->
+                                            otherIdx != index &&
+                                            !pinouts[otherIdx].isBlankPin &&
+                                            (pinouts[otherIdx].colorHex.equals(preset.colorHex, ignoreCase = true) ||
+                                             pinouts[otherIdx].wireColor.trim().equals(preset.colorName.trim(), ignoreCase = true))
                                         }
+                                        !isChosenInOtherPin
                                     }
                                 }
                                 availablePresets.forEach { preset ->

@@ -13,58 +13,14 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
 
-    - name: Set up JDK 21
+    - name: Set up JDK 17
       uses: actions/setup-java@v4
       with:
         distribution: 'temurin'
-        java-version: '21'
+        java-version: '17'
 
-    - name: Install and Setup Gradle
+    - name: Install Gradle
       uses: gradle/actions/setup-gradle@v3
-      with:
-        cache-read-only: false
-
-    - name: Prepare Keystores and Environment
-      run: |
-        if [ ! -f ".env" ]; then
-          touch .env
-        fi
-
-        # Restore debug.keystore if base64 exists, otherwise generate standard debug key
-        if [ -f "debug.keystore.base64" ] && [ ! -f "debug.keystore" ]; then
-          echo "Restoring debug.keystore from base64..."
-          base64 -d debug.keystore.base64 > debug.keystore
-        fi
-        if [ ! -f "debug.keystore" ]; then
-          echo "Generating debug.keystore..."
-          keytool -genkeypair -v \
-            -keystore debug.keystore \
-            -storepass android \
-            -alias androiddebugkey \
-            -keypass android \
-            -keyalg RSA \
-            -keysize 2048 \
-            -validity 10000 \
-            -dname "CN=Android Debug,O=Android,C=US"
-        fi
-
-        # Restore upload keystore if base64 exists, otherwise generate consistent key
-        if [ -f "my-upload-key.jks.base64" ] && [ ! -f "my-upload-key.jks" ]; then
-          echo "Restoring my-upload-key.jks from base64..."
-          base64 -d my-upload-key.jks.base64 > my-upload-key.jks
-        fi
-        if [ ! -f "my-upload-key.jks" ]; then
-          echo "Generating consistent upload keystore for signing..."
-          keytool -genkeypair -v \
-            -keystore my-upload-key.jks \
-            -alias upload \
-            -keyalg RSA \
-            -keysize 2048 \
-            -validity 10000 \
-            -storepass "WasherMotor2026@Key" \
-            -keypass "WasherMotor2026@Key" \
-            -dname "CN=AlBaraaElectronics, OU=Engineering, O=AlBaraa, L=Cairo, S=Cairo, C=EG"
-        fi
 
     - name: Build Release APK with Gradle
       env:
@@ -72,21 +28,11 @@ jobs:
         STORE_PASSWORD: ${{ secrets.STORE_PASSWORD || 'WasherMotor2026@Key' }}
         KEY_ALIAS: ${{ secrets.KEY_ALIAS || 'upload' }}
         KEY_PASSWORD: ${{ secrets.KEY_PASSWORD || 'WasherMotor2026@Key' }}
-        GRADLE_OPTS: "-Dorg.gradle.internal.http.socketTimeout=180000 -Dorg.gradle.internal.http.connectionTimeout=180000"
-      run: |
-        gradle assembleRelease --stacktrace
+      run: gradle assembleRelease
 
-    - name: Build Debug APK with Gradle
-      env:
-        GRADLE_OPTS: "-Dorg.gradle.internal.http.socketTimeout=180000 -Dorg.gradle.internal.http.connectionTimeout=180000"
-      run: |
-        gradle assembleDebug --stacktrace
-
-    - name: Upload APKs
+    - name: Upload Release APK
       uses: actions/upload-artifact@v4
       with:
-        name: albaraa-electronics-apks
-        path: |
-          app/build/outputs/apk/release/*.apk
-          app/build/outputs/apk/debug/*.apk
+        name: app-release-apk
+        path: app/build/outputs/apk/release/*.apk
         if-no-files-found: warn
