@@ -19,8 +19,10 @@ jobs:
         distribution: 'temurin'
         java-version: '21'
 
-    - name: Install Gradle
+    - name: Install and Setup Gradle
       uses: gradle/actions/setup-gradle@v3
+      with:
+        cache-read-only: false
 
     - name: Prepare Keystore and Environment
       run: |
@@ -46,7 +48,9 @@ jobs:
         STORE_PASSWORD: ${{ secrets.STORE_PASSWORD || 'WasherMotor2026@Key' }}
         KEY_ALIAS: ${{ secrets.KEY_ALIAS || 'upload' }}
         KEY_PASSWORD: ${{ secrets.KEY_PASSWORD || 'WasherMotor2026@Key' }}
-      run: gradle assembleRelease assembleDebug --stacktrace
+        GRADLE_OPTS: "-Dorg.gradle.internal.http.socketTimeout=180000 -Dorg.gradle.internal.http.connectionTimeout=180000 -Dorg.gradle.internal.repository.max.retries=10 -Dorg.gradle.internal.repository.max.tentatives=10"
+      run: |
+        gradle assembleRelease assembleDebug --stacktrace || (echo "Retrying build after transient network timeout..." && sleep 10 && gradle assembleRelease assembleDebug --stacktrace)
 
     - name: Upload APKs
       uses: actions/upload-artifact@v4
