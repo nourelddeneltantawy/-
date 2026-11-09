@@ -449,6 +449,7 @@ fun AppContent(
         motorViewModel.refreshUserRole(userEmail)
         com.example.data.repository.MarketplaceRepository.switchUser(context, userEmail, userId)
         JobRecordRepository.switchUser(context, userEmail, userId)
+        com.example.data.ToolsCategoryManager.switchUser(context, userEmail)
     }
 
     // 1. Startup In-App Update Check (runs on launch in background, non-blocking)

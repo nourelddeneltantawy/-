@@ -20,15 +20,19 @@ data class TechnicianJobRecord(
     val deviceType: String = "", // نوع الكارت / الجهاز: e.g. "غسالة سامسونج"
     val faultDescription: String = "", // عطل الجهاز: e.g. "طرمبة" / "باور"
     val cost: Double = 0.0, // الحساب / التكلفة: e.g. 250.0
+    val expenseCost: Double = 0.0, // المصروفات / التكلفة المدفوعة على الكارتة (قطع غيار، شحن)
     val replacedParts: String = "", // قطع الغيار المبدلة: e.g. "ترياك acs1086"
     val clientLocation: String = "", // مكان العميل: e.g. "شارع الجزيرة / المرج"
     val otherDetails: String = "", // تفاصيل أخرى / ملاحظات: e.g. "تم بيعه كارت خلع"
     val imageUrl: String = "", // صورة للكارت
-    val status: String = "قيد الفحص", // قيد الفحص / جاهز للاستلام / تم التسليم والتحصيل
+    val status: String = "في المخزون", // في المخزون / قيد الفحص / جاهز للاستلام / تم التسليم والتحصيل
     val customFields: Map<String, String> = emptyMap(), // خانات إضافية يحددها المستخدم
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis()
 ) {
+    val netProfit: Double
+        get() = cost - expenseCost
+
     fun toMap(): Map<String, Any?> {
         return mapOf(
             "id" to id,
@@ -41,6 +45,7 @@ data class TechnicianJobRecord(
             "deviceType" to deviceType,
             "faultDescription" to faultDescription,
             "cost" to cost,
+            "expenseCost" to expenseCost,
             "replacedParts" to replacedParts,
             "clientLocation" to clientLocation,
             "otherDetails" to otherDetails,
@@ -66,11 +71,12 @@ data class TechnicianJobRecord(
                 deviceType = (map["deviceType"] as? String) ?: "",
                 faultDescription = (map["faultDescription"] as? String) ?: "",
                 cost = (map["cost"] as? Number)?.toDouble() ?: 0.0,
+                expenseCost = (map["expenseCost"] as? Number)?.toDouble() ?: 0.0,
                 replacedParts = (map["replacedParts"] as? String) ?: "",
                 clientLocation = (map["clientLocation"] as? String) ?: "",
                 otherDetails = (map["otherDetails"] as? String) ?: "",
                 imageUrl = (map["imageUrl"] as? String) ?: "",
-                status = (map["status"] as? String) ?: "قيد الفحص",
+                status = (map["status"] as? String) ?: "في المخزون",
                 customFields = (map["customFields"] as? Map<String, String>) ?: emptyMap(),
                 createdAt = (map["createdAt"] as? Number)?.toLong() ?: System.currentTimeMillis(),
                 updatedAt = (map["updatedAt"] as? Number)?.toLong() ?: System.currentTimeMillis()

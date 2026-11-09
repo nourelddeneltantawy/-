@@ -152,62 +152,17 @@ fun ToolsHubScreen(
     var lockedDialogCategoryTitle by remember { mutableStateOf<String?>(null) }
     var customInfoDialogCategory by remember { mutableStateOf<ToolGridItem?>(null) }
 
-    // Built-in Default Tool Items
+    // Built-in Default Tool Items (Only Job Log as requested by user)
     val defaultItems = remember(jobsCount) {
         listOf(
             ToolGridItem(
                 id = "job_log",
                 defaultTitle = "سجل صيانة الورشة والكروت",
-                defaultSubtitle = if (jobsCount > 0) "$jobsCount كارتة مسجلة" else "تسجيل الشغل والفواتير",
+                defaultSubtitle = if (jobsCount > 0) "$jobsCount كارتة مسجلة بالسجل" else "تسجيل الشغل والفواتير",
                 defaultIcon = Icons.Default.Receipt,
                 iconTint = Color(0xFF0284C7),
                 circleBackground = Color(0xFFE0F2FE),
                 onClick = onNavigateToJobLog
-            ),
-            ToolGridItem(
-                id = "receipt_gen",
-                defaultTitle = "مولد إيصالات الصيانة",
-                defaultSubtitle = "مشاركة صور فواتير رسمية",
-                defaultIcon = Icons.Default.Share,
-                iconTint = Color(0xFF10B981),
-                circleBackground = Color(0xFFD1FAE5),
-                onClick = onNavigateToJobLog
-            ),
-            ToolGridItem(
-                id = "diagnostics",
-                defaultTitle = "دليل تشخيص الأعطال",
-                defaultSubtitle = "أكواد أعطال الغسالات وحلولها",
-                defaultIcon = Icons.Default.Warning,
-                iconTint = Color(0xFFD97706),
-                circleBackground = Color(0xFFFEF3C7),
-                onClick = { onNavigateToDiagnostics("أعطال الأوتوماتيك") }
-            ),
-            ToolGridItem(
-                id = "ai_studio",
-                defaultTitle = "استوديو الذكاء الاصطناعي",
-                defaultSubtitle = "فحص صور الكروت والبوردات",
-                defaultIcon = Icons.Default.AutoAwesome,
-                iconTint = Color(0xFF06B6D4),
-                circleBackground = Color(0xFFCFFAFE),
-                onClick = onNavigateToAiStudio
-            ),
-            ToolGridItem(
-                id = "motor_tester",
-                defaultTitle = "فاحص أطراف المواتير",
-                defaultSubtitle = "فحص التاكو والسرعات",
-                defaultIcon = Icons.Default.Memory,
-                iconTint = Color(0xFFEF4444),
-                circleBackground = Color(0xFFFFE4E6),
-                onClick = onNavigateToIntegrator
-            ),
-            ToolGridItem(
-                id = "harness_map",
-                defaultTitle = "خريطة ضفائر الغسالات",
-                defaultSubtitle = "توصيلات وألوان الأسلاك",
-                defaultIcon = Icons.Default.Cable,
-                iconTint = Color(0xFF8B5CF6),
-                circleBackground = Color(0xFFF3E8FF),
-                onClick = onNavigateToHarnesses
             )
         )
     }
@@ -216,9 +171,10 @@ fun ToolsHubScreen(
     val allItems = remember(defaultItems, customizations) {
         val list = defaultItems.toMutableList()
         val defaultIds = defaultItems.map { it.id }.toSet()
+        val obsoleteIds = setOf("receipt_gen", "receipt_generator", "diagnostics", "ai_studio", "motor_tester", "harness_map")
 
         customizations.forEach { (id, cust) ->
-            if (!defaultIds.contains(id)) {
+            if (!defaultIds.contains(id) && !obsoleteIds.contains(id)) {
                 list.add(
                     ToolGridItem(
                         id = id,
@@ -321,7 +277,7 @@ fun ToolsHubScreen(
                                 )
                             )
                             Text(
-                                text = "مركز الأدوات الذكية وقوائم الصيانة ⚡",
+                                text = if (!userEmail.isNullOrBlank()) "أدوات وقوائم خاصة بحساب: $userEmail 🔒" else "أدوات وقوائم الصيانة الخاصة ⚡",
                                 style = MaterialTheme.typography.labelSmall.copy(
                                     color = Color.White.copy(alpha = 0.9f),
                                     fontSize = 11.sp

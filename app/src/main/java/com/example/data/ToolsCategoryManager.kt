@@ -15,11 +15,15 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 import org.json.JSONObject
 
+/**
+ * Manages Tools Categories customized per individual user email:
+ * "قائمة الأدوات ديت تكون خاصة بكل واحد يسجل بالبريد الإلكتروني بتاعه وكل بريد إلكتروني بياناته منفصلة عن أي بريد آخر"
+ */
 object ToolsCategoryManager {
     private const val TAG = "ToolsCategoryManager"
     private const val PREFS_NAME = "albaraa_tools_categories_prefs"
-    private const val KEY_CATEGORIES_JSON = "tools_categories_json"
-    private const val KEY_CATEGORIES_ORDER = "tools_categories_order"
+    private const val KEY_CATEGORIES_JSON_PREFIX = "tools_categories_json_"
+    private const val KEY_CATEGORIES_ORDER_PREFIX = "tools_categories_order_"
 
     private val _customizations = MutableStateFlow<Map<String, HubCategoryCustomization>>(emptyMap())
     val customizations: StateFlow<Map<String, HubCategoryCustomization>> = _customizations.asStateFlow()
@@ -27,18 +31,33 @@ object ToolsCategoryManager {
     private val _categoryOrder = MutableStateFlow<List<String>>(emptyList())
     val categoryOrder: StateFlow<List<String>> = _categoryOrder.asStateFlow()
 
+    private var currentEmail: String = ""
     private var listenerRegistration: ListenerRegistration? = null
     private var isInitialized = false
 
-    fun init(context: Context) {
-        val appContext = context.applicationContext ?: context
+    fun init(context: Context, email: String? = null) {
+        val safeEmail = (email ?: "guest").trim().lowercase()
+        switchUser(context, safeEmail)
+    }
 
-        // 1. Load from local cache
+    fun switchUser(context: Context, email: String?) {
+        val appContext = context.applicationContext ?: context
+        val safeEmail = (email ?: "guest").trim().lowercase()
+        if (safeEmail == currentEmail && isInitialized) return
+
+        currentEmail = safeEmail
+        listenerRegistration?.remove()
+        listenerRegistration = null
+
+        // 1. Load from local cache keyed by user email
         val prefs = appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        val jsonStr = prefs.getString(KEY_CATEGORIES_JSON, null)
-        val orderStr = prefs.getString(KEY_CATEGORIES_ORDER, null)
-        if (!orderStr.isNullOrBlank()) {
-            _categoryOrder.value = orderStr.split(",").filter { it.isNotBlank() }
+        val jsonStr = prefs.getString("$KEY_CATEGORIES_JSON_PREFIX$safeEmail", null)
+        val orderStr = prefs.getString("$KEY_CATEGORIES_ORDER_PREFIX$safeEmail", null)
+
+        _categoryOrder.value = if (!orderStr.isNullOrBlank()) {
+            orderStr.split(",").filter { it.isNotBlank() }
+        } else {
+            emptyList()
         }
 
         if (!jsonStr.isNullOrBlank()) {
@@ -66,52 +85,56 @@ object ToolsCategoryManager {
                     if (sorted.isNotEmpty()) _categoryOrder.value = sorted
                 }
             } catch (e: Throwable) {
-                Log.w(TAG, "Failed to parse local tools categories cache: ${e.message}")
+                Log.w(TAG, "Failed parsing local cache for $safeEmail: ${e.message}")
             }
+        } else {
+            _customizations.value = emptyMap()
         }
 
-        // 2. Fetch remote directly
-        fetchRemote(appContext)
-
-        // 3. Realtime Firestore sync
-        if (listenerRegistration == null) {
-            try {
-                val db = FirebaseInitializer.getFirestore(appContext)
-                listenerRegistration = db.collection("app_settings").document("tools_categories")
-                    .addSnapshotListener { snapshot, error ->
-                        if (error != null) {
-                            Log.w(TAG, "Tools categories listener error: ${error.message}")
-                            return@addSnapshotListener
-                        }
-                        if (snapshot != null && snapshot.exists()) {
-                            val data = snapshot.data
-                            if (data != null) {
-                                val map = parseFirestoreData(data)
-                                _customizations.value = map
-                                val order = parseFirestoreOrder(data, map)
-                                if (order.isNotEmpty()) {
-                                    _categoryOrder.value = order
-                                }
-                                saveToPrefs(appContext, map, _categoryOrder.value)
-                            }
-                        }
-                    }
-            } catch (e: Throwable) {
-                Log.e(TAG, "Failed to attach real-time tools categories listener", e)
-            }
+        // 2. Fetch remote and attach real-time listener if authenticated
+        if (safeEmail.isNotBlank() && safeEmail != "guest") {
+            fetchRemote(appContext, safeEmail)
+            attachListener(appContext, safeEmail)
         }
         isInitialized = true
     }
 
-    fun fetchRemote(context: Context) {
+    private fun attachListener(context: Context, safeEmail: String) {
+        try {
+            val db = FirebaseInitializer.getFirestore(context)
+            listenerRegistration = db.collection("user_tools_settings").document(safeEmail)
+                .addSnapshotListener { snapshot, error ->
+                    if (error != null) {
+                        Log.w(TAG, "Tools categories listener error for $safeEmail: ${error.message}")
+                        return@addSnapshotListener
+                    }
+                    if (snapshot != null && snapshot.exists()) {
+                        val data = snapshot.data
+                        if (data != null) {
+                            val map = parseFirestoreData(data)
+                            _customizations.value = map
+                            val order = parseFirestoreOrder(data, map)
+                            if (order.isNotEmpty()) {
+                                _categoryOrder.value = order
+                            }
+                            saveToPrefs(context, safeEmail, map, _categoryOrder.value)
+                        }
+                    }
+                }
+        } catch (e: Throwable) {
+            Log.e(TAG, "Failed to attach real-time listener for $safeEmail", e)
+        }
+    }
+
+    fun fetchRemote(context: Context, safeEmail: String) {
         val appContext = context.applicationContext ?: context
         CoroutineScope(Dispatchers.IO).launch {
             try {
                 val db = FirebaseInitializer.getFirestore(appContext)
                 val snapshot = try {
-                    db.collection("app_settings").document("tools_categories").get(Source.SERVER).await()
+                    db.collection("user_tools_settings").document(safeEmail).get(Source.SERVER).await()
                 } catch (_: Throwable) {
-                    db.collection("app_settings").document("tools_categories").get().await()
+                    db.collection("user_tools_settings").document(safeEmail).get().await()
                 }
 
                 if (snapshot.exists()) {
@@ -123,63 +146,35 @@ object ToolsCategoryManager {
                         if (order.isNotEmpty()) {
                             _categoryOrder.value = order
                         }
-                        saveToPrefs(appContext, map, _categoryOrder.value)
+                        saveToPrefs(appContext, safeEmail, map, _categoryOrder.value)
                     }
                 }
             } catch (e: Throwable) {
-                Log.w(TAG, "Failed to fetch remote tools categories: ${e.message}")
+                Log.w(TAG, "Failed remote fetch for $safeEmail: ${e.message}")
             }
         }
     }
 
     fun toggleCategoryLock(context: Context, categoryId: String, onComplete: ((Boolean) -> Unit)? = null) {
+        val email = currentEmail
         val current = _customizations.value.toMutableMap()
         val existing = current[categoryId] ?: HubCategoryCustomization(id = categoryId)
         val updated = existing.copy(isLocked = !existing.isLocked)
         current[categoryId] = updated
         _customizations.value = current
-        saveToPrefs(context, current, _categoryOrder.value)
-        syncToFirestore(context, current, _categoryOrder.value, onComplete)
+        saveToPrefs(context, email, current, _categoryOrder.value)
+        syncToFirestore(context, email, current, _categoryOrder.value, onComplete)
     }
 
     fun toggleCategoryVisibility(context: Context, categoryId: String, onComplete: ((Boolean) -> Unit)? = null) {
+        val email = currentEmail
         val current = _customizations.value.toMutableMap()
         val existing = current[categoryId] ?: HubCategoryCustomization(id = categoryId)
         val updated = existing.copy(isHidden = !existing.isHidden)
         current[categoryId] = updated
         _customizations.value = current
-        saveToPrefs(context, current, _categoryOrder.value)
-        syncToFirestore(context, current, _categoryOrder.value, onComplete)
-    }
-
-    fun updateCategory(
-        context: Context,
-        categoryId: String,
-        title: String,
-        subtitle: String,
-        imageUrl: String = "",
-        iconName: String = "",
-        onComplete: ((Boolean) -> Unit)? = null
-    ) {
-        val current = _customizations.value.toMutableMap()
-        val existing = current[categoryId] ?: HubCategoryCustomization(id = categoryId)
-        val updated = existing.copy(
-            customTitle = title.trim(),
-            customSubtitle = subtitle.trim(),
-            customImageUrl = imageUrl.trim(),
-            customIconName = iconName.trim()
-        )
-        current[categoryId] = updated
-        _customizations.value = current
-
-        val order = _categoryOrder.value.toMutableList()
-        if (!order.contains(categoryId)) {
-            order.add(categoryId)
-            _categoryOrder.value = order
-        }
-
-        saveToPrefs(context, current, order)
-        syncToFirestore(context, current, order, onComplete)
+        saveToPrefs(context, email, current, _categoryOrder.value)
+        syncToFirestore(context, email, current, _categoryOrder.value, onComplete)
     }
 
     fun setCategoryVisibility(
@@ -188,12 +183,13 @@ object ToolsCategoryManager {
         isHidden: Boolean,
         onComplete: ((Boolean) -> Unit)? = null
     ) {
+        val email = currentEmail
         val current = _customizations.value.toMutableMap()
         val existing = current[id] ?: HubCategoryCustomization(id = id)
         current[id] = existing.copy(isHidden = isHidden)
         _customizations.value = current
-        saveToPrefs(context, current, _categoryOrder.value)
-        syncToFirestore(context, current, _categoryOrder.value, onComplete)
+        saveToPrefs(context, email, current, _categoryOrder.value)
+        syncToFirestore(context, email, current, _categoryOrder.value, onComplete)
     }
 
     fun addCategory(
@@ -205,6 +201,7 @@ object ToolsCategoryManager {
         imageUrl: String = "",
         onComplete: ((Boolean) -> Unit)? = null
     ) {
+        val email = currentEmail
         val current = _customizations.value.toMutableMap()
         val newCat = HubCategoryCustomization(
             id = id,
@@ -223,8 +220,39 @@ object ToolsCategoryManager {
             _categoryOrder.value = order
         }
 
-        saveToPrefs(context, current, order)
-        syncToFirestore(context, current, order, onComplete)
+        saveToPrefs(context, email, current, order)
+        syncToFirestore(context, email, current, order, onComplete)
+    }
+
+    fun updateCategory(
+        context: Context,
+        categoryId: String,
+        title: String,
+        subtitle: String,
+        imageUrl: String = "",
+        iconName: String = "",
+        onComplete: ((Boolean) -> Unit)? = null
+    ) {
+        val email = currentEmail
+        val current = _customizations.value.toMutableMap()
+        val existing = current[categoryId] ?: HubCategoryCustomization(id = categoryId)
+        val updated = existing.copy(
+            customTitle = title.trim(),
+            customSubtitle = subtitle.trim(),
+            customImageUrl = imageUrl.trim(),
+            customIconName = iconName.trim()
+        )
+        current[categoryId] = updated
+        _customizations.value = current
+
+        val order = _categoryOrder.value.toMutableList()
+        if (!order.contains(categoryId)) {
+            order.add(categoryId)
+            _categoryOrder.value = order
+        }
+
+        saveToPrefs(context, email, current, order)
+        syncToFirestore(context, email, current, order, onComplete)
     }
 
     fun deleteCategory(
@@ -232,6 +260,7 @@ object ToolsCategoryManager {
         id: String,
         onComplete: ((Boolean) -> Unit)? = null
     ) {
+        val email = currentEmail
         val current = _customizations.value.toMutableMap()
         current.remove(id)
         _customizations.value = current
@@ -240,8 +269,8 @@ object ToolsCategoryManager {
         order.remove(id)
         _categoryOrder.value = order
 
-        saveToPrefs(context, current, order)
-        syncToFirestore(context, current, order, onComplete)
+        saveToPrefs(context, email, current, order)
+        syncToFirestore(context, email, current, order, onComplete)
     }
 
     fun resetCategory(
@@ -249,11 +278,12 @@ object ToolsCategoryManager {
         id: String,
         onComplete: ((Boolean) -> Unit)? = null
     ) {
+        val email = currentEmail
         val current = _customizations.value.toMutableMap()
         current.remove(id)
         _customizations.value = current
-        saveToPrefs(context, current, _categoryOrder.value)
-        syncToFirestore(context, current, _categoryOrder.value, onComplete)
+        saveToPrefs(context, email, current, _categoryOrder.value)
+        syncToFirestore(context, email, current, _categoryOrder.value, onComplete)
     }
 
     fun moveCategory(
@@ -277,6 +307,7 @@ object ToolsCategoryManager {
     }
 
     fun reorderCategories(context: Context, newOrder: List<String>, onComplete: ((Boolean) -> Unit)? = null) {
+        val email = currentEmail
         _categoryOrder.value = newOrder
         val current = _customizations.value.toMutableMap()
         newOrder.forEachIndexed { index, catId ->
@@ -284,16 +315,21 @@ object ToolsCategoryManager {
             current[catId] = existing.copy(orderIndex = index)
         }
         _customizations.value = current
-        saveToPrefs(context, current, newOrder)
-        syncToFirestore(context, current, newOrder, onComplete)
+        saveToPrefs(context, email, current, newOrder)
+        syncToFirestore(context, email, current, newOrder, onComplete)
     }
 
     private fun syncToFirestore(
         context: Context,
+        email: String,
         map: Map<String, HubCategoryCustomization>,
         order: List<String>,
         onComplete: ((Boolean) -> Unit)? = null
     ) {
+        if (email.isBlank() || email == "guest") {
+            onComplete?.invoke(true)
+            return
+        }
         CoroutineScope(Dispatchers.IO).launch {
             try {
                 val db = FirebaseInitializer.getFirestore(context)
@@ -301,13 +337,13 @@ object ToolsCategoryManager {
                 map.forEach { (k, v) -> payload[k] = v.toMap() }
                 payload["__order__"] = order
 
-                db.collection("app_settings").document("tools_categories")
+                db.collection("user_tools_settings").document(email)
                     .set(payload)
                     .addOnCompleteListener { task ->
                         onComplete?.invoke(task.isSuccessful)
                     }
             } catch (e: Throwable) {
-                Log.e(TAG, "Error syncing tools categories to Firestore", e)
+                Log.e(TAG, "Error syncing tools categories to Firestore for $email", e)
                 onComplete?.invoke(false)
             }
         }
@@ -335,7 +371,7 @@ object ToolsCategoryManager {
         return map.values.sortedBy { it.orderIndex }.map { it.id }
     }
 
-    private fun saveToPrefs(context: Context, map: Map<String, HubCategoryCustomization>, order: List<String>) {
+    private fun saveToPrefs(context: Context, email: String, map: Map<String, HubCategoryCustomization>, order: List<String>) {
         try {
             val json = JSONObject()
             map.forEach { (id, item) ->
@@ -351,11 +387,11 @@ object ToolsCategoryManager {
             }
             val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             prefs.edit()
-                .putString(KEY_CATEGORIES_JSON, json.toString())
-                .putString(KEY_CATEGORIES_ORDER, order.joinToString(","))
+                .putString("$KEY_CATEGORIES_JSON_PREFIX$email", json.toString())
+                .putString("$KEY_CATEGORIES_ORDER_PREFIX$email", order.joinToString(","))
                 .apply()
         } catch (e: Throwable) {
-            Log.e(TAG, "Failed saving tools categories to prefs: ${e.message}")
+            Log.e(TAG, "Failed saving tools categories to prefs for $email: ${e.message}")
         }
     }
 }

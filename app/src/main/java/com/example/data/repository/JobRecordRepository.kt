@@ -59,10 +59,13 @@ object JobRecordRepository {
         if (cached.isNotEmpty()) {
             _jobs.value = cached
         } else {
-            // Seed with sample data from user's Excel sheet if brand new
-            val seeded = getInitialExcelSampleData(safeEmail, safeId)
+            // Seed with sample data from user's Excel sheet only if Super Admin / Owner, otherwise fresh empty logbook
+            val isSuperAdmin = AdminRepository.isSuperAdminEmail(safeEmail)
+            val seeded = if (isSuperAdmin) getInitialExcelSampleData(safeEmail, safeId) else emptyList()
             _jobs.value = seeded
-            saveCachedJobs(appContext, safeEmail, seeded)
+            if (seeded.isNotEmpty()) {
+                saveCachedJobs(appContext, safeEmail, seeded)
+            }
         }
 
         // 2. Attach Firestore listener for real-time cloud sync if logged in

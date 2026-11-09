@@ -1,8 +1,8 @@
 package com.example.ui.components
 
+import android.app.DatePickerDialog
 import android.net.Uri
 import android.widget.Toast
-import kotlinx.coroutines.launch
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -27,6 +27,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.CalendarToday
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
@@ -35,21 +36,24 @@ import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material.icons.filled.PriceCheck
+import androidx.compose.material.icons.filled.ShoppingCart
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Divider
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
@@ -65,6 +69,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.model.TechnicianJobRecord
+import kotlinx.coroutines.launch
+import java.util.Calendar
+import java.util.Locale
 
 @OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
 @Composable
@@ -78,15 +85,38 @@ fun EditJobDialog(
 
     var date by remember { mutableStateOf(initialJob?.date ?: TechnicianJobRecord.getCurrentDateFormatted()) }
     var dayOfWeek by remember { mutableStateOf(initialJob?.dayOfWeek ?: TechnicianJobRecord.getDayOfWeekArabic(date)) }
+    var showDayDropdown by remember { mutableStateOf(false) }
+
     var clientPhone by remember { mutableStateOf(initialJob?.clientPhone ?: "") }
     var deviceType by remember { mutableStateOf(initialJob?.deviceType ?: "") }
     var faultDescription by remember { mutableStateOf(initialJob?.faultDescription ?: "") }
-    var costStr by remember { mutableStateOf(if (initialJob != null && initialJob.cost > 0) String.format("%.0f", initialJob.cost) else "") }
+    var costStr by remember { mutableStateOf(if (initialJob != null && initialJob.cost > 0) String.format(Locale.US, "%.0f", initialJob.cost) else "") }
+    var expenseCostStr by remember { mutableStateOf(if (initialJob != null && initialJob.expenseCost > 0) String.format(Locale.US, "%.0f", initialJob.expenseCost) else "") }
     var replacedParts by remember { mutableStateOf(initialJob?.replacedParts ?: "") }
     var clientLocation by remember { mutableStateOf(initialJob?.clientLocation ?: "") }
     var otherDetails by remember { mutableStateOf(initialJob?.otherDetails ?: "") }
     var imageUrl by remember { mutableStateOf(initialJob?.imageUrl ?: "") }
-    var status by remember { mutableStateOf(initialJob?.status ?: "قيد الفحص") }
+    var status by remember { mutableStateOf(initialJob?.status ?: "في المخزون") }
+
+    val daysList = listOf("السبت", "الأحد", "الاثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة")
+
+    fun openDatePicker() {
+        val cal = Calendar.getInstance()
+        val parts = date.split("/").mapNotNull { it.toIntOrNull() }
+        val y = if (parts.size >= 1) parts[0] else cal.get(Calendar.YEAR)
+        val m = if (parts.size >= 2) (parts[1] - 1).coerceIn(0, 11) else cal.get(Calendar.MONTH)
+        val d = if (parts.size >= 3) parts[2].coerceIn(1, 31) else cal.get(Calendar.DAY_OF_MONTH)
+
+        DatePickerDialog(
+            context,
+            { _, selectedYear, selectedMonth, selectedDay ->
+                val formatted = String.format(Locale.US, "%04d/%02d/%02d", selectedYear, selectedMonth + 1, selectedDay)
+                date = formatted
+                dayOfWeek = TechnicianJobRecord.getDayOfWeekArabic(formatted)
+            },
+            y, m, d
+        ).show()
+    }
 
     val customFieldsMap = remember {
         mutableStateMapOf<String, String>().apply {
@@ -157,29 +187,76 @@ fun EditJobDialog(
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                // Row: Date & Day
+                // Row: Interactive Date & Dropdown Day of week
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    OutlinedTextField(
-                        value = date,
-                        onValueChange = {
-                            date = it
-                            dayOfWeek = TechnicianJobRecord.getDayOfWeekArabic(it)
-                        },
-                        label = { Text("التاريخ (YYYY/MM/DD)") },
-                        leadingIcon = { Icon(Icons.Default.CalendarToday, contentDescription = null, modifier = Modifier.size(18.dp)) },
-                        modifier = Modifier.weight(1.3f),
-                        singleLine = true
-                    )
-                    OutlinedTextField(
-                        value = dayOfWeek,
-                        onValueChange = { dayOfWeek = it },
-                        label = { Text("اليوم") },
-                        modifier = Modifier.weight(0.9f),
-                        singleLine = true
-                    )
+                    // Date Field with Interactive DatePicker dialog
+                    Box(modifier = Modifier.weight(1.3f)) {
+                        OutlinedTextField(
+                            value = date,
+                            onValueChange = {},
+                            readOnly = true,
+                            label = { Text("التاريخ (تقويم تفاعلي 📅)") },
+                            leadingIcon = {
+                                IconButton(onClick = { openDatePicker() }) {
+                                    Icon(
+                                        imageVector = Icons.Default.CalendarToday,
+                                        contentDescription = "اختيار التاريخ",
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+                            },
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = MaterialTheme.colorScheme.primary,
+                                unfocusedBorderColor = MaterialTheme.colorScheme.outline
+                            ),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { openDatePicker() }
+                        )
+                    }
+
+                    // Day of Week Dropdown Menu
+                    Box(modifier = Modifier.weight(0.9f)) {
+                        OutlinedTextField(
+                            value = dayOfWeek,
+                            onValueChange = {},
+                            readOnly = true,
+                            label = { Text("اليوم (قائمة)") },
+                            trailingIcon = {
+                                IconButton(onClick = { showDayDropdown = true }) {
+                                    Icon(Icons.Default.ArrowDropDown, contentDescription = "قائمة الأيام")
+                                }
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { showDayDropdown = true }
+                        )
+                        DropdownMenu(
+                            expanded = showDayDropdown,
+                            onDismissRequest = { showDayDropdown = false }
+                        ) {
+                            daysList.forEach { dayName ->
+                                DropdownMenuItem(
+                                    text = {
+                                        Text(
+                                            text = dayName,
+                                            fontWeight = if (dayName == dayOfWeek) FontWeight.Bold else FontWeight.Normal,
+                                            color = if (dayName == dayOfWeek) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+                                        )
+                                    },
+                                    onClick = {
+                                        dayOfWeek = dayName
+                                        showDayDropdown = false
+                                    }
+                                )
+                            }
+                        }
+                    }
                 }
 
                 // Phone
@@ -251,16 +328,64 @@ fun EditJobDialog(
                     }
                 }
 
-                // Cost / Account
-                OutlinedTextField(
-                    value = costStr,
-                    onValueChange = { costStr = it.filter { c -> c.isDigit() || c == '.' } },
-                    label = { Text("الحساب / التكلفة (ج.م)") },
-                    placeholder = { Text("مثال: 350") },
-                    leadingIcon = { Icon(Icons.Default.PriceCheck, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                // Row: Client Cost vs Technician Expenses
+                Row(
                     modifier = Modifier.fillMaxWidth(),
-                    singleLine = true
-                )
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedTextField(
+                        value = costStr,
+                        onValueChange = { costStr = it.filter { c -> c.isDigit() || c == '.' } },
+                        label = { Text("الحساب من العميل (ج.م)") },
+                        placeholder = { Text("مثال: 500") },
+                        leadingIcon = { Icon(Icons.Default.PriceCheck, contentDescription = null, tint = Color(0xFF10B981), modifier = Modifier.size(18.dp)) },
+                        modifier = Modifier.weight(1f),
+                        singleLine = true
+                    )
+
+                    OutlinedTextField(
+                        value = expenseCostStr,
+                        onValueChange = { expenseCostStr = it.filter { c -> c.isDigit() || c == '.' } },
+                        label = { Text("المصروفات/القطع (ج.م)") },
+                        placeholder = { Text("مثال: 150") },
+                        leadingIcon = { Icon(Icons.Default.ShoppingCart, contentDescription = null, tint = Color(0xFFEF4444), modifier = Modifier.size(18.dp)) },
+                        modifier = Modifier.weight(1f),
+                        singleLine = true
+                    )
+                }
+
+                // Live Net Profit Breakdown Banner
+                val clientCost = costStr.toDoubleOrNull() ?: 0.0
+                val expenseVal = expenseCostStr.toDoubleOrNull() ?: 0.0
+                val netProfit = clientCost - expenseVal
+                if (clientCost > 0 || expenseVal > 0) {
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = if (netProfit >= 0) Color(0xFF10B981).copy(alpha = 0.12f) else Color(0xFFEF4444).copy(alpha = 0.12f),
+                        border = BorderStroke(1.dp, if (netProfit >= 0) Color(0xFF10B981).copy(alpha = 0.5f) else Color(0xFFEF4444).copy(alpha = 0.5f)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "التحصيل: ${String.format(Locale.US, "%.0f", clientCost)} - المصاريف: ${String.format(Locale.US, "%.0f", expenseVal)}",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Text(
+                                text = "صافي المكسب: ${String.format(Locale.US, "%.0f", netProfit)} ج.م",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp,
+                                color = if (netProfit >= 0) Color(0xFF047857) else Color(0xFFDC2626)
+                            )
+                        }
+                    }
+                }
 
                 // Replaced spare parts
                 Column {
@@ -321,40 +446,22 @@ fun EditJobDialog(
                     }
                 }
 
-                // Status Chips
-                Text("حالة الكارتة:", fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    val statusOptions = listOf("قيد الفحص", "جاهز للاستلام", "تم التسليم والتحصيل")
-                    statusOptions.forEach { opt ->
-                        FilterChip(
-                            selected = status == opt,
-                            onClick = { status = opt },
-                            label = { Text(opt, fontSize = 11.sp) },
-                            colors = FilterChipDefaults.filterChipColors(
-                                selectedContainerColor = if (opt.contains("تسليم")) Color(0xFF10B981) else MaterialTheme.colorScheme.primaryContainer
-                            )
-                        )
-                    }
-                }
-
                 // Other Details
                 OutlinedTextField(
                     value = otherDetails,
                     onValueChange = { otherDetails = it },
-                    label = { Text("تفاصيل أخرى / ملاحظات") },
-                    placeholder = { Text("أي تفاصيل إضافية عن الشغل...") },
+                    label = { Text("تفاصيل أخرى / ملاحظات فنية") },
+                    placeholder = { Text("مثال: تم التوصيل واختبار الموتور تمام...") },
                     modifier = Modifier.fillMaxWidth(),
-                    maxLines = 3
+                    minLines = 2,
+                    maxLines = 4
                 )
 
-                // Board Image Picker
+                // Image Picker for card
                 Surface(
                     shape = RoundedCornerShape(12.dp),
                     color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Row(
@@ -365,8 +472,21 @@ fun EditJobDialog(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Default.Image, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                            Spacer(modifier = Modifier.width(8.dp))
+                            Box(
+                                modifier = Modifier
+                                    .size(38.dp)
+                                    .clip(CircleShape)
+                                    .background(if (imageUrl.isNotBlank()) Color(0xFF10B981).copy(alpha = 0.2f) else MaterialTheme.colorScheme.surfaceVariant),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Image,
+                                    contentDescription = null,
+                                    tint = if (imageUrl.isNotBlank()) Color(0xFF10B981) else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(10.dp))
                             Column {
                                 Text("صورة الكارتة أثناء الصيانة", fontWeight = FontWeight.Bold, fontSize = 12.sp)
                                 Text(
@@ -392,7 +512,7 @@ fun EditJobDialog(
                 }
 
                 // Dynamic Custom Fields: "ولدي القدرة في زيادة خانات أخرى لاحقاً"
-                Divider(modifier = Modifier.padding(vertical = 4.dp))
+                HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -456,6 +576,7 @@ fun EditJobDialog(
                         return@Button
                     }
                     val costVal = costStr.toDoubleOrNull() ?: 0.0
+                    val expenseVal = expenseCostStr.toDoubleOrNull() ?: 0.0
                     val updated = (initialJob ?: TechnicianJobRecord()).copy(
                         userEmail = currentUserEmail,
                         date = date,
@@ -464,6 +585,7 @@ fun EditJobDialog(
                         deviceType = deviceType,
                         faultDescription = faultDescription,
                         cost = costVal,
+                        expenseCost = expenseVal,
                         replacedParts = replacedParts,
                         clientLocation = clientLocation,
                         otherDetails = otherDetails,
@@ -493,37 +615,38 @@ fun EditJobDialog(
                     OutlinedTextField(
                         value = newFieldName,
                         onValueChange = { newFieldName = it },
-                        label = { Text("اسم الخانة") },
-                        placeholder = { Text("مثال: فترة الضمان، الرقم المسلسل...") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
+                        label = { Text("اسم الخانة الجديدة") },
+                        placeholder = { Text("مثال: رقم الشاسيه، المقاس...") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
                     )
                     OutlinedTextField(
                         value = newFieldValue,
                         onValueChange = { newFieldValue = it },
                         label = { Text("قيمة الخانة") },
-                        placeholder = { Text("مثال: شهرين، SN-9988...") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
+                        placeholder = { Text("مثال: 50A...") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
                     )
                 }
             },
             confirmButton = {
                 Button(
                     onClick = {
-                        if (newFieldName.isNotBlank()) {
+                        if (newFieldName.isNotBlank() && newFieldValue.isNotBlank()) {
                             customFieldsMap[newFieldName.trim()] = newFieldValue.trim()
                             newFieldName = ""
                             newFieldValue = ""
                             showAddCustomFieldDialog = false
                         }
-                    }
+                    },
+                    enabled = newFieldName.isNotBlank() && newFieldValue.isNotBlank()
                 ) {
                     Text("إضافة")
                 }
             },
             dismissButton = {
-                OutlinedButton(onClick = { showAddCustomFieldDialog = false }) {
+                TextButton(onClick = { showAddCustomFieldDialog = false }) {
                     Text("إلغاء")
                 }
             }

@@ -2,11 +2,13 @@ package com.example.ui.components
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -19,9 +21,12 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material.icons.filled.Receipt
 import androidx.compose.material.icons.filled.Share
+import coil.compose.AsyncImage
+import com.example.util.ImageHelper
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -145,6 +150,56 @@ fun ShareReceiptDialog(
                     color = MaterialTheme.colorScheme.primary
                 )
 
+                // Prominent Photo Inclusion Selector (طلب المستخدم: اقدر اختار الصوره لما باجي اشارك الكروت اضيفها ولا لا)
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = if (includeImage) Color(0xFF0284C7).copy(alpha = 0.15f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                    border = BorderStroke(1.dp, if (includeImage) Color(0xFF0284C7) else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { includeImage = !includeImage }
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(
+                                modifier = Modifier
+                                    .size(34.dp)
+                                    .clip(CircleShape)
+                                    .background(if (includeImage) Color(0xFF0284C7).copy(alpha = 0.2f) else MaterialTheme.colorScheme.surfaceVariant),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Image,
+                                    contentDescription = null,
+                                    tint = if (includeImage) Color(0xFF0284C7) else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Column {
+                                Text("إرفاق صورة الكارتة في الإيصال 📸", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                Text(
+                                    text = if (includeImage) "مفعّل: ستظهر صورة الكارتة بالوصل" else "معطّل: لن تظهر الصورة بالإيصال",
+                                    fontSize = 10.sp,
+                                    color = if (includeImage) Color(0xFF0284C7) else MaterialTheme.colorScheme.outline
+                                )
+                            }
+                        }
+                        Checkbox(
+                            checked = includeImage,
+                            onCheckedChange = { includeImage = it },
+                            colors = CheckboxDefaults.colors(checkedColor = Color(0xFF0284C7)),
+                            modifier = Modifier.size(28.dp)
+                        )
+                    }
+                }
+
                 Surface(
                     shape = RoundedCornerShape(12.dp),
                     color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
@@ -170,9 +225,7 @@ fun ShareReceiptDialog(
                         }
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                             FieldCheckItem("ملاحظات أخرى", includeOtherDetails, modifier = Modifier.weight(1f)) { includeOtherDetails = it }
-                            if (jobs.any { it.imageUrl.isNotBlank() }) {
-                                FieldCheckItem("صور الكروت 📷", includeImage, modifier = Modifier.weight(1f)) { includeImage = it }
-                            }
+                            FieldCheckItem("صورة الكارتة 📷", includeImage, modifier = Modifier.weight(1f)) { includeImage = it }
                         }
                     }
                 }
@@ -261,6 +314,27 @@ fun ShareReceiptDialog(
                             }
                             if (includeReplacedParts && card.replacedParts.isNotBlank()) {
                                 PreviewRow("القطع:", card.replacedParts)
+                            }
+                            if (includeImage && card.imageUrl.isNotBlank()) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.padding(top = 4.dp)
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(46.dp)
+                                            .clip(RoundedCornerShape(6.dp))
+                                            .background(Color.Black.copy(alpha = 0.3f))
+                                    ) {
+                                        AsyncImage(
+                                            model = ImageHelper.getCoilData(card.imageUrl),
+                                            contentDescription = null,
+                                            modifier = Modifier.fillMaxSize()
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text("مرفق صورة الكارتة بالإيصال ✓", color = Color(0xFF34D399), fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                                }
                             }
                         }
 

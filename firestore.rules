@@ -135,5 +135,15 @@ service cloud.firestore {
       allow get, list: if true;
       allow create, update, delete: if true;
     }
+
+    // Technician Work Logs (سجل صيانة وكروت الفني المنفصل لكل مستخدم)
+    match /technician_work_logs/{logId} {
+      allow get, list, create, update, delete: if true;
+    }
+
+    // User Private Tools Settings (قوائم الأدوات الخاصة بكل مستخدم بالبريد الإلكتروني)
+    match /user_tools_settings/{userEmail} {
+      allow get, list, create, update, delete: if true;
+    }
   }
 }
