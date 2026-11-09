@@ -1,9 +1,7 @@
 package com.example.ui.components
 
-import android.widget.Toast
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -19,20 +17,17 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Download
-import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material.icons.filled.Receipt
 import androidx.compose.material.icons.filled.Share
-import androidx.compose.material.icons.filled.Verified
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CheckboxDefaults
-import androidx.compose.material3.Divider
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -59,38 +54,37 @@ import com.example.util.ReceiptCustomization
 
 @Composable
 fun ShareReceiptDialog(
-    job: TechnicianJobRecord,
+    jobs: List<TechnicianJobRecord>,
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
+    val firstJob = jobs.firstOrNull() ?: return
 
     var includeDate by remember { mutableStateOf(true) }
     var includePhone by remember { mutableStateOf(true) }
+    var includeLocation by remember { mutableStateOf(true) }
     var includeDeviceType by remember { mutableStateOf(true) }
     var includeFault by remember { mutableStateOf(true) }
     var includeCost by remember { mutableStateOf(true) }
     var includeReplacedParts by remember { mutableStateOf(true) }
-    var includeLocation by remember { mutableStateOf(true) }
     var includeOtherDetails by remember { mutableStateOf(true) }
     var includeStatus by remember { mutableStateOf(false) }
-    var includeImage by remember { mutableStateOf(job.imageUrl.isNotBlank()) }
-    var includeCustomFields by remember { mutableStateOf(job.customFields.isNotEmpty()) }
-    var includeStamp by remember { mutableStateOf(true) }
+    var includeImage by remember { mutableStateOf(jobs.any { it.imageUrl.isNotBlank() }) }
+    var includeCustomFields by remember { mutableStateOf(jobs.any { it.customFields.isNotEmpty() }) }
 
     fun buildConfig(): ReceiptCustomization {
         return ReceiptCustomization(
             includeDate = includeDate,
             includePhone = includePhone,
+            includeLocation = includeLocation,
             includeDeviceType = includeDeviceType,
             includeFault = includeFault,
             includeCost = includeCost,
             includeReplacedParts = includeReplacedParts,
-            includeLocation = includeLocation,
             includeOtherDetails = includeOtherDetails,
             includeStatus = includeStatus,
             includeImage = includeImage,
-            includeCustomFields = includeCustomFields,
-            includeStamp = includeStamp
+            includeCustomFields = includeCustomFields
         )
     }
 
@@ -120,12 +114,12 @@ fun ShareReceiptDialog(
                     Spacer(modifier = Modifier.width(10.dp))
                     Column {
                         Text(
-                            text = "تجهيز ومشاركة إيصال العميل 📸",
+                            text = if (jobs.size > 1) "إيصال صيانة مجمع (${jobs.size} كروت) 📸" else "مشاركة إيصال الصيانة 📸",
                             fontWeight = FontWeight.Bold,
                             fontSize = 15.sp
                         )
                         Text(
-                            text = "حدد الخانات التي تريد إرسالها للعميل",
+                            text = "اختر البيانات التي تريد إرسالها للعميل",
                             fontSize = 11.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -145,7 +139,7 @@ fun ShareReceiptDialog(
             ) {
                 // Section 1: Fields checklist
                 Text(
-                    text = "اختر الخانات التي تظهر في الصورة المنظمة:",
+                    text = "حدد الخانات التي تظهر بالإيصال:",
                     fontWeight = FontWeight.Bold,
                     fontSize = 12.sp,
                     color = MaterialTheme.colorScheme.primary
@@ -163,38 +157,29 @@ fun ShareReceiptDialog(
                             FieldCheckItem("رقم هاتف العميل", includePhone, modifier = Modifier.weight(1f)) { includePhone = it }
                         }
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            FieldCheckItem("مكان العميل", includeLocation, modifier = Modifier.weight(1f)) { includeLocation = it }
                             FieldCheckItem("نوع الجهاز والكارتة", includeDeviceType, modifier = Modifier.weight(1f)) { includeDeviceType = it }
-                            FieldCheckItem("توصيف العطل", includeFault, modifier = Modifier.weight(1f)) { includeFault = it }
                         }
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            FieldCheckItem("الحساب والسعر (ج.م)", includeCost, modifier = Modifier.weight(1f)) { includeCost = it }
+                            FieldCheckItem("توصيف العطل", includeFault, modifier = Modifier.weight(1f)) { includeFault = it }
                             FieldCheckItem("قطع الغيار المبدلة", includeReplacedParts, modifier = Modifier.weight(1f)) { includeReplacedParts = it }
                         }
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            FieldCheckItem("مكان وعنوان العميل", includeLocation, modifier = Modifier.weight(1f)) { includeLocation = it }
-                            FieldCheckItem("حالة الشغل الحالية", includeStatus, modifier = Modifier.weight(1f)) { includeStatus = it }
+                            FieldCheckItem("الحساب والتكلفة (ج.م)", includeCost, modifier = Modifier.weight(1f)) { includeCost = it }
+                            FieldCheckItem("حالة الكارتة", includeStatus, modifier = Modifier.weight(1f)) { includeStatus = it }
                         }
-                        if (job.otherDetails.isNotBlank()) {
-                            FieldCheckItem("تفاصيل وملاحظات إضافية", includeOtherDetails) { includeOtherDetails = it }
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            FieldCheckItem("ملاحظات أخرى", includeOtherDetails, modifier = Modifier.weight(1f)) { includeOtherDetails = it }
+                            if (jobs.any { it.imageUrl.isNotBlank() }) {
+                                FieldCheckItem("صور الكروت 📷", includeImage, modifier = Modifier.weight(1f)) { includeImage = it }
+                            }
                         }
-                        if (job.customFields.isNotEmpty()) {
-                            FieldCheckItem("الخانات المخصصة (${job.customFields.size} خانات)", includeCustomFields) { includeCustomFields = it }
-                        }
-                        if (job.imageUrl.isNotBlank()) {
-                            FieldCheckItem("📷 صورة الكارتة أثناء الصيانة", includeImage) { includeImage = it }
-                        }
-                        Divider(modifier = Modifier.padding(vertical = 4.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
-                        FieldCheckItem(
-                            label = "ختم وشعار التطبيق المعتمد في الأسفل 🎖️",
-                            checked = includeStamp,
-                            isHighlighted = true
-                        ) { includeStamp = it }
                     }
                 }
 
-                // Section 2: Live preview card
+                // Section 2: Clean Preview (No bottom cluttered stamp, just logo + details + total)
                 Text(
-                    text = "معاينة سريعة لشكل الإيصال النهائي:",
+                    text = "معاينة الإيصال المنظم:",
                     fontWeight = FontWeight.Bold,
                     fontSize = 12.sp,
                     color = MaterialTheme.colorScheme.primary
@@ -202,15 +187,15 @@ fun ShareReceiptDialog(
 
                 Surface(
                     shape = RoundedCornerShape(14.dp),
-                    color = Color(0xFF0F172A),
-                    border = BorderStroke(1.dp, Color(0xFF334155)),
+                    color = Color(0xFF0E1626),
+                    border = BorderStroke(1.dp, Color(0xFF1E2D4A)),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Column(
                         modifier = Modifier.padding(14.dp),
                         verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        // Header banner
+                        // Header banner (Logo + Title)
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,
@@ -224,84 +209,80 @@ fun ShareReceiptDialog(
                                     fontSize = 14.sp
                                 )
                                 Text(
-                                    text = "تقرير وإيصال صيانة معتمد",
+                                    text = if (jobs.size > 1) "إيصال صيانة مجمع (${jobs.size} كروت)" else "إيصال صيانة",
                                     color = Color(0xFF38BDF8),
-                                    fontSize = 11.sp
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold
                                 )
                             }
                             if (includeDate) {
                                 Text(
-                                    text = "${job.dayOfWeek} ${job.date}",
+                                    text = "${firstJob.dayOfWeek} ${firstJob.date}",
                                     color = Color(0xFF94A3B8),
                                     fontSize = 10.sp
                                 )
                             }
                         }
 
-                        Divider(color = Color(0xFF334155), modifier = Modifier.padding(vertical = 4.dp))
+                        HorizontalDivider(color = Color(0xFF1E2D4A), modifier = Modifier.padding(vertical = 4.dp))
 
-                        // Selected Items Preview
-                        if (includePhone && job.clientPhone.isNotBlank()) {
-                            PreviewRow("رقم الهاتف:", job.clientPhone)
+                        // Customer info
+                        if (includePhone && firstJob.clientPhone.isNotBlank()) {
+                            PreviewRow("رقم الهاتف:", firstJob.clientPhone)
                         }
-                        if (includeLocation && job.clientLocation.isNotBlank()) {
-                            PreviewRow("المكان:", job.clientLocation)
-                        }
-                        if (includeDeviceType && job.deviceType.isNotBlank()) {
-                            PreviewRow("الجهاز:", job.deviceType)
-                        }
-                        if (includeFault && job.faultDescription.isNotBlank()) {
-                            PreviewRow("العطل:", job.faultDescription, valueColor = Color(0xFFF87171))
-                        }
-                        if (includeReplacedParts && job.replacedParts.isNotBlank()) {
-                            PreviewRow("القطع المبدلة:", job.replacedParts)
-                        }
-                        if (includeCost && job.cost > 0) {
-                            PreviewRow("الحساب:", "${String.format("%.0f", job.cost)} ج.م", valueColor = Color(0xFF34D399), isBold = true)
-                        }
-                        if (includeStatus && job.status.isNotBlank()) {
-                            PreviewRow("الحالة:", job.status, valueColor = Color(0xFFFBBF24))
-                        }
-                        if (includeOtherDetails && job.otherDetails.isNotBlank()) {
-                            PreviewRow("ملاحظات:", job.otherDetails)
-                        }
-                        if (includeCustomFields && job.customFields.isNotEmpty()) {
-                            job.customFields.forEach { (k, v) ->
-                                PreviewRow("$k:", v)
-                            }
-                        }
-                        if (includeImage && job.imageUrl.isNotBlank()) {
-                            Surface(
-                                shape = RoundedCornerShape(8.dp),
-                                color = Color(0xFF1E293B),
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(vertical = 4.dp)
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(8.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Icon(Icons.Default.Image, contentDescription = null, tint = Color(0xFF38BDF8), modifier = Modifier.size(16.dp))
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text("مرفق صورة الكارتة في الإيصال", fontSize = 11.sp, color = Color(0xFF94A3B8))
-                                }
-                            }
+                        if (includeLocation && firstJob.clientLocation.isNotBlank()) {
+                            PreviewRow("المكان:", firstJob.clientLocation)
                         }
 
-                        if (includeStamp) {
-                            Divider(color = Color(0xFF334155), modifier = Modifier.padding(vertical = 4.dp))
+                        // Cards summary
+                        jobs.forEachIndexed { idx, card ->
+                            HorizontalDivider(color = Color(0xFF1E2D4A), modifier = Modifier.padding(vertical = 3.dp))
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
+                                horizontalArrangement = Arrangement.SpaceBetween
                             ) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(Icons.Default.Verified, contentDescription = null, tint = Color(0xFFF59E0B), modifier = Modifier.size(16.dp))
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                    Text("معتمد • ختم وضمان البراء إلكترونيك", fontSize = 10.sp, color = Color(0xFFF59E0B), fontWeight = FontWeight.Bold)
+                                Text(
+                                    text = if (jobs.size > 1) "كارتة ${idx + 1}: ${card.deviceType}" else card.deviceType,
+                                    color = Color.White,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 11.sp
+                                )
+                                if (includeCost && card.cost > 0) {
+                                    Text(
+                                        text = "${String.format("%.0f", card.cost)} ج.م",
+                                        color = Color(0xFF34D399),
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 11.sp
+                                    )
                                 }
-                                Text("جودة وضمان", fontSize = 9.sp, color = Color(0xFF94A3B8))
+                            }
+                            if (includeFault && card.faultDescription.isNotBlank()) {
+                                PreviewRow("العطل:", card.faultDescription, valueColor = Color(0xFFF87171))
+                            }
+                            if (includeReplacedParts && card.replacedParts.isNotBlank()) {
+                                PreviewRow("القطع:", card.replacedParts)
+                            }
+                        }
+
+                        if (includeCost) {
+                            val total = jobs.sumOf { it.cost }
+                            HorizontalDivider(color = Color(0xFF10B981).copy(alpha = 0.5f), modifier = Modifier.padding(vertical = 4.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                    text = if (jobs.size > 1) "إجمالي الحساب (${jobs.size} كروت):" else "إجمالي الحساب:",
+                                    color = Color.White,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 12.sp
+                                )
+                                Text(
+                                    text = "${String.format("%.0f", total)} ج.م",
+                                    color = Color(0xFF34D399),
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 12.sp
+                                )
                             }
                         }
                     }
@@ -317,7 +298,7 @@ fun ShareReceiptDialog(
                 Button(
                     onClick = {
                         val config = buildConfig()
-                        JobReceiptShareHelper.shareToWhatsApp(context, job, config, job.clientPhone)
+                        JobReceiptShareHelper.shareToWhatsApp(context, jobs, config, firstJob.clientPhone)
                         onDismiss()
                     },
                     modifier = Modifier.fillMaxWidth(),
@@ -326,7 +307,11 @@ fun ShareReceiptDialog(
                 ) {
                     Icon(Icons.Default.Phone, contentDescription = null, modifier = Modifier.size(16.dp))
                     Spacer(modifier = Modifier.width(8.dp))
-                    Text("إرسال لواتساب العميل مباشرة (${job.clientPhone.ifBlank { "واتساب" }})", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    Text(
+                        text = "إرسال لواتساب العميل (${firstJob.clientPhone.ifBlank { "واتساب" }})",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold
+                    )
                 }
 
                 Row(
@@ -337,7 +322,7 @@ fun ShareReceiptDialog(
                     OutlinedButton(
                         onClick = {
                             val config = buildConfig()
-                            JobReceiptShareHelper.shareGeneric(context, job, config)
+                            JobReceiptShareHelper.shareGeneric(context, jobs, config)
                             onDismiss()
                         },
                         modifier = Modifier.weight(1f),
@@ -352,7 +337,7 @@ fun ShareReceiptDialog(
                     OutlinedButton(
                         onClick = {
                             val config = buildConfig()
-                            JobReceiptShareHelper.saveToGallery(context, job, config)
+                            JobReceiptShareHelper.saveToGallery(context, jobs, config)
                         },
                         modifier = Modifier.weight(1f),
                         shape = RoundedCornerShape(10.dp)
@@ -373,28 +358,23 @@ private fun FieldCheckItem(
     label: String,
     checked: Boolean,
     modifier: Modifier = Modifier,
-    isHighlighted: Boolean = false,
     onCheckedChange: (Boolean) -> Unit
 ) {
     Row(
-        modifier = modifier
-            .padding(vertical = 2.dp),
+        modifier = modifier.padding(vertical = 2.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Checkbox(
             checked = checked,
             onCheckedChange = onCheckedChange,
-            colors = CheckboxDefaults.colors(
-                checkedColor = if (isHighlighted) Color(0xFFF59E0B) else MaterialTheme.colorScheme.primary
-            ),
+            colors = CheckboxDefaults.colors(checkedColor = MaterialTheme.colorScheme.primary),
             modifier = Modifier.size(28.dp)
         )
         Spacer(modifier = Modifier.width(4.dp))
         Text(
             text = label,
             fontSize = 11.sp,
-            fontWeight = if (isHighlighted) FontWeight.Bold else FontWeight.Normal,
-            color = if (isHighlighted) Color(0xFFF59E0B) else MaterialTheme.colorScheme.onSurface
+            color = MaterialTheme.colorScheme.onSurface
         )
     }
 }
@@ -403,8 +383,7 @@ private fun FieldCheckItem(
 private fun PreviewRow(
     label: String,
     value: String,
-    valueColor: Color = Color.White,
-    isBold: Boolean = false
+    valueColor: Color = Color.White
 ) {
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -413,17 +392,15 @@ private fun PreviewRow(
     ) {
         Text(
             text = label,
-            fontSize = 11.sp,
-            color = Color(0xFF94A3B8),
-            fontWeight = FontWeight.Medium
+            fontSize = 10.sp,
+            color = Color(0xFF94A3B8)
         )
         Text(
             text = value,
-            fontSize = 11.sp,
+            fontSize = 10.sp,
             color = valueColor,
-            fontWeight = if (isBold) FontWeight.Bold else FontWeight.Normal,
             textAlign = TextAlign.End,
-            maxLines = 2
+            maxLines = 1
         )
     }
 }

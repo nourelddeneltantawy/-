@@ -2,6 +2,7 @@ package com.example.ui.components
 
 import android.net.Uri
 import android.widget.Toast
+import kotlinx.coroutines.launch
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -97,11 +98,16 @@ fun EditJobDialog(
     var newFieldName by remember { mutableStateOf("") }
     var newFieldValue by remember { mutableStateOf("") }
 
+    val coroutineScope = androidx.compose.runtime.rememberCoroutineScope()
+
     val photoPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia(),
         onResult = { uri: Uri? ->
             if (uri != null) {
-                imageUrl = uri.toString()
+                coroutineScope.launch {
+                    val permanentUrl = com.example.util.ImageHelper.saveAndPreparePermanentImage(context, uri)
+                    imageUrl = permanentUrl
+                }
             }
         }
     )

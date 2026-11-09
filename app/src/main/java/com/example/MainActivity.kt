@@ -120,6 +120,7 @@ class MainActivity : ComponentActivity() {
         com.example.data.ContactInfoManager.init(this)
         com.example.data.HubCategoryManager.init(this)
         com.example.data.BottomNavManager.init(this)
+        com.example.data.ToolsCategoryManager.init(this)
         JobRecordRepository.init(this, null, null)
         com.example.data.repository.MarketplaceRepository.init(this, null, null)
         enableEdgeToEdge()

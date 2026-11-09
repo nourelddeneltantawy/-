@@ -162,9 +162,9 @@ fun AdminHarnessScreen(
         if (uri != null) {
             coroutineScope.launch {
                 try {
-                    val localPath = ImageHelper.copyUriToLocalStorage(context, uri)
-                    boardImageUrl = localPath
-                    snackbarHostState.showSnackbar("تم حفظ صورة الكارتة بنجاح")
+                    val permanentUrl = ImageHelper.saveAndPreparePermanentImage(context, uri)
+                    boardImageUrl = permanentUrl
+                    snackbarHostState.showSnackbar("تم حفظ صورة الكارتة الدائمة بنجاح")
                 } catch (e: Exception) {
                     boardImageUrl = uri.toString()
                     snackbarHostState.showSnackbar("تم تحديد الصورة")

@@ -1354,15 +1354,18 @@ fun CreateOrEditPostDialog(
     var selectedGovernorate by remember { mutableStateOf(myProfile.city.ifBlank { "القاهرة" }) }
     var selectedDistrict by remember { mutableStateOf("") }
 
+    val coroutineScope = rememberCoroutineScope()
     val photoPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
     ) { uri: Uri? ->
         if (uri != null) {
-            try {
-                val localPath = ImageHelper.copyUriToLocalStorage(context, uri)
-                mediaUrl = localPath
-            } catch (e: Exception) {
-                mediaUrl = uri.toString()
+            coroutineScope.launch {
+                try {
+                    val permanentUrl = ImageHelper.saveAndPreparePermanentImage(context, uri)
+                    mediaUrl = permanentUrl
+                } catch (e: Exception) {
+                    mediaUrl = uri.toString()
+                }
             }
         }
     }
@@ -1624,15 +1627,18 @@ fun EditUserProfileDialog(
     var selectedGovernorate by remember { mutableStateOf(currentProfile.city.split("•").getOrNull(1)?.trim() ?: "القاهرة") }
     var selectedDistrict by remember { mutableStateOf(currentProfile.city.split("•").getOrNull(0)?.trim() ?: "") }
 
+    val coroutineScope = rememberCoroutineScope()
     val photoPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
     ) { uri: Uri? ->
         if (uri != null) {
-            try {
-                val localPath = ImageHelper.copyUriToLocalStorage(context, uri)
-                avatarUrl = localPath
-            } catch (e: Exception) {
-                avatarUrl = uri.toString()
+            coroutineScope.launch {
+                try {
+                    val permanentUrl = ImageHelper.saveAndPreparePermanentImage(context, uri)
+                    avatarUrl = permanentUrl
+                } catch (e: Exception) {
+                    avatarUrl = uri.toString()
+                }
             }
         }
     }

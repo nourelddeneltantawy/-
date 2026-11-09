@@ -242,9 +242,9 @@ fun AdminMotorScreen(
         if (uri != null) {
             coroutineScope.launch {
                 try {
-                    val localPath = ImageHelper.copyUriToLocalStorage(context, uri)
-                    imageUrlsList.add(localPath)
-                    snackbarHostState.showSnackbar("تمت إضافة صورة الماتور بنجاح (${imageUrlsList.size} صور)")
+                    val permanentUrl = ImageHelper.saveAndPreparePermanentImage(context, uri)
+                    imageUrlsList.add(permanentUrl)
+                    snackbarHostState.showSnackbar("تمت إضافة صورة الماتور الدائمة بنجاح (${imageUrlsList.size} صور)")
                 } catch (e: Exception) {
                     imageUrlsList.add(uri.toString())
                     snackbarHostState.showSnackbar("تمت إضافة الصورة")
