@@ -1,11 +1,16 @@
 package com.example.ui.components
 
+import android.content.Context
 import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -21,16 +26,20 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.AddPhotoAlternate
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.DoneAll
 import androidx.compose.material.icons.filled.Forum
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Person
@@ -40,14 +49,17 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -59,20 +71,29 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import coil.request.ImageRequest
 import com.example.data.model.CommunityMessage
 import com.example.data.model.UserProfile
 import com.example.data.repository.CommunityGroupRepository
 import com.example.util.ImageHelper
 import kotlinx.coroutines.launch
 
+/**
+ * Professional Telegram / WhatsApp-styled Community Group Chat for Technicians.
+ * Features speech bubbles (sender/receiver aligned), quote replies, photo previews,
+ * emoji reactions, and smooth real-time streaming.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TechnicianGroupChatView(
     currentUserId: String,
@@ -81,12 +102,12 @@ fun TechnicianGroupChatView(
     isAdmin: Boolean,
     isGuest: Boolean,
     onAuthClick: () -> Unit,
+    onBackClick: (() -> Unit)? = null,
     onZoomImage: (String) -> Unit = {}
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
 
-    // Initialize CommunityGroupRepository
     LaunchedEffect(Unit) {
         CommunityGroupRepository.init(context)
     }
@@ -101,9 +122,7 @@ fun TechnicianGroupChatView(
 
     val photoPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia(),
-        onResult = { uri: Uri? ->
-            selectedImageUri = uri
-        }
+        onResult = { uri: Uri? -> selectedImageUri = uri }
     )
 
     // Auto-scroll to bottom on new messages
@@ -118,6 +137,7 @@ fun TechnicianGroupChatView(
         Box(
             modifier = Modifier
                 .fillMaxSize()
+                .background(Color(0xFF0F172A))
                 .padding(24.dp),
             contentAlignment = Alignment.Center
         ) {
@@ -181,199 +201,319 @@ fun TechnicianGroupChatView(
     val senderName = userProfile?.displayName?.ifBlank { currentUserEmail.substringBefore("@") } ?: currentUserEmail.substringBefore("@")
     val senderAvatar = userProfile?.avatarUrl ?: ""
 
-    Column(modifier = Modifier.fillMaxSize()) {
-        // Chat Messages Stream
-        LazyColumn(
-            state = listState,
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth(),
-            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            items(messages, key = { it.id }) { msg ->
-                val isMe = msg.senderEmail.equals(currentUserEmail, ignoreCase = true)
-                ChatMessageItem(
-                    message = msg,
-                    isMe = isMe,
-                    currentUserEmail = currentUserEmail,
-                    isAdmin = isAdmin,
-                    onReply = { replyingToMessage = msg },
-                    onDelete = {
-                        CommunityGroupRepository.deleteMessage(context, msg.id) {
-                            Toast.makeText(context, "تم حذف الرسالة", Toast.LENGTH_SHORT).show()
-                        }
-                    },
-                    onToggleReaction = { emoji ->
-                        CommunityGroupRepository.toggleReaction(context, msg.id, emoji, currentUserEmail)
-                    },
-                    onZoomImage = onZoomImage
-                )
-            }
-        }
-
-        // Pinned Bottom Input Row
-        Surface(
-            color = MaterialTheme.colorScheme.surface,
-            tonalElevation = 6.dp,
-            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Column(modifier = Modifier.padding(8.dp)) {
-                // Reply quote banner
-                AnimatedVisibility(visible = replyingToMessage != null) {
-                    replyingToMessage?.let { target ->
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
                         Surface(
-                            shape = RoundedCornerShape(8.dp),
-                            color = Color(0xFF0284C7).copy(alpha = 0.15f),
-                            border = BorderStroke(1.dp, Color(0xFF0284C7).copy(alpha = 0.4f)),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(bottom = 6.dp)
+                            shape = CircleShape,
+                            color = Color(0xFF0284C7).copy(alpha = 0.2f),
+                            modifier = Modifier.size(38.dp)
                         ) {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 10.dp, vertical = 4.dp),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-                                    Icon(Icons.Default.Reply, contentDescription = null, tint = Color(0xFF0284C7), modifier = Modifier.size(16.dp))
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Column {
-                                        Text("الرد على ${target.senderName}:", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color(0xFF0284C7))
-                                        Text(target.messageText.ifBlank { "صورة مرفقة" }, fontSize = 10.sp, maxLines = 1, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                    }
-                                }
-                                IconButton(onClick = { replyingToMessage = null }, modifier = Modifier.size(24.dp)) {
-                                    Icon(Icons.Default.Close, contentDescription = "إلغاء الرد", modifier = Modifier.size(16.dp))
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Selected Image Preview
-                AnimatedVisibility(visible = selectedImageUri != null) {
-                    selectedImageUri?.let { uri ->
-                        Row(
-                            modifier = Modifier
-                                .padding(bottom = 6.dp)
-                                .fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(50.dp)
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .background(MaterialTheme.colorScheme.surfaceVariant)
-                            ) {
-                                AsyncImage(
-                                    model = uri,
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    imageVector = Icons.Default.Forum,
                                     contentDescription = null,
-                                    contentScale = ContentScale.Crop,
-                                    modifier = Modifier.fillMaxSize()
+                                    tint = Color(0xFF38BDF8),
+                                    modifier = Modifier.size(20.dp)
                                 )
                             }
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("صورة مرفقة مع الرسالة", fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
-                            Spacer(modifier = Modifier.weight(1f))
-                            IconButton(onClick = { selectedImageUri = null }, modifier = Modifier.size(26.dp)) {
-                                Icon(Icons.Default.Close, contentDescription = "حذف الصورة", modifier = Modifier.size(18.dp))
+                        }
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Column {
+                            Text(
+                                text = "جروب الصنايعية والفنيين 💬",
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(7.dp)
+                                        .clip(CircleShape)
+                                        .background(Color(0xFF10B981))
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(
+                                    text = "محادثة فنية فورية ومشاركة أعطال",
+                                    fontSize = 10.sp,
+                                    color = MaterialTheme.colorScheme.outline
+                                )
                             }
                         }
                     }
-                }
-
-                // Main Input Row
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    // Image picker button
-                    IconButton(
-                        onClick = {
-                            photoPickerLauncher.launch(
-                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                },
+                navigationIcon = {
+                    if (onBackClick != null) {
+                        IconButton(onClick = onBackClick) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                contentDescription = "رجوع"
                             )
-                        },
-                        modifier = Modifier
-                            .size(42.dp)
-                            .clip(CircleShape)
-                            .background(MaterialTheme.colorScheme.surfaceVariant)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.AddPhotoAlternate,
-                            contentDescription = "إرفاق صورة",
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(20.dp)
-                        )
+                        }
                     }
-
-                    // Text Field
-                    OutlinedTextField(
-                        value = messageInput,
-                        onValueChange = { messageInput = it },
-                        modifier = Modifier.weight(1f),
-                        placeholder = { Text("اكتب استفسارك أو رسالتك للجروب...", fontSize = 12.sp) },
-                        maxLines = 3,
-                        shape = RoundedCornerShape(20.dp),
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = MaterialTheme.colorScheme.primary,
-                            unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant
-                        )
-                    )
-
-                    // Send Button
-                    val canSend = (messageInput.isNotBlank() || selectedImageUri != null) && !isSending
-                    Button(
-                        onClick = {
-                            if (!canSend) return@Button
-                            isSending = true
-                            val textToSend = messageInput.trim()
-                            val repId = replyingToMessage?.id
-                            val repName = replyingToMessage?.senderName
-                            val repText = replyingToMessage?.messageText
-
-                            coroutineScope.launch {
-                                var uploadedImageUrl = ""
-                                if (selectedImageUri != null) {
-                                    uploadedImageUrl = ImageHelper.saveAndPreparePermanentImage(context, selectedImageUri!!)
-                                }
-
-                                CommunityGroupRepository.sendMessage(
-                                    context = context,
-                                    senderId = currentUserId,
-                                    senderEmail = currentUserEmail,
-                                    senderName = senderName,
-                                    senderAvatar = senderAvatar,
-                                    messageText = textToSend,
-                                    imageUrl = uploadedImageUrl,
-                                    replyToId = repId,
-                                    replyToName = repName,
-                                    replyToText = repText
+                },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.surface
+                )
+            )
+        }
+    ) { innerPadding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding)
+                .background(Color(0xFF0B131E)) // WhatsApp/Telegram dark wallpaper background
+        ) {
+            // Chat Messages Stream
+            LazyColumn(
+                state = listState,
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth(),
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                if (messages.isEmpty()) {
+                    item {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 40.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Surface(
+                                shape = RoundedCornerShape(14.dp),
+                                color = Color(0xFF1E293B).copy(alpha = 0.8f),
+                                modifier = Modifier.padding(16.dp)
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(16.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally
                                 ) {
-                                    isSending = false
-                                    messageInput = ""
-                                    selectedImageUri = null
-                                    replyingToMessage = null
+                                    Text("👋 مرحباً بك في جروب الفنيين!", fontWeight = FontWeight.Bold, color = Color(0xFF38BDF8), fontSize = 14.sp)
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    Text("كن أول من يطرح استفساراً أو يشارك صورة كارتة أو عطل مع زملائك.", fontSize = 11.sp, color = MaterialTheme.colorScheme.outline, textAlign = TextAlign.Center)
                                 }
                             }
-                        },
-                        enabled = canSend,
-                        shape = CircleShape,
-                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
-                        modifier = Modifier.size(44.dp),
-                        contentPadding = PaddingValues(0.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.Send,
-                            contentDescription = "إرسال",
-                            tint = Color.White,
-                            modifier = Modifier.size(18.dp)
+                        }
+                    }
+                } else {
+                    items(messages, key = { it.id }) { msg ->
+                        val isMe = msg.senderEmail.equals(currentUserEmail, ignoreCase = true)
+                        TelegramChatBubble(
+                            message = msg,
+                            isMe = isMe,
+                            currentUserEmail = currentUserEmail,
+                            isAdmin = isAdmin,
+                            onReply = { replyingToMessage = msg },
+                            onDelete = {
+                                CommunityGroupRepository.deleteMessage(context, msg.id) {
+                                    Toast.makeText(context, "تم حذف الرسالة", Toast.LENGTH_SHORT).show()
+                                }
+                            },
+                            onToggleReaction = { emoji ->
+                                CommunityGroupRepository.toggleReaction(context, msg.id, emoji, currentUserEmail)
+                            },
+                            onZoomImage = onZoomImage
                         )
+                    }
+                }
+            }
+
+            // Pinned Telegram-style Bottom Input Bar
+            Surface(
+                color = MaterialTheme.colorScheme.surface,
+                tonalElevation = 8.dp,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.25f)),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)) {
+                    // Reply quote banner with slide-in animation
+                    AnimatedVisibility(
+                        visible = replyingToMessage != null,
+                        enter = slideInVertically() + fadeIn(),
+                        exit = slideOutVertically() + fadeOut()
+                    ) {
+                        replyingToMessage?.let { target ->
+                            Surface(
+                                shape = RoundedCornerShape(10.dp),
+                                color = Color(0xFF0284C7).copy(alpha = 0.12f),
+                                border = BorderStroke(1.dp, Color(0xFF0284C7).copy(alpha = 0.35f)),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(bottom = 6.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 10.dp, vertical = 4.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                                        Box(
+                                            modifier = Modifier
+                                                .width(3.dp)
+                                                .height(28.dp)
+                                                .background(Color(0xFF0284C7), RoundedCornerShape(2.dp))
+                                        )
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Column {
+                                            Text("الرد على ${target.senderName}:", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color(0xFF0284C7))
+                                            Text(target.messageText.ifBlank { "صورة مرفقة 📷" }, fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        }
+                                    }
+                                    IconButton(onClick = { replyingToMessage = null }, modifier = Modifier.size(24.dp)) {
+                                        Icon(Icons.Default.Close, contentDescription = "إلغاء الرد", modifier = Modifier.size(16.dp))
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Selected Image Preview
+                    AnimatedVisibility(visible = selectedImageUri != null) {
+                        selectedImageUri?.let { uri ->
+                            Surface(
+                                shape = RoundedCornerShape(10.dp),
+                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(bottom = 6.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(6.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(52.dp)
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .background(MaterialTheme.colorScheme.surfaceVariant)
+                                    ) {
+                                        AsyncImage(
+                                            model = uri,
+                                            contentDescription = null,
+                                            contentScale = ContentScale.Crop,
+                                            modifier = Modifier.fillMaxSize()
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.width(10.dp))
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text("صورة مرفقة جاهزة للإرسال 📷", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                                        Text("اضغط إرسال لمشاركتها في الجروب", fontSize = 10.sp, color = MaterialTheme.colorScheme.outline)
+                                    }
+                                    IconButton(onClick = { selectedImageUri = null }, modifier = Modifier.size(28.dp)) {
+                                        Icon(Icons.Default.Close, contentDescription = "حذف الصورة", modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.error)
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Main Input Row (WhatsApp / Telegram Styled)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        // Image attachment button
+                        Surface(
+                            shape = CircleShape,
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
+                            modifier = Modifier
+                                .size(42.dp)
+                                .clip(CircleShape)
+                                .clickable {
+                                    photoPickerLauncher.launch(
+                                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                                    )
+                                }
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    imageVector = Icons.Default.AddPhotoAlternate,
+                                    contentDescription = "إرفاق صورة",
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(22.dp)
+                                )
+                            }
+                        }
+
+                        // Text Field (Telegram curved capsule)
+                        OutlinedTextField(
+                            value = messageInput,
+                            onValueChange = { messageInput = it },
+                            modifier = Modifier.weight(1f),
+                            placeholder = { Text("اكتب استفسارك أو رسالتك للجروب...", fontSize = 12.sp) },
+                            maxLines = 4,
+                            shape = RoundedCornerShape(24.dp),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = MaterialTheme.colorScheme.primary,
+                                unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
+                                focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
+                                unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.2f)
+                            )
+                        )
+
+                        // Send Button (Telegram Vibrant Blue Circle)
+                        val canSend = (messageInput.isNotBlank() || selectedImageUri != null) && !isSending
+                        Surface(
+                            shape = CircleShape,
+                            color = if (canSend) Color(0xFF0284C7) else MaterialTheme.colorScheme.surfaceVariant,
+                            modifier = Modifier
+                                .size(44.dp)
+                                .clip(CircleShape)
+                                .clickable(enabled = canSend) {
+                                    if (!canSend) return@clickable
+                                    isSending = true
+                                    val textToSend = messageInput.trim()
+                                    val repId = replyingToMessage?.id
+                                    val repName = replyingToMessage?.senderName
+                                    val repText = replyingToMessage?.messageText
+
+                                    coroutineScope.launch {
+                                        var uploadedImageUrl = ""
+                                        if (selectedImageUri != null) {
+                                            uploadedImageUrl = ImageHelper.saveAndPreparePermanentImage(context, selectedImageUri!!)
+                                        }
+
+                                        CommunityGroupRepository.sendMessage(
+                                            context = context,
+                                            senderId = currentUserId,
+                                            senderEmail = currentUserEmail,
+                                            senderName = senderName,
+                                            senderAvatar = senderAvatar,
+                                            messageText = textToSend,
+                                            imageUrl = uploadedImageUrl,
+                                            replyToId = repId,
+                                            replyToName = repName,
+                                            replyToText = repText
+                                        ) { success ->
+                                            isSending = false
+                                            if (success) {
+                                                messageInput = ""
+                                                selectedImageUri = null
+                                                replyingToMessage = null
+                                            } else {
+                                                Toast.makeText(context, "تعذر إرسال الرسالة، تحقق من الاتصال", Toast.LENGTH_SHORT).show()
+                                            }
+                                        }
+                                    }
+                                }
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Filled.Send,
+                                    contentDescription = "إرسال",
+                                    tint = if (canSend) Color.White else MaterialTheme.colorScheme.outline,
+                                    modifier = Modifier.size(19.dp)
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -381,8 +521,16 @@ fun TechnicianGroupChatView(
     }
 }
 
+/**
+ * Authentic Telegram / WhatsApp Chat Bubble:
+ * - Yours on one side (aligned End / Right in RTL), theirs on the other (aligned Start / Left).
+ * - Distinct speech bubble tail corners.
+ * - Inline timestamp and double checkmark (✓✓).
+ * - Quoted reply preview.
+ * - Tap/long-press actions & emoji reactions hanging neatly below the bubble.
+ */
 @Composable
-fun ChatMessageItem(
+fun TelegramChatBubble(
     message: CommunityMessage,
     isMe: Boolean,
     currentUserEmail: String,
@@ -393,172 +541,243 @@ fun ChatMessageItem(
     onZoomImage: (String) -> Unit
 ) {
     val canDelete = isMe || isAdmin
-    val bubbleColor = if (isMe) Color(0xFF0369A1).copy(alpha = 0.22f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-    val borderColor = if (isMe) Color(0xFF0284C7).copy(alpha = 0.4f) else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)
 
-    Card(
-        shape = RoundedCornerShape(14.dp),
-        colors = CardDefaults.cardColors(containerColor = bubbleColor),
-        border = BorderStroke(1.dp, borderColor),
-        modifier = Modifier.fillMaxWidth()
+    // Telegram-inspired bubble colors
+    val bubbleColor = if (isMe) Color(0xFF0369A1) else Color(0xFF1E293B)
+    val textColor = Color.White
+    val bubbleBorder = if (isMe) Color(0xFF38BDF8).copy(alpha = 0.3f) else Color(0xFF334155).copy(alpha = 0.6f)
+
+    // Speech bubble shape with tail on bottom corner (as demonstrated in namethatui reference)
+    val bubbleShape = if (isMe) {
+        RoundedCornerShape(
+            topStart = 16.dp,
+            topEnd = 16.dp,
+            bottomStart = 16.dp,
+            bottomEnd = 3.dp // Tail notch
+        )
+    } else {
+        RoundedCornerShape(
+            topStart = 16.dp,
+            topEnd = 16.dp,
+            bottomStart = 3.dp, // Tail notch
+            bottomEnd = 16.dp
+        )
+    }
+
+    var showActionMenu by remember { mutableStateOf(false) }
+
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalAlignment = if (isMe) Alignment.End else Alignment.Start
     ) {
-        Column(modifier = Modifier.padding(10.dp)) {
-            // Header: Sender name, email badge, time, and delete
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+        Row(
+            modifier = Modifier.widthIn(max = 330.dp),
+            horizontalArrangement = if (isMe) Arrangement.End else Arrangement.Start
+        ) {
+            Surface(
+                shape = bubbleShape,
+                color = bubbleColor,
+                border = BorderStroke(1.dp, bubbleBorder),
+                modifier = Modifier
+                    .clip(bubbleShape)
+                    .clickable { showActionMenu = !showActionMenu }
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box(
-                        modifier = Modifier
-                            .size(28.dp)
-                            .clip(CircleShape)
-                            .background(if (isMe) Color(0xFF0284C7).copy(alpha = 0.25f) else Color(0xFF10B981).copy(alpha = 0.2f)),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Person,
-                            contentDescription = null,
-                            tint = if (isMe) Color(0xFF0284C7) else Color(0xFF10B981),
-                            modifier = Modifier.size(16.dp)
-                        )
-                    }
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Column {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp)) {
+                    // Sender Name (For other users' messages in group chat)
+                    if (!isMe) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(bottom = 3.dp)
+                        ) {
                             Text(
                                 text = message.senderName,
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 12.sp,
-                                color = if (isMe) Color(0xFF0284C7) else MaterialTheme.colorScheme.primary
+                                color = Color(0xFF38BDF8) // Cyan highlight like Telegram
                             )
-                            if (isMe) {
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Surface(
-                                    shape = RoundedCornerShape(4.dp),
-                                    color = Color(0xFF0284C7).copy(alpha = 0.2f)
-                                ) {
-                                    Text("أنت", fontSize = 8.sp, color = Color(0xFF0284C7), modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp))
+                        }
+                    }
+
+                    // Quoted reply snippet
+                    if (!message.replyToName.isNullOrBlank()) {
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = Color.Black.copy(alpha = 0.25f),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(bottom = 5.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .width(3.dp)
+                                        .height(24.dp)
+                                        .background(if (isMe) Color.White else Color(0xFF38BDF8), RoundedCornerShape(2.dp))
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Column {
+                                    Text(
+                                        text = message.replyToName,
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = if (isMe) Color(0xFFBAE6FD) else Color(0xFF38BDF8)
+                                    )
+                                    Text(
+                                        text = message.replyToText ?: "صورة مرفقة",
+                                        fontSize = 9.sp,
+                                        color = Color.White.copy(alpha = 0.8f),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
                                 }
                             }
                         }
-                        Text(message.formattedTime, fontSize = 9.sp, color = MaterialTheme.colorScheme.outline)
                     }
-                }
 
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    IconButton(onClick = onReply, modifier = Modifier.size(26.dp)) {
-                        Icon(Icons.Default.Reply, contentDescription = "رد", tint = MaterialTheme.colorScheme.outline, modifier = Modifier.size(15.dp))
-                    }
-                    if (canDelete) {
-                        IconButton(onClick = onDelete, modifier = Modifier.size(26.dp)) {
-                            Icon(Icons.Default.Delete, contentDescription = "حذف", tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(14.dp))
-                        }
-                    }
-                }
-            }
-
-            // Quoted reply if exists
-            if (!message.replyToName.isNullOrBlank()) {
-                Surface(
-                    shape = RoundedCornerShape(8.dp),
-                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.8f),
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f)),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 4.dp, bottom = 4.dp)
-                ) {
-                    Row(modifier = Modifier.padding(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    // Attached Photo Preview
+                    if (message.imageUrl.isNotBlank()) {
                         Box(
                             modifier = Modifier
-                                .width(3.dp)
-                                .height(24.dp)
-                                .background(Color(0xFF0284C7))
+                                .fillMaxWidth()
+                                .height(190.dp)
+                                .padding(bottom = 6.dp)
+                                .clip(RoundedCornerShape(10.dp))
+                                .clickable { onZoomImage(message.imageUrl) }
+                        ) {
+                            AsyncImage(
+                                model = ImageRequest.Builder(LocalContext.current)
+                                    .data(ImageHelper.getCoilData(message.imageUrl))
+                                    .crossfade(true)
+                                    .build(),
+                                contentDescription = "صورة مرفقة",
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        }
+                    }
+
+                    // Message text
+                    if (message.messageText.isNotBlank()) {
+                        Text(
+                            text = message.messageText,
+                            fontSize = 13.sp,
+                            lineHeight = 19.sp,
+                            color = textColor
                         )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Column {
-                            Text("↩️ رداً على ${message.replyToName}:", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color(0xFF0284C7))
-                            Text(message.replyToText ?: "", fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
+                    }
+
+                    // Inline Timestamp and Delivery Indicators (bottom-end aligned)
+                    Row(
+                        modifier = Modifier
+                            .align(Alignment.End)
+                            .padding(top = 3.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = message.formattedTime,
+                            fontSize = 9.sp,
+                            color = Color.White.copy(alpha = 0.65f)
+                        )
+                        if (isMe) {
+                            Spacer(modifier = Modifier.width(3.dp))
+                            Icon(
+                                imageVector = Icons.Default.DoneAll,
+                                contentDescription = "تم التسليم",
+                                tint = Color(0xFF38BDF8), // Cyan checkmarks like WhatsApp
+                                modifier = Modifier.size(13.dp)
+                            )
                         }
                     }
                 }
             }
+        }
 
-            // Message text
-            if (message.messageText.isNotBlank()) {
-                Text(
-                    text = message.messageText,
-                    fontSize = 13.sp,
-                    lineHeight = 18.sp,
-                    modifier = Modifier.padding(vertical = 4.dp)
-                )
-            }
-
-            // Image attachment
-            if (message.imageUrl.isNotBlank()) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(180.dp)
-                        .padding(top = 4.dp)
-                        .clip(RoundedCornerShape(10.dp))
-                        .clickable { onZoomImage(message.imageUrl) }
-                ) {
-                    AsyncImage(
-                        model = message.imageUrl,
-                        contentDescription = "صورة مرفقة",
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier.fillMaxSize()
-                    )
-                }
-            }
-
-            // Quick Reactions Bar
+        // Reactions cluster directly below the bubble
+        if (message.reactions.isNotEmpty() || showActionMenu) {
             Row(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = 6.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
+                    .padding(top = 2.dp, start = if (isMe) 0.dp else 4.dp, end = if (isMe) 4.dp else 0.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // Existing reaction badges
-                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    message.reactions.forEach { (emoji, users) ->
-                        if (users.isNotEmpty()) {
-                            val didIReact = users.contains(currentUserEmail.trim().lowercase())
-                            Surface(
-                                shape = RoundedCornerShape(12.dp),
-                                color = if (didIReact) Color(0xFF0284C7).copy(alpha = 0.2f) else MaterialTheme.colorScheme.surfaceVariant,
-                                border = BorderStroke(1.dp, if (didIReact) Color(0xFF0284C7) else Color.Transparent),
-                                modifier = Modifier
-                                    .clickable { onToggleReaction(emoji) }
-                                    .padding(vertical = 1.dp)
+                // Attached reaction chips
+                message.reactions.forEach { (emoji, users) ->
+                    if (users.isNotEmpty()) {
+                        val didIReact = users.contains(currentUserEmail.trim().lowercase())
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = if (didIReact) Color(0xFF0284C7).copy(alpha = 0.35f) else Color(0xFF1E293B),
+                            border = BorderStroke(1.dp, if (didIReact) Color(0xFF38BDF8) else Color(0xFF334155)),
+                            modifier = Modifier.clickable { onToggleReaction(emoji) }
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp),
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Text(emoji, fontSize = 11.sp)
-                                    Spacer(modifier = Modifier.width(3.dp))
-                                    Text("${users.size}", fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                                }
+                                Text(emoji, fontSize = 11.sp)
+                                Spacer(modifier = Modifier.width(2.dp))
+                                Text(
+                                    text = "${users.size}",
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color.White
+                                )
                             }
                         }
                     }
                 }
 
-                // Reaction Picker Emojis
-                Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                    listOf("👍", "❤️", "💡", "🔥").forEach { emoji ->
-                        Surface(
-                            shape = CircleShape,
-                            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.6f),
-                            modifier = Modifier
-                                .clip(CircleShape)
-                                .clickable { onToggleReaction(emoji) }
+                // Quick Reaction Picker / Actions when clicked
+                if (showActionMenu) {
+                    Surface(
+                        shape = RoundedCornerShape(16.dp),
+                        color = Color(0xFF1E293B),
+                        border = BorderStroke(1.dp, Color(0xFF334155)),
+                        modifier = Modifier.padding(horizontal = 2.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
-                            Text(emoji, fontSize = 13.sp, modifier = Modifier.padding(4.dp))
+                            listOf("👍", "❤️", "🔥", "💡", "👏").forEach { emoji ->
+                                Text(
+                                    text = emoji,
+                                    fontSize = 13.sp,
+                                    modifier = Modifier
+                                        .clip(CircleShape)
+                                        .clickable {
+                                            onToggleReaction(emoji)
+                                            showActionMenu = false
+                                        }
+                                        .padding(2.dp)
+                                )
+                            }
+
+                            IconButton(
+                                onClick = {
+                                    onReply()
+                                    showActionMenu = false
+                                },
+                                modifier = Modifier.size(22.dp)
+                            ) {
+                                Icon(Icons.Default.Reply, contentDescription = "رد", tint = Color(0xFF38BDF8), modifier = Modifier.size(13.dp))
+                            }
+
+                            if (canDelete) {
+                                IconButton(
+                                    onClick = {
+                                        onDelete()
+                                        showActionMenu = false
+                                    },
+                                    modifier = Modifier.size(22.dp)
+                                ) {
+                                    Icon(Icons.Default.Delete, contentDescription = "حذف", tint = Color(0xFFEF4444), modifier = Modifier.size(13.dp))
+                                }
+                            }
                         }
                     }
                 }

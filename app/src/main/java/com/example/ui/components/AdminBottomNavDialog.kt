@@ -115,6 +115,57 @@ fun AdminBottomNavDialog(
                     }
                 }
 
+                // Tab: Technician Group Chat (جروب الفنيين والصنايعية)
+                val groupTab = tabsMap[BottomNavManager.TAB_COMMUNITY_GROUP]
+                    ?: BottomNavCustomization(id = BottomNavManager.TAB_COMMUNITY_GROUP, title = "جروب الفنيين")
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = if (groupTab.isHidden) Color(0xFFEF4444).copy(alpha = 0.08f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                    border = BorderStroke(1.dp, if (groupTab.isHidden) Color(0xFFEF4444).copy(alpha = 0.4f) else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(
+                                modifier = Modifier.weight(1f),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Tune,
+                                    contentDescription = null,
+                                    tint = if (groupTab.isHidden) Color(0xFFEF4444) else Color(0xFF38BDF8),
+                                    modifier = Modifier.size(22.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Column {
+                                    Text("جروب الفنيين والصنايعية 💬", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                    Text(
+                                        text = if (groupTab.isHidden) "مغلق ومخفي عن المستخدمين 🔒" else "متاح ونشط لجميع المستخدمين ✓",
+                                        fontSize = 11.sp,
+                                        color = if (groupTab.isHidden) Color(0xFFEF4444) else Color(0xFF10B981)
+                                    )
+                                }
+                            }
+
+                            Switch(
+                                checked = !groupTab.isHidden,
+                                onCheckedChange = { isVisible ->
+                                    BottomNavManager.setTabVisibility(context, BottomNavManager.TAB_COMMUNITY_GROUP, !isVisible) { success ->
+                                        if (success) {
+                                            val state = if (isVisible) "تفعيل وإظهار" else "إخفاء وقفل"
+                                            Toast.makeText(context, "تم $state جروب الفنيين بنجاح", Toast.LENGTH_SHORT).show()
+                                        }
+                                    }
+                                }
+                            )
+                        }
+                    }
+                }
+
                 // Tab 2: Tools (الأدوات)
                 val toolsTab = tabsMap[BottomNavManager.TAB_TOOLS]
                     ?: BottomNavCustomization(id = BottomNavManager.TAB_TOOLS, title = "الأدوات")

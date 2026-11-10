@@ -96,7 +96,16 @@ fun EditJobDialog(
     var clientLocation by remember { mutableStateOf(initialJob?.clientLocation ?: "") }
     var otherDetails by remember { mutableStateOf(initialJob?.otherDetails ?: "") }
     var imageUrl by remember { mutableStateOf(initialJob?.imageUrl ?: "") }
-    var status by remember { mutableStateOf(initialJob?.status ?: "في المخزون") }
+    var status by remember {
+        mutableStateOf(
+            when (initialJob?.status) {
+                "كشف" -> "قيد الفحص"
+                "سليمة" -> "تم التسليم والتحصيل"
+                else -> initialJob?.status ?: "في المخزون"
+            }
+        )
+    }
+    var isInspectionSound by remember { mutableStateOf(initialJob?.isInspectionSound ?: false) }
 
     val daysList = listOf("السبت", "الأحد", "الاثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة")
 
@@ -148,14 +157,12 @@ fun EditJobDialog(
     )
 
     val faultSuggestions = listOf(
-        "كشف", "سليمة (كشف فقط)", "باور", "طرمبة", "رطوبة وتمليح", "تفحم مسارات", "عطل EH0",
-        "ماتور سريع", "لا يعمل الماتور", "بروسيسور", "لوحة أزرار"
+        "الكارتة سليمة (كشف وتجربة)", "باور فاصل تماماً", "طرمبة لا تصرف", "رطوبة وتمليح", "تفحم مسارات", "عطل EH0",
+        "ماتور سريع", "لا يعمل الماتور", "بروسيسور تالف", "لوحة أزرار"
     )
 
     val statusOptions = listOf(
         "في المخزون",
-        "كشف",
-        "سليمة",
         "قيد الفحص",
         "جاهز للاستلام",
         "تم التسليم والتحصيل"
@@ -268,9 +275,59 @@ fun EditJobDialog(
                     }
                 }
 
-                // Status Selector (في المخزون / كشف / سليمة / قيد الفحص / جاهز للاستلام / تم التسليم والتحصيل)
+                // Service Type / Inspection Outcome Selector (صيانة وإصلاح أم كشف فقط وسليمة)
                 Column(modifier = Modifier.fillMaxWidth()) {
-                    Text("حالة الكارتة والصيانة 📌", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                    Text("نوع الخدمة وحالة الكارتة بعد الكشف ⚡", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = if (!isInspectionSound) MaterialTheme.colorScheme.primary.copy(alpha = 0.15f) else MaterialTheme.colorScheme.surfaceVariant,
+                            border = BorderStroke(1.5.dp, if (!isInspectionSound) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f)),
+                            modifier = Modifier
+                                .weight(1f)
+                                .clickable { isInspectionSound = false }
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.Center
+                            ) {
+                                Text("🔧 صيانة وإصلاح", fontSize = 11.sp, fontWeight = if (!isInspectionSound) FontWeight.Bold else FontWeight.Normal, color = if (!isInspectionSound) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface)
+                            }
+                        }
+
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = if (isInspectionSound) Color(0xFF10B981).copy(alpha = 0.18f) else MaterialTheme.colorScheme.surfaceVariant,
+                            border = BorderStroke(1.5.dp, if (isInspectionSound) Color(0xFF10B981) else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f)),
+                            modifier = Modifier
+                                .weight(1f)
+                                .clickable {
+                                    isInspectionSound = true
+                                    if (faultDescription.isBlank() || faultDescription == "باور") {
+                                        faultDescription = "الكارتة سليمة (فحص وتجربة)"
+                                    }
+                                }
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.Center
+                            ) {
+                                Text("✅ كشف فقط (سليمة)", fontSize = 11.sp, fontWeight = if (isInspectionSound) FontWeight.Bold else FontWeight.Normal, color = if (isInspectionSound) Color(0xFF047857) else MaterialTheme.colorScheme.onSurface)
+                            }
+                        }
+                    }
+                }
+
+                // Status Selector (في المخزون / قيد الفحص / جاهز للاستلام / تم التسليم والتحصيل)
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    Text("مرحلة الكارتة الحالية 📌", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
                     FlowRow(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -376,7 +433,7 @@ fun EditJobDialog(
                     OutlinedTextField(
                         value = costStr,
                         onValueChange = { costStr = it.filter { c -> c.isDigit() || c == '.' } },
-                        label = { Text("الحساب من العميل (ج.م)") },
+                        label = { Text(if (isInspectionSound) "حساب الكشف/الفحص (ج.م)" else "الحساب من العميل (ج.م)") },
                         placeholder = { Text("مثال: 500") },
                         leadingIcon = { Icon(Icons.Default.PriceCheck, contentDescription = null, tint = Color(0xFF10B981), modifier = Modifier.size(18.dp)) },
                         modifier = Modifier.weight(1f),
@@ -631,6 +688,7 @@ fun EditJobDialog(
                         otherDetails = otherDetails,
                         imageUrl = imageUrl,
                         status = status,
+                        serviceType = if (isInspectionSound) TechnicianJobRecord.SERVICE_TYPE_INSPECTION else TechnicianJobRecord.SERVICE_TYPE_REPAIR,
                         customFields = customFieldsMap.toMap(),
                         updatedAt = System.currentTimeMillis()
                     )

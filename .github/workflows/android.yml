@@ -75,18 +75,11 @@ jobs:
         GRADLE_OPTS: "-Dorg.gradle.internal.http.socketTimeout=180000 -Dorg.gradle.internal.http.connectionTimeout=180000"
       run: |
         gradle assembleRelease --stacktrace
+        cp app/build/outputs/apk/release/*-release.apk app/build/outputs/apk/release/AlBaraa-Electronics.apk 2>/dev/null || true
 
-    - name: Build Debug APK with Gradle
-      env:
-        GRADLE_OPTS: "-Dorg.gradle.internal.http.socketTimeout=180000 -Dorg.gradle.internal.http.connectionTimeout=180000"
-      run: |
-        gradle assembleDebug --stacktrace
-
-    - name: Upload APKs
+    - name: Upload Single APK
       uses: actions/upload-artifact@v4
       with:
-        name: albaraa-electronics-apks
-        path: |
-          app/build/outputs/apk/release/*.apk
-          app/build/outputs/apk/debug/*.apk
+        name: albaraa-electronics-apk
+        path: app/build/outputs/apk/release/AlBaraa-Electronics.apk
         if-no-files-found: warn

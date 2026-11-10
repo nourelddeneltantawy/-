@@ -257,7 +257,7 @@ fun ToolsHubScreen(
     }
 
     // Built-in Default Tool Items: Job Log + Customers Directory
-    val defaultItems = remember(jobsCount, customersCount) {
+    val defaultItems = remember(jobsCount) {
         listOf(
             ToolGridItem(
                 id = "job_log",
@@ -267,15 +267,6 @@ fun ToolsHubScreen(
                 iconTint = Color(0xFF0284C7),
                 circleBackground = Color(0xFFE0F2FE),
                 onClick = onNavigateToJobLog
-            ),
-            ToolGridItem(
-                id = "customers_dir",
-                defaultTitle = "دليل وسجل العملاء",
-                defaultSubtitle = if (customersCount > 0) "$customersCount عميل مسجل 👥" else "دليل أرقام وأماكن العملاء",
-                defaultIcon = Icons.Default.People,
-                iconTint = Color(0xFF10B981),
-                circleBackground = Color(0xFFD1FAE5),
-                onClick = onNavigateToCustomers
             )
         )
     }
@@ -284,7 +275,7 @@ fun ToolsHubScreen(
     val allItems = remember(defaultItems, customizations) {
         val list = defaultItems.toMutableList()
         val defaultIds = defaultItems.map { it.id }.toSet()
-        val obsoleteIds = setOf("receipt_gen", "receipt_generator", "diagnostics", "ai_studio", "motor_tester", "harness_map")
+        val obsoleteIds = setOf("customers_dir", "receipt_gen", "receipt_generator", "diagnostics", "ai_studio", "motor_tester", "harness_map")
 
         customizations.forEach { (id, cust) ->
             if (!defaultIds.contains(id) && !obsoleteIds.contains(id)) {

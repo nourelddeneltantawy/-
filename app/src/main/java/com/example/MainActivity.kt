@@ -93,6 +93,8 @@ import androidx.compose.material3.BadgedBox
 import android.widget.Toast
 import com.example.data.BottomNavManager
 import com.example.ui.components.AdminBottomNavDialog
+import androidx.compose.material.icons.filled.Forum
+import com.example.ui.components.TechnicianGroupChatView
 
 enum class Screen {
     DASHBOARD,
@@ -112,6 +114,7 @@ enum class Screen {
     AI_STUDIO,
     MANAGE_ADMINS,
     MARKETPLACE,
+    COMMUNITY_GROUP,
     AUTH
 }
 
@@ -426,6 +429,8 @@ fun AppContent(
     val isHomeVisible = isSuperAdmin || isAdmin || BottomNavManager.isTabVisible(BottomNavManager.TAB_HOME, isAdmin)
     val isDashboardVisible = isSuperAdmin || isAdmin || BottomNavManager.isTabVisible(BottomNavManager.TAB_DASHBOARD, isAdmin)
     val isMarketplaceHiddenForUsers = BottomNavManager.isTabHiddenForUsers(BottomNavManager.TAB_MARKETPLACE)
+    val isCommunityGroupVisible = isSuperAdmin || isAdmin || BottomNavManager.isTabVisible(BottomNavManager.TAB_COMMUNITY_GROUP, isAdmin)
+    val isCommunityGroupHiddenForUsers = BottomNavManager.isTabHiddenForUsers(BottomNavManager.TAB_COMMUNITY_GROUP)
 
     LaunchedEffect(isToolsVisible, currentScreen) {
         if (!isToolsVisible && currentScreen == Screen.TOOLS && !isAdmin) {
@@ -438,6 +443,13 @@ fun AppContent(
         if (!isMarketplaceVisible && currentScreen == Screen.MARKETPLACE && !isAdmin) {
             currentScreen = Screen.DASHBOARD
             Toast.makeText(context, "تم قفل قسم سوق الكروت من قبل الإدارة", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    LaunchedEffect(isCommunityGroupVisible, currentScreen) {
+        if (!isCommunityGroupVisible && currentScreen == Screen.COMMUNITY_GROUP && !isAdmin) {
+            currentScreen = Screen.DASHBOARD
+            Toast.makeText(context, "تم قفل جروب الفنيين من قبل الإدارة", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -627,13 +639,13 @@ fun AppContent(
                         )
                     }
 
-                    // Item 4: المجتمع (سوق الكروت + جروب الصنايعية)
+                    // Item 4: سوق الكروت (المنشورات والبيع والشراء)
                     if (isMarketplaceVisible) {
                         NavigationBarItem(
                             selected = currentScreen == Screen.MARKETPLACE,
                             onClick = {
                                 if (isMarketplaceHiddenForUsers && !isAdmin) {
-                                    Toast.makeText(context, "قسم المجتمع مغلق حالياً من قبل الإدارة للصيانة والتحديث", Toast.LENGTH_SHORT).show()
+                                    Toast.makeText(context, "سوق الكروت مغلق حالياً من قبل الإدارة للصيانة والتحديث", Toast.LENGTH_SHORT).show()
                                 } else {
                                     selectTab(Screen.MARKETPLACE)
                                 }
@@ -649,14 +661,14 @@ fun AppContent(
                                     }
                                 ) {
                                     Icon(
-                                        imageVector = if (isAdmin && isMarketplaceHiddenForUsers) Icons.Default.Lock else Icons.Default.Groups,
-                                        contentDescription = "المجتمع"
+                                        imageVector = if (isAdmin && isMarketplaceHiddenForUsers) Icons.Default.Lock else Icons.Default.Storefront,
+                                        contentDescription = "سوق الكروت"
                                     )
                                 }
                             },
                             label = {
                                 Text(
-                                    if (isAdmin && isMarketplaceHiddenForUsers) "المجتمع (مغلق)" else "المجتمع",
+                                    if (isAdmin && isMarketplaceHiddenForUsers) "سوق الكروت (مغلق)" else "سوق الكروت",
                                     fontSize = 11.sp,
                                     fontWeight = if (currentScreen == Screen.MARKETPLACE) FontWeight.Bold else FontWeight.Normal
                                 )
@@ -665,6 +677,48 @@ fun AppContent(
                                 selectedIconColor = if (isAdmin && isMarketplaceHiddenForUsers) Color(0xFFEF4444) else Color(0xFF10B981),
                                 selectedTextColor = if (isAdmin && isMarketplaceHiddenForUsers) Color(0xFFEF4444) else Color(0xFF10B981),
                                 indicatorColor = if (isAdmin && isMarketplaceHiddenForUsers) Color(0xFFFEE2E2) else Color(0xFFD1FAE5)
+                            )
+                        )
+                    }
+
+                    // Item 5: جروب الفنيين والصنايعية (محادثة مباشرة منفصلة)
+                    if (isCommunityGroupVisible) {
+                        NavigationBarItem(
+                            selected = currentScreen == Screen.COMMUNITY_GROUP,
+                            onClick = {
+                                if (isCommunityGroupHiddenForUsers && !isAdmin) {
+                                    Toast.makeText(context, "جروب الفنيين مغلق حالياً من قبل الإدارة للصيانة", Toast.LENGTH_SHORT).show()
+                                } else {
+                                    selectTab(Screen.COMMUNITY_GROUP)
+                                }
+                            },
+                            icon = {
+                                BadgedBox(
+                                    badge = {
+                                        if (isAdmin && isCommunityGroupHiddenForUsers) {
+                                            Badge(containerColor = Color(0xFFEF4444)) {
+                                                Text("مغلق", fontSize = 8.sp, color = Color.White)
+                                            }
+                                        }
+                                    }
+                                ) {
+                                    Icon(
+                                        imageVector = if (isAdmin && isCommunityGroupHiddenForUsers) Icons.Default.Lock else Icons.Default.Forum,
+                                        contentDescription = "جروب الفنيين"
+                                    )
+                                }
+                            },
+                            label = {
+                                Text(
+                                    if (isAdmin && isCommunityGroupHiddenForUsers) "جروب الفنيين (مغلق)" else "جروب الفنيين",
+                                    fontSize = 11.sp,
+                                    fontWeight = if (currentScreen == Screen.COMMUNITY_GROUP) FontWeight.Bold else FontWeight.Normal
+                                )
+                            },
+                            colors = NavigationBarItemDefaults.colors(
+                                selectedIconColor = if (isAdmin && isCommunityGroupHiddenForUsers) Color(0xFFEF4444) else Color(0xFF0284C7),
+                                selectedTextColor = if (isAdmin && isCommunityGroupHiddenForUsers) Color(0xFFEF4444) else Color(0xFF0284C7),
+                                indicatorColor = if (isAdmin && isCommunityGroupHiddenForUsers) Color(0xFFFEE2E2) else Color(0xFFE0F2FE)
                             )
                         )
                     }
@@ -1170,6 +1224,25 @@ fun AppContent(
                         MarketplaceScreen(
                             currentUserId = userId,
                             currentUserEmail = userEmail,
+                            isAdmin = isAdmin,
+                            isGuest = isGuest,
+                            onAuthClick = {
+                                navigateTo(Screen.AUTH)
+                            },
+                            onBackClick = {
+                                selectTab(Screen.DASHBOARD)
+                            }
+                        )
+                    }
+
+                    Screen.COMMUNITY_GROUP -> {
+                        BackHandler {
+                            selectTab(Screen.DASHBOARD)
+                        }
+                        TechnicianGroupChatView(
+                            currentUserId = userId,
+                            currentUserEmail = userEmail,
+                            userProfile = null,
                             isAdmin = isAdmin,
                             isGuest = isGuest,
                             onAuthClick = {

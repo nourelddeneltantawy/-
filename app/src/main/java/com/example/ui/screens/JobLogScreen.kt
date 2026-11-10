@@ -102,11 +102,9 @@ import com.example.util.ImageHelper
 import java.text.SimpleDateFormat
 import java.util.Locale
 
-// Pre-defined status pipeline including "كشف" and "سليمة"
+// Standard lifecycle pipeline for cards
 val JOB_STATUSES = listOf(
     "في المخزون",
-    "كشف",
-    "سليمة",
     "قيد الفحص",
     "جاهز للاستلام",
     "تم التسليم والتحصيل"
@@ -186,11 +184,11 @@ fun JobLogScreen(
         val matchesStatus = when (selectedFilterStatus) {
             "الكل" -> true
             "في المخزون" -> job.status.contains("المخزون") || job.status.isBlank()
-            "كشف" -> job.status.contains("كشف") || job.faultDescription.contains("كشف")
-            "سليمة" -> job.status.contains("سليمة")
             "قيد الفحص" -> job.status.contains("الفحص") || job.status.contains("صيانة")
             "جاهز للاستلام" -> job.status.contains("جاهز")
             "تم التسليم والتحصيل" -> job.status.contains("تسليم") || job.status.contains("تحصيل")
+            "كشف وسليمة فقط ✅" -> job.isInspectionSound
+            "صيانة فقط 🔧" -> !job.isInspectionSound
             else -> job.status == selectedFilterStatus
         }
 
@@ -482,11 +480,23 @@ fun JobLogScreen(
                         Text("إضافة كارت جديد ➕", fontSize = 12.sp, fontWeight = FontWeight.Bold)
                     }
 
-                    Text(
-                        text = "حدد كروت لتغيير حالتها أو حذفها معاً ✓",
-                        fontSize = 11.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                    if (onOpenCustomers != null) {
+                        OutlinedButton(
+                            onClick = onOpenCustomers,
+                            shape = RoundedCornerShape(10.dp),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+                        ) {
+                            Icon(Icons.Default.People, contentDescription = null, tint = Color(0xFF10B981), modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("دليل وسجل العملاء 👥", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color(0xFF10B981))
+                        }
+                    } else {
+                        Text(
+                            text = "حدد كروت لتغيير حالتها أو حذفها معاً ✓",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                 }
             }
 
@@ -574,16 +584,16 @@ fun JobLogScreen(
                     .padding(horizontal = 16.dp, vertical = 2.dp),
                 horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                val filters = listOf("الكل", "في المخزون", "كشف", "سليمة", "قيد الفحص", "جاهز للاستلام", "تم التسليم والتحصيل")
+                val filters = listOf("الكل", "في المخزون", "قيد الفحص", "جاهز للاستلام", "تم التسليم والتحصيل", "كشف وسليمة فقط ✅", "صيانة فقط 🔧")
                 items(filters) { flt ->
                     val count = when (flt) {
                         "الكل" -> jobsList.size
                         "في المخزون" -> jobsList.count { it.status.contains("المخزون") || it.status.isBlank() }
-                        "كشف" -> jobsList.count { it.status.contains("كشف") || it.faultDescription.contains("كشف") }
-                        "سليمة" -> jobsList.count { it.status.contains("سليمة") }
                         "قيد الفحص" -> jobsList.count { it.status.contains("الفحص") || it.status.contains("صيانة") }
                         "جاهز للاستلام" -> jobsList.count { it.status.contains("جاهز") }
                         "تم التسليم والتحصيل" -> jobsList.count { it.status.contains("تسليم") || it.status.contains("تحصيل") }
+                        "كشف وسليمة فقط ✅" -> jobsList.count { it.isInspectionSound }
+                        "صيانة فقط 🔧" -> jobsList.count { !it.isInspectionSound }
                         else -> 0
                     }
                     FilterChip(
@@ -889,7 +899,21 @@ fun JobChipCard(
                                 fontSize = 13.sp,
                                 color = MaterialTheme.colorScheme.onSurface
                             )
-                            if (job.faultDescription.isNotBlank()) {
+                            if (job.isInspectionSound) {
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Surface(
+                                    shape = RoundedCornerShape(6.dp),
+                                    color = Color(0xFF10B981).copy(alpha = 0.15f)
+                                ) {
+                                    Text(
+                                        text = "✅ كشف (سليمة)",
+                                        fontSize = 10.sp,
+                                        color = Color(0xFF047857),
+                                        fontWeight = FontWeight.Bold,
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                    )
+                                }
+                            } else if (job.faultDescription.isNotBlank()) {
                                 Spacer(modifier = Modifier.width(6.dp))
                                 Surface(
                                     shape = RoundedCornerShape(6.dp),

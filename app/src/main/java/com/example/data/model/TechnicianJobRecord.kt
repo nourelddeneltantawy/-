@@ -26,12 +26,16 @@ data class TechnicianJobRecord(
     val otherDetails: String = "", // تفاصيل أخرى / ملاحظات: e.g. "تم بيعه كارت خلع"
     val imageUrl: String = "", // صورة للكارت
     val status: String = "في المخزون", // في المخزون / قيد الفحص / جاهز للاستلام / تم التسليم والتحصيل
+    val serviceType: String = SERVICE_TYPE_REPAIR, // REPAIR (صيانة وإصلاح) or INSPECTION_SOUND (كشف فقط - سليمة)
     val customFields: Map<String, String> = emptyMap(), // خانات إضافية يحددها المستخدم
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis()
 ) {
     val netProfit: Double
         get() = cost - expenseCost
+
+    val isInspectionSound: Boolean
+        get() = serviceType == SERVICE_TYPE_INSPECTION || status == "كشف" || status == "سليمة" || faultDescription.contains("سليمة")
 
     fun toMap(): Map<String, Any?> {
         return mapOf(
@@ -51,6 +55,7 @@ data class TechnicianJobRecord(
             "otherDetails" to otherDetails,
             "imageUrl" to imageUrl,
             "status" to status,
+            "serviceType" to serviceType,
             "customFields" to customFields,
             "createdAt" to createdAt,
             "updatedAt" to updatedAt
@@ -58,8 +63,25 @@ data class TechnicianJobRecord(
     }
 
     companion object {
+        const val SERVICE_TYPE_REPAIR = "REPAIR"
+        const val SERVICE_TYPE_INSPECTION = "INSPECTION_SOUND"
+
         @Suppress("UNCHECKED_CAST")
         fun fromMap(id: String, map: Map<String, Any?>): TechnicianJobRecord {
+            val rawStatus = (map["status"] as? String) ?: "في المخزون"
+            val rawServiceType = (map["serviceType"] as? String) ?: ""
+            val fault = (map["faultDescription"] as? String) ?: ""
+
+            val mappedServiceType = if (rawServiceType.isNotBlank()) rawServiceType
+                else if (rawStatus == "كشف" || rawStatus == "سليمة" || fault.contains("سليمة")) SERVICE_TYPE_INSPECTION
+                else SERVICE_TYPE_REPAIR
+
+            val normalizedStatus = when (rawStatus) {
+                "كشف" -> "قيد الفحص"
+                "سليمة" -> "تم التسليم والتحصيل"
+                else -> rawStatus
+            }
+
             return TechnicianJobRecord(
                 id = id,
                 userEmail = (map["userEmail"] as? String) ?: "",
@@ -69,14 +91,15 @@ data class TechnicianJobRecord(
                 clientPhone = (map["clientPhone"] as? String) ?: "",
                 whatsappUrl = (map["whatsappUrl"] as? String) ?: "",
                 deviceType = (map["deviceType"] as? String) ?: "",
-                faultDescription = (map["faultDescription"] as? String) ?: "",
+                faultDescription = fault,
                 cost = (map["cost"] as? Number)?.toDouble() ?: 0.0,
                 expenseCost = (map["expenseCost"] as? Number)?.toDouble() ?: 0.0,
                 replacedParts = (map["replacedParts"] as? String) ?: "",
                 clientLocation = (map["clientLocation"] as? String) ?: "",
                 otherDetails = (map["otherDetails"] as? String) ?: "",
                 imageUrl = (map["imageUrl"] as? String) ?: "",
-                status = (map["status"] as? String) ?: "في المخزون",
+                status = normalizedStatus,
+                serviceType = mappedServiceType,
                 customFields = (map["customFields"] as? Map<String, String>) ?: emptyMap(),
                 createdAt = (map["createdAt"] as? Number)?.toLong() ?: System.currentTimeMillis(),
                 updatedAt = (map["updatedAt"] as? Number)?.toLong() ?: System.currentTimeMillis()
