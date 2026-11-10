@@ -44,7 +44,10 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Storefront
 import androidx.compose.material.icons.filled.Verified
 import androidx.compose.material.icons.filled.Engineering
+import androidx.compose.material.icons.filled.Forum
+import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.Refresh
+import com.example.ui.components.TechnicianGroupChatView
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
@@ -138,6 +141,9 @@ fun MarketplaceScreen(
         displayName = currentUserEmail?.substringBefore("@") ?: "فني البراء"
     )
 
+    // 0: Marketplace Posts (سوق ومنشورات الكروت), 1: Technicians Group Chat (جروب الصنايعية والفنيين)
+    var communitySectionIndex by remember { mutableIntStateOf(0) }
+
     // 0: SELL, 1: BUY, 2: MY_POSTS (Facebook-style profile/posts)
     var selectedTabIndex by remember { mutableIntStateOf(0) }
     var searchQuery by remember { mutableStateOf("") }
@@ -201,7 +207,7 @@ fun MarketplaceScreen(
         modifier = modifier.fillMaxSize().testTag("marketplace_screen"),
         snackbarHost = { SnackbarHost(snackbarHostState) },
         floatingActionButton = {
-            if (selectedTabIndex != 2) {
+            if (communitySectionIndex == 0 && selectedTabIndex != 2) {
                 FloatingActionButton(
                     onClick = {
                         if (isGuest || currentUserEmail.isNullOrBlank()) {
@@ -273,7 +279,7 @@ fun MarketplaceScreen(
                             ) {
                                 Box(contentAlignment = Alignment.Center) {
                                     Icon(
-                                        imageVector = Icons.Default.Storefront,
+                                        imageVector = Icons.Default.Groups,
                                         contentDescription = null,
                                         tint = MaterialTheme.colorScheme.primary,
                                         modifier = Modifier.size(20.dp)
@@ -282,11 +288,11 @@ fun MarketplaceScreen(
                             }
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                text = "سوق الكروت والصيانة",
+                                text = "مجتمع الفنيين وسوق الكروت 🤝",
                                 style = MaterialTheme.typography.titleMedium.copy(
                                     color = Color.White,
                                     fontWeight = FontWeight.Bold,
-                                    fontSize = 17.sp
+                                    fontSize = 16.sp
                                 )
                             )
                         }
@@ -346,35 +352,80 @@ fun MarketplaceScreen(
                         }
                     }
 
-                    Spacer(modifier = Modifier.height(8.dp))
+                    if (communitySectionIndex == 0) {
+                        Spacer(modifier = Modifier.height(8.dp))
 
-                    // Predictive Search Autocomplete Box
-                    SearchAutocompleteBox(
-                        query = searchQuery,
-                        onQueryChange = { searchQuery = it },
-                        placeholder = "ابحث بالاسم، الموديل، الحي، أو الفني...",
-                        allSuggestions = autocompleteSuggestions,
-                        modifier = Modifier.fillMaxWidth()
-                    )
+                        // Predictive Search Autocomplete Box
+                        SearchAutocompleteBox(
+                            query = searchQuery,
+                            onQueryChange = { searchQuery = it },
+                            placeholder = "ابحث بالاسم، الموديل، الحي، أو الفني...",
+                            allSuggestions = autocompleteSuggestions,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
                 }
             }
 
-            // Breadcrumbs Navigation Trail
-            BreadcrumbBar(
-                items = listOf(
-                    BreadcrumbItem(title = "الأقسام", onClick = onBackClick),
-                    BreadcrumbItem(title = "سوق الكروت", onClick = { selectedTabIndex = 0 }),
-                    BreadcrumbItem(
-                        title = when (selectedTabIndex) {
-                            0 -> "بيع كروت 🏷️"
-                            1 -> "طلب شراء 🔍"
-                            else -> "صفحتي وإعلاناتي 👤"
-                        },
-                        isCurrent = true
+            // Primary Community Tabs (طلب المستخدم: الخانة فيها قائمة للمنشورات وقائمة ثانية جروب للصنايعية)
+            TabRow(
+                selectedTabIndex = communitySectionIndex,
+                containerColor = MaterialTheme.colorScheme.surface,
+                contentColor = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Tab(
+                    selected = communitySectionIndex == 0,
+                    onClick = { communitySectionIndex = 0 },
+                    text = {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.Storefront, contentDescription = null, modifier = Modifier.size(15.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("منشورات وسوق الكروت 🛒", fontWeight = if (communitySectionIndex == 0) FontWeight.Bold else FontWeight.Normal, fontSize = 12.sp)
+                        }
+                    }
+                )
+                Tab(
+                    selected = communitySectionIndex == 1,
+                    onClick = { communitySectionIndex = 1 },
+                    text = {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.Forum, contentDescription = null, modifier = Modifier.size(15.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("جروب الصنايعية والفنيين 💬", fontWeight = if (communitySectionIndex == 1) FontWeight.Bold else FontWeight.Normal, fontSize = 12.sp)
+                        }
+                    }
+                )
+            }
+
+            if (communitySectionIndex == 1) {
+                TechnicianGroupChatView(
+                    currentUserId = currentUserId,
+                    currentUserEmail = currentUserEmail,
+                    userProfile = myProfile,
+                    isAdmin = isAdmin,
+                    isGuest = isGuest,
+                    onAuthClick = onAuthClick,
+                    onZoomImage = { zoomedImageUrl = it }
+                )
+            } else {
+                Column(modifier = Modifier.fillMaxSize()) {
+                    // Breadcrumbs Navigation Trail
+                    BreadcrumbBar(
+                        items = listOf(
+                            BreadcrumbItem(title = "الأقسام", onClick = onBackClick),
+                            BreadcrumbItem(title = "سوق الكروت", onClick = { selectedTabIndex = 0 }),
+                            BreadcrumbItem(
+                                title = when (selectedTabIndex) {
+                                    0 -> "بيع كروت 🏷️"
+                                    1 -> "طلب شراء 🔍"
+                                    else -> "صفحتي وإعلاناتي 👤"
+                                },
+                                isCurrent = true
+                            )
+                        ),
+                        onHomeClick = onBackClick
                     )
-                ),
-                onHomeClick = onBackClick
-            )
 
             // Tabs: 1. SELL, 2. BUY, 3. MY POSTS & PROFILE
             TabRow(
@@ -816,6 +867,8 @@ fun MarketplaceScreen(
                 }
             }
         }
+    }
+}
     }
 
     // Dialog: Create or Edit Post

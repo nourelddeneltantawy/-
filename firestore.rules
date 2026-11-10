@@ -145,5 +145,10 @@ service cloud.firestore {
     match /user_tools_settings/{userEmail} {
       allow get, list, create, update, delete: if true;
     }
+
+    // Community Group Messages (جروب المحادثة والتواصل للفنيين والصنايعية)
+    match /community_group_messages/{msgId} {
+      allow get, list, create, update, delete: if true;
+    }
   }
 }

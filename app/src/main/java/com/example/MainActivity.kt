@@ -81,9 +81,11 @@ import com.example.ui.screens.ProgrammingScreen
 import com.example.ui.screens.MarketplaceScreen
 import com.example.ui.screens.ToolsHubScreen
 import com.example.ui.screens.JobLogScreen
+import com.example.ui.screens.CustomersDirectoryScreen
 import com.example.data.repository.JobRecordRepository
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Storefront
+import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material3.Badge
@@ -106,6 +108,7 @@ enum class Screen {
     PROGRAMMING,
     TOOLS,
     JOB_LOG,
+    CUSTOMERS_DIR,
     AI_STUDIO,
     MANAGE_ADMINS,
     MARKETPLACE,
@@ -123,6 +126,7 @@ class MainActivity : ComponentActivity() {
         com.example.data.ToolsCategoryManager.init(this)
         JobRecordRepository.init(this, null, null)
         com.example.data.repository.MarketplaceRepository.init(this, null, null)
+        com.example.data.repository.CommunityGroupRepository.init(this)
         enableEdgeToEdge()
         setContent {
             val themeMode by com.example.util.ThemeManager.themeMode.collectAsState()
@@ -623,13 +627,13 @@ fun AppContent(
                         )
                     }
 
-                    // Item 3: سوق الكروت (البيع والشراء)
+                    // Item 4: المجتمع (سوق الكروت + جروب الصنايعية)
                     if (isMarketplaceVisible) {
                         NavigationBarItem(
                             selected = currentScreen == Screen.MARKETPLACE,
                             onClick = {
                                 if (isMarketplaceHiddenForUsers && !isAdmin) {
-                                    Toast.makeText(context, "قسم سوق الكروت مغلق حالياً من قبل الإدارة للصيانة والتحديث", Toast.LENGTH_SHORT).show()
+                                    Toast.makeText(context, "قسم المجتمع مغلق حالياً من قبل الإدارة للصيانة والتحديث", Toast.LENGTH_SHORT).show()
                                 } else {
                                     selectTab(Screen.MARKETPLACE)
                                 }
@@ -645,14 +649,14 @@ fun AppContent(
                                     }
                                 ) {
                                     Icon(
-                                        imageVector = if (isAdmin && isMarketplaceHiddenForUsers) Icons.Default.Lock else Icons.Default.Storefront,
-                                        contentDescription = "سوق الكروت"
+                                        imageVector = if (isAdmin && isMarketplaceHiddenForUsers) Icons.Default.Lock else Icons.Default.Groups,
+                                        contentDescription = "المجتمع"
                                     )
                                 }
                             },
                             label = {
                                 Text(
-                                    if (isAdmin && isMarketplaceHiddenForUsers) "سوق الكروت (مغلق)" else "سوق الكروت",
+                                    if (isAdmin && isMarketplaceHiddenForUsers) "المجتمع (مغلق)" else "المجتمع",
                                     fontSize = 11.sp,
                                     fontWeight = if (currentScreen == Screen.MARKETPLACE) FontWeight.Bold else FontWeight.Normal
                                 )
@@ -978,6 +982,7 @@ fun AppContent(
                             userEmail = userEmail,
                             isAdmin = isAdmin,
                             onNavigateToJobLog = { navigateTo(Screen.JOB_LOG) },
+                            onNavigateToCustomers = { navigateTo(Screen.CUSTOMERS_DIR) },
                             onNavigateToIntegrator = { navigateTo(Screen.SYSTEM_INTEGRATOR) },
                             onNavigateToHarnesses = { navigateTo(Screen.HARNESS_LIST) },
                             onNavigateToDiagnostics = { title ->
@@ -985,7 +990,8 @@ fun AppContent(
                                 navigateTo(Screen.DIAGNOSTICS)
                             },
                             onNavigateToAiStudio = { navigateTo(Screen.AI_STUDIO) },
-                            onNavigateToProfile = onOpenWelcomeProfile
+                            onNavigateToProfile = onOpenWelcomeProfile,
+                            onAuthClick = { navigateTo(Screen.AUTH) }
                         )
                     }
 
@@ -995,7 +1001,19 @@ fun AppContent(
                         }
                         JobLogScreen(
                             userEmail = userEmail,
-                            onBackClick = { navigateBack() }
+                            onBackClick = { navigateBack() },
+                            onOpenCustomers = { navigateTo(Screen.CUSTOMERS_DIR) }
+                        )
+                    }
+
+                    Screen.CUSTOMERS_DIR -> {
+                        BackHandler {
+                            navigateBack()
+                        }
+                        CustomersDirectoryScreen(
+                            userEmail = userEmail,
+                            onBackClick = { navigateBack() },
+                            onOpenJobLog = { navigateTo(Screen.JOB_LOG) }
                         )
                     }
 

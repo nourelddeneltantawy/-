@@ -45,6 +45,7 @@ import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Memory
+import androidx.compose.material.icons.filled.People
 import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material.icons.filled.PriceCheck
 import androidx.compose.material.icons.filled.Receipt
@@ -101,19 +102,32 @@ import com.example.util.ImageHelper
 import java.text.SimpleDateFormat
 import java.util.Locale
 
-// Pre-defined status pipeline
+// Pre-defined status pipeline including "كشف" and "سليمة"
 val JOB_STATUSES = listOf(
     "في المخزون",
+    "كشف",
+    "سليمة",
     "قيد الفحص",
     "جاهز للاستلام",
     "تم التسليم والتحصيل"
 )
 
+enum class JobSearchScope(val title: String) {
+    ALL("الكل 🌐"),
+    PHONE("رقم الهاتف 📞"),
+    DEVICE("نوع الكارتة 💻"),
+    LOCATION("المكان 📍"),
+    DATE("التاريخ 📅"),
+    FAULT("العطل / كشف ⚡"),
+    PARTS("قطع الغيار 🔧")
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun JobLogScreen(
     userEmail: String?,
-    onBackClick: () -> Unit
+    onBackClick: () -> Unit,
+    onOpenCustomers: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
     val currentEmail = (userEmail ?: "guest").trim().lowercase()
@@ -121,9 +135,10 @@ fun JobLogScreen(
     val jobsList by JobRecordRepository.jobs.collectAsState()
 
     var searchQuery by remember { mutableStateOf("") }
+    var selectedSearchScope by remember { mutableStateOf(JobSearchScope.ALL) }
     var selectedFilterStatus by remember { mutableStateOf("الكل") }
 
-    // Multi-selection for receipts
+    // Multi-selection for batch actions & receipts
     val selectedJobIds = remember { mutableStateListOf<String>() }
 
     var jobToEdit by remember { mutableStateOf<TechnicianJobRecord?>(null) }
@@ -136,6 +151,10 @@ fun JobLogScreen(
     var jobToDelete by remember { mutableStateOf<TechnicianJobRecord?>(null) }
     var showDeleteConfirmDialog by remember { mutableStateOf(false) }
 
+    // Batch Action Dialogs
+    var showBatchStatusDialog by remember { mutableStateOf(false) }
+    var showBatchDeleteDialog by remember { mutableStateOf(false) }
+
     // Quick status transfer dialog
     var jobToMoveStatus by remember { mutableStateOf<TechnicianJobRecord?>(null) }
 
@@ -147,17 +166,28 @@ fun JobLogScreen(
     }
 
     val filteredJobs = jobsList.filter { job ->
-        val matchesSearch = searchQuery.isBlank() ||
-                job.clientPhone.contains(searchQuery.trim()) ||
-                job.deviceType.contains(searchQuery.trim(), ignoreCase = true) ||
-                job.faultDescription.contains(searchQuery.trim(), ignoreCase = true) ||
-                job.clientLocation.contains(searchQuery.trim(), ignoreCase = true) ||
-                job.date.contains(searchQuery.trim()) ||
-                job.replacedParts.contains(searchQuery.trim(), ignoreCase = true)
+        val q = searchQuery.trim()
+        val matchesSearch = q.isBlank() || when (selectedSearchScope) {
+            JobSearchScope.ALL -> job.clientPhone.contains(q) ||
+                    job.deviceType.contains(q, ignoreCase = true) ||
+                    job.faultDescription.contains(q, ignoreCase = true) ||
+                    job.clientLocation.contains(q, ignoreCase = true) ||
+                    job.date.contains(q) ||
+                    job.dayOfWeek.contains(q) ||
+                    job.replacedParts.contains(q, ignoreCase = true)
+            JobSearchScope.PHONE -> job.clientPhone.contains(q)
+            JobSearchScope.DEVICE -> job.deviceType.contains(q, ignoreCase = true)
+            JobSearchScope.LOCATION -> job.clientLocation.contains(q, ignoreCase = true)
+            JobSearchScope.DATE -> job.date.contains(q) || job.dayOfWeek.contains(q)
+            JobSearchScope.FAULT -> job.faultDescription.contains(q, ignoreCase = true) || job.status.contains(q, ignoreCase = true)
+            JobSearchScope.PARTS -> job.replacedParts.contains(q, ignoreCase = true)
+        }
 
         val matchesStatus = when (selectedFilterStatus) {
             "الكل" -> true
             "في المخزون" -> job.status.contains("المخزون") || job.status.isBlank()
+            "كشف" -> job.status.contains("كشف") || job.faultDescription.contains("كشف")
+            "سليمة" -> job.status.contains("سليمة")
             "قيد الفحص" -> job.status.contains("الفحص") || job.status.contains("صيانة")
             "جاهز للاستلام" -> job.status.contains("جاهز")
             "تم التسليم والتحصيل" -> job.status.contains("تسليم") || job.status.contains("تحصيل")
@@ -197,6 +227,15 @@ fun JobLogScreen(
                     }
                 },
                 actions = {
+                    if (onOpenCustomers != null) {
+                        IconButton(onClick = onOpenCustomers) {
+                            Icon(
+                                imageVector = Icons.Default.People,
+                                contentDescription = "دليل وسجل العملاء",
+                                tint = Color(0xFF38BDF8)
+                            )
+                        }
+                    }
                     // Monthly profit statistics button
                     IconButton(onClick = { showMonthlyStatsDialog = true }) {
                         Icon(
@@ -319,37 +358,116 @@ fun JobLogScreen(
                 }
             }
 
-            // Top Action Row: Add New Card + Multi-card Receipt Button
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 4.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                // If cards are selected, show combined receipt button
-                if (selectedJobIds.isNotEmpty()) {
-                    Button(
-                        onClick = {
-                            val selectedJobs = jobsList.filter { selectedJobIds.contains(it.id) }
-                            if (selectedJobs.isNotEmpty()) {
-                                jobsToShare = selectedJobs
-                                showShareDialog = true
+            // Batch Action Toolbar OR Single Creation Row
+            if (selectedJobIds.isNotEmpty()) {
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = Color(0xFF0F172A),
+                    border = BorderStroke(1.2.dp, Color(0xFF0284C7)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 4.dp)
+                ) {
+                    Column(modifier = Modifier.padding(10.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "تم تحديد ${selectedJobIds.size} كروت 🎯",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 12.sp,
+                                color = Color(0xFF38BDF8)
+                            )
+                            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                TextButton(
+                                    onClick = {
+                                        if (selectedJobIds.size == filteredJobs.size) {
+                                            selectedJobIds.clear()
+                                        } else {
+                                            selectedJobIds.clear()
+                                            selectedJobIds.addAll(filteredJobs.map { it.id })
+                                        }
+                                    },
+                                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
+                                ) {
+                                    Text(
+                                        if (selectedJobIds.size == filteredJobs.size) "إلغاء الكل" else "تحديد الكل",
+                                        fontSize = 11.sp
+                                    )
+                                }
+                                TextButton(
+                                    onClick = { selectedJobIds.clear() },
+                                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
+                                ) {
+                                    Text("إلغاء ✖", fontSize = 11.sp, color = MaterialTheme.colorScheme.error)
+                                }
                             }
-                        },
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0284C7)),
-                        shape = RoundedCornerShape(10.dp),
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
-                    ) {
-                        Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(15.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("إيصال مجمع (${selectedJobIds.size} كروت) 📸", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                    }
+                        }
 
-                    TextButton(onClick = { selectedJobIds.clear() }) {
-                        Text("إلغاء التحديد", fontSize = 11.sp, color = MaterialTheme.colorScheme.error)
+                        // Batch Action Buttons Row (تغيير الحالة مع بعض / حذف مع بعض / إيصال مجمع)
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 4.dp),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            // Combined Receipt
+                            Button(
+                                onClick = {
+                                    val selectedJobs = jobsList.filter { selectedJobIds.contains(it.id) }
+                                    if (selectedJobs.isNotEmpty()) {
+                                        jobsToShare = selectedJobs
+                                        showShareDialog = true
+                                    }
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0284C7)),
+                                shape = RoundedCornerShape(8.dp),
+                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(13.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("إيصال مجمع", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            }
+
+                            // Batch Status Change (طلب المستخدم: اغير حالتها مع بعض)
+                            Button(
+                                onClick = { showBatchStatusDialog = true },
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF8B5CF6)),
+                                shape = RoundedCornerShape(8.dp),
+                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp),
+                                modifier = Modifier.weight(1.1f)
+                            ) {
+                                Icon(Icons.Default.SwapHoriz, contentDescription = null, modifier = Modifier.size(13.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("تغيير الحالة 🔄", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            }
+
+                            // Batch Delete (طلب المستخدم: احذفهم مع بعض)
+                            Button(
+                                onClick = { showBatchDeleteDialog = true },
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626)),
+                                shape = RoundedCornerShape(8.dp),
+                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp),
+                                modifier = Modifier.weight(0.9f)
+                            ) {
+                                Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(13.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("حذف 🗑️", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
                     }
-                } else {
+                }
+            } else {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 4.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
                     Button(
                         onClick = {
                             jobToEdit = null
@@ -365,21 +483,34 @@ fun JobLogScreen(
                     }
 
                     Text(
-                        text = "اختر كروت لدمجها في إيصال واحد ✓",
+                        text = "حدد كروت لتغيير حالتها أو حذفها معاً ✓",
                         fontSize = 11.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
 
-            // Search Bar
+            // Search Bar with Dynamic Scope Placeholder
             OutlinedTextField(
                 value = searchQuery,
                 onValueChange = { searchQuery = it },
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp, vertical = 4.dp),
-                placeholder = { Text("🔍 ابحث برقم الهاتف، نوع الكارتة، أو العطل...", fontSize = 12.sp) },
+                placeholder = {
+                    Text(
+                        text = when (selectedSearchScope) {
+                            JobSearchScope.ALL -> "🔍 ابحث برقم الهاتف، الكارتة، المكان، أو العطل..."
+                            JobSearchScope.PHONE -> "🔍 ابحث في رقم هاتف العميل..."
+                            JobSearchScope.DEVICE -> "🔍 ابحث في نوع الجهاز والكارتة..."
+                            JobSearchScope.LOCATION -> "🔍 ابحث في مكان أو عنوان العميل..."
+                            JobSearchScope.DATE -> "🔍 ابحث في تاريخ أو يوم الصيانة..."
+                            JobSearchScope.FAULT -> "🔍 ابحث في العطل أو الكشف أو السليمة..."
+                            JobSearchScope.PARTS -> "🔍 ابحث في قطع الغيار المبدلة..."
+                        },
+                        fontSize = 11.sp
+                    )
+                },
                 leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
                 trailingIcon = {
                     if (searchQuery.isNotBlank()) {
@@ -396,18 +527,60 @@ fun JobLogScreen(
                 )
             )
 
-            // Filter Chips (الكل / في المخزون / قيد الفحص / جاهز للاستلام / تم التسليم والتحصيل)
+            // Search Scope Selector Chips (طلب المستخدم: فلتر اقدر اختار هبحث فين برقم العميل او مكانه او الكارته او التاريخ)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 1.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "نطاق البحث:",
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.outline,
+                    modifier = Modifier.padding(end = 6.dp)
+                )
+                LazyRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    items(JobSearchScope.values()) { scope ->
+                        val isSelected = selectedSearchScope == scope
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
+                            border = BorderStroke(1.dp, if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f)),
+                            modifier = Modifier
+                                .clickable { selectedSearchScope = scope }
+                                .padding(vertical = 1.dp)
+                        ) {
+                            Text(
+                                text = scope.title,
+                                fontSize = 10.sp,
+                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                color = if (isSelected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Filter Chips (الكل / في المخزون / كشف / سليمة / قيد الفحص / جاهز للاستلام / تم التسليم والتحصيل)
             LazyRow(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp, vertical = 2.dp),
                 horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                val filters = listOf("الكل", "في المخزون", "قيد الفحص", "جاهز للاستلام", "تم التسليم والتحصيل")
+                val filters = listOf("الكل", "في المخزون", "كشف", "سليمة", "قيد الفحص", "جاهز للاستلام", "تم التسليم والتحصيل")
                 items(filters) { flt ->
                     val count = when (flt) {
                         "الكل" -> jobsList.size
                         "في المخزون" -> jobsList.count { it.status.contains("المخزون") || it.status.isBlank() }
+                        "كشف" -> jobsList.count { it.status.contains("كشف") || it.faultDescription.contains("كشف") }
+                        "سليمة" -> jobsList.count { it.status.contains("سليمة") }
                         "قيد الفحص" -> jobsList.count { it.status.contains("الفحص") || it.status.contains("صيانة") }
                         "جاهز للاستلام" -> jobsList.count { it.status.contains("جاهز") }
                         "تم التسليم والتحصيل" -> jobsList.count { it.status.contains("تسليم") || it.status.contains("تحصيل") }
@@ -575,6 +748,81 @@ fun JobLogScreen(
                 showDeleteConfirmDialog = false
                 jobToDelete = null
             }
+        )
+    }
+
+    // Dialog: Batch Status Change (طلب المستخدم: اغير حالتهم مع بعض)
+    if (showBatchStatusDialog && selectedJobIds.isNotEmpty()) {
+        AlertDialog(
+            onDismissRequest = { showBatchStatusDialog = false },
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.SwapHoriz, contentDescription = null, tint = Color(0xFF8B5CF6))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("تغيير حالة (${selectedJobIds.size}) كروت معاً 🔄", fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                }
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("اختر الحالة الجديدة لتطبيقها على جميع الكروت المحددة دفعة واحدة:", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    JOB_STATUSES.forEach { statusName ->
+                        val color = getStatusColor(statusName)
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = color.copy(alpha = 0.15f),
+                            border = BorderStroke(1.dp, color.copy(alpha = 0.4f)),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    val count = selectedJobIds.size
+                                    JobRecordRepository.batchUpdateStatus(context, selectedJobIds.toSet(), statusName) { success ->
+                                        if (success) {
+                                            Toast.makeText(context, "تم تغيير حالة $count كروت إلى ($statusName) بنجاح ✅", Toast.LENGTH_SHORT).show()
+                                        }
+                                    }
+                                    selectedJobIds.clear()
+                                    showBatchStatusDialog = false
+                                }
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(statusName, fontWeight = FontWeight.Bold, fontSize = 13.sp, color = color)
+                                Icon(Icons.Default.CheckCircle, contentDescription = null, tint = color, modifier = Modifier.size(16.dp))
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = {
+                TextButton(onClick = { showBatchStatusDialog = false }) {
+                    Text("إلغاء")
+                }
+            }
+        )
+    }
+
+    // Dialog: Batch Delete (طلب المستخدم: احذفهم مع بعض)
+    if (showBatchDeleteDialog && selectedJobIds.isNotEmpty()) {
+        ConfirmDeleteDialog(
+            title = "حذف (${selectedJobIds.size}) كروت محددة ⚠️",
+            message = "هل أنت متأكد من حذف ${selectedJobIds.size} كروت معاً نهائياً من سجلك؟ لا يمكن استرجاعها بعد الحذف.",
+            onConfirm = {
+                val count = selectedJobIds.size
+                JobRecordRepository.batchDeleteJobs(context, selectedJobIds.toSet()) { success ->
+                    if (success) {
+                        Toast.makeText(context, "تم حذف $count كروت بنجاح 🗑️", Toast.LENGTH_SHORT).show()
+                    }
+                }
+                selectedJobIds.clear()
+                showBatchDeleteDialog = false
+            },
+            onDismiss = { showBatchDeleteDialog = false }
         )
     }
 }
@@ -1187,6 +1435,8 @@ fun formatArabicMonthName(yearMonth: String): String {
 fun getStatusColor(status: String): Color {
     return when {
         status.contains("المخزون") -> Color(0xFF8B5CF6) // Purple
+        status.contains("كشف") -> Color(0xFFF59E0B) // Amber
+        status.contains("سليمة") -> Color(0xFF059669) // Green
         status.contains("الفحص") || status.contains("صيانة") -> Color(0xFFD97706) // Amber
         status.contains("جاهز") -> Color(0xFF0284C7) // Sky blue
         status.contains("تسليم") || status.contains("تحصيل") -> Color(0xFF10B981) // Emerald Green

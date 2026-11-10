@@ -181,6 +181,81 @@ object JobRecordRepository {
         }
     }
 
+    fun batchUpdateStatus(
+        context: Context,
+        jobIds: Set<String>,
+        newStatus: String,
+        onComplete: ((Boolean) -> Unit)? = null
+    ) {
+        val appContext = context.applicationContext ?: context
+        val email = currentEmail
+        val currentList = _jobs.value.toMutableList()
+        val updatedJobs = mutableListOf<TechnicianJobRecord>()
+
+        for (i in currentList.indices) {
+            if (jobIds.contains(currentList[i].id)) {
+                val updated = currentList[i].copy(status = newStatus, updatedAt = System.currentTimeMillis())
+                currentList[i] = updated
+                updatedJobs.add(updated)
+            }
+        }
+        _jobs.value = currentList
+        saveCachedJobs(appContext, email, currentList)
+
+        if (email.isNotBlank() && email != "guest") {
+            CoroutineScope(Dispatchers.IO).launch {
+                try {
+                    val db = FirebaseInitializer.getFirestore(appContext)
+                    val batch = db.batch()
+                    for (j in updatedJobs) {
+                        val docRef = db.collection("technician_work_logs").document(j.id)
+                        batch.update(docRef, "status", newStatus, "updatedAt", j.updatedAt)
+                    }
+                    batch.commit().await()
+                    withContext(Dispatchers.Main) { onComplete?.invoke(true) }
+                } catch (e: Throwable) {
+                    Log.e(TAG, "Error batch updating status in Firestore: ${e.message}")
+                    withContext(Dispatchers.Main) { onComplete?.invoke(true) }
+                }
+            }
+        } else {
+            onComplete?.invoke(true)
+        }
+    }
+
+    fun batchDeleteJobs(
+        context: Context,
+        jobIds: Set<String>,
+        onComplete: ((Boolean) -> Unit)? = null
+    ) {
+        val appContext = context.applicationContext ?: context
+        val email = currentEmail
+        val currentList = _jobs.value.toMutableList()
+        currentList.removeAll { jobIds.contains(it.id) }
+        _jobs.value = currentList
+        saveCachedJobs(appContext, email, currentList)
+
+        if (email.isNotBlank() && email != "guest") {
+            CoroutineScope(Dispatchers.IO).launch {
+                try {
+                    val db = FirebaseInitializer.getFirestore(appContext)
+                    val batch = db.batch()
+                    for (id in jobIds) {
+                        val docRef = db.collection("technician_work_logs").document(id)
+                        batch.delete(docRef)
+                    }
+                    batch.commit().await()
+                    withContext(Dispatchers.Main) { onComplete?.invoke(true) }
+                } catch (e: Throwable) {
+                    Log.e(TAG, "Error batch deleting jobs from Firestore: ${e.message}")
+                    withContext(Dispatchers.Main) { onComplete?.invoke(true) }
+                }
+            }
+        } else {
+            onComplete?.invoke(true)
+        }
+    }
+
     private fun loadCachedJobs(context: Context, email: String): List<TechnicianJobRecord> {
         return try {
             val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)

@@ -1,5 +1,6 @@
 package com.example.ui.components
 
+import android.content.Context
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -65,17 +66,23 @@ fun ShareReceiptDialog(
     val context = LocalContext.current
     val firstJob = jobs.firstOrNull() ?: return
 
-    var includeDate by remember { mutableStateOf(true) }
-    var includePhone by remember { mutableStateOf(true) }
-    var includeLocation by remember { mutableStateOf(true) }
-    var includeDeviceType by remember { mutableStateOf(true) }
-    var includeFault by remember { mutableStateOf(true) }
-    var includeCost by remember { mutableStateOf(true) }
-    var includeReplacedParts by remember { mutableStateOf(true) }
-    var includeOtherDetails by remember { mutableStateOf(true) }
-    var includeStatus by remember { mutableStateOf(false) }
-    var includeImage by remember { mutableStateOf(jobs.any { it.imageUrl.isNotBlank() }) }
-    var includeCustomFields by remember { mutableStateOf(jobs.any { it.customFields.isNotEmpty() }) }
+    val prefs = remember { context.getSharedPreferences("receipt_share_prefs", Context.MODE_PRIVATE) }
+
+    var includeDate by remember { mutableStateOf(prefs.getBoolean("includeDate", true)) }
+    var includePhone by remember { mutableStateOf(prefs.getBoolean("includePhone", true)) }
+    var includeLocation by remember { mutableStateOf(prefs.getBoolean("includeLocation", true)) }
+    var includeDeviceType by remember { mutableStateOf(prefs.getBoolean("includeDeviceType", true)) }
+    var includeFault by remember { mutableStateOf(prefs.getBoolean("includeFault", true)) }
+    var includeCost by remember { mutableStateOf(prefs.getBoolean("includeCost", true)) }
+    var includeReplacedParts by remember { mutableStateOf(prefs.getBoolean("includeReplacedParts", false)) }
+    var includeOtherDetails by remember { mutableStateOf(prefs.getBoolean("includeOtherDetails", false)) }
+    var includeStatus by remember { mutableStateOf(prefs.getBoolean("includeStatus", false)) }
+    var includeImage by remember { mutableStateOf(prefs.getBoolean("includeImage", true)) }
+    var includeCustomFields by remember { mutableStateOf(prefs.getBoolean("includeCustomFields", false)) }
+
+    fun updatePref(key: String, value: Boolean) {
+        prefs.edit().putBoolean(key, value).apply()
+    }
 
     fun buildConfig(): ReceiptCustomization {
         return ReceiptCustomization(
@@ -124,7 +131,7 @@ fun ShareReceiptDialog(
                             fontSize = 15.sp
                         )
                         Text(
-                            text = "اختر البيانات التي تريد إرسالها للعميل",
+                            text = "يتم حفظ اختياراتك تلقائياً للاستخدام القادم 💾",
                             fontSize = 11.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -157,7 +164,11 @@ fun ShareReceiptDialog(
                     border = BorderStroke(1.dp, if (includeImage) Color(0xFF0284C7) else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f)),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clickable { includeImage = !includeImage }
+                        .clickable {
+                            val nextVal = !includeImage
+                            includeImage = nextVal
+                            updatePref("includeImage", nextVal)
+                        }
                 ) {
                     Row(
                         modifier = Modifier
@@ -193,7 +204,10 @@ fun ShareReceiptDialog(
                         }
                         Checkbox(
                             checked = includeImage,
-                            onCheckedChange = { includeImage = it },
+                            onCheckedChange = {
+                                includeImage = it
+                                updatePref("includeImage", it)
+                            },
                             colors = CheckboxDefaults.colors(checkedColor = Color(0xFF0284C7)),
                             modifier = Modifier.size(28.dp)
                         )
@@ -208,24 +222,54 @@ fun ShareReceiptDialog(
                 ) {
                     Column(modifier = Modifier.padding(8.dp)) {
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            FieldCheckItem("التاريخ واليوم", includeDate, modifier = Modifier.weight(1f)) { includeDate = it }
-                            FieldCheckItem("رقم هاتف العميل", includePhone, modifier = Modifier.weight(1f)) { includePhone = it }
+                            FieldCheckItem("التاريخ واليوم", includeDate, modifier = Modifier.weight(1f)) {
+                                includeDate = it
+                                updatePref("includeDate", it)
+                            }
+                            FieldCheckItem("رقم هاتف العميل", includePhone, modifier = Modifier.weight(1f)) {
+                                includePhone = it
+                                updatePref("includePhone", it)
+                            }
                         }
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            FieldCheckItem("مكان العميل", includeLocation, modifier = Modifier.weight(1f)) { includeLocation = it }
-                            FieldCheckItem("نوع الجهاز والكارتة", includeDeviceType, modifier = Modifier.weight(1f)) { includeDeviceType = it }
+                            FieldCheckItem("مكان العميل", includeLocation, modifier = Modifier.weight(1f)) {
+                                includeLocation = it
+                                updatePref("includeLocation", it)
+                            }
+                            FieldCheckItem("نوع الجهاز والكارتة", includeDeviceType, modifier = Modifier.weight(1f)) {
+                                includeDeviceType = it
+                                updatePref("includeDeviceType", it)
+                            }
                         }
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            FieldCheckItem("توصيف العطل", includeFault, modifier = Modifier.weight(1f)) { includeFault = it }
-                            FieldCheckItem("قطع الغيار المبدلة", includeReplacedParts, modifier = Modifier.weight(1f)) { includeReplacedParts = it }
+                            FieldCheckItem("توصيف العطل", includeFault, modifier = Modifier.weight(1f)) {
+                                includeFault = it
+                                updatePref("includeFault", it)
+                            }
+                            FieldCheckItem("قطع الغيار المبدلة", includeReplacedParts, modifier = Modifier.weight(1f)) {
+                                includeReplacedParts = it
+                                updatePref("includeReplacedParts", it)
+                            }
                         }
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            FieldCheckItem("الحساب والتكلفة (ج.م)", includeCost, modifier = Modifier.weight(1f)) { includeCost = it }
-                            FieldCheckItem("حالة الكارتة", includeStatus, modifier = Modifier.weight(1f)) { includeStatus = it }
+                            FieldCheckItem("الحساب والتكلفة (ج.م)", includeCost, modifier = Modifier.weight(1f)) {
+                                includeCost = it
+                                updatePref("includeCost", it)
+                            }
+                            FieldCheckItem("حالة الكارتة", includeStatus, modifier = Modifier.weight(1f)) {
+                                includeStatus = it
+                                updatePref("includeStatus", it)
+                            }
                         }
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            FieldCheckItem("ملاحظات أخرى", includeOtherDetails, modifier = Modifier.weight(1f)) { includeOtherDetails = it }
-                            FieldCheckItem("صورة الكارتة 📷", includeImage, modifier = Modifier.weight(1f)) { includeImage = it }
+                            FieldCheckItem("ملاحظات أخرى", includeOtherDetails, modifier = Modifier.weight(1f)) {
+                                includeOtherDetails = it
+                                updatePref("includeOtherDetails", it)
+                            }
+                            FieldCheckItem("صورة الكارتة 📷", includeImage, modifier = Modifier.weight(1f)) {
+                                includeImage = it
+                                updatePref("includeImage", it)
+                            }
                         }
                     }
                 }

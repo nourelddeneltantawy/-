@@ -48,6 +48,7 @@ import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.Memory
+import androidx.compose.material.icons.filled.People
 import androidx.compose.material.icons.filled.PrecisionManufacturing
 import androidx.compose.material.icons.filled.Receipt
 import androidx.compose.material.icons.filled.Share
@@ -131,11 +132,13 @@ fun ToolsHubScreen(
     userEmail: String?,
     isAdmin: Boolean,
     onNavigateToJobLog: () -> Unit,
+    onNavigateToCustomers: () -> Unit = {},
     onNavigateToIntegrator: () -> Unit,
     onNavigateToHarnesses: () -> Unit,
     onNavigateToDiagnostics: (String) -> Unit,
     onNavigateToAiStudio: () -> Unit,
     onNavigateToProfile: () -> Unit = {},
+    onAuthClick: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -145,6 +148,9 @@ fun ToolsHubScreen(
     val categoryOrder by ToolsCategoryManager.categoryOrder.collectAsState()
     val jobsList by JobRecordRepository.jobs.collectAsState()
     val jobsCount = jobsList.size
+    val customersCount = remember(jobsList) {
+        jobsList.map { it.clientPhone.trim().ifBlank { it.clientLocation.trim().ifBlank { it.id } } }.distinct().size
+    }
 
     var editingCategoryId by remember { mutableStateOf<String?>(null) }
     var showReorderDialog by remember { mutableStateOf(false) }
@@ -152,8 +158,106 @@ fun ToolsHubScreen(
     var lockedDialogCategoryTitle by remember { mutableStateOf<String?>(null) }
     var customInfoDialogCategory by remember { mutableStateOf<ToolGridItem?>(null) }
 
-    // Built-in Default Tool Items (Only Job Log as requested by user)
-    val defaultItems = remember(jobsCount) {
+    // If user is not authenticated with an email, enforce login
+    if (userEmail.isNullOrBlank() || userEmail == "guest") {
+        Scaffold(
+            modifier = modifier.fillMaxSize().testTag("tools_hub_screen_locked")
+        ) { innerPadding ->
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(innerPadding)
+                    .verticalScroll(rememberScrollState()),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(bottomStart = 32.dp, bottomEnd = 32.dp))
+                        .background(
+                            Brush.verticalGradient(
+                                listOf(
+                                    MaterialTheme.colorScheme.primary,
+                                    MaterialTheme.colorScheme.primaryContainer
+                                )
+                            )
+                        )
+                        .padding(top = 20.dp, bottom = 26.dp, start = 20.dp, end = 20.dp)
+                ) {
+                    Column {
+                        Text("مرحباً بك في مركز الأدوات ⚡", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                        Text("مساحة عمل خاصة بكل فني ومستخدم 🔒", color = Color.White.copy(alpha = 0.85f), fontSize = 12.sp)
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(28.dp))
+
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 20.dp),
+                    shape = RoundedCornerShape(20.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    border = BorderStroke(1.2.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.3f))
+                ) {
+                    Column(
+                        modifier = Modifier.padding(24.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(14.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(64.dp)
+                                .clip(CircleShape)
+                                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Lock,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(32.dp)
+                            )
+                        }
+
+                        Text(
+                            text = "قسم خاص بالفنيين المسجلين 🔒",
+                            fontSize = 17.sp,
+                            fontWeight = FontWeight.Bold,
+                            textAlign = TextAlign.Center
+                        )
+
+                        Text(
+                            text = "قائمة الأدوات وسجل الكروت ودليل العملاء وحساب الأرباح مخصصة ومستقلة تماماً لكل مستخدم ببريده الإلكتروني.\n\nسجل دخولك الآن للوصول إلى أدواتك وسجلك الخاص المشفر والمحمي بالكامل.",
+                            fontSize = 13.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center,
+                            lineHeight = 20.sp
+                        )
+
+                        Button(
+                            onClick = onAuthClick,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(48.dp),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                        ) {
+                            Text(
+                                text = "تسجيل الدخول بالبريد الإلكتروني 🚀",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 14.sp
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        return
+    }
+
+    // Built-in Default Tool Items: Job Log + Customers Directory
+    val defaultItems = remember(jobsCount, customersCount) {
         listOf(
             ToolGridItem(
                 id = "job_log",
@@ -163,6 +267,15 @@ fun ToolsHubScreen(
                 iconTint = Color(0xFF0284C7),
                 circleBackground = Color(0xFFE0F2FE),
                 onClick = onNavigateToJobLog
+            ),
+            ToolGridItem(
+                id = "customers_dir",
+                defaultTitle = "دليل وسجل العملاء",
+                defaultSubtitle = if (customersCount > 0) "$customersCount عميل مسجل 👥" else "دليل أرقام وأماكن العملاء",
+                defaultIcon = Icons.Default.People,
+                iconTint = Color(0xFF10B981),
+                circleBackground = Color(0xFFD1FAE5),
+                onClick = onNavigateToCustomers
             )
         )
     }

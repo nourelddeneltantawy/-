@@ -148,8 +148,17 @@ fun EditJobDialog(
     )
 
     val faultSuggestions = listOf(
-        "باور", "طرمبة", "رطوبة وتمليح", "تفحم مسارات", "عطل EH0",
+        "كشف", "سليمة (كشف فقط)", "باور", "طرمبة", "رطوبة وتمليح", "تفحم مسارات", "عطل EH0",
         "ماتور سريع", "لا يعمل الماتور", "بروسيسور", "لوحة أزرار"
+    )
+
+    val statusOptions = listOf(
+        "في المخزون",
+        "كشف",
+        "سليمة",
+        "قيد الفحص",
+        "جاهز للاستلام",
+        "تم التسليم والتحصيل"
     )
 
     val partsSuggestions = listOf(
@@ -253,6 +262,37 @@ fun EditJobDialog(
                                         dayOfWeek = dayName
                                         showDayDropdown = false
                                     }
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // Status Selector (في المخزون / كشف / سليمة / قيد الفحص / جاهز للاستلام / تم التسليم والتحصيل)
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    Text("حالة الكارتة والصيانة 📌", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                    FlowRow(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        statusOptions.forEach { opt ->
+                            val isSelected = status == opt || (opt == "في المخزون" && status.isBlank())
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
+                                border = BorderStroke(1.dp, if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
+                                modifier = Modifier
+                                    .clickable { status = opt }
+                                    .padding(vertical = 2.dp)
+                            ) {
+                                Text(
+                                    text = opt,
+                                    fontSize = 11.sp,
+                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                    color = if (isSelected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                                 )
                             }
                         }
