@@ -27,8 +27,11 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.CheckCircle
@@ -201,6 +204,121 @@ fun MarketplaceScreen(
         }
     }
 
+    // Gated for unauthenticated / guest users (Requirement: enforce email login like Tools and Group chat)
+    if (isGuest || currentUserEmail.isNullOrBlank() || currentUserEmail == "guest") {
+        Scaffold(
+            modifier = modifier.fillMaxSize().testTag("marketplace_screen_locked")
+        ) { innerPadding ->
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(innerPadding)
+                    .verticalScroll(rememberScrollState()),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(bottomStart = 32.dp, bottomEnd = 32.dp))
+                        .background(
+                            Brush.verticalGradient(
+                                listOf(
+                                    Color(0xFF0284C7),
+                                    Color(0xFF0F172A)
+                                )
+                            )
+                        )
+                        .padding(top = 20.dp, bottom = 26.dp, start = 20.dp, end = 20.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column {
+                            Text("مرحباً بك في سوق الكروت 🛒", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                            Text("منصة بيع وشراء الكروت والقطع بين الفنيين 🔒", color = Color.White.copy(alpha = 0.85f), fontSize = 12.sp)
+                        }
+                        IconButton(onClick = onBackClick) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                contentDescription = "رجوع",
+                                tint = Color.White
+                            )
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(28.dp))
+
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 20.dp),
+                    shape = RoundedCornerShape(20.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    border = BorderStroke(1.2.dp, Color(0xFF0284C7).copy(alpha = 0.35f))
+                ) {
+                    Column(
+                        modifier = Modifier.padding(24.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(14.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(64.dp)
+                                .clip(CircleShape)
+                                .background(Color(0xFF0284C7).copy(alpha = 0.15f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Lock,
+                                contentDescription = null,
+                                tint = Color(0xFF0284C7),
+                                modifier = Modifier.size(32.dp)
+                            )
+                        }
+
+                        Text(
+                            text = "قسم خاص بالفنيين المسجلين 🔒",
+                            fontSize = 17.sp,
+                            fontWeight = FontWeight.Bold,
+                            textAlign = TextAlign.Center
+                        )
+
+                        Text(
+                            text = "سوق الكروت وعروض البيع والشراء والطلبات والتواصل المباشر مخصصة ومستقلة لكل مستخدم ببريده الإلكتروني.\n\nسجل دخولك الآن للوصول إلى السوق ونشر وشراء الكروت والتواصل مع الزملاء الفنيين.",
+                            fontSize = 13.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center,
+                            lineHeight = 20.sp
+                        )
+
+                        Button(
+                            onClick = onAuthClick,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(48.dp),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0284C7))
+                        ) {
+                            Text(
+                                text = "تسجيل الدخول بالبريد الإلكتروني 🚀",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 14.sp
+                            )
+                        }
+
+                        TextButton(onClick = onBackClick) {
+                            Text("العودة إلى مجتمع الفنيين 🔙", color = MaterialTheme.colorScheme.primary)
+                        }
+                    }
+                }
+            }
+        }
+        return
+    }
+
     Scaffold(
         modifier = modifier.fillMaxSize().testTag("marketplace_screen"),
         snackbarHost = { SnackbarHost(snackbarHostState) },
@@ -270,6 +388,18 @@ fun MarketplaceScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
+                            IconButton(
+                                onClick = onBackClick,
+                                modifier = Modifier.size(34.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                    contentDescription = "رجوع للمجتمع",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(4.dp))
                             Surface(
                                 shape = CircleShape,
                                 color = MaterialTheme.colorScheme.surface,

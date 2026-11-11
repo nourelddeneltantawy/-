@@ -80,11 +80,14 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.border
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.example.data.model.CommunityMessage
 import com.example.data.model.UserProfile
 import com.example.data.repository.CommunityGroupRepository
+import com.example.data.repository.MarketplaceRepository
+import com.example.ui.screens.AuthorProfileDetailDialog
 import com.example.util.ImageHelper
 import kotlinx.coroutines.launch
 
@@ -119,6 +122,7 @@ fun TechnicianGroupChatView(
     var selectedImageUri by remember { mutableStateOf<Uri?>(null) }
     var replyingToMessage by remember { mutableStateOf<CommunityMessage?>(null) }
     var isSending by remember { mutableStateOf(false) }
+    var profileToView by remember { mutableStateOf<UserProfile?>(null) }
 
     val photoPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia(),
@@ -317,7 +321,18 @@ fun TechnicianGroupChatView(
                             onToggleReaction = { emoji ->
                                 CommunityGroupRepository.toggleReaction(context, msg.id, emoji, currentUserEmail)
                             },
-                            onZoomImage = onZoomImage
+                            onZoomImage = onZoomImage,
+                            onAuthorClick = { key, name, avatar ->
+                                coroutineScope.launch {
+                                    val fetched = MarketplaceRepository.fetchAuthorProfile(context, key)
+                                    profileToView = fetched ?: UserProfile(
+                                        userId = key,
+                                        email = if (key.contains("@")) key else "",
+                                        displayName = name,
+                                        avatarUrl = avatar
+                                    )
+                                }
+                            }
                         )
                     }
                 }
@@ -519,6 +534,20 @@ fun TechnicianGroupChatView(
             }
         }
     }
+
+    // Dialog: View author profile details with WhatsApp and Call buttons
+    if (profileToView != null) {
+        AuthorProfileDetailDialog(
+            profile = profileToView!!,
+            onDismiss = { profileToView = null },
+            onWhatsAppClick = { phone ->
+                openWhatsApp(context, phone, "السلام عليكم أخي الفني، تواصلت معك عبر جروب الفنيين في تطبيق البراء إلكترونيك")
+            },
+            onCallClick = { phone ->
+                openDialer(context, phone)
+            }
+        )
+    }
 }
 
 /**
@@ -538,7 +567,8 @@ fun TelegramChatBubble(
     onReply: () -> Unit,
     onDelete: () -> Unit,
     onToggleReaction: (String) -> Unit,
-    onZoomImage: (String) -> Unit
+    onZoomImage: (String) -> Unit,
+    onAuthorClick: (String, String, String) -> Unit = { _, _, _ -> }
 ) {
     val canDelete = isMe || isAdmin
 
@@ -583,19 +613,56 @@ fun TelegramChatBubble(
                     .clickable { showActionMenu = !showActionMenu }
             ) {
                 Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp)) {
-                    // Sender Name (For other users' messages in group chat)
-                    if (!isMe) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.padding(bottom = 3.dp)
-                        ) {
-                            Text(
-                                text = message.senderName,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 12.sp,
-                                color = Color(0xFF38BDF8) // Cyan highlight like Telegram
+                    // Sender Profile Header (Clickable Avatar + Name, Facebook comment / Telegram style)
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable {
+                                onAuthorClick(
+                                    message.senderEmail.ifBlank { message.senderId },
+                                    message.senderName,
+                                    message.senderAvatar
+                                )
+                            }
+                            .padding(bottom = 4.dp, end = 4.dp)
+                    ) {
+                        if (message.senderAvatar.isNotBlank()) {
+                            AsyncImage(
+                                model = ImageRequest.Builder(LocalContext.current)
+                                    .data(ImageHelper.getCoilData(message.senderAvatar))
+                                    .crossfade(true)
+                                    .build(),
+                                contentDescription = message.senderName,
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier
+                                    .size(22.dp)
+                                    .clip(CircleShape)
+                                    .border(1.dp, if (isMe) Color.White.copy(alpha = 0.6f) else Color(0xFF38BDF8), CircleShape)
                             )
+                        } else {
+                            Surface(
+                                shape = CircleShape,
+                                color = if (isMe) Color(0xFF0284C7) else Color(0xFF334155),
+                                modifier = Modifier.size(22.dp)
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Text(
+                                        text = message.senderName.take(1).ifBlank { "ف" },
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color.White
+                                    )
+                                }
+                            }
                         }
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = if (isMe) "${message.senderName} (أنت)" else message.senderName,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 12.sp,
+                            color = if (isMe) Color(0xFFBAE6FD) else Color(0xFF38BDF8)
+                        )
                     }
 
                     // Quoted reply snippet
@@ -785,3 +852,31 @@ fun TelegramChatBubble(
         }
     }
 }
+
+private fun openWhatsApp(context: Context, phone: String, message: String) {
+    try {
+        var clean = phone.replace(Regex("[^0-9+]"), "")
+        if (clean.startsWith("01")) {
+            clean = "+2$clean"
+        } else if (!clean.startsWith("+") && clean.isNotBlank()) {
+            clean = "+2$clean"
+        }
+        val encodedMsg = java.net.URLEncoder.encode(message, "UTF-8")
+        val uri = Uri.parse("https://api.whatsapp.com/send?phone=$clean&text=$encodedMsg")
+        val intent = android.content.Intent(android.content.Intent.ACTION_VIEW, uri)
+        context.startActivity(intent)
+    } catch (_: Throwable) {
+        Toast.makeText(context, "تعذر فتح تطبيق واتساب", Toast.LENGTH_SHORT).show()
+    }
+}
+
+private fun openDialer(context: Context, phone: String) {
+    try {
+        val clean = phone.replace(Regex("[^0-9+]"), "")
+        val intent = android.content.Intent(android.content.Intent.ACTION_DIAL, Uri.parse("tel:$clean"))
+        context.startActivity(intent)
+    } catch (_: Throwable) {
+        Toast.makeText(context, "تعذر فتح تطبيق الهاتف", Toast.LENGTH_SHORT).show()
+    }
+}
+

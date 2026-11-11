@@ -79,6 +79,7 @@ import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.runtime.mutableStateListOf
 import com.example.ui.screens.ProgrammingScreen
 import com.example.ui.screens.MarketplaceScreen
+import com.example.ui.screens.CommunityHubScreen
 import com.example.ui.screens.ToolsHubScreen
 import com.example.ui.screens.JobLogScreen
 import com.example.ui.screens.CustomersDirectoryScreen
@@ -113,6 +114,7 @@ enum class Screen {
     CUSTOMERS_DIR,
     AI_STUDIO,
     MANAGE_ADMINS,
+    COMMUNITY_HUB,
     MARKETPLACE,
     COMMUNITY_GROUP,
     AUTH
@@ -425,12 +427,10 @@ fun AppContent(
     val bottomNavTabs by BottomNavManager.tabs.collectAsState()
     val isToolsVisible = isSuperAdmin || isAdmin || BottomNavManager.isTabVisible(BottomNavManager.TAB_TOOLS, isAdmin)
     val isToolsHiddenForUsers = BottomNavManager.isTabHiddenForUsers(BottomNavManager.TAB_TOOLS)
-    val isMarketplaceVisible = isSuperAdmin || isAdmin || BottomNavManager.isTabVisible(BottomNavManager.TAB_MARKETPLACE, isAdmin)
+    val isCommunityVisible = isSuperAdmin || isAdmin || BottomNavManager.isTabVisible(BottomNavManager.TAB_COMMUNITY, isAdmin)
+    val isCommunityHiddenForUsers = BottomNavManager.isTabHiddenForUsers(BottomNavManager.TAB_COMMUNITY)
     val isHomeVisible = isSuperAdmin || isAdmin || BottomNavManager.isTabVisible(BottomNavManager.TAB_HOME, isAdmin)
     val isDashboardVisible = isSuperAdmin || isAdmin || BottomNavManager.isTabVisible(BottomNavManager.TAB_DASHBOARD, isAdmin)
-    val isMarketplaceHiddenForUsers = BottomNavManager.isTabHiddenForUsers(BottomNavManager.TAB_MARKETPLACE)
-    val isCommunityGroupVisible = isSuperAdmin || isAdmin || BottomNavManager.isTabVisible(BottomNavManager.TAB_COMMUNITY_GROUP, isAdmin)
-    val isCommunityGroupHiddenForUsers = BottomNavManager.isTabHiddenForUsers(BottomNavManager.TAB_COMMUNITY_GROUP)
 
     LaunchedEffect(isToolsVisible, currentScreen) {
         if (!isToolsVisible && currentScreen == Screen.TOOLS && !isAdmin) {
@@ -439,17 +439,10 @@ fun AppContent(
         }
     }
 
-    LaunchedEffect(isMarketplaceVisible, currentScreen) {
-        if (!isMarketplaceVisible && currentScreen == Screen.MARKETPLACE && !isAdmin) {
+    LaunchedEffect(isCommunityVisible, currentScreen) {
+        if (!isCommunityVisible && (currentScreen == Screen.COMMUNITY_HUB || currentScreen == Screen.MARKETPLACE || currentScreen == Screen.COMMUNITY_GROUP) && !isAdmin) {
             currentScreen = Screen.DASHBOARD
-            Toast.makeText(context, "تم قفل قسم سوق الكروت من قبل الإدارة", Toast.LENGTH_SHORT).show()
-        }
-    }
-
-    LaunchedEffect(isCommunityGroupVisible, currentScreen) {
-        if (!isCommunityGroupVisible && currentScreen == Screen.COMMUNITY_GROUP && !isAdmin) {
-            currentScreen = Screen.DASHBOARD
-            Toast.makeText(context, "تم قفل جروب الفنيين من قبل الإدارة", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, "تم قفل قسم المجتمع من قبل الإدارة", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -543,7 +536,7 @@ fun AppContent(
     val showBottomBar = currentScreen in setOf(
         Screen.DASHBOARD,
         Screen.TOOLS,
-        Screen.MARKETPLACE
+        Screen.COMMUNITY_HUB
     )
 
     Scaffold(
@@ -639,21 +632,21 @@ fun AppContent(
                         )
                     }
 
-                    // Item 4: سوق الكروت (المنشورات والبيع والشراء)
-                    if (isMarketplaceVisible) {
+                    // Item 4: المجتمع (سوق الكروت وجروب الفنيين)
+                    if (isCommunityVisible) {
                         NavigationBarItem(
-                            selected = currentScreen == Screen.MARKETPLACE,
+                            selected = currentScreen == Screen.COMMUNITY_HUB || currentScreen == Screen.MARKETPLACE || currentScreen == Screen.COMMUNITY_GROUP,
                             onClick = {
-                                if (isMarketplaceHiddenForUsers && !isAdmin) {
-                                    Toast.makeText(context, "سوق الكروت مغلق حالياً من قبل الإدارة للصيانة والتحديث", Toast.LENGTH_SHORT).show()
+                                if (isCommunityHiddenForUsers && !isAdmin) {
+                                    Toast.makeText(context, "قسم المجتمع مغلق حالياً من قبل الإدارة للصيانة", Toast.LENGTH_SHORT).show()
                                 } else {
-                                    selectTab(Screen.MARKETPLACE)
+                                    selectTab(Screen.COMMUNITY_HUB)
                                 }
                             },
                             icon = {
                                 BadgedBox(
                                     badge = {
-                                        if (isAdmin && isMarketplaceHiddenForUsers) {
+                                        if (isAdmin && isCommunityHiddenForUsers) {
                                             Badge(containerColor = Color(0xFFEF4444)) {
                                                 Text("مغلق", fontSize = 8.sp, color = Color.White)
                                             }
@@ -661,64 +654,22 @@ fun AppContent(
                                     }
                                 ) {
                                     Icon(
-                                        imageVector = if (isAdmin && isMarketplaceHiddenForUsers) Icons.Default.Lock else Icons.Default.Storefront,
-                                        contentDescription = "سوق الكروت"
+                                        imageVector = if (isAdmin && isCommunityHiddenForUsers) Icons.Default.Lock else Icons.Default.Groups,
+                                        contentDescription = "المجتمع"
                                     )
                                 }
                             },
                             label = {
                                 Text(
-                                    if (isAdmin && isMarketplaceHiddenForUsers) "سوق الكروت (مغلق)" else "سوق الكروت",
+                                    if (isAdmin && isCommunityHiddenForUsers) "المجتمع (مغلق)" else "المجتمع",
                                     fontSize = 11.sp,
-                                    fontWeight = if (currentScreen == Screen.MARKETPLACE) FontWeight.Bold else FontWeight.Normal
+                                    fontWeight = if (currentScreen == Screen.COMMUNITY_HUB || currentScreen == Screen.MARKETPLACE || currentScreen == Screen.COMMUNITY_GROUP) FontWeight.Bold else FontWeight.Normal
                                 )
                             },
                             colors = NavigationBarItemDefaults.colors(
-                                selectedIconColor = if (isAdmin && isMarketplaceHiddenForUsers) Color(0xFFEF4444) else Color(0xFF10B981),
-                                selectedTextColor = if (isAdmin && isMarketplaceHiddenForUsers) Color(0xFFEF4444) else Color(0xFF10B981),
-                                indicatorColor = if (isAdmin && isMarketplaceHiddenForUsers) Color(0xFFFEE2E2) else Color(0xFFD1FAE5)
-                            )
-                        )
-                    }
-
-                    // Item 5: جروب الفنيين والصنايعية (محادثة مباشرة منفصلة)
-                    if (isCommunityGroupVisible) {
-                        NavigationBarItem(
-                            selected = currentScreen == Screen.COMMUNITY_GROUP,
-                            onClick = {
-                                if (isCommunityGroupHiddenForUsers && !isAdmin) {
-                                    Toast.makeText(context, "جروب الفنيين مغلق حالياً من قبل الإدارة للصيانة", Toast.LENGTH_SHORT).show()
-                                } else {
-                                    selectTab(Screen.COMMUNITY_GROUP)
-                                }
-                            },
-                            icon = {
-                                BadgedBox(
-                                    badge = {
-                                        if (isAdmin && isCommunityGroupHiddenForUsers) {
-                                            Badge(containerColor = Color(0xFFEF4444)) {
-                                                Text("مغلق", fontSize = 8.sp, color = Color.White)
-                                            }
-                                        }
-                                    }
-                                ) {
-                                    Icon(
-                                        imageVector = if (isAdmin && isCommunityGroupHiddenForUsers) Icons.Default.Lock else Icons.Default.Forum,
-                                        contentDescription = "جروب الفنيين"
-                                    )
-                                }
-                            },
-                            label = {
-                                Text(
-                                    if (isAdmin && isCommunityGroupHiddenForUsers) "جروب الفنيين (مغلق)" else "جروب الفنيين",
-                                    fontSize = 11.sp,
-                                    fontWeight = if (currentScreen == Screen.COMMUNITY_GROUP) FontWeight.Bold else FontWeight.Normal
-                                )
-                            },
-                            colors = NavigationBarItemDefaults.colors(
-                                selectedIconColor = if (isAdmin && isCommunityGroupHiddenForUsers) Color(0xFFEF4444) else Color(0xFF0284C7),
-                                selectedTextColor = if (isAdmin && isCommunityGroupHiddenForUsers) Color(0xFFEF4444) else Color(0xFF0284C7),
-                                indicatorColor = if (isAdmin && isCommunityGroupHiddenForUsers) Color(0xFFFEE2E2) else Color(0xFFE0F2FE)
+                                selectedIconColor = if (isAdmin && isCommunityHiddenForUsers) Color(0xFFEF4444) else Color(0xFF0284C7),
+                                selectedTextColor = if (isAdmin && isCommunityHiddenForUsers) Color(0xFFEF4444) else Color(0xFF0284C7),
+                                indicatorColor = if (isAdmin && isCommunityHiddenForUsers) Color(0xFFFEE2E2) else Color(0xFFE0F2FE)
                             )
                         )
                     }
@@ -1217,9 +1168,23 @@ fun AppContent(
                         }
                     }
 
-                    Screen.MARKETPLACE -> {
+                    Screen.COMMUNITY_HUB -> {
                         BackHandler {
                             selectTab(Screen.DASHBOARD)
+                        }
+                        CommunityHubScreen(
+                            userEmail = userEmail,
+                            isGuest = isGuest,
+                            isAdmin = isAdmin,
+                            onNavigateToMarketplace = { navigateTo(Screen.MARKETPLACE) },
+                            onNavigateToGroupChat = { navigateTo(Screen.COMMUNITY_GROUP) },
+                            onAuthClick = { navigateTo(Screen.AUTH) }
+                        )
+                    }
+
+                    Screen.MARKETPLACE -> {
+                        BackHandler {
+                            selectTab(Screen.COMMUNITY_HUB)
                         }
                         MarketplaceScreen(
                             currentUserId = userId,
@@ -1230,14 +1195,14 @@ fun AppContent(
                                 navigateTo(Screen.AUTH)
                             },
                             onBackClick = {
-                                selectTab(Screen.DASHBOARD)
+                                selectTab(Screen.COMMUNITY_HUB)
                             }
                         )
                     }
 
                     Screen.COMMUNITY_GROUP -> {
                         BackHandler {
-                            selectTab(Screen.DASHBOARD)
+                            selectTab(Screen.COMMUNITY_HUB)
                         }
                         TechnicianGroupChatView(
                             currentUserId = userId,
@@ -1249,7 +1214,7 @@ fun AppContent(
                                 navigateTo(Screen.AUTH)
                             },
                             onBackClick = {
-                                selectTab(Screen.DASHBOARD)
+                                selectTab(Screen.COMMUNITY_HUB)
                             }
                         )
                     }
