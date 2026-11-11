@@ -32,13 +32,14 @@ fun MyApplicationTheme(
         onPrimaryContainer = Color.White,
         secondary = colorTheme.secondary,
         onSecondary = Color(0xFF0F172A),
-        background = DarkNavyBg,
+        background = ClayDarkBg,
         onBackground = Color(0xFFF8FAFC),
-        surface = CardNavy,
+        surface = ClayDarkSurface,
         onSurface = Color(0xFFF8FAFC),
-        surfaceVariant = Color(0xFF1E293B),
+        surfaceVariant = ClayDarkSurfaceVariant,
         onSurfaceVariant = Color(0xFFCBD5E1),
-        outline = Color(0xFF64748B)
+        outline = ClayDarkOutline,
+        outlineVariant = Color(0xFF243046)
     )
 
     val dynamicLight = lightColorScheme(
@@ -48,13 +49,14 @@ fun MyApplicationTheme(
         onPrimaryContainer = colorTheme.primaryContainer,
         secondary = colorTheme.secondary,
         onSecondary = Color.White,
-        background = Color(0xFFF8FAFC),
+        background = ClayLightBg,
         onBackground = Color(0xFF0F172A),
-        surface = Color.White,
+        surface = ClayLightSurface,
         onSurface = Color(0xFF0F172A),
-        surfaceVariant = Color(0xFFF1F5F9),
+        surfaceVariant = ClayLightSurfaceVariant,
         onSurfaceVariant = Color(0xFF475569),
-        outline = Color(0xFFCBD5E1)
+        outline = ClayLightOutline,
+        outlineVariant = Color(0xFFD6DFEA)
     )
 
     val colorScheme = if (isDark) dynamicDark else dynamicLight

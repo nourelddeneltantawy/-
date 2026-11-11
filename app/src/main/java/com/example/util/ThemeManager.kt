@@ -66,6 +66,15 @@ enum class AppColorTheme(
         secondary = Color(0xFFA78BFA),
         hexCode = "#8B5CF6"
     ),
+    ORANGE(
+        id = "orange",
+        title = "برتقالي دافئ عصري (الستايل المرفق)",
+        primary = Color(0xFFEA580C),
+        onPrimary = Color.White,
+        primaryContainer = Color(0xFFC2410C),
+        secondary = Color(0xFFFB923C),
+        hexCode = "#EA580C"
+    ),
     AMBER(
         id = "amber",
         title = "ذهبي كهرماني مميز",

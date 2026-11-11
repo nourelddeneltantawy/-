@@ -361,12 +361,13 @@ fun CommunityActionCard(
 ) {
     Card(
         modifier = modifier
-            .shadow(4.dp, RoundedCornerShape(20.dp), spotColor = iconTint.copy(alpha = 0.25f))
-            .clip(RoundedCornerShape(20.dp))
+            .shadow(8.dp, RoundedCornerShape(24.dp), spotColor = Color(0x1F000000), ambientColor = Color(0x12000000))
+            .clip(RoundedCornerShape(24.dp))
+            .border(1.2.dp, if (isLocked) Color(0xFFEF4444).copy(alpha = 0.35f) else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f), RoundedCornerShape(24.dp))
             .clickable(onClick = onClick),
-        shape = RoundedCornerShape(20.dp),
+        shape = RoundedCornerShape(24.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        border = BorderStroke(1.2.dp, if (isLocked) Color(0xFFEF4444).copy(alpha = 0.3f) else iconTint.copy(alpha = 0.3f))
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
     ) {
         Column(
             modifier = Modifier

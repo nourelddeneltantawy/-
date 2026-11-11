@@ -86,6 +86,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -858,18 +859,25 @@ fun JobChipCard(
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
+            .shadow(
+                elevation = if (isSelected) 6.dp else 4.dp,
+                shape = RoundedCornerShape(18.dp),
+                spotColor = Color(0x1F000000),
+                ambientColor = Color(0x10000000)
+            )
+            .clip(RoundedCornerShape(18.dp))
             .clickable { isExpanded = !isExpanded },
-        shape = RoundedCornerShape(12.dp),
+        shape = RoundedCornerShape(18.dp),
         colors = CardDefaults.cardColors(
-            containerColor = if (isSelected) Color(0xFF0284C7).copy(alpha = 0.12f)
-            else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
+            containerColor = if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+            else MaterialTheme.colorScheme.surface
         ),
         border = BorderStroke(
             1.2.dp,
-            if (isSelected) Color(0xFF0284C7)
-            else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)
-        )
+            if (isSelected) MaterialTheme.colorScheme.primary
+            else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f)
+        ),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
     ) {
         Column(modifier = Modifier.padding(10.dp)) {
             // COMPACT ROW (الشريحة الصغيرة)

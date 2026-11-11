@@ -490,7 +490,18 @@ fun DashboardHubScreen(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .height(172.dp)
+                                .shadow(
+                                    elevation = 8.dp,
+                                    shape = RoundedCornerShape(24.dp),
+                                    spotColor = Color(0x1F000000),
+                                    ambientColor = Color(0x12000000)
+                                )
                                 .clip(RoundedCornerShape(24.dp))
+                                .border(
+                                    width = 1.2.dp,
+                                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f),
+                                    shape = RoundedCornerShape(24.dp)
+                                )
                                 .clickable {
                                     if (!isAdmin && isCategoryLocked) {
                                         lockedDialogCategoryTitle = finalTitle
@@ -505,7 +516,7 @@ fun DashboardHubScreen(
                             colors = CardDefaults.cardColors(
                                 containerColor = if (isCategoryLocked && !isAdmin) MaterialTheme.colorScheme.surface.copy(alpha = 0.6f) else MaterialTheme.colorScheme.surface
                             ),
-                            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                            elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
                         ) {
                             Column(
                                 modifier = Modifier

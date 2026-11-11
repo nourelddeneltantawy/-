@@ -7,6 +7,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -58,6 +59,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
@@ -99,17 +101,28 @@ fun MotorCard(
         modifier = modifier
             .testTag("motor_card_${motor.id}")
             .fillMaxWidth()
-            .clip(RoundedCornerShape(18.dp))
+            .shadow(
+                elevation = 6.dp,
+                shape = RoundedCornerShape(22.dp),
+                spotColor = Color(0x1F000000),
+                ambientColor = Color(0x10000000)
+            )
+            .clip(RoundedCornerShape(22.dp))
+            .border(
+                1.2.dp,
+                MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f),
+                RoundedCornerShape(22.dp)
+            )
             .combinedClickable(
                 onClick = onClick,
                 onLongClick = { onEditClick?.invoke() }
             )
             .animateContentSize(),
-        shape = RoundedCornerShape(18.dp),
+        shape = RoundedCornerShape(22.dp),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surface
         ),
-        elevation = CardDefaults.cardElevation(defaultElevation = 3.dp)
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
     ) {
         Column(
             modifier = Modifier
