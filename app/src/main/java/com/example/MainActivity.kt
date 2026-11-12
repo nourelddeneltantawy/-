@@ -142,7 +142,8 @@ class MainActivity : ComponentActivity() {
             val isDark = when (themeMode) {
                 com.example.util.AppThemeMode.SYSTEM -> isSystemDark
                 com.example.util.AppThemeMode.DARK -> true
-                com.example.util.AppThemeMode.LIGHT -> false
+                com.example.util.AppThemeMode.LIGHT,
+                com.example.util.AppThemeMode.CLAY -> false
             }
 
             MyApplicationTheme(darkTheme = isDark) {

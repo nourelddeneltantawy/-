@@ -43,6 +43,7 @@ import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Cable
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.CleaningServices
+import com.example.ui.theme.LocalIsClayTheme
 import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.ContactPhone
 import androidx.compose.material.icons.filled.Edit
@@ -218,18 +219,33 @@ fun DashboardHubScreen(
                 .fillMaxSize()
                 .padding(bottom = innerPadding.calculateBottomPadding())
         ) {
+            val isClay = LocalIsClayTheme.current
             // TOP HEADER: Curved gradient banner matching the user's screenshot
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(bottomStart = 32.dp, bottomEnd = 32.dp))
                     .background(
-                        Brush.verticalGradient(
-                            colors = listOf(
-                                MaterialTheme.colorScheme.primary,
-                                MaterialTheme.colorScheme.primaryContainer
+                        if (isClay) {
+                            Brush.verticalGradient(
+                                listOf(
+                                    Color(0xFFFFFFFF),
+                                    Color(0xFFEFF2F6)
+                                )
                             )
-                        )
+                        } else {
+                            Brush.verticalGradient(
+                                listOf(
+                                    MaterialTheme.colorScheme.primary,
+                                    MaterialTheme.colorScheme.primaryContainer
+                                )
+                            )
+                        }
+                    )
+                    .then(
+                        if (isClay) {
+                            Modifier.border(1.2.dp, Color(0xFFD6DFEA), RoundedCornerShape(bottomStart = 32.dp, bottomEnd = 32.dp))
+                        } else Modifier
                     )
                     .padding(top = innerPadding.calculateTopPadding() + 8.dp, bottom = 24.dp, start = 20.dp, end = 20.dp)
             ) {
@@ -251,7 +267,7 @@ fun DashboardHubScreen(
                             modifier = Modifier
                                 .size(48.dp)
                                 .clip(CircleShape)
-                                .border(2.dp, Color.White.copy(alpha = 0.8f), CircleShape)
+                                .border(2.dp, if (isClay) Color(0xFFD6DFEA) else Color.White.copy(alpha = 0.8f), CircleShape)
                         ) {
                             Image(
                                 painter = painterResource(id = R.drawable.logo_albaraa),
@@ -265,14 +281,14 @@ fun DashboardHubScreen(
                             Text(
                                 text = "مرحباً بك،",
                                 style = MaterialTheme.typography.bodyMedium.copy(
-                                    color = Color.White.copy(alpha = 0.85f),
+                                    color = if (isClay) Color(0xFF64748B) else Color.White.copy(alpha = 0.85f),
                                     fontSize = 13.sp
                                 )
                             )
                             Text(
                                 text = if (isSuperAdmin) "م. البراء إلكترونيك (Super Admin)" else if (isAdmin) "م. البراء إلكترونيك (مشرف)" else if (isGuest) "الزائر الكريم" else (userEmail ?: "مهندس الصيانة"),
                                 style = MaterialTheme.typography.titleLarge.copy(
-                                    color = Color.White,
+                                    color = if (isClay) Color(0xFF0F172A) else Color.White,
                                     fontWeight = FontWeight.Bold,
                                     fontSize = 18.sp
                                 )
@@ -286,7 +302,7 @@ fun DashboardHubScreen(
                             Icon(
                                 imageVector = Icons.Default.SystemUpdate,
                                 contentDescription = "التحقق من وجود تحديثات",
-                                tint = Color.White
+                                tint = if (isClay) MaterialTheme.colorScheme.primary else Color.White
                             )
                         }
 
@@ -295,7 +311,7 @@ fun DashboardHubScreen(
                             Icon(
                                 imageVector = Icons.Default.Palette,
                                 contentDescription = "مظهر التطبيق والسمة",
-                                tint = Color.White
+                                tint = if (isClay) MaterialTheme.colorScheme.primary else Color.White
                             )
                         }
 
@@ -305,7 +321,7 @@ fun DashboardHubScreen(
                                 Icon(
                                     imageVector = Icons.Default.CloudUpload,
                                     contentDescription = "نشر تحديث جديد للتطبيق",
-                                    tint = Color.White
+                                    tint = if (isClay) MaterialTheme.colorScheme.primary else Color.White
                                 )
                             }
 
@@ -313,7 +329,7 @@ fun DashboardHubScreen(
                                 Icon(
                                     imageVector = Icons.Default.Tune,
                                     contentDescription = "إدارة الشريط السفلي والتبويبات",
-                                    tint = Color.White
+                                    tint = if (isClay) MaterialTheme.colorScheme.primary else Color.White
                                 )
                             }
                         }

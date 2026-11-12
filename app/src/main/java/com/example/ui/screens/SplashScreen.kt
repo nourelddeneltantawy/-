@@ -40,6 +40,7 @@ import androidx.compose.material.icons.filled.StarBorder
 import com.example.data.AppStatsAndRatingManager
 import com.example.data.AppStatsData
 import com.example.ui.components.ThemeSettingsDialog
+import com.example.ui.theme.LocalIsClayTheme
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -139,6 +140,7 @@ fun SplashScreen(
 
     val contactInfo by ContactInfoManager.contactInfo.collectAsState()
     val statsData by AppStatsAndRatingManager.stats.collectAsState()
+    val isClay = LocalIsClayTheme.current
 
     val handleUpdateIconClick = {
         coroutineScope.launch {
@@ -179,12 +181,26 @@ fun SplashScreen(
                 .fillMaxSize(0.48f)
                 .clip(RoundedCornerShape(bottomStart = 56.dp, bottomEnd = 56.dp))
                 .background(
-                    Brush.verticalGradient(
-                        colors = listOf(
-                            MaterialTheme.colorScheme.primary,
-                            MaterialTheme.colorScheme.primaryContainer
+                    if (isClay) {
+                        Brush.verticalGradient(
+                            listOf(
+                                Color(0xFFFFFFFF),
+                                Color(0xFFEFF2F6)
+                            )
                         )
-                    )
+                    } else {
+                        Brush.verticalGradient(
+                            listOf(
+                                MaterialTheme.colorScheme.primary,
+                                MaterialTheme.colorScheme.primaryContainer
+                            )
+                        )
+                    }
+                )
+                .then(
+                    if (isClay) {
+                        Modifier.border(1.2.dp, Color(0xFFD6DFEA), RoundedCornerShape(bottomStart = 56.dp, bottomEnd = 56.dp))
+                    } else Modifier
                 )
         )
 
@@ -265,11 +281,14 @@ fun SplashScreen(
                     }
                 }
 
-                // End side: Custom Sleek Navy Container with Action Icons
+                // End side: Custom Sleek Container with Action Icons
                 Surface(
                     shape = RoundedCornerShape(16.dp),
-                    color = Color(0xFF0B1727).copy(alpha = 0.85f),
-                    border = androidx.compose.foundation.BorderStroke(1.2.dp, Color(0xFF38BDF8).copy(alpha = 0.35f)),
+                    color = if (isClay) Color(0xFFFFFFFF) else Color(0xFF0B1727).copy(alpha = 0.85f),
+                    border = androidx.compose.foundation.BorderStroke(
+                        1.2.dp,
+                        if (isClay) Color(0xFFD6DFEA) else Color(0xFF38BDF8).copy(alpha = 0.35f)
+                    ),
                     shadowElevation = 6.dp
                 ) {
                     Row(
@@ -283,7 +302,7 @@ fun SplashScreen(
                                 onClick = { handleUpdateIconClick() },
                                 modifier = Modifier.size(42.dp).testTag("splash_download_update_button")
                             ) {
-                                PhoneDownloadIcon(tint = Color(0xFF38BDF8))
+                                PhoneDownloadIcon(tint = if (isClay) MaterialTheme.colorScheme.primary else Color(0xFF38BDF8))
                             }
 
                             if (activeUpdateInfo?.hasUpdate == true) {
@@ -293,7 +312,7 @@ fun SplashScreen(
                                         .padding(top = 4.dp, end = 4.dp)
                                         .size(9.dp)
                                         .background(Color(0xFFEF4444), CircleShape)
-                                        .border(1.5.dp, Color(0xFF0B1727), CircleShape)
+                                        .border(1.5.dp, if (isClay) Color.White else Color(0xFF0B1727), CircleShape)
                                 )
                             }
                         }
@@ -303,7 +322,7 @@ fun SplashScreen(
                             modifier = Modifier
                                 .width(1.dp)
                                 .height(22.dp)
-                                .background(Color.White.copy(alpha = 0.2f))
+                                .background(if (isClay) Color(0xFFD6DFEA) else Color.White.copy(alpha = 0.2f))
                         )
 
                         // 2. Door with Arrow (تسجيل الدخول / الخروج)
@@ -320,7 +339,7 @@ fun SplashScreen(
                             Icon(
                                 imageVector = if (currentUserEmail != null) Icons.AutoMirrored.Filled.Logout else Icons.AutoMirrored.Filled.Login,
                                 contentDescription = if (currentUserEmail != null) "تسجيل الخروج" else "تسجيل الدخول",
-                                tint = Color(0xFF38BDF8),
+                                tint = if (isClay) MaterialTheme.colorScheme.primary else Color(0xFF38BDF8),
                                 modifier = Modifier.size(24.dp)
                             )
                         }
@@ -330,7 +349,7 @@ fun SplashScreen(
                             modifier = Modifier
                                 .width(1.dp)
                                 .height(22.dp)
-                                .background(Color.White.copy(alpha = 0.2f))
+                                .background(if (isClay) Color(0xFFD6DFEA) else Color.White.copy(alpha = 0.2f))
                         )
 
                         // 3. App Theme & Appearance Settings (السمة وإعدادات التطبيق)
@@ -341,7 +360,7 @@ fun SplashScreen(
                             Icon(
                                 imageVector = Icons.Default.Settings,
                                 contentDescription = "إعدادات المظهر والسمة",
-                                tint = Color(0xFF38BDF8),
+                                tint = if (isClay) MaterialTheme.colorScheme.primary else Color(0xFF38BDF8),
                                 modifier = Modifier.size(22.dp)
                             )
                         }
@@ -375,7 +394,7 @@ fun SplashScreen(
                 text = contactInfo.engineerName,
                 style = MaterialTheme.typography.titleLarge.copy(
                     fontWeight = FontWeight.Bold,
-                    color = Color.White,
+                    color = if (isClay) Color(0xFF0F172A) else Color.White,
                     fontSize = 22.sp
                 ),
                 textAlign = TextAlign.Center
@@ -386,7 +405,7 @@ fun SplashScreen(
             Text(
                 text = contactInfo.titleSubtitle,
                 style = MaterialTheme.typography.bodyMedium.copy(
-                    color = Color(0xFFE0F2FE),
+                    color = if (isClay) Color(0xFF64748B) else Color(0xFFE0F2FE),
                     fontSize = 13.sp,
                     fontWeight = FontWeight.Medium
                 ),
@@ -406,8 +425,9 @@ fun SplashScreen(
                 // 1. Real Active Users Pill
                 Surface(
                     shape = RoundedCornerShape(20.dp),
-                    color = Color.White.copy(alpha = 0.12f),
-                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.25f))
+                    color = if (isClay) Color(0xFFFFFFFF) else Color.White.copy(alpha = 0.12f),
+                    border = BorderStroke(1.dp, if (isClay) Color(0xFFD6DFEA) else Color.White.copy(alpha = 0.25f)),
+                    shadowElevation = if (isClay) 4.dp else 0.dp
                 ) {
                     Row(
                         modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
@@ -416,13 +436,13 @@ fun SplashScreen(
                         Icon(
                             imageVector = Icons.Default.People,
                             contentDescription = null,
-                            tint = Color(0xFF67E8F9),
+                            tint = if (isClay) MaterialTheme.colorScheme.primary else Color(0xFF67E8F9),
                             modifier = Modifier.size(16.dp)
                         )
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
                             text = "${statsData.totalUsersCount} مستخدم مسجل بالتطبيق ⚡",
-                            color = Color.White,
+                            color = if (isClay) Color(0xFF1E293B) else Color.White,
                             fontSize = 12.sp,
                             fontWeight = FontWeight.Bold
                         )
@@ -432,8 +452,9 @@ fun SplashScreen(
                 // 2. Interactive Real App Rating Badge
                 Surface(
                     shape = RoundedCornerShape(20.dp),
-                    color = Color.White.copy(alpha = 0.14f),
-                    border = BorderStroke(1.dp, Color(0xFFFDE047).copy(alpha = 0.4f)),
+                    color = if (isClay) Color(0xFFFFFFFF) else Color.White.copy(alpha = 0.14f),
+                    border = BorderStroke(1.dp, if (isClay) Color(0xFFD6DFEA) else Color(0xFFFDE047).copy(alpha = 0.4f)),
+                    shadowElevation = if (isClay) 4.dp else 0.dp,
                     modifier = Modifier.clickable {
                         if (currentUserEmail.isNullOrBlank()) {
                             showMustLoginDialog = true
@@ -467,7 +488,7 @@ fun SplashScreen(
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
                             text = if (statsData.totalRatingsCount > 0) "(${statsData.totalRatingsCount} تقييم)" else "(كن أول من يقيّم التطبيق ⭐)",
-                            color = Color.White.copy(alpha = 0.9f),
+                            color = if (isClay) Color(0xFF64748B) else Color.White.copy(alpha = 0.9f),
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Medium
                         )
@@ -475,7 +496,7 @@ fun SplashScreen(
                             Spacer(modifier = Modifier.width(4.dp))
                             Text(
                                 text = "• تقييمك: ${statsData.currentUserRating}★",
-                                color = Color(0xFF86EFAC),
+                                color = if (isClay) Color(0xFF047857) else Color(0xFF86EFAC),
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.Bold
                             )
@@ -509,12 +530,21 @@ fun SplashScreen(
                     modifier = Modifier
                         .fillMaxSize()
                         .background(
-                            Brush.horizontalGradient(
-                                listOf(
-                                    MaterialTheme.colorScheme.primary,
-                                    MaterialTheme.colorScheme.primary.copy(alpha = 0.85f)
+                            if (isClay) {
+                                Brush.horizontalGradient(
+                                    listOf(
+                                        Color(0xFFEA580C),
+                                        Color(0xFFF97316)
+                                    )
                                 )
-                            )
+                            } else {
+                                Brush.horizontalGradient(
+                                    listOf(
+                                        MaterialTheme.colorScheme.primary,
+                                        MaterialTheme.colorScheme.primary.copy(alpha = 0.85f)
+                                    )
+                                )
+                            }
                         ),
                     contentAlignment = Alignment.Center
                 ) {

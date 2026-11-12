@@ -23,6 +23,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.AdminPanelSettings
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.BrightnessAuto
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
@@ -195,6 +196,14 @@ fun ThemeSettingsDialog(
                     icon = Icons.Default.LightMode,
                     isSelected = currentMode == AppThemeMode.LIGHT,
                     onClick = { ThemeManager.setThemeMode(context, AppThemeMode.LIGHT) }
+                )
+
+                ThemeOptionCard(
+                    title = "الستايل الكلايمورفيك الناعم (الاستايل المرفق) ✨",
+                    subtitle = "مجسم ناعم ثلاثي الأبعاد، شرايح بيضاء بارزة، وتفاصيل برتقالية أنيقة تماماً كالصورة الاسترشادية 🎨",
+                    icon = Icons.Default.AutoAwesome,
+                    isSelected = currentMode == AppThemeMode.CLAY,
+                    onClick = { ThemeManager.setThemeMode(context, AppThemeMode.CLAY) }
                 )
 
                 if (onManageAdmins != null) {

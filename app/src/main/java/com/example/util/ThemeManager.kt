@@ -9,7 +9,8 @@ import kotlinx.coroutines.flow.asStateFlow
 enum class AppThemeMode(val title: String, val subtitle: String) {
     SYSTEM("تلقائي (حسب النظام)", "يتبع إعدادات ومظهر الهاتف تلقائياً 📱"),
     DARK("الوضع الداكن (Dark)", "خلفيات كحلية داكنة مريحة للعين 🌙"),
-    LIGHT("الوضع الفاتح (Light)", "خلفيات بيضاء وسماوية ناصعة ☀️")
+    LIGHT("الوضع الفاتح (Light)", "خلفيات بيضاء وسماوية ناصعة ☀️"),
+    CLAY("ستايل كلايمورفيك ناعم (الستايل المرفق) 🎨", "مجسم ثلاثي الأبعاد ناعم، شرايح بيضاء بارزة، وتفاصيل برتقالية أنيقة تماماً كالصورة الاسترشادية")
 }
 
 enum class AppColorTheme(
@@ -134,6 +135,9 @@ object ThemeManager {
         val appContext = context.applicationContext ?: context
         val prefs = appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         prefs.edit().putString(KEY_THEME, mode.name).apply()
+        if (mode == AppThemeMode.CLAY && _colorTheme.value == AppColorTheme.BLUE) {
+            setColorTheme(context, AppColorTheme.ORANGE)
+        }
     }
 
     fun setColorTheme(context: Context, color: AppColorTheme) {
