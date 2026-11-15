@@ -81,6 +81,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.runtime.mutableStateListOf
 import com.example.ui.screens.ProgrammingScreen
+import com.example.ui.screens.McuProgrammerScreen
 import com.example.ui.screens.MarketplaceScreen
 import com.example.ui.screens.CommunityHubScreen
 import com.example.ui.screens.ToolsHubScreen
@@ -112,6 +113,7 @@ enum class Screen {
     SYSTEM_INTEGRATOR,
     DIAGNOSTICS,
     PROGRAMMING,
+    MCU_PROGRAMMER,
     TOOLS,
     JOB_LOG,
     CUSTOMERS_DIR,
@@ -433,6 +435,8 @@ fun AppContent(
     val isToolsHiddenForUsers = BottomNavManager.isTabHiddenForUsers(BottomNavManager.TAB_TOOLS)
     val isCommunityVisible = isSuperAdmin || isAdmin || BottomNavManager.isTabVisible(BottomNavManager.TAB_COMMUNITY, isAdmin)
     val isCommunityHiddenForUsers = BottomNavManager.isTabHiddenForUsers(BottomNavManager.TAB_COMMUNITY)
+    val isMcuProgrammerVisible = isSuperAdmin || isAdmin || BottomNavManager.isTabVisible(BottomNavManager.TAB_MCU_PROGRAMMER, isAdmin)
+    val isMcuProgrammerHiddenForUsers = BottomNavManager.isTabHiddenForUsers(BottomNavManager.TAB_MCU_PROGRAMMER)
     val isHomeVisible = isSuperAdmin || isAdmin || BottomNavManager.isTabVisible(BottomNavManager.TAB_HOME, isAdmin)
     val isDashboardVisible = isSuperAdmin || isAdmin || BottomNavManager.isTabVisible(BottomNavManager.TAB_DASHBOARD, isAdmin)
 
@@ -440,6 +444,13 @@ fun AppContent(
         if (!isToolsVisible && currentScreen == Screen.TOOLS && !isAdmin) {
             currentScreen = Screen.DASHBOARD
             Toast.makeText(context, "تم قفل قسم الأدوات من قبل الإدارة", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    LaunchedEffect(isMcuProgrammerVisible, currentScreen) {
+        if (!isMcuProgrammerVisible && currentScreen == Screen.MCU_PROGRAMMER && !isAdmin) {
+            currentScreen = Screen.DASHBOARD
+            Toast.makeText(context, "تم قفل قسم البرمجة من قبل الإدارة", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -540,6 +551,7 @@ fun AppContent(
     val showBottomBar = currentScreen in setOf(
         Screen.DASHBOARD,
         Screen.TOOLS,
+        Screen.MCU_PROGRAMMER,
         Screen.COMMUNITY_HUB
     )
 
@@ -642,6 +654,49 @@ fun AppContent(
                                 selectedIconColor = if (isAdmin && isToolsHiddenForUsers) Color(0xFFEF4444) else Color(0xFF0284C7),
                                 selectedTextColor = if (isAdmin && isToolsHiddenForUsers) Color(0xFFEF4444) else Color(0xFF0284C7),
                                 indicatorColor = if (isAdmin && isToolsHiddenForUsers) Color(0xFFFEE2E2) else Color(0xFFE0F2FE)
+                            )
+                        )
+                    }
+
+                    // Item 3b: البرمجة (مبرمجة المعالجات الشاملة)
+                    if (isMcuProgrammerVisible) {
+                        NavigationBarItem(
+                            selected = currentScreen == Screen.MCU_PROGRAMMER,
+                            onClick = {
+                                if (isMcuProgrammerHiddenForUsers && !isAdmin) {
+                                    Toast.makeText(context, "قسم البرمجة مغلق حالياً من قبل الإدارة للصيانة", Toast.LENGTH_SHORT).show()
+                                } else {
+                                    selectTab(Screen.MCU_PROGRAMMER)
+                                }
+                            },
+                            icon = {
+                                BadgedBox(
+                                    badge = {
+                                        if (isAdmin && isMcuProgrammerHiddenForUsers) {
+                                            Badge(containerColor = Color(0xFFEF4444)) {
+                                                Text("مغلق", fontSize = 8.sp, color = Color.White)
+                                            }
+                                        }
+                                    }
+                                ) {
+                                    Icon(
+                                        imageVector = if (isAdmin && isMcuProgrammerHiddenForUsers) Icons.Default.Lock else Icons.Default.Memory,
+                                        contentDescription = "البرمجة"
+                                    )
+                                }
+                            },
+                            label = {
+                                Text(
+                                    if (isAdmin && isMcuProgrammerHiddenForUsers) "البرمجة (مغلق)" else "البرمجة",
+                                    fontSize = 10.sp,
+                                    maxLines = 1,
+                                    fontWeight = if (currentScreen == Screen.MCU_PROGRAMMER) FontWeight.Bold else FontWeight.Normal
+                                )
+                            },
+                            colors = NavigationBarItemDefaults.colors(
+                                selectedIconColor = if (isAdmin && isMcuProgrammerHiddenForUsers) Color(0xFFEF4444) else MaterialTheme.colorScheme.primary,
+                                selectedTextColor = if (isAdmin && isMcuProgrammerHiddenForUsers) Color(0xFFEF4444) else MaterialTheme.colorScheme.primary,
+                                indicatorColor = if (isAdmin && isMcuProgrammerHiddenForUsers) Color(0xFFFEE2E2) else MaterialTheme.colorScheme.primaryContainer
                             )
                         )
                     }
@@ -994,6 +1049,12 @@ fun AppContent(
                             isAdmin = canEditProgramming,
                             currentUserEmail = userEmail,
                             onBackClick = { navigateBack() }
+                        )
+                    }
+
+                    Screen.MCU_PROGRAMMER -> {
+                        McuProgrammerScreen(
+                            onBackClick = { selectTab(Screen.DASHBOARD) }
                         )
                     }
 

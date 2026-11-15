@@ -1,0 +1,630 @@
+package com.example.ui.viewmodel
+
+import android.app.Application
+import android.net.Uri
+import android.provider.OpenableColumns
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import com.example.data.model.LogLevel
+import com.example.data.model.McuProcessor
+import com.example.data.model.ProgrammerChipType
+import com.example.data.model.ProgrammerLogEntry
+import com.example.data.model.UsbSerialDeviceInfo
+import com.example.data.repository.McuDatabaseRepository
+import com.example.util.ChipAutoDetectResult
+import com.example.util.FirmwareParser
+import com.example.util.FlashOperationResult
+import com.example.util.UsbConnectResult
+import com.example.util.UsbOtgProgrammerService
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+
+data class McuProgrammerUiState(
+    val isLoadingDb: Boolean = true,
+    val dbError: String? = null,
+    val loadedDbFiles: List<String> = emptyList(),
+    val totalMcuCount: Int = 0,
+    val currentStep: Int = 1,
+
+    // Step 1: Search & Cascading Dropdowns
+    val searchQuery: String = "",
+    val searchMatches: List<McuProcessor> = emptyList(),
+    val manufacturers: List<String> = emptyList(),
+    val selectedManufacturer: String = "",
+    val mainFamilies: List<String> = emptyList(),
+    val selectedMainFamily: String = "",
+    val subFamilies: List<String> = emptyList(),
+    val selectedSubFamily: String = "",
+    val partNumbers: List<McuProcessor> = emptyList(),
+    val selectedProcessor: McuProcessor? = null,
+    val isAutoDetecting: Boolean = false,
+    val autoDetectStatus: String? = null,
+    val autoDetectIsSuccess: Boolean = false,
+
+    // Step 2: Programmer & USB OTG
+    val selectedProgrammer: ProgrammerChipType = ProgrammerChipType.FT232RL,
+    val attachedUsbDevices: List<UsbSerialDeviceInfo> = emptyList(),
+
+    // Step 3: Dynamic Flasher Controls & Hex Viewer
+    val baudRate: Int = 9600,
+    val idCodeBytesHex: List<String> = List(7) { "FF" },
+    val clockFrequency: String = "20 MHz",
+    val eraseMode: String = "مسح كلي (Chip Erase)",
+    val isConnected: Boolean = false,
+    val connectedDeviceLabel: String = "",
+    val isBusy: Boolean = false,
+    val progress: Float = 0f,
+    val progressLabel: String = "",
+    val flashBuffer: ByteArray = ByteArray(1024) { 0xFF.toByte() },
+    val loadedFileName: String? = null,
+    val loadedFormat: String? = null,
+    val loadedNonEmptyCount: Int = 0,
+    val selectedBlockIndex: Int = 0,
+    val logs: List<ProgrammerLogEntry> = emptyList()
+)
+
+class McuProgrammerViewModel(application: Application) : AndroidViewModel(application) {
+    private val appContext = application.applicationContext
+    private val usbService = UsbOtgProgrammerService(appContext)
+    private var allProcessors: List<McuProcessor> = emptyList()
+    private val timeFormat = SimpleDateFormat("HH:mm:ss", Locale.US)
+
+    private val _uiState = MutableStateFlow(McuProgrammerUiState())
+    val uiState: StateFlow<McuProgrammerUiState> = _uiState.asStateFlow()
+
+    init {
+        loadDatabase()
+        refreshUsbDevices()
+    }
+
+    fun loadDatabase(forceReload: Boolean = false) {
+        viewModelScope.launch {
+            _uiState.update { it.copy(isLoadingDb = true, dbError = null) }
+            val res = McuDatabaseRepository.loadAllDatabases(appContext, forceReload)
+            allProcessors = res.processors
+
+            if (allProcessors.isEmpty()) {
+                _uiState.update {
+                    it.copy(
+                        isLoadingDb = false,
+                        loadedDbFiles = res.loadedFileNames,
+                        totalMcuCount = 0,
+                        dbError = if (res.errors.isNotEmpty()) res.errors.joinToString("\n")
+                        else "لم يتم العثور على ملفات قواعد بيانات في assets/databases/"
+                    )
+                }
+                return@launch
+            }
+
+            val manufacturers = allProcessors.map { it.manufacturer }.distinct().sorted()
+            val firstMan = manufacturers.firstOrNull().orEmpty()
+            val families = allProcessors.filter { it.manufacturer == firstMan }.map { it.mainFamily }.distinct().sorted()
+            val firstFam = families.firstOrNull().orEmpty()
+            val subs = allProcessors.filter { it.manufacturer == firstMan && it.mainFamily == firstFam }
+                .map { it.subFamily }.distinct().sorted()
+            val firstSub = subs.firstOrNull().orEmpty()
+            val parts = allProcessors.filter {
+                it.manufacturer == firstMan && it.mainFamily == firstFam && it.subFamily == firstSub
+            }.sortedBy { it.partNumber }
+            val firstPart = parts.firstOrNull()
+
+            _uiState.update { state ->
+                val buffer = firstPart?.let { FirmwareParser.createEmptyBuffer(it.flashSizeBytes) }
+                    ?: FirmwareParser.createEmptyBuffer(64 * 1024)
+                state.copy(
+                    isLoadingDb = false,
+                    loadedDbFiles = res.loadedFileNames,
+                    totalMcuCount = allProcessors.size,
+                    manufacturers = manufacturers,
+                    selectedManufacturer = firstMan,
+                    mainFamilies = families,
+                    selectedMainFamily = firstFam,
+                    subFamilies = subs,
+                    selectedSubFamily = firstSub,
+                    partNumbers = parts,
+                    selectedProcessor = firstPart,
+                    flashBuffer = buffer,
+                    selectedBlockIndex = 0
+                )
+            }
+            addLog(
+                "تم تحميل ${allProcessors.size} معالج من (${res.loadedFileNames.joinToString(", ")})",
+                LogLevel.SUCCESS
+            )
+        }
+    }
+
+    fun onSearchQueryChanged(query: String) {
+        val trimmed = query.trim()
+        val matches = if (trimmed.length < 2) {
+            emptyList()
+        } else {
+            val tokens = trimmed.lowercase().split(" ").filter { it.isNotBlank() }
+            allProcessors.asSequence().filter { mcu ->
+                val haystack = "${mcu.partNumber} ${mcu.mainFamily} ${mcu.subFamily} ${mcu.manufacturer} ${mcu.displayLabel}".lowercase()
+                tokens.all { token -> haystack.contains(token) }
+            }.take(45).toList()
+        }
+        _uiState.update { it.copy(searchQuery = query, searchMatches = matches) }
+    }
+
+    fun selectSearchMatch(mcu: McuProcessor) {
+        applySelectedMcuHierarchy(mcu, clearSearch = true)
+    }
+
+    private fun applySelectedMcuHierarchy(mcu: McuProcessor, clearSearch: Boolean = false) {
+        val families = allProcessors.filter { it.manufacturer == mcu.manufacturer }.map { it.mainFamily }.distinct().sorted()
+        val subs = allProcessors.filter { it.manufacturer == mcu.manufacturer && it.mainFamily == mcu.mainFamily }
+            .map { it.subFamily }.distinct().sorted()
+        val parts = allProcessors.filter {
+            it.manufacturer == mcu.manufacturer && it.mainFamily == mcu.mainFamily && it.subFamily == mcu.subFamily
+        }.sortedBy { it.partNumber }
+
+        _uiState.update { state ->
+            val newBuffer = if (state.loadedFileName == null || state.flashBuffer.size != mcu.flashSizeBytes) {
+                FirmwareParser.createEmptyBuffer(mcu.flashSizeBytes)
+            } else {
+                state.flashBuffer
+            }
+            state.copy(
+                searchQuery = if (clearSearch) "" else state.searchQuery,
+                searchMatches = if (clearSearch) emptyList() else state.searchMatches,
+                selectedManufacturer = mcu.manufacturer,
+                mainFamilies = families,
+                selectedMainFamily = mcu.mainFamily,
+                subFamilies = subs,
+                selectedSubFamily = mcu.subFamily,
+                partNumbers = parts,
+                selectedProcessor = mcu,
+                flashBuffer = newBuffer,
+                selectedBlockIndex = 0
+            )
+        }
+    }
+
+    fun selectManufacturer(manufacturer: String) {
+        val families = allProcessors.filter { it.manufacturer == manufacturer }.map { it.mainFamily }.distinct().sorted()
+        val firstFam = families.firstOrNull().orEmpty()
+        val subs = allProcessors.filter { it.manufacturer == manufacturer && it.mainFamily == firstFam }
+            .map { it.subFamily }.distinct().sorted()
+        val firstSub = subs.firstOrNull().orEmpty()
+        val parts = allProcessors.filter {
+            it.manufacturer == manufacturer && it.mainFamily == firstFam && it.subFamily == firstSub
+        }.sortedBy { it.partNumber }
+        val firstPart = parts.firstOrNull()
+
+        updateCascadingState(manufacturer, families, firstFam, subs, firstSub, parts, firstPart)
+    }
+
+    fun selectMainFamily(mainFamily: String) {
+        val man = _uiState.value.selectedManufacturer
+        val subs = allProcessors.filter { it.manufacturer == man && it.mainFamily == mainFamily }
+            .map { it.subFamily }.distinct().sorted()
+        val firstSub = subs.firstOrNull().orEmpty()
+        val parts = allProcessors.filter {
+            it.manufacturer == man && it.mainFamily == mainFamily && it.subFamily == firstSub
+        }.sortedBy { it.partNumber }
+        val firstPart = parts.firstOrNull()
+
+        updateCascadingState(
+            man, _uiState.value.mainFamilies, mainFamily, subs, firstSub, parts, firstPart
+        )
+    }
+
+    fun selectSubFamily(subFamily: String) {
+        val man = _uiState.value.selectedManufacturer
+        val fam = _uiState.value.selectedMainFamily
+        val parts = allProcessors.filter {
+            it.manufacturer == man && it.mainFamily == fam && it.subFamily == subFamily
+        }.sortedBy { it.partNumber }
+        val firstPart = parts.firstOrNull()
+
+        updateCascadingState(
+            man, _uiState.value.mainFamilies, fam, _uiState.value.subFamilies, subFamily, parts, firstPart
+        )
+    }
+
+    fun selectPartNumber(processor: McuProcessor) {
+        _uiState.update { state ->
+            val resetBuf = if (state.loadedFileName == null) {
+                FirmwareParser.createEmptyBuffer(processor.flashSizeBytes)
+            } else {
+                state.flashBuffer
+            }
+            state.copy(
+                selectedProcessor = processor,
+                flashBuffer = resetBuf,
+                selectedBlockIndex = 0
+            )
+        }
+    }
+
+    private fun updateCascadingState(
+        manufacturer: String,
+        families: List<String>,
+        selectedFamily: String,
+        subs: List<String>,
+        selectedSub: String,
+        parts: List<McuProcessor>,
+        selectedPart: McuProcessor?
+    ) {
+        _uiState.update { state ->
+            val buf = selectedPart?.let {
+                if (state.loadedFileName == null) FirmwareParser.createEmptyBuffer(it.flashSizeBytes) else state.flashBuffer
+            } ?: state.flashBuffer
+            state.copy(
+                selectedManufacturer = manufacturer,
+                mainFamilies = families,
+                selectedMainFamily = selectedFamily,
+                subFamilies = subs,
+                selectedSubFamily = selectedSub,
+                partNumbers = parts,
+                selectedProcessor = selectedPart,
+                flashBuffer = buf,
+                selectedBlockIndex = 0
+            )
+        }
+    }
+
+    fun goToStep(step: Int) {
+        refreshUsbDevices()
+        val target = step.coerceIn(1, 3)
+        if (target == 3) {
+            val mcu = _uiState.value.selectedProcessor
+            if (mcu != null && _uiState.value.loadedFileName == null && _uiState.value.flashBuffer.size != mcu.flashSizeBytes) {
+                _uiState.update {
+                    it.copy(
+                        currentStep = target,
+                        flashBuffer = FirmwareParser.createEmptyBuffer(mcu.flashSizeBytes),
+                        selectedBlockIndex = 0
+                    )
+                }
+                return
+            }
+        }
+        _uiState.update { it.copy(currentStep = target) }
+    }
+
+    fun selectProgrammer(chip: ProgrammerChipType) {
+        _uiState.update { it.copy(selectedProgrammer = chip) }
+        refreshUsbDevices()
+    }
+
+    fun refreshUsbDevices() {
+        val devices = usbService.scanAttachedDevices()
+        _uiState.update { it.copy(attachedUsbDevices = devices) }
+    }
+
+    fun autoDetectChipId() {
+        if (_uiState.value.isAutoDetecting || _uiState.value.isBusy) return
+        viewModelScope.launch {
+            _uiState.update {
+                it.copy(
+                    isAutoDetecting = true,
+                    autoDetectStatus = "جاري فحص منفذ USB OTG وإرسال نبضة التزامن...",
+                    autoDetectIsSuccess = false
+                )
+            }
+            addLog("بدء الفحص التلقائي للمعالج (Auto-Detect Chip ID)...", LogLevel.INFO)
+
+            when (val res = usbService.probeChipId(_uiState.value.selectedProgrammer, allProcessors) { msg ->
+                addLog(msg, LogLevel.INFO)
+            }) {
+                is ChipAutoDetectResult.Matched -> {
+                    res.matchedProcessor?.let { matched ->
+                        applySelectedMcuHierarchy(matched, clearSearch = true)
+                    }
+                    _uiState.update {
+                        it.copy(
+                            isAutoDetecting = false,
+                            isConnected = usbService.isConnected(),
+                            autoDetectStatus = res.diagnosticMessage,
+                            autoDetectIsSuccess = true
+                        )
+                    }
+                    addLog(res.diagnosticMessage, LogLevel.SUCCESS)
+                }
+                is ChipAutoDetectResult.Failure -> {
+                    _uiState.update {
+                        it.copy(
+                            isAutoDetecting = false,
+                            isConnected = usbService.isConnected(),
+                            autoDetectStatus = res.reason,
+                            autoDetectIsSuccess = false
+                        )
+                    }
+                    addLog(res.reason, LogLevel.WARNING)
+                }
+            }
+            refreshUsbDevices()
+        }
+    }
+
+    fun setBaudRate(baud: Int) {
+        _uiState.update { it.copy(baudRate = baud) }
+    }
+
+    fun updateIdCodeByte(index: Int, rawHex: String) {
+        if (index !in 0..6) return
+        val filtered = rawHex.uppercase().filter { it in '0'..'9' || it in 'A'..'F' }.take(2)
+        _uiState.update { state ->
+            val list = state.idCodeBytesHex.toMutableList()
+            list[index] = filtered
+            state.copy(idCodeBytesHex = list)
+        }
+    }
+
+    fun resetIdCodeDefault() {
+        _uiState.update { it.copy(idCodeBytesHex = List(7) { "FF" }) }
+    }
+
+    fun setClockFrequency(clock: String) {
+        _uiState.update { it.copy(clockFrequency = clock) }
+    }
+
+    fun setEraseMode(mode: String) {
+        _uiState.update { it.copy(eraseMode = mode) }
+    }
+
+    fun selectBlock(blockIdx: Int) {
+        _uiState.update { it.copy(selectedBlockIndex = blockIdx.coerceAtLeast(0)) }
+    }
+
+    fun toggleUsbConnection() {
+        if (_uiState.value.isBusy) return
+        if (_uiState.value.isConnected) {
+            usbService.disconnect()
+            _uiState.update {
+                it.copy(isConnected = false, connectedDeviceLabel = "")
+            }
+            addLog("تم فصل المبرمجة USB OTG.", LogLevel.INFO)
+            refreshUsbDevices()
+            return
+        }
+
+        viewModelScope.launch {
+            _uiState.update { it.copy(isBusy = true, progress = 0.2f, progressLabel = "جاري فتح منفذ USB OTG...") }
+            val baud = _uiState.value.baudRate
+            when (val res = usbService.connect(_uiState.value.selectedProgrammer, baud)) {
+                is UsbConnectResult.Success -> {
+                    val label = "${res.deviceInfo.productName} (${res.deviceInfo.hexVidPid}) @ $baud"
+                    _uiState.update {
+                        it.copy(
+                            isBusy = false,
+                            isConnected = true,
+                            connectedDeviceLabel = label,
+                            progress = 0f,
+                            progressLabel = ""
+                        )
+                    }
+                    addLog("متصل بالمنفذ: $label", LogLevel.SUCCESS)
+                }
+                is UsbConnectResult.Failure -> {
+                    _uiState.update {
+                        it.copy(
+                            isBusy = false,
+                            isConnected = false,
+                            connectedDeviceLabel = "",
+                            progress = 0f,
+                            progressLabel = ""
+                        )
+                    }
+                    addLog(res.reason, LogLevel.ERROR)
+                }
+            }
+            refreshUsbDevices()
+        }
+    }
+
+    fun loadFirmwareFromUri(uri: Uri) {
+        val mcu = _uiState.value.selectedProcessor ?: return
+        viewModelScope.launch {
+            _uiState.update { it.copy(isBusy = true, progress = 0.4f, progressLabel = "جاري قراءة وتحليل ملف السوفت...") }
+            try {
+                val parsed = withContext(Dispatchers.IO) {
+                    var fileName = "firmware.bin"
+                    appContext.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+                        val idx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                        if (idx != -1 && cursor.moveToFirst()) {
+                            fileName = cursor.getString(idx) ?: fileName
+                        }
+                    }
+                    val bytes = appContext.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                        ?: throw IllegalStateException("تعذر فتح الملف المختار.")
+                    FirmwareParser.parseFirmware(bytes, fileName, mcu.flashSizeBytes)
+                }
+
+                _uiState.update {
+                    it.copy(
+                        isBusy = false,
+                        progress = 0f,
+                        progressLabel = "",
+                        flashBuffer = parsed.bytes,
+                        loadedFileName = parsed.fileName,
+                        loadedFormat = parsed.format,
+                        loadedNonEmptyCount = parsed.nonEmptyBytesCount,
+                        selectedBlockIndex = 0
+                    )
+                }
+                addLog(
+                    "تم تحميل الملف ${parsed.fileName} (${parsed.format}) - ${parsed.nonEmptyBytesCount} بايت فعلي في ذاكرة ${mcu.flashKb}KB",
+                    LogLevel.SUCCESS
+                )
+            } catch (e: Throwable) {
+                _uiState.update { it.copy(isBusy = false, progress = 0f, progressLabel = "") }
+                addLog("فشل قراءة الملف: ${e.message}", LogLevel.ERROR)
+            }
+        }
+    }
+
+    fun saveDumpToUri(uri: Uri, asIntelHex: Boolean) {
+        val buffer = _uiState.value.flashBuffer
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    appContext.contentResolver.openOutputStream(uri)?.use { out ->
+                        if (asIntelHex) {
+                            out.write(FirmwareParser.toIntelHex(buffer).toByteArray(Charsets.US_ASCII))
+                        } else {
+                            out.write(buffer)
+                        }
+                    } ?: throw IllegalStateException("تعذر الكتابة إلى المسار المختار.")
+                }
+                addLog(
+                    "تم حفظ السوفت المسحوب بنجاح (${if (asIntelHex) "Intel HEX" else "BIN"})",
+                    LogLevel.SUCCESS
+                )
+            } catch (e: Throwable) {
+                addLog("خطأ أثناء حفظ الملف: ${e.message}", LogLevel.ERROR)
+            }
+        }
+    }
+
+    fun readChipFlash() {
+        val mcu = _uiState.value.selectedProcessor ?: return
+        if (_uiState.value.isBusy) return
+        val idBytes = parseIdCodeBytes()
+        if (idBytes == null) {
+            addLog("صيغة 7-Byte ID Code غير مكتملة (أدخل 7 بايت Hex من 00 إلى FF).", LogLevel.ERROR)
+            return
+        }
+
+        viewModelScope.launch {
+            _uiState.update { it.copy(isBusy = true, progress = 0.02f, progressLabel = "بدء قراءة الفلاش...") }
+            addLog("بدء قراءة ذاكرة ${mcu.partNumber} (${mcu.flashKb}KB)...", LogLevel.INFO)
+
+            when (val res = usbService.executeReadFlash(mcu, idBytes) { prog, msg ->
+                _uiState.update { it.copy(progress = prog, progressLabel = msg) }
+            }) {
+                is FlashOperationResult.Success -> {
+                    val data = res.bytesTransferred ?: _uiState.value.flashBuffer
+                    _uiState.update {
+                        it.copy(
+                            isBusy = false,
+                            progress = 1f,
+                            progressLabel = "اكتملت القراءة",
+                            flashBuffer = data,
+                            loadedFileName = "Dump_${mcu.partNumber}.bin",
+                            loadedFormat = "Chip Read",
+                            loadedNonEmptyCount = data.count { b -> b != 0xFF.toByte() },
+                            selectedBlockIndex = 0
+                        )
+                    }
+                    addLog(res.message, LogLevel.SUCCESS)
+                }
+                is FlashOperationResult.Failure -> {
+                    _uiState.update { it.copy(isBusy = false, progress = 0f, progressLabel = "") }
+                    addLog(res.reason, LogLevel.ERROR)
+                }
+            }
+        }
+    }
+
+    fun eraseChipFlash() {
+        val mcu = _uiState.value.selectedProcessor ?: return
+        if (_uiState.value.isBusy) return
+        val idBytes = parseIdCodeBytes() ?: run {
+            addLog("أدخل 7 بايت صحيحة في خانة ID Code أولاً.", LogLevel.ERROR)
+            return
+        }
+
+        viewModelScope.launch {
+            _uiState.update { it.copy(isBusy = true, progress = 0.1f, progressLabel = "جاري مسح الفلاش...") }
+            addLog("بدء مسح ذاكرة ${mcu.partNumber} (${_uiState.value.eraseMode})...", LogLevel.INFO)
+            when (val res = usbService.executeErase(mcu, _uiState.value.eraseMode, idBytes) { prog, msg ->
+                _uiState.update { it.copy(progress = prog, progressLabel = msg) }
+            }) {
+                is FlashOperationResult.Success -> {
+                    _uiState.update {
+                        it.copy(
+                            isBusy = false,
+                            progress = 1f,
+                            progressLabel = "تم المسح",
+                            flashBuffer = FirmwareParser.createEmptyBuffer(mcu.flashSizeBytes),
+                            loadedNonEmptyCount = 0
+                        )
+                    }
+                    addLog(res.message, LogLevel.SUCCESS)
+                }
+                is FlashOperationResult.Failure -> {
+                    _uiState.update { it.copy(isBusy = false, progress = 0f, progressLabel = "") }
+                    addLog(res.reason, LogLevel.ERROR)
+                }
+            }
+        }
+    }
+
+    fun writeChipFlash() = runWriteOrVerify(verifyOnly = false)
+    fun verifyChipFlash() = runWriteOrVerify(verifyOnly = true)
+
+    private fun runWriteOrVerify(verifyOnly: Boolean) {
+        val mcu = _uiState.value.selectedProcessor ?: return
+        if (_uiState.value.isBusy) return
+        val idBytes = parseIdCodeBytes() ?: run {
+            addLog("أدخل 7 بايت صحيحة في خانة ID Code أولاً.", LogLevel.ERROR)
+            return
+        }
+
+        viewModelScope.launch {
+            val actionName = if (verifyOnly) "مطابقة (Verify)" else "كتابة (Write)"
+            _uiState.update { it.copy(isBusy = true, progress = 0.02f, progressLabel = "بدء $actionName...") }
+            addLog("بدء عملية $actionName على ${mcu.partNumber}...", LogLevel.INFO)
+
+            when (val res = usbService.executeWriteAndVerify(
+                processor = mcu,
+                firmwareBytes = _uiState.value.flashBuffer,
+                idCodeBytes = idBytes,
+                verifyOnly = verifyOnly
+            ) { prog, msg ->
+                _uiState.update { it.copy(progress = prog, progressLabel = msg) }
+            }) {
+                is FlashOperationResult.Success -> {
+                    _uiState.update { it.copy(isBusy = false, progress = 1f, progressLabel = "اكتملت العملية") }
+                    addLog(res.message, LogLevel.SUCCESS)
+                }
+                is FlashOperationResult.Failure -> {
+                    _uiState.update { it.copy(isBusy = false, progress = 0f, progressLabel = "") }
+                    addLog(res.reason, LogLevel.ERROR)
+                }
+            }
+        }
+    }
+
+    fun clearLogs() {
+        _uiState.update { it.copy(logs = emptyList()) }
+    }
+
+    private fun parseIdCodeBytes(): ByteArray? {
+        val parts = _uiState.value.idCodeBytesHex
+        if (parts.size != 7) return null
+        val out = ByteArray(7)
+        for (i in 0 until 7) {
+            val p = parts[i].ifBlank { "FF" }
+            val v = p.toIntOrNull(16) ?: return null
+            if (v !in 0..255) return null
+            out[i] = v.toByte()
+        }
+        return out
+    }
+
+    private fun addLog(message: String, level: LogLevel) {
+        val ts = timeFormat.format(Date())
+        _uiState.update { state ->
+            val updated = (state.logs + ProgrammerLogEntry(ts, message, level)).takeLast(120)
+            state.copy(logs = updated)
+        }
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        usbService.disconnect()
+    }
+}

@@ -11,10 +11,13 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.Storefront
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.AlertDialog
@@ -55,7 +58,9 @@ fun AdminBottomNavDialog(
         },
         text = {
             Column(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 Text(
@@ -161,6 +166,57 @@ fun AdminBottomNavDialog(
                                         if (success) {
                                             val state = if (isVisible) "تفعيل وإظهار" else "إخفاء وقفل"
                                             Toast.makeText(context, "تم $state قسم الأدوات بنجاح", Toast.LENGTH_SHORT).show()
+                                        }
+                                    }
+                                }
+                            )
+                        }
+                    }
+                }
+
+                // Tab 2b: MCU Programmer (البرمجة)
+                val programmerTab = tabsMap[BottomNavManager.TAB_MCU_PROGRAMMER]
+                    ?: BottomNavCustomization(id = BottomNavManager.TAB_MCU_PROGRAMMER, title = "البرمجة")
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = if (programmerTab.isHidden) Color(0xFFEF4444).copy(alpha = 0.08f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                    border = BorderStroke(1.dp, if (programmerTab.isHidden) Color(0xFFEF4444).copy(alpha = 0.4f) else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(
+                                modifier = Modifier.weight(1f),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Memory,
+                                    contentDescription = null,
+                                    tint = if (programmerTab.isHidden) Color(0xFFEF4444) else Color(0xFF38BDF8),
+                                    modifier = Modifier.size(22.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Column {
+                                    Text("البرمجة (مبرمجة المعالجات الشاملة)", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                    Text(
+                                        text = if (programmerTab.isHidden) "مغلقة ومخفية عن المستخدمين 🔒" else "متاحة ونشطة لجميع المستخدمين ✓",
+                                        fontSize = 11.sp,
+                                        color = if (programmerTab.isHidden) Color(0xFFEF4444) else Color(0xFF10B981)
+                                    )
+                                }
+                            }
+
+                            Switch(
+                                checked = !programmerTab.isHidden,
+                                onCheckedChange = { isVisible ->
+                                    BottomNavManager.setTabVisibility(context, BottomNavManager.TAB_MCU_PROGRAMMER, !isVisible) { success ->
+                                        if (success) {
+                                            val state = if (isVisible) "تفعيل وإظهار" else "إخفاء وقفل"
+                                            Toast.makeText(context, "تم $state تبويب البرمجة بنجاح", Toast.LENGTH_SHORT).show()
                                         }
                                     }
                                 }

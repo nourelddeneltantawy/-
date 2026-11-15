@@ -24,6 +24,7 @@ object BottomNavManager {
     const val TAB_DASHBOARD = "dashboard"
     const val TAB_TOOLS = "tools"
     const val TAB_COMMUNITY = "community"
+    const val TAB_MCU_PROGRAMMER = "mcu_programmer"
     const val TAB_MARKETPLACE = "marketplace"
     const val TAB_COMMUNITY_GROUP = "community_group"
 
@@ -31,6 +32,7 @@ object BottomNavManager {
         TAB_HOME to BottomNavCustomization(id = TAB_HOME, title = "شاشة البدء", isHidden = false, isLocked = false),
         TAB_DASHBOARD to BottomNavCustomization(id = TAB_DASHBOARD, title = "الأقسام", isHidden = false, isLocked = false),
         TAB_TOOLS to BottomNavCustomization(id = TAB_TOOLS, title = "الأدوات", isHidden = false, isLocked = false),
+        TAB_MCU_PROGRAMMER to BottomNavCustomization(id = TAB_MCU_PROGRAMMER, title = "البرمجة", isHidden = false, isLocked = false),
         TAB_COMMUNITY to BottomNavCustomization(id = TAB_COMMUNITY, title = "المجتمع", isHidden = false, isLocked = false),
         TAB_MARKETPLACE to BottomNavCustomization(id = TAB_MARKETPLACE, title = "سوق الكروت", isHidden = false, isLocked = false),
         TAB_COMMUNITY_GROUP to BottomNavCustomization(id = TAB_COMMUNITY_GROUP, title = "جروب الفنيين", isHidden = false, isLocked = false)
