@@ -213,6 +213,7 @@ fun McuProgrammerScreen(
                     onToggleConnection = programmerViewModel::toggleUsbConnection,
                     onBaudRateChange = programmerViewModel::setBaudRate,
                     onToggleDtrRtsReset = programmerViewModel::setEnableDtrRtsReset,
+                    onToggleEchoCancel = programmerViewModel::setEnableEchoCancellation,
                     onIdCodeByteChange = programmerViewModel::updateIdCodeByte,
                     onResetIdCode = programmerViewModel::resetIdCodeDefault,
                     onClockChange = programmerViewModel::setClockFrequency,

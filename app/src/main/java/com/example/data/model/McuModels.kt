@@ -35,6 +35,18 @@ data class McuProcessor(
         return McuProtocolDefaults.defaultPinoutFor(this)
     }
 
+    fun is78k0Flmd0Mode(): Boolean {
+        val fam = mainFamily.trim().uppercase()
+        return fam.contains("78K0") && !fam.contains("78K0R")
+    }
+
+    fun isRl78Family(): Boolean = mainFamily.trim().uppercase().contains("RL78")
+
+    fun isDiodeSingleWireSchematicFamily(): Boolean {
+        val fam = mainFamily.trim().uppercase()
+        return fam.contains("RL78") || fam.contains("78K0") || fam.contains("R8C") || fam.contains("M16C")
+    }
+
     val flashSizeBytes: Int
         get() = (flashKb.coerceAtLeast(1)) * 1024
 }
@@ -161,41 +173,50 @@ object McuProtocolDefaults {
 
     fun defaultPinoutFor(mcu: McuProcessor): List<McuPinMapping> {
         val fam = mcu.mainFamily.trim().uppercase()
-        val pkgNote = "حزمة ${mcu.pins}-Pin (حدد رقم البن حسب Datasheet إذا لم يُدرج في JSON)"
+        val pkgNote = "حزمة ${mcu.pins}-Pin (راجع الداتاشيت لرقم البن الفعلي)"
         return when {
+            fam.contains("RL78") -> listOf(
+                McuPinMapping("TX + RX (عبر دايود 1N4148 D1)", "TOOL0 / MODE", "طرف أحادي السلك", "ثنائي الاتجاه (D1)", "تجميع TX و RX عبر دايود D1 (1N4148) إلى طرف TOOL0 مع إلغاء الصدى تلقائياً"),
+                McuPinMapping("RTS (عبر دايود 1N4148 D2)", "RESET#", "تحكم بالبوت", "خرج Reset", "الكاثود جهة RTS والأنود جهة RESET لتنفيذ نبضة 50ms ثم HIGH"),
+                McuPinMapping("VCC (التغذية)", "VDD / EVDD", "1.6V - 5.5V", "تغذية", "تغذية مستقرة ${mcu.recommendedVoltage}"),
+                McuPinMapping("GND (الأرضي)", "VSS / EVSS", "أرضي + مكثف REGC", "أرضي مشترك", "ربط الأرضي مباشرة + مكثف 0.47µF على طرف REGC")
+            )
             fam.contains("R8C") -> listOf(
-                McuPinMapping("TXD (خرج المبرمجة)", "RXD1 / P3_7 (또는 P1_5)", "حسب الباكج (${mcu.pins}P)", "UART إلى المعالج", "طرف استقبال البيانات في وضع Boot ($pkgNote)"),
-                McuPinMapping("RXD (دخل المبرمجة)", "TXD1 / P3_4 (أو P1_4)", "حسب الباكج (${mcu.pins}P)", "UART من المعالج", "طرف إرسال البيانات من المعالج"),
-                McuPinMapping("GND (الأرضي)", "VSS", "مرجع مشترك", "أرضي مشترك", "يجب ربطه مباشرة بأرضي البوردة"),
-                McuPinMapping("VCC (التغذية)", "VCC / AVCC", "تغذية 5V / 3.3V", "تغذية", "تغذية مستقرة ${mcu.recommendedVoltage}"),
-                McuPinMapping("DTR / RTS (التحكم)", "RESET + MODE", "LOW أثناء الإقلاع", "تحكم بالبوت", "توصيل MODE للأرضي عبر مقاومة 1kΩ - 4.7kΩ عند التشغيل")
+                McuPinMapping("TX + RX (عبر دايود 1N4148 D1)", "TOOL0 / MODE (RXD/TXD)", "حسب الباكج (${mcu.pins}P)", "ثنائي الاتجاه (D1)", "دمج TX و RX عبر دايود D1 (1N4148) لتكوين خط البيانات و MODE المشترك ($pkgNote)"),
+                McuPinMapping("RTS (عبر دايود 1N4148 D2)", "RESET#", "تحكم بالبوت", "خرج Reset", "طرف RTS يتحكم في RESET عبر دايود D2 أثناء سحب TX/MODE للأسفل 50ms"),
+                McuPinMapping("VCC (التغذية)", "VCC / AVCC", "2.7V - 5.5V", "تغذية", "تغذية مستقرة ${mcu.recommendedVoltage}"),
+                McuPinMapping("GND (الأرضي)", "VSS", "مرجع مشترك", "أرضي مشترك", "ربط مباشر بأرضي البوردة")
+            )
+            fam.contains("78K0R") -> listOf(
+                McuPinMapping("TX + RX (عبر دايود 1N4148 D1)", "TOOL0 / MODE", "حسب الباكج (${mcu.pins}P)", "ثنائي الاتجاه (D1)", "دمج TX و RX عبر دايود D1 (1N4148) لتكوين خط TOOL0 / MODE المشترك ($pkgNote)"),
+                McuPinMapping("RTS (عبر دايود 1N4148 D2)", "RESET#", "تحكم بالبوت", "خرج Reset", "طرف RTS مسؤول عن RESET عبر دايود D2 (نبضة 50ms مع TX LOW)"),
+                McuPinMapping("DTR (إذا توفر FLMD0)", "FLMD0", "HIGH (5V/3.3V)", "تفعيل البرمجة", "يُربط في الموديلات المزودة بطرف FLMD0 (يُضبط DTR = false)"),
+                McuPinMapping("VCC / GND", "VDD / VSS", "تغذية وأرضي", "تغذية مشتركة", "${mcu.recommendedVoltage} + مكثف REGC")
+            )
+            fam.contains("78K0") -> listOf(
+                McuPinMapping("RTS (عبر دايود 1N4148 D2)", "RESET#", "نبضة Reset 50ms", "خرج Reset", "طرف RTS يتحكم في RESET عبر دايود D2 (50ms LOW ثم HIGH)"),
+                McuPinMapping("DTR (تحكم FLMD0)", "FLMD0", "HIGH بجهد 5V", "تفعيل وضع الفلاش", "طرف DTR مسؤول عن FLMD0 (يُضبط DTR = false لإخراج HIGH 5V)"),
+                McuPinMapping("TX + RX (عبر دايود 1N4148 D1)", "TOOL0 / UART6 (RXD6/TXD6)", "حسب الباكج (${mcu.pins}P)", "ثنائي الاتجاه (D1)", "دمج TX و RX عبر دايود D1 (1N4148) مع تفعيل إلغاء الصدى تلقائياً"),
+                McuPinMapping("VCC / GND", "VDD / VSS", "تغذية 5V وأرضي", "تغذية مشتركة", "${mcu.recommendedVoltage}")
             )
             fam.contains("M16C") -> listOf(
-                McuPinMapping("TXD (خرج المبرمجة)", "RXD1 (P6_6)", "حسب الباكج (${mcu.pins}P)", "UART إلى المعالج", pkgNote),
-                McuPinMapping("RXD (دخل المبرمجة)", "TXD1 (P6_7)", "حسب الباكج (${mcu.pins}P)", "UART من المعالج", "خرج البيانات التسلسلي"),
-                McuPinMapping("DTR / RTS", "RESET + CNVss (HIGH)", "تفعيل Boot Mode", "تحكم بالبوت", "رفع CNVss إلى VCC وسحب RESET ثم إطلاقه"),
-                McuPinMapping("VCC", "VCC1 / VCC2", "3.3V - 5.0V", "تغذية", mcu.recommendedVoltage),
+                McuPinMapping("TX + RX (عبر دايود 1N4148 D1)", "TOOL0 / MODE (RXD1/TXD1)", "حسب الباكج (${mcu.pins}P)", "ثنائي الاتجاه (D1)", pkgNote),
+                McuPinMapping("RTS (عبر دايود 1N4148 D2)", "RESET#", "تحكم بالبوت", "خرج Reset", "نبضة Reset عبر RTS مع تهيئة CNVss"),
+                McuPinMapping("VCC", "VCC1 / VCC2", "3.0V - 5.5V", "تغذية", mcu.recommendedVoltage),
                 McuPinMapping("GND", "VSS", "أرضي", "أرضي مشترك", "أرضي الدائرة المشترك")
-            )
-            fam.contains("RL78") -> listOf(
-                McuPinMapping("TXD + RXD (عبر مقاومة 1kΩ)", "TOOL0 (P4_0)", "طرف أحادي السلك", "ثنائي الاتجاه (1-Wire)", "اربط TXD بـ RXD عبر دايود شوتكي أو مقاومة 1kΩ إلى TOOL0"),
-                McuPinMapping("DTR / RTS", "RESET", "سحب مؤقت للأرضي", "إعادة ضبط", "نبضة Low على RESET مع بقاء TOOL0 منخفضاً لدخول البرمجة"),
-                McuPinMapping("VCC", "VDD / EVDD", "1.6V - 5.5V", "تغذية", mcu.recommendedVoltage),
-                McuPinMapping("GND", "VSS / EVSS", "أرضي + ربط REGC بمكثف", "أرضي مشترك", "تأكد من وجود مكثف 0.47µF على طرف REGC")
             )
             fam.startsWith("RX") -> listOf(
                 McuPinMapping("TXD (3.3V فقط)", "RXD1 (SCI Boot)", "حسب الباكج (${mcu.pins}P)", "UART إلى المعالج", "مستوى الجهد 3.3V حصراً"),
                 McuPinMapping("RXD (3.3V فقط)", "TXD1 (SCI Boot)", "حسب الباكج (${mcu.pins}P)", "UART من المعالج", "مستوى الجهد 3.3V حصراً"),
-                McuPinMapping("DTR / RTS", "RES# + MD (LOW)", "تفعيل SCI Boot", "تحكم بالبوت", "ضع طرف MD على LOW عند نبضة RES#"),
+                McuPinMapping("RTS (عبر D2)", "RES# + MD (LOW)", "تفعيل SCI Boot", "تحكم بالبوت", "ضع طرف MD على LOW عند نبضة RES#"),
                 McuPinMapping("VCC (3.3V)", "VCC / AVCC0", "3.3V حصراً", "تغذية", mcu.recommendedVoltage),
                 McuPinMapping("GND", "VSS / AVSS0", "أرضي", "أرضي مشترك", "أرضي مشترك مستقر")
             )
             else -> listOf(
-                McuPinMapping("TXD (خرج المبرمجة)", "RXD6 / TOOLRxD", "حسب الباكج (${mcu.pins}P)", "UART إلى المعالج", pkgNote),
-                McuPinMapping("RXD (دخل المبرمجة)", "TXD6 / TOOLTxD", "حسب الباكج (${mcu.pins}P)", "UART من المعالج", "استقبال ردود المعالج"),
-                McuPinMapping("DTR / RTS", "FLMD0 (HIGH) + RESET", "تفعيل البرمجة", "تحكم بالبوت", "رفع FLMD0 إلى VDD ثم نبضة RESET"),
-                McuPinMapping("VCC", "VDD", "تغذية", "تغذية", mcu.recommendedVoltage),
-                McuPinMapping("GND", "VSS", "أرضي", "أرضي مشترك", "ربط الأرضي المشترك")
+                McuPinMapping("TX + RX (عبر دايود 1N4148 D1)", "TOOL0 / MODE", "حسب الباكج (${mcu.pins}P)", "ثنائي الاتجاه (D1)", pkgNote),
+                McuPinMapping("RTS (عبر دايود 1N4148 D2)", "RESET#", "تحكم بالبوت", "خرج Reset", "طرف RTS مسؤول عن RESET عبر دايود D2"),
+                McuPinMapping("DTR", "FLMD0 (عند الحاجة)", "تفعيل البرمجة", "تحكم بالبوت", "رفع FLMD0 إلى HIGH في عائلات 78K0"),
+                McuPinMapping("VCC / GND", "VDD / VSS", "تغذية وأرضي", "تغذية مشتركة", mcu.recommendedVoltage)
             )
         }
     }

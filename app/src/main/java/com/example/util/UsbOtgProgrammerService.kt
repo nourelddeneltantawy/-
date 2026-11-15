@@ -84,6 +84,16 @@ object UsbOtgProgrammerService {
     private var outEndpoint: UsbEndpoint? = null
     @Volatile
     private var activeChipType: ProgrammerChipType? = null
+    @Volatile
+    private var currentBaudRate: Int = 9600
+    @Volatile
+    private var echoCancellationEnabled: Boolean = true
+
+    private enum class BootSyncMode {
+        SINGLE_WIRE_RL78,
+        SINGLE_WIRE_R8C_78K0R,
+        FLMD0_78K0
+    }
 
     // Continuous RX input buffer filled by background readerJob
     private val rxLock = Any()
@@ -96,6 +106,10 @@ object UsbOtgProgrammerService {
 
     private val _connectedLabelFlow = MutableStateFlow("")
     val connectedLabelFlow: StateFlow<String> = _connectedLabelFlow.asStateFlow()
+
+    fun setEchoCancellation(enabled: Boolean) {
+        echoCancellationEnabled = enabled
+    }
 
     private fun ensureContext(context: Context) {
         val ctx = context.applicationContext
@@ -182,8 +196,8 @@ object UsbOtgProgrammerService {
         ensureContext(context)
         val conn = activeConnection ?: return
         val dev = activeDevice ?: return
-        // When DTR/RTS Reset is disabled, release both lines (false = HIGH/inactive) so the chip isn't held in reset
-        setControlLines(conn, dev, activeChipType, dtr = false, rts = enableBootHold, onLog = onLog)
+        setTxBreak(conn, dev, activeChipType, enabled = false, onLog = onLog)
+        setControlLines(conn, dev, activeChipType, dtr = false, rts = false, onLog = onLog)
     }
 
     suspend fun connect(
@@ -357,8 +371,18 @@ object UsbOtgProgrammerService {
         }
     }
 
+    private fun resolveBootSyncMode(mainFamily: String?): BootSyncMode {
+        val fam = mainFamily.orEmpty().trim().uppercase()
+        return when {
+            fam.contains("78K0") && !fam.contains("78K0R") -> BootSyncMode.FLMD0_78K0
+            fam.contains("RL78") -> BootSyncMode.SINGLE_WIRE_RL78
+            else -> BootSyncMode.SINGLE_WIRE_R8C_78K0R
+        }
+    }
+
     private suspend fun performSyncHandshake(
         enableDtrRtsReset: Boolean,
+        syncMode: BootSyncMode,
         onLog: (String) -> Unit
     ): Boolean {
         val conn = activeConnection ?: run {
@@ -367,51 +391,101 @@ object UsbOtgProgrammerService {
         }
         val dev = activeDevice ?: return false
 
-        onLog("1) تهيئة المنفذ: 9600 Baud, 8N1, Flow Control OFF...")
+        onLog("1) تهيئة المنفذ: 9600 Baud, 8N1, Flow Control OFF (Echo Cancel=${if (echoCancellationEnabled) "ON" else "OFF"})...")
         configureUartHardware(conn, dev, activeChipType, 9600, onLog)
+        setTxBreak(conn, dev, activeChipType, enabled = false, onLog = onLog)
 
-        if (enableDtrRtsReset) {
-            onLog("2) تتابع Reset: DTR=true (RESET=LOW) و RTS=true (MODE=LOW) -> انتظار 100ms...")
-            setControlLines(conn, dev, activeChipType, dtr = true, rts = true, onLog = onLog)
-            delay(100)
-
-            onLog("3) رفع RESET: DTR=false (RESET=HIGH) مع إبقاء RTS=true (MODE=LOW) -> انتظار 150ms...")
-            setControlLines(conn, dev, activeChipType, dtr = false, rts = true, onLog = onLog)
-            delay(150)
-        } else {
-            onLog("2) نبضة DTR/RTS Reset معطلة — تحرير DTR=false و RTS=false (وضع التوصيل المباشر)...")
+        if (!enableDtrRtsReset) {
+            onLog("2) نبضة DTR/RTS معطلة — تحرير DTR=false و RTS=false (توصيل مباشر)...")
             setControlLines(conn, dev, activeChipType, dtr = false, rts = false, onLog = onLog)
-            delay(60)
-        }
+            delay(50)
+            flushRxBuffer()
+        } else if (syncMode == BootSyncMode.FLMD0_78K0) {
+            onLog("2) تتابع 78K0 (FLMD0): DTR=false (FLMD0=HIGH 5V) و RTS=true (RESET=LOW عبر D2) -> انتظار 50ms...")
+            setControlLines(conn, dev, activeChipType, dtr = false, rts = true, onLog = onLog)
+            delay(50)
 
-        onLog("4) تفريغ Input Buffer (Flush) قبل بدء المزامنة...")
-        flushRxBuffer()
-
-        onLog("5) إرسال 16 بايت 0x00 بفاصل 25ms بين كل بايت...")
-        val zeroByte = byteArrayOf(0x00)
-        for (i in 0 until 16) {
-            val txErr = writeRawBytes(zeroByte)
-            if (txErr != null) {
-                onLog("TX ERROR (Sync byte #${i + 1}): $txErr")
-                return false
+            onLog("3) رفع RESET: RTS=false (RESET=HIGH) مع إبقاء DTR=false (FLMD0=HIGH) -> انتظار 20ms...")
+            setControlLines(conn, dev, activeChipType, dtr = false, rts = false, onLog = onLog)
+            delay(20)
+            flushRxBuffer()
+        } else {
+            onLog("2) سحب RTS=true (RESET=LOW عبر D2) + تفعيل TX Break LOW (سحب TOOL0/MODE=LOW عبر D1) -> 50ms...")
+            setControlLines(conn, dev, activeChipType, dtr = false, rts = true, onLog = onLog)
+            val breakSupported = setTxBreak(conn, dev, activeChipType, enabled = true, onLog = onLog)
+            if (!breakSupported) {
+                // Fallback if adapter ignores SET_BREAK: keep TX actively pulled low using 0x00 bytes during 50ms
+                repeat(4) {
+                    writeRawBytes(byteArrayOf(0x00, 0x00, 0x00, 0x00))
+                    delay(12)
+                }
+            } else {
+                delay(50)
             }
-            delay(25)
-        }
-        onLog("TX: 00 x16 (25ms interval)")
 
-        delay(50)
+            onLog("3) رفع RESET: RTS=false (RESET=HIGH) بينما TOOL0/MODE منخفض عبر Break لالتقاط Boot Mode -> 20ms...")
+            setControlLines(conn, dev, activeChipType, dtr = false, rts = false, onLog = onLog)
+            delay(20)
 
-        val b0Reply = transmitAndLog(byteArrayOf(0xB0.toByte()), expectedMax = 8, timeoutMs = 250, onLog = onLog)
-        if (b0Reply.isEmpty()) {
-            transmitAndLog(byteArrayOf(0x00), expectedMax = 8, timeoutMs = 200, onLog = onLog)
+            setTxBreak(conn, dev, activeChipType, enabled = false, onLog = onLog)
+            delay(8)
+            flushRxBuffer()
         }
-        return true
+
+        return when (syncMode) {
+            BootSyncMode.SINGLE_WIRE_RL78 -> {
+                onLog("4) إرسال نبضة المزامنة RL78 (0x3A) مع إلغاء صدى الدايود D1...")
+                val syncReply = transmitAndLog(byteArrayOf(0x3A), expectedMax = 4, timeoutMs = 200, onLog = onLog)
+                if (syncReply.isEmpty()) {
+                    onLog("إعادة محاولة المزامنة بنبضة 0x00 (RL78)...")
+                    transmitAndLog(byteArrayOf(0x00), expectedMax = 4, timeoutMs = 160, onLog = onLog)
+                }
+                true
+            }
+            BootSyncMode.FLMD0_78K0 -> {
+                onLog("4) إرسال نبضة المزامنة 78K0 (0x00 × 2) مع إلغاء صدى D1...")
+                val err1 = writeWithEchoCancel(byteArrayOf(0x00), clearStaleRx = true, onLog = onLog)
+                if (err1 != null) {
+                    onLog("TX ERROR (78K0 Sync #1): $err1")
+                    return false
+                }
+                delay(20)
+                val err2 = writeWithEchoCancel(byteArrayOf(0x00), clearStaleRx = true, onLog = onLog)
+                if (err2 != null) {
+                    onLog("TX ERROR (78K0 Sync #2): $err2")
+                    return false
+                }
+                delay(20)
+                true
+            }
+            BootSyncMode.SINGLE_WIRE_R8C_78K0R -> {
+                onLog("4) إرسال 16 بايت 0x00 بفاصل 20ms (R8C / 78K0R) مع إلغاء صدى الدايود D1...")
+                val zeroByte = byteArrayOf(0x00)
+                for (i in 0 until 16) {
+                    val txErr = writeWithEchoCancel(zeroByte, clearStaleRx = (i == 0), onLog = onLog)
+                    if (txErr != null) {
+                        onLog("TX ERROR (Sync byte #${i + 1}): $txErr")
+                        return false
+                    }
+                    delay(20)
+                }
+                onLog("TX: 00 x16 (Echo Cancelled)")
+                delay(40)
+
+                val b0Reply = transmitAndLog(byteArrayOf(0xB0.toByte()), expectedMax = 8, timeoutMs = 250, onLog = onLog)
+                if (b0Reply.isEmpty()) {
+                    transmitAndLog(byteArrayOf(0x00), expectedMax = 8, timeoutMs = 200, onLog = onLog)
+                }
+                true
+            }
+        }
     }
 
     suspend fun probeChipId(
         context: Context,
         preferredChip: ProgrammerChipType?,
         enableDtrRtsReset: Boolean,
+        targetMainFamily: String? = null,
         catalog: List<McuProcessor>,
         onLog: (String) -> Unit
     ): ChipAutoDetectResult = withContext(Dispatchers.IO) {
@@ -420,10 +494,42 @@ object UsbOtgProgrammerService {
             return@withContext ChipAutoDetectResult.Failure("تعذر فتح منفذ USB OTG للفحص التلقائي.")
         }
 
-        if (!performSyncHandshake(enableDtrRtsReset, onLog)) {
+        val initialMode = resolveBootSyncMode(targetMainFamily)
+        if (!performSyncHandshake(enableDtrRtsReset, initialMode, onLog)) {
             return@withContext ChipAutoDetectResult.Failure("فشل إرسال نبضة المزامنة عبر USB. راجع تفاصيل الخطأ في السجل.")
         }
 
+        if (initialMode == BootSyncMode.SINGLE_WIRE_R8C_78K0R) {
+            val r8cResult = probeR8cSequence(catalog, onLog)
+            if (r8cResult != null) return@withContext r8cResult
+
+            onLog("لم يرد كمعالج R8C — إعادة تهيئة Boot Mode وتجربة RL78 (0x3A + Silicon Signature)...")
+            if (performSyncHandshake(enableDtrRtsReset, BootSyncMode.SINGLE_WIRE_RL78, onLog)) {
+                val rl78Result = probeRl78Or78k0Sequence(catalog, onLog)
+                if (rl78Result != null) return@withContext rl78Result
+            }
+        } else {
+            val rl78Result = probeRl78Or78k0Sequence(catalog, onLog)
+            if (rl78Result != null) return@withContext rl78Result
+
+            if (initialMode == BootSyncMode.SINGLE_WIRE_RL78) {
+                onLog("لم يرد كمعالج RL78 — إعادة تهيئة Boot Mode وتجربة R8C / 78K0R...")
+                if (performSyncHandshake(enableDtrRtsReset, BootSyncMode.SINGLE_WIRE_R8C_78K0R, onLog)) {
+                    val r8cResult = probeR8cSequence(catalog, onLog)
+                    if (r8cResult != null) return@withContext r8cResult
+                }
+            }
+        }
+
+        ChipAutoDetectResult.Failure(
+            "تم فتح المنفذ وتنفيذ تتابع RTS/TX Break وإلغاء صدى الدايود D1، ولكن المعالج لم يرد بأي بايتات. تأكد من دايود D1/D2 والتغذية والجهد."
+        )
+    }
+
+    private suspend fun probeR8cSequence(
+        catalog: List<McuProcessor>,
+        onLog: (String) -> Unit
+    ): ChipAutoDetectResult.Matched? {
         onLog("إرسال طلب معلومات البوت لودر 0xFB...")
         val versionReply = transmitAndLog(byteArrayOf(0xFB.toByte()), expectedMax = 16, timeoutMs = 450, onLog = onLog)
         val versionAscii = toPrintableAscii(versionReply)
@@ -476,50 +582,48 @@ object UsbOtgProgrammerService {
         }
 
         val allBytes = combinedSignatureData.toByteArray()
-        if (allBytes.isNotEmpty()) {
-            val allHex = toHex(allBytes.take(32).toByteArray())
-            val msg = when {
-                matchedMcu != null -> "تم التعرف على المعالج بنجاح: ${matchedMcu.partNumber} ($versionAscii)"
-                versionAscii.isNotBlank() -> "استجاب بوت لودر R8C بنجاح ($versionAscii | RX: $allHex)."
-                else -> "تم استلام رد من المعالج [RX: $allHex]."
+        if (allBytes.isEmpty()) return null
+
+        val allHex = toHex(allBytes.take(32).toByteArray())
+        val msg = when {
+            matchedMcu != null -> "تم التعرف على المعالج بنجاح: ${matchedMcu.partNumber} ($versionAscii)"
+            versionAscii.isNotBlank() -> "استجاب بوت لودر R8C/78K0R بنجاح ($versionAscii | RX: $allHex)."
+            else -> "تم استلام رد من المعالج [RX: $allHex]."
+        }
+        return ChipAutoDetectResult.Matched(
+            rawSignatureHex = allHex,
+            matchedProcessor = matchedMcu,
+            diagnosticMessage = msg
+        )
+    }
+
+    private suspend fun probeRl78Or78k0Sequence(
+        catalog: List<McuProcessor>,
+        onLog: (String) -> Unit
+    ): ChipAutoDetectResult.Matched? {
+        onLog("إرسال إطار طلب توقيع السليكون RL78/78K0 (01 01 C0 3F 03)...")
+        var reply = transmitAndLog(
+            byteArrayOf(0x01, 0x01, 0xC0.toByte(), 0x3F, 0x03),
+            expectedMax = 32,
+            timeoutMs = 350,
+            onLog = onLog
+        )
+        if (reply.isEmpty()) {
+            reply = transmitAndLog(byteArrayOf(0xC0.toByte()), expectedMax = 32, timeoutMs = 300, onLog = onLog)
+        }
+        if (reply.isEmpty()) return null
+
+        val hexStr = toHex(reply)
+        val ascii = toPrintableAscii(reply)
+        val matched = matchCatalogBySignature(ascii, hexStr, catalog)
+        return ChipAutoDetectResult.Matched(
+            rawSignatureHex = hexStr,
+            matchedProcessor = matched,
+            diagnosticMessage = if (matched != null) {
+                "تم التعرف على المعالج تلقائياً: ${matched.partNumber} ($ascii)"
+            } else {
+                "استجاب المعالج بالبيانات [$ascii | $hexStr]"
             }
-            return@withContext ChipAutoDetectResult.Matched(
-                rawSignatureHex = allHex,
-                matchedProcessor = matchedMcu,
-                diagnosticMessage = msg
-            )
-        }
-
-        onLog("تجربة تسلسل RL78 (0x00 ثم 0xC0)...")
-        transmitAndLog(byteArrayOf(0x00), expectedMax = 8, timeoutMs = 150, onLog = onLog)
-        delay(20)
-        var rl78Reply = transmitAndLog(byteArrayOf(0xC0.toByte()), expectedMax = 32, timeoutMs = 350, onLog = onLog)
-        if (rl78Reply.isEmpty()) {
-            rl78Reply = transmitAndLog(
-                byteArrayOf(0x01, 0x01, 0xC0.toByte(), 0x3F, 0x03),
-                expectedMax = 32,
-                timeoutMs = 350,
-                onLog = onLog
-            )
-        }
-
-        if (rl78Reply.isNotEmpty()) {
-            val hexStr = toHex(rl78Reply)
-            val ascii = toPrintableAscii(rl78Reply)
-            val matched = matchCatalogBySignature(ascii, hexStr, catalog)
-            return@withContext ChipAutoDetectResult.Matched(
-                rawSignatureHex = hexStr,
-                matchedProcessor = matched,
-                diagnosticMessage = if (matched != null) {
-                    "تم التعرف على معالج RL78 تلقائياً: ${matched.partNumber} ($ascii)"
-                } else {
-                    "استجاب معالج RL78 بالبيانات [$ascii | $hexStr]"
-                }
-            )
-        }
-
-        ChipAutoDetectResult.Failure(
-            "تم فتح المنفذ والاستماع المستمر للبيانات ولكن RX لم يستلم أي بايتات من المعالج. جرّب تبديل وضع (DTR/RTS Reset) أو عكس أطراف TXD/RXD وتأكد من الجهد 5V/3.3V."
         )
     }
 
@@ -540,7 +644,8 @@ object UsbOtgProgrammerService {
 
         val totalSize = processor.flashSizeBytes
         onProgress(0, totalSize, "مزامنة المعالج...")
-        if (!performSyncHandshake(enableDtrRtsReset, onLog)) {
+        val syncMode = resolveBootSyncMode(processor.mainFamily)
+        if (!performSyncHandshake(enableDtrRtsReset, syncMode, onLog)) {
             return@withContext FlashOperationResult.Failure("فشلت مرحلة الإرسال أثناء المزامنة (راجع سجل الأحداث).")
         }
 
@@ -570,7 +675,7 @@ object UsbOtgProgrammerService {
                 ((addr ushr 8) and 0xFF).toByte(),
                 ((addr ushr 16) and 0xFF).toByte()
             )
-            val txErr = writeRawBytes(cmd)
+            val txErr = writeWithEchoCancel(cmd, clearStaleRx = true, onLog = onLog)
             if (txErr != null) {
                 onLog("TX ERROR (Read 0x%06X): $txErr".format(addr))
                 return@withContext FlashOperationResult.Failure("فشل الإرسال عند 0x%06X: $txErr".format(addr))
@@ -578,7 +683,7 @@ object UsbOtgProgrammerService {
             val chunk = readBufferedBytes(expectedMax = blockSize, timeoutMs = 450, onLog = onLog)
             if (chunk.isEmpty()) {
                 return@withContext FlashOperationResult.Failure(
-                    "توقف المعالج عن إرسال البيانات عند العنوان 0x%06X (RX فارغ)."
+                    "توقف المعالج عن إرسال البيانات عند العنوان 0x%06X (RX فارغ بعد حذف الصدى)."
                         .format(addr)
                 )
             }
@@ -614,7 +719,8 @@ object UsbOtgProgrammerService {
             return@withContext FlashOperationResult.Failure("يجب الاتصال بمبرمجة USB OTG أولاً.")
         }
         val totalSize = processor.flashSizeBytes
-        if (!performSyncHandshake(enableDtrRtsReset, onLog)) {
+        val syncMode = resolveBootSyncMode(processor.mainFamily)
+        if (!performSyncHandshake(enableDtrRtsReset, syncMode, onLog)) {
             return@withContext FlashOperationResult.Failure("فشلت مرحلة الإرسال أثناء المزامنة.")
         }
 
@@ -653,7 +759,8 @@ object UsbOtgProgrammerService {
             return@withContext FlashOperationResult.Failure("يجب الاتصال بمبرمجة USB OTG أولاً.")
         }
         val totalSize = firmwareBytes.size
-        if (!performSyncHandshake(enableDtrRtsReset, onLog)) {
+        val syncMode = resolveBootSyncMode(processor.mainFamily)
+        if (!performSyncHandshake(enableDtrRtsReset, syncMode, onLog)) {
             return@withContext FlashOperationResult.Failure("فشلت مرحلة الإرسال أثناء المزامنة.")
         }
 
@@ -681,7 +788,7 @@ object UsbOtgProgrammerService {
                     ((offset ushr 8) and 0xFF).toByte(),
                     ((offset ushr 16) and 0xFF).toByte()
                 )
-                val txErr = writeRawBytes(readCmd)
+                val txErr = writeWithEchoCancel(readCmd, clearStaleRx = true, onLog = onLog)
                 if (txErr != null) {
                     onLog("TX ERROR (Verify 0x%06X): $txErr".format(offset))
                     return@withContext FlashOperationResult.Failure("فشل الإرسال أثناء Verify عند 0x%06X: $txErr".format(offset))
@@ -705,7 +812,7 @@ object UsbOtgProgrammerService {
                     ((offset ushr 8) and 0xFF).toByte(),
                     ((offset ushr 16) and 0xFF).toByte()
                 )
-                val txErr = writeRawBytes(header + slice)
+                val txErr = writeWithEchoCancel(header + slice, clearStaleRx = true, onLog = onLog)
                 if (txErr != null) {
                     onLog("TX ERROR (Write 0x%06X): $txErr".format(offset))
                     return@withContext FlashOperationResult.Failure("فشل إرسال صفحة 0x%06X: $txErr".format(offset))
@@ -768,7 +875,7 @@ object UsbOtgProgrammerService {
         onLog: (String) -> Unit
     ): ByteArray {
         onLog("TX: ${toHex(txBytes)}")
-        val txErr = writeRawBytes(txBytes)
+        val txErr = writeWithEchoCancel(txBytes, clearStaleRx = true, onLog = onLog)
         if (txErr != null) {
             onLog("TX ERROR: $txErr")
             return ByteArray(0)
@@ -878,6 +985,7 @@ object UsbOtgProgrammerService {
         baudRate: Int,
         onLog: ((String) -> Unit)?
     ) {
+        currentBaudRate = baudRate
         try {
             when (chipType) {
                 ProgrammerChipType.FT232RL -> {
@@ -976,6 +1084,87 @@ object UsbOtgProgrammerService {
         } catch (e: Throwable) {
             onLog?.invoke("DTR/RTS Exception (${device.deviceName}): ${e.toString()}")
         }
+    }
+
+    private fun setTxBreak(
+        conn: UsbDeviceConnection,
+        device: UsbDevice,
+        chipType: ProgrammerChipType?,
+        enabled: Boolean,
+        onLog: ((String) -> Unit)? = null
+    ): Boolean {
+        return try {
+            val ret = when (chipType) {
+                ProgrammerChipType.CP2102 -> {
+                    conn.controlTransfer(0x41, 0x05, if (enabled) 0x0001 else 0x0000, controlInterfaceIndex, null, 0, 300)
+                }
+                ProgrammerChipType.FT232RL -> {
+                    conn.controlTransfer(0x40, 0x04, if (enabled) 0x4008 else 0x0008, 0, null, 0, 300)
+                }
+                ProgrammerChipType.CH340G -> {
+                    conn.controlTransfer(0x40, 0x9A, 0x05, if (enabled) 0x0000 else 0x0001, null, 0, 300)
+                }
+                else -> {
+                    conn.controlTransfer(0x21, 0x23, if (enabled) 0xFFFF else 0x0000, controlInterfaceIndex, null, 0, 300)
+                }
+            }
+            if (ret < 0) {
+                onLog?.invoke("TX Break Warning ($chipType, enabled=$enabled): controlTransfer returned $ret")
+            }
+            ret >= 0
+        } catch (e: Throwable) {
+            onLog?.invoke("TX Break Exception (${device.deviceName}): ${e.toString()}")
+            false
+        }
+    }
+
+    /**
+     * Transmits txBytes and cancels the 1N4148 diode D1 loopback echo by removing
+     * the first txBytes.size bytes arriving in rxBuffer.
+     */
+    private suspend fun writeWithEchoCancel(
+        txBytes: ByteArray,
+        clearStaleRx: Boolean = true,
+        onLog: ((String) -> Unit)? = null
+    ): String? {
+        if (clearStaleRx) {
+            synchronized(rxLock) {
+                rxBuffer.clear()
+            }
+        }
+        val txErr = writeRawBytes(txBytes)
+        if (txErr != null) return txErr
+
+        if (echoCancellationEnabled && txBytes.isNotEmpty()) {
+            val dropped = discardEchoBytes(txBytes.size)
+            if (dropped < txBytes.size && txBytes.size > 1) {
+                onLog?.invoke("D1 Echo Notice: حُذف $dropped / ${txBytes.size} بايت صدى")
+            }
+        }
+        return null
+    }
+
+    private suspend fun discardEchoBytes(expectedEchoCount: Int): Int {
+        if (expectedEchoCount <= 0) return 0
+        val baud = currentBaudRate.coerceAtLeast(300)
+        val wireWindowMs = ((expectedEchoCount * 11_000L) / baud) + 90L
+        val deadline = System.currentTimeMillis() + wireWindowMs
+        var discarded = 0
+
+        while (discarded < expectedEchoCount) {
+            var tookAny = false
+            synchronized(rxLock) {
+                while (rxBuffer.isNotEmpty() && discarded < expectedEchoCount) {
+                    rxBuffer.removeFirst()
+                    discarded++
+                    tookAny = true
+                }
+            }
+            if (discarded >= expectedEchoCount) break
+            if (System.currentTimeMillis() >= deadline) break
+            delay(if (tookAny) 2L else 3L)
+        }
+        return discarded
     }
 
     /**

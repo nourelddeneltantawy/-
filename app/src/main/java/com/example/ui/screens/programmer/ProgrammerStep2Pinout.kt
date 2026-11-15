@@ -42,7 +42,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.model.McuPinMapping
@@ -185,6 +187,16 @@ fun ProgrammerStep2Pinout(
 
         // Pinout Mapping Diagram & Table
         if (mcu != null) {
+            if (mcu.isDiodeSingleWireSchematicFamily()) {
+                Diode1N4148SchematicCard(
+                    familyName = mcu.mainFamily,
+                    partNumber = mcu.partNumber,
+                    chipModel = state.selectedProgrammer.chipModel,
+                    is78k0Flmd0 = mcu.is78k0Flmd0Mode(),
+                    voltage = mcu.recommendedVoltage
+                )
+            }
+
             Card(
                 shape = RoundedCornerShape(18.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -366,6 +378,181 @@ private fun PinoutBridgeCard(
                     lineHeight = 15.sp
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun Diode1N4148SchematicCard(
+    familyName: String,
+    partNumber: String,
+    chipModel: String,
+    is78k0Flmd0: Boolean,
+    voltage: String
+) {
+    Card(
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.2.dp, Color(0xFF0EA5E9).copy(alpha = 0.5f)),
+        modifier = Modifier.testTag("step2_diode_schematic_card")
+    ) {
+        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "المخطط الهندسي المعتمد (1N4148 Diodes)",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 14.sp,
+                        color = Color(0xFF38BDF8)
+                    )
+                    Text(
+                        text = "$chipModel ➔ $partNumber ($familyName)",
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = if (is78k0Flmd0) Color(0xFFF59E0B).copy(alpha = 0.16f)
+                    else Color(0xFF10B981).copy(alpha = 0.16f)
+                ) {
+                    Text(
+                        text = if (is78k0Flmd0) "وضع FLMD0" else "وضع TOOL0/MODE",
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = if (is78k0Flmd0) Color(0xFFF59E0B) else Color(0xFF10B981),
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                    )
+                }
+            }
+
+            // Table Header
+            Surface(
+                shape = RoundedCornerShape(10.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 10.dp, vertical = 7.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "طرف المبرمجة",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Text(
+                        text = "المكوّن / التوصيل",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Text(
+                        text = "طرف المعالج",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        textAlign = TextAlign.End,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+            }
+
+            SchematicTableRow(
+                programmerSignal = "RTS",
+                bridgeComponent = "دايود D2 (1N4148)",
+                mcuTarget = "RESET#",
+                accentColor = Color(0xFFF59E0B),
+                subNote = "الكاثود جهة RTS — ينفذ نبضة Reset 50ms ثم HIGH"
+            )
+            SchematicTableRow(
+                programmerSignal = "TX + RX",
+                bridgeComponent = "دايود D1 (1N4148)",
+                mcuTarget = "TOOL0 / MODE",
+                accentColor = Color(0xFF38BDF8),
+                subNote = "خط البيانات والـ Mode المشترك (مع إلغاء صدى D1 تلقائياً بالكود)"
+            )
+            SchematicTableRow(
+                programmerSignal = "DTR",
+                bridgeComponent = if (is78k0Flmd0) "توصيل مباشر (HIGH)" else "اختياري (FLMD0)",
+                mcuTarget = "FLMD0",
+                accentColor = if (is78k0Flmd0) Color(0xFF10B981) else Color(0xFF94A3B8),
+                subNote = if (is78k0Flmd0) {
+                    "أساسي لعائلة 78K0: يُرفع إلى 5V HIGH عبر DTR = false قبل Reset"
+                } else {
+                    "مخصص لعائلة 78K0 (غير مطلوب في وضع TOOL0 الأحادي)"
+                }
+            )
+            SchematicTableRow(
+                programmerSignal = "VCC / GND",
+                bridgeComponent = "توصيل مباشر",
+                mcuTarget = "VDD / VSS",
+                accentColor = Color(0xFFEF4444),
+                subNote = "الجهد الموصى به: $voltage مع مكثف REGC عند الحاجة"
+            )
+        }
+    }
+}
+
+@Composable
+private fun SchematicTableRow(
+    programmerSignal: String,
+    bridgeComponent: String,
+    mcuTarget: String,
+    accentColor: Color,
+    subNote: String
+) {
+    Surface(
+        shape = RoundedCornerShape(10.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.32f),
+        border = BorderStroke(1.dp, accentColor.copy(alpha = 0.3f))
+    ) {
+        Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = programmerSignal,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = FontFamily.Monospace,
+                    color = accentColor,
+                    modifier = Modifier.weight(1f)
+                )
+                Text(
+                    text = bridgeComponent,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.weight(1f)
+                )
+                Text(
+                    text = mcuTarget,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = FontFamily.Monospace,
+                    color = MaterialTheme.colorScheme.primary,
+                    textAlign = TextAlign.End,
+                    modifier = Modifier.weight(1f)
+                )
+            }
+            Text(
+                text = subNote,
+                fontSize = 10.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                lineHeight = 14.sp
+            )
         }
     }
 }

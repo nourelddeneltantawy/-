@@ -56,6 +56,7 @@ data class McuProgrammerUiState(
     // Step 3: Dynamic Flasher Controls & PC-Style Hex Viewer
     val baudRate: Int = 9600,
     val enableDtrRtsReset: Boolean = true,
+    val enableEchoCancellation: Boolean = true,
     val idCodeBytesHex: List<String> = List(7) { "FF" },
     val clockFrequency: String = "20 MHz",
     val eraseMode: String = "مسح كلي (Chip Erase)",
@@ -320,22 +321,33 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
         )
     }
 
+    fun setEnableEchoCancellation(enabled: Boolean) {
+        _uiState.update { it.copy(enableEchoCancellation = enabled) }
+        UsbOtgProgrammerService.setEchoCancellation(enabled)
+        addLog(
+            if (enabled) "تم تفعيل إلغاء صدى الدايود D1 (Echo Cancellation)." else "تم إيقاف إلغاء صدى الدايود D1 (وضع سلكين منفصلين).",
+            LogLevel.INFO
+        )
+    }
+
     fun autoDetectChipId() {
         if (_uiState.value.isAutoDetecting || _uiState.value.isBusy) return
         viewModelScope.launch {
             _uiState.update {
                 it.copy(
                     isAutoDetecting = true,
-                    autoDetectStatus = "جاري فحص USB OTG والاستماع المستمر للبيانات...",
+                    autoDetectStatus = "جاري فحص USB OTG مع تتابع RTS/TX Break وإلغاء صدى D1...",
                     autoDetectIsSuccess = false
                 )
             }
             addLog("بدء التعرف التلقائي (Auto-Detect Chip ID)...", LogLevel.INFO)
 
+            val familyHint = _uiState.value.selectedProcessor?.mainFamily ?: _uiState.value.selectedMainFamily
             when (val res = UsbOtgProgrammerService.probeChipId(
                 context = appContext,
                 preferredChip = _uiState.value.selectedProgrammer,
                 enableDtrRtsReset = _uiState.value.enableDtrRtsReset,
+                targetMainFamily = familyHint,
                 catalog = allProcessors
             ) { msg ->
                 addLog(msg, LogLevel.INFO)

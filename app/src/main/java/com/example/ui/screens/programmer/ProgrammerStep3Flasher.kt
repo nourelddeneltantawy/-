@@ -105,6 +105,7 @@ fun ProgrammerStep3Flasher(
     onToggleConnection: () -> Unit,
     onBaudRateChange: (Int) -> Unit,
     onToggleDtrRtsReset: (Boolean) -> Unit,
+    onToggleEchoCancel: (Boolean) -> Unit,
     onIdCodeByteChange: (Int, String) -> Unit,
     onResetIdCode: () -> Unit,
     onClockChange: (String) -> Unit,
@@ -260,6 +261,41 @@ fun ProgrammerStep3Flasher(
                             onCheckedChange = onToggleDtrRtsReset,
                             enabled = !state.isBusy,
                             modifier = Modifier.testTag("step3_dtr_rts_switch")
+                        )
+                    }
+                }
+
+                // D1 Diode Echo Cancellation Switch
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 4.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "إلغاء صدى الدايود D1 (Echo Cancellation)",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = if (state.enableEchoCancellation) "حذف بايتات الصدى المارة عبر D1 (TX↔RX) تلقائياً" else "توصيل بسلكين منفصلين بدون دايود D1",
+                                fontSize = 10.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Switch(
+                            checked = state.enableEchoCancellation,
+                            onCheckedChange = onToggleEchoCancel,
+                            enabled = !state.isBusy,
+                            modifier = Modifier.testTag("step3_echo_cancel_switch")
                         )
                     }
                 }
