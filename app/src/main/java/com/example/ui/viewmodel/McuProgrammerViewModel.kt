@@ -55,11 +55,12 @@ data class McuProgrammerUiState(
 
     // Step 3: Dynamic Flasher Controls & PC-Style Hex Viewer
     val baudRate: Int = 9600,
+    val enableDtrRtsReset: Boolean = true,
     val idCodeBytesHex: List<String> = List(7) { "FF" },
     val clockFrequency: String = "20 MHz",
     val eraseMode: String = "مسح كلي (Chip Erase)",
-    val isConnected: Boolean = false,
-    val connectedDeviceLabel: String = "",
+    val isConnected: Boolean = UsbOtgProgrammerService.isConnected(),
+    val connectedDeviceLabel: String = UsbOtgProgrammerService.connectedLabelFlow.value,
     val isBusy: Boolean = false,
     val progress: Float = 0f,
     val progressBytesDone: Int = 0,
@@ -76,7 +77,6 @@ data class McuProgrammerUiState(
 
 class McuProgrammerViewModel(application: Application) : AndroidViewModel(application) {
     private val appContext = application.applicationContext
-    private val usbService = UsbOtgProgrammerService(appContext)
     private var allProcessors: List<McuProcessor> = emptyList()
     private val timeFormat = SimpleDateFormat("HH:mm:ss", Locale.US)
 
@@ -86,6 +86,16 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
     init {
         loadDatabase()
         refreshUsbDevices()
+        viewModelScope.launch {
+            UsbOtgProgrammerService.isConnectedFlow.collect { connected ->
+                _uiState.update { it.copy(isConnected = connected) }
+            }
+        }
+        viewModelScope.launch {
+            UsbOtgProgrammerService.connectedLabelFlow.collect { label ->
+                _uiState.update { it.copy(connectedDeviceLabel = label) }
+            }
+        }
     }
 
     fun loadDatabase(forceReload: Boolean = false) {
@@ -293,8 +303,21 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
     }
 
     fun refreshUsbDevices() {
-        val devices = usbService.scanAttachedDevices()
+        val devices = UsbOtgProgrammerService.scanAttachedDevices(appContext)
         _uiState.update { it.copy(attachedUsbDevices = devices) }
+    }
+
+    fun setEnableDtrRtsReset(enabled: Boolean) {
+        _uiState.update { it.copy(enableDtrRtsReset = enabled) }
+        if (UsbOtgProgrammerService.isConnected()) {
+            UsbOtgProgrammerService.applyIdleControlLines(appContext, enableBootHold = enabled) { msg ->
+                addLog(msg, LogLevel.INFO)
+            }
+        }
+        addLog(
+            if (enabled) "تم تفعيل نبضة DTR/RTS Reset التلقائية." else "تم إيقاف نبضة DTR/RTS Reset (توصيل مباشر بدون Reset).",
+            LogLevel.INFO
+        )
     }
 
     fun autoDetectChipId() {
@@ -303,13 +326,18 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
             _uiState.update {
                 it.copy(
                     isAutoDetecting = true,
-                    autoDetectStatus = "جاري فحص USB OTG وإرسال نبضة المزامنة (16×0x00)...",
+                    autoDetectStatus = "جاري فحص USB OTG والاستماع المستمر للبيانات...",
                     autoDetectIsSuccess = false
                 )
             }
             addLog("بدء التعرف التلقائي (Auto-Detect Chip ID)...", LogLevel.INFO)
 
-            when (val res = usbService.probeChipId(_uiState.value.selectedProgrammer, allProcessors) { msg ->
+            when (val res = UsbOtgProgrammerService.probeChipId(
+                context = appContext,
+                preferredChip = _uiState.value.selectedProgrammer,
+                enableDtrRtsReset = _uiState.value.enableDtrRtsReset,
+                catalog = allProcessors
+            ) { msg ->
                 addLog(msg, LogLevel.INFO)
             }) {
                 is ChipAutoDetectResult.Matched -> {
@@ -319,7 +347,7 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                     _uiState.update {
                         it.copy(
                             isAutoDetecting = false,
-                            isConnected = usbService.isConnected(),
+                            isConnected = UsbOtgProgrammerService.isConnected(),
                             autoDetectStatus = res.diagnosticMessage,
                             autoDetectIsSuccess = true
                         )
@@ -330,7 +358,7 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                     _uiState.update {
                         it.copy(
                             isAutoDetecting = false,
-                            isConnected = usbService.isConnected(),
+                            isConnected = UsbOtgProgrammerService.isConnected(),
                             autoDetectStatus = res.reason,
                             autoDetectIsSuccess = false
                         )
@@ -395,8 +423,8 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
 
     fun toggleUsbConnection() {
         if (_uiState.value.isBusy) return
-        if (_uiState.value.isConnected) {
-            usbService.disconnect()
+        if (UsbOtgProgrammerService.isConnected()) {
+            UsbOtgProgrammerService.disconnect()
             _uiState.update { it.copy(isConnected = false, connectedDeviceLabel = "") }
             addLog("تم فصل المبرمجة USB OTG.", LogLevel.INFO)
             refreshUsbDevices()
@@ -414,7 +442,13 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                 )
             }
             val baud = _uiState.value.baudRate
-            when (val res = usbService.connect(_uiState.value.selectedProgrammer, baud)) {
+            when (val res = UsbOtgProgrammerService.connect(
+                context = appContext,
+                preferredChip = _uiState.value.selectedProgrammer,
+                baudRate = baud,
+                enableDtrRtsReset = _uiState.value.enableDtrRtsReset,
+                onLog = { msg -> addLog(msg, LogLevel.INFO) }
+            )) {
                 is UsbConnectResult.Success -> {
                     val label = "${res.deviceInfo.productName} (${res.deviceInfo.hexVidPid}) @ $baud"
                     _uiState.update {
@@ -542,7 +576,11 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
             }
             addLog("بدء قراءة ذاكرة ${mcu.partNumber} (${mcu.flashKb}KB)...", LogLevel.INFO)
 
-            when (val res = usbService.executeReadFlash(
+            when (val res = UsbOtgProgrammerService.executeReadFlash(
+                context = appContext,
+                preferredChip = _uiState.value.selectedProgrammer,
+                baudRate = _uiState.value.baudRate,
+                enableDtrRtsReset = _uiState.value.enableDtrRtsReset,
                 processor = mcu,
                 idCodeBytes = idBytes,
                 onLog = { msg -> addLog(msg, LogLevel.INFO) },
@@ -598,7 +636,7 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
         val mcu = _uiState.value.selectedProcessor ?: return
         if (_uiState.value.isBusy) return
         val idBytes = parseIdCodeBytes() ?: run {
-            addLog("كود ID Code غير مكتمل: أدخل 14 حرف Hex بالضبط.", LogLevel.ERROR)
+            addLog("كود ID Code غير مكتمل: أدخل حرفين Hex في كل خانة.", LogLevel.ERROR)
             return
         }
 
@@ -613,7 +651,11 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                 )
             }
             addLog("بدء مسح ذاكرة ${mcu.partNumber} (${_uiState.value.eraseMode})...", LogLevel.INFO)
-            when (val res = usbService.executeErase(
+            when (val res = UsbOtgProgrammerService.executeErase(
+                context = appContext,
+                preferredChip = _uiState.value.selectedProgrammer,
+                baudRate = _uiState.value.baudRate,
+                enableDtrRtsReset = _uiState.value.enableDtrRtsReset,
                 processor = mcu,
                 eraseMode = _uiState.value.eraseMode,
                 idCodeBytes = idBytes,
@@ -662,7 +704,7 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
         val mcu = _uiState.value.selectedProcessor ?: return
         if (_uiState.value.isBusy) return
         val idBytes = parseIdCodeBytes() ?: run {
-            addLog("كود ID Code غير مكتمل: أدخل 14 حرف Hex بالضبط.", LogLevel.ERROR)
+            addLog("كود ID Code غير مكتمل: أدخل حرفين Hex في كل خانة.", LogLevel.ERROR)
             return
         }
 
@@ -680,7 +722,11 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
             }
             addLog("بدء عملية $actionName على ${mcu.partNumber}...", LogLevel.INFO)
 
-            when (val res = usbService.executeWriteAndVerify(
+            when (val res = UsbOtgProgrammerService.executeWriteAndVerify(
+                context = appContext,
+                preferredChip = _uiState.value.selectedProgrammer,
+                baudRate = _uiState.value.baudRate,
+                enableDtrRtsReset = _uiState.value.enableDtrRtsReset,
                 processor = mcu,
                 firmwareBytes = _uiState.value.flashBuffer,
                 idCodeBytes = idBytes,
@@ -755,6 +801,6 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
 
     override fun onCleared() {
         super.onCleared()
-        usbService.disconnect()
+        // Keep Singleton UsbOtgProgrammerService open across screen/tab navigation
     }
 }

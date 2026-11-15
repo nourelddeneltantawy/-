@@ -18,8 +18,16 @@ import com.example.data.model.McuProcessor
 import com.example.data.model.ProgrammerChipType
 import com.example.data.model.ProtocolFamilyType
 import com.example.data.model.UsbSerialDeviceInfo
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
@@ -45,24 +53,89 @@ sealed class FlashOperationResult {
     data class Failure(val reason: String) : FlashOperationResult()
 }
 
-class UsbOtgProgrammerService(private val context: Context) {
-    companion object {
-        private const val TAG = "UsbOtgProgrammer"
-        private const val ACTION_USB_PERMISSION = "com.example.USB_PROGRAMMER_PERMISSION"
-    }
+/**
+ * Singleton USB OTG Serial Manager.
+ * Keeps the open UsbDeviceConnection and continuous RX inputStream reader coroutine alive
+ * across Step 1, Step 2, Step 3 and navigation changes until explicitly disconnected.
+ */
+object UsbOtgProgrammerService {
+    private const val TAG = "UsbOtgProgrammer"
+    private const val ACTION_USB_PERMISSION = "com.example.USB_PROGRAMMER_PERMISSION"
 
-    private val appContext = context.applicationContext
-    private val usbManager: UsbManager? = appContext.getSystemService(Context.USB_SERVICE) as? UsbManager
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
+    @Volatile
+    private var appContext: Context? = null
+    @Volatile
+    private var usbManager: UsbManager? = null
+    @Volatile
+    private var detachReceiverRegistered = false
+
+    @Volatile
     private var activeDevice: UsbDevice? = null
+    @Volatile
     private var activeConnection: UsbDeviceConnection? = null
     private val claimedInterfaces = mutableListOf<UsbInterface>()
+    @Volatile
     private var controlInterfaceIndex: Int = 0
+    @Volatile
     private var inEndpoint: UsbEndpoint? = null
+    @Volatile
     private var outEndpoint: UsbEndpoint? = null
+    @Volatile
     private var activeChipType: ProgrammerChipType? = null
 
-    fun scanAttachedDevices(): List<UsbSerialDeviceInfo> {
+    // Continuous RX input buffer filled by background readerJob
+    private val rxLock = Any()
+    private val rxBuffer = ArrayDeque<Byte>(4096)
+    private var readerJob: Job? = null
+    private var externalLogSink: ((String) -> Unit)? = null
+
+    private val _isConnectedFlow = MutableStateFlow(false)
+    val isConnectedFlow: StateFlow<Boolean> = _isConnectedFlow.asStateFlow()
+
+    private val _connectedLabelFlow = MutableStateFlow("")
+    val connectedLabelFlow: StateFlow<String> = _connectedLabelFlow.asStateFlow()
+
+    private fun ensureContext(context: Context) {
+        val ctx = context.applicationContext
+        appContext = ctx
+        if (usbManager == null) {
+            usbManager = ctx.getSystemService(Context.USB_SERVICE) as? UsbManager
+        }
+        if (!detachReceiverRegistered) {
+            detachReceiverRegistered = true
+            try {
+                val detachReceiver = object : BroadcastReceiver() {
+                    override fun onReceive(c: Context?, intent: Intent?) {
+                        if (intent?.action == UsbManager.ACTION_USB_DEVICE_DETACHED) {
+                            val detached = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                                intent.getParcelableExtra(UsbManager.EXTRA_DEVICE, UsbDevice::class.java)
+                            } else {
+                                @Suppress("DEPRECATION")
+                                intent.getParcelableExtra(UsbManager.EXTRA_DEVICE)
+                            }
+                            if (detached != null && detached.deviceId == activeDevice?.deviceId) {
+                                externalLogSink?.invoke("USB Event: تم فصل المبرمجة (${detached.productName ?: detached.deviceName}) من منفذ OTG.")
+                                disconnect()
+                            }
+                        }
+                    }
+                }
+                ContextCompat.registerReceiver(
+                    ctx,
+                    detachReceiver,
+                    IntentFilter(UsbManager.ACTION_USB_DEVICE_DETACHED),
+                    ContextCompat.RECEIVER_NOT_EXPORTED
+                )
+            } catch (e: Throwable) {
+                Log.w(TAG, "Detach receiver warning: ${e.toString()}")
+            }
+        }
+    }
+
+    fun scanAttachedDevices(context: Context): List<UsbSerialDeviceInfo> {
+        ensureContext(context)
         val manager = usbManager ?: return emptyList()
         return manager.deviceList.values.map { dev ->
             UsbSerialDeviceInfo(
@@ -81,6 +154,11 @@ class UsbOtgProgrammerService(private val context: Context) {
     fun isConnected(): Boolean = activeConnection != null && inEndpoint != null && outEndpoint != null
 
     fun disconnect() {
+        readerJob?.cancel()
+        readerJob = null
+        synchronized(rxLock) {
+            rxBuffer.clear()
+        }
         claimedInterfaces.forEach { iface ->
             try {
                 activeConnection?.releaseInterface(iface)
@@ -96,105 +174,225 @@ class UsbOtgProgrammerService(private val context: Context) {
         activeDevice = null
         activeChipType = null
         controlInterfaceIndex = 0
+        _isConnectedFlow.value = false
+        _connectedLabelFlow.value = ""
+    }
+
+    fun applyIdleControlLines(context: Context, enableBootHold: Boolean, onLog: (String) -> Unit) {
+        ensureContext(context)
+        val conn = activeConnection ?: return
+        val dev = activeDevice ?: return
+        // When DTR/RTS Reset is disabled, release both lines (false = HIGH/inactive) so the chip isn't held in reset
+        setControlLines(conn, dev, activeChipType, dtr = false, rts = enableBootHold, onLog = onLog)
     }
 
     suspend fun connect(
+        context: Context,
         preferredChip: ProgrammerChipType?,
-        baudRate: Int
+        baudRate: Int,
+        enableDtrRtsReset: Boolean = true,
+        onLog: ((String) -> Unit)? = null
     ): UsbConnectResult = withContext(Dispatchers.IO) {
+        ensureContext(context)
+        externalLogSink = onLog
         val manager = usbManager ?: return@withContext UsbConnectResult.Failure(
             "نظام USB Host غير مدعوم على هذا الجهاز."
         )
-        val devices = manager.deviceList.values.toList()
-        if (devices.isEmpty()) {
-            return@withContext UsbConnectResult.Failure(
-                "لم يتم اكتشاف أي مبرمجة USB OTG موصولة بالهاتف. تأكد من توصيل كابل OTG والمبرمجة وتفعيل OTG في إعدادات الهاتف."
-            )
-        }
 
-        val targetDevice = devices.firstOrNull {
-            preferredChip != null && it.vendorId in preferredChip.vendorIds
-        } ?: devices.firstOrNull {
-            ProgrammerChipType.fromVendorId(it.vendorId) != null
-        } ?: devices.first()
-
-        if (!manager.hasPermission(targetDevice)) {
-            val granted = requestUsbPermission(manager, targetDevice)
-            if (!granted) {
+        try {
+            val devices = manager.deviceList.values.toList()
+            if (devices.isEmpty()) {
                 return@withContext UsbConnectResult.Failure(
-                    "لم يتم منح صلاحية الوصول لمنفذ USB للمبرمجة (${targetDevice.productName ?: targetDevice.deviceName})."
+                    "لم يتم اكتشاف أي مبرمجة USB OTG موصولة بالهاتف. تأكد من توصيل كابل OTG والمبرمجة وتفعيل OTG."
                 )
             }
-        }
 
-        disconnect()
-        val conn = manager.openDevice(targetDevice) ?: return@withContext UsbConnectResult.Failure(
-            "تعذر فتح اتصال USB مع المبرمجة. افصل الكابل وأعد توصيله ثم حاول مرة أخرى."
-        )
+            val targetDevice = devices.firstOrNull {
+                preferredChip != null && it.vendorId in preferredChip.vendorIds
+            } ?: devices.firstOrNull {
+                ProgrammerChipType.fromVendorId(it.vendorId) != null
+            } ?: devices.first()
 
-        val endpoints = findSerialInterfaceAndEndpoints(targetDevice, conn)
-        if (endpoints == null) {
-            conn.close()
-            return@withContext UsbConnectResult.Failure(
-                "الجهاز المتصل (${targetDevice.productName ?: targetDevice.deviceName}) لا يحتوي على نقاط اتصال Bulk Serial UART صالحة."
+            if (!manager.hasPermission(targetDevice)) {
+                val granted = requestUsbPermission(manager, targetDevice)
+                if (!granted) {
+                    return@withContext UsbConnectResult.Failure(
+                        "لم يتم منح صلاحية الوصول لمنفذ USB للمبرمجة (${targetDevice.productName ?: targetDevice.deviceName})."
+                    )
+                }
+            }
+
+            disconnect()
+            val conn = manager.openDevice(targetDevice) ?: return@withContext UsbConnectResult.Failure(
+                "تعذر فتح اتصال USB مع المبرمجة (${targetDevice.deviceName}). أعد توصيل كابل OTG."
             )
+
+            val endpoints = findSerialInterfaceAndEndpoints(targetDevice, conn)
+            if (endpoints == null) {
+                conn.close()
+                return@withContext UsbConnectResult.Failure(
+                    "الجهاز المتصل (${targetDevice.productName ?: targetDevice.deviceName}) لا يحتوي على نقاط اتصال Bulk Serial UART صالحة."
+                )
+            }
+
+            activeDevice = targetDevice
+            activeConnection = conn
+            inEndpoint = endpoints.first
+            outEndpoint = endpoints.second
+            activeChipType = ProgrammerChipType.fromVendorId(targetDevice.vendorId)
+
+            configureUartHardware(conn, targetDevice, activeChipType, baudRate, onLog)
+            if (!enableDtrRtsReset) {
+                setControlLines(conn, targetDevice, activeChipType, dtr = false, rts = false, onLog = onLog)
+            }
+
+            startContinuousReaderLoop(conn, endpoints.first)
+
+            val info = UsbSerialDeviceInfo(
+                deviceId = targetDevice.deviceId,
+                deviceName = targetDevice.deviceName,
+                productName = targetDevice.productName ?: (activeChipType?.displayName ?: "USB-UART"),
+                manufacturerName = targetDevice.manufacturerName ?: "USB",
+                vendorId = targetDevice.vendorId,
+                productId = targetDevice.productId,
+                chipType = activeChipType,
+                hasPermission = true
+            )
+            val label = "${info.productName} (${info.hexVidPid}) @ $baudRate"
+            _isConnectedFlow.value = true
+            _connectedLabelFlow.value = label
+            onLog?.invoke(
+                "USB Open OK: ${info.productName} (${info.hexVidPid}), iface=$controlInterfaceIndex, epIn=0x%02X, epOut=0x%02X"
+                    .format(endpoints.first.address, endpoints.second.address)
+            )
+            UsbConnectResult.Success(info, baudRate)
+        } catch (e: Throwable) {
+            disconnect()
+            UsbConnectResult.Failure("استثناء أثناء الاتصال بـ USB: ${e.toString()}")
         }
-
-        activeDevice = targetDevice
-        activeConnection = conn
-        inEndpoint = endpoints.first
-        outEndpoint = endpoints.second
-        activeChipType = ProgrammerChipType.fromVendorId(targetDevice.vendorId)
-
-        configureUartHardware(conn, targetDevice, activeChipType, baudRate)
-
-        val info = UsbSerialDeviceInfo(
-            deviceId = targetDevice.deviceId,
-            deviceName = targetDevice.deviceName,
-            productName = targetDevice.productName ?: (activeChipType?.displayName ?: "USB-UART"),
-            manufacturerName = targetDevice.manufacturerName ?: "USB",
-            vendorId = targetDevice.vendorId,
-            productId = targetDevice.productId,
-            chipType = activeChipType,
-            hasPermission = true
-        )
-        UsbConnectResult.Success(info, baudRate)
     }
 
     /**
-     * Exact PC-grade Renesas FDT / R8C Flasher Reset & Bit-Rate Sync Algorithm:
-     * 1. Configure 9600 Baud, 8N1, Flow Control OFF.
-     * 2. Assert DTR=true & RTS=true (RESET=LOW, MODE=LOW) -> Wait 100ms.
-     * 3. De-assert DTR=false while keeping RTS=true (RESET=HIGH, MODE=LOW) -> Wait 150ms.
-     * 4. Flush Input Buffer.
-     * 5. Send 16 bytes of 0x00 with 25ms interval between each byte -> Wait 50ms.
-     * 6. Send confirmation 0xB0 (and fallback 0x00) and inspect RX ACK (0xB0 / 0x06 / 0x80).
+     * Continuous background inputStream listener.
+     * Captures every incoming byte from CP2102 / FT232RL / CH340G immediately into rxBuffer
+     * BEFORE commands are transmitted, preventing fast UART responses from ever being missed.
      */
-    private suspend fun performPcExactSyncHandshake(
+    private fun startContinuousReaderLoop(conn: UsbDeviceConnection, epIn: UsbEndpoint) {
+        readerJob?.cancel()
+        readerJob = serviceScope.launch {
+            val pktSize = epIn.maxPacketSize.coerceAtLeast(64)
+            val buf = ByteArray(pktSize)
+            try {
+                while (isActive && activeConnection === conn) {
+                    val n = conn.bulkTransfer(epIn, buf, buf.size, 60)
+                    if (n > 0) {
+                        val startIdx = if (activeChipType == ProgrammerChipType.FT232RL) 2 else 0
+                        if (n > startIdx) {
+                            synchronized(rxLock) {
+                                for (i in startIdx until n) {
+                                    rxBuffer.addLast(buf[i])
+                                }
+                            }
+                        }
+                    } else if (n < 0) {
+                        // bulkTransfer returns -1 on normal 60ms idle timeout on Android USB Host;
+                        // verify if device is still present in UsbManager
+                        val devName = activeDevice?.deviceName
+                        if (devName != null && usbManager?.deviceList?.containsKey(devName) == false) {
+                            externalLogSink?.invoke("RX Listener Error: انقطع اتصال الجهاز ($devName) من منفذ OTG.")
+                            disconnect()
+                            break
+                        }
+                    }
+                }
+            } catch (e: Throwable) {
+                if (activeConnection === conn) {
+                    externalLogSink?.invoke("RX Listener Exception: ${e.toString()}")
+                    disconnect()
+                }
+            }
+        }
+    }
+
+    private fun flushRxBuffer() {
+        synchronized(rxLock) {
+            rxBuffer.clear()
+        }
+        // Also purge CP2102 hardware FIFO if applicable
+        try {
+            val conn = activeConnection ?: return
+            if (activeChipType == ProgrammerChipType.CP2102) {
+                conn.controlTransfer(0x41, 0x12, 0x000F, controlInterfaceIndex, null, 0, 200)
+            }
+        } catch (_: Throwable) {}
+    }
+
+    /**
+     * Ensures port is still physically valid before TX; reconnects automatically if Android dropped an unused handle.
+     */
+    private suspend fun ensureConnectionHealthy(
+        context: Context,
+        preferredChip: ProgrammerChipType?,
+        baudRate: Int,
+        enableDtrRtsReset: Boolean,
         onLog: (String) -> Unit
     ): Boolean {
-        val conn = activeConnection ?: return false
+        ensureContext(context)
+        val dev = activeDevice
+        val mgr = usbManager
+        val stillAttached = dev != null && mgr?.deviceList?.containsKey(dev.deviceName) == true
+        if (isConnected() && stillAttached) {
+            return true
+        }
+        if (isConnected() && !stillAttached) {
+            onLog("تنبيه: تغير مقبض USB OTG، جاري إعادة فتح المنفذ تلقائياً...")
+            disconnect()
+        }
+        return when (val res = connect(context, preferredChip, baudRate, enableDtrRtsReset, onLog)) {
+            is UsbConnectResult.Success -> true
+            is UsbConnectResult.Failure -> {
+                onLog(res.reason)
+                false
+            }
+        }
+    }
+
+    private suspend fun performSyncHandshake(
+        enableDtrRtsReset: Boolean,
+        onLog: (String) -> Unit
+    ): Boolean {
+        val conn = activeConnection ?: run {
+            onLog("Sync Error: لا يوجد مقبض UsbDeviceConnection نشط.")
+            return false
+        }
         val dev = activeDevice ?: return false
 
-        onLog("1) تهيئة المنفذ: 9600 Baud, 8N1, بدون Flow Control...")
-        configureUartHardware(conn, dev, activeChipType, 9600)
+        onLog("1) تهيئة المنفذ: 9600 Baud, 8N1, Flow Control OFF...")
+        configureUartHardware(conn, dev, activeChipType, 9600, onLog)
 
-        onLog("2) تتابع Reset: وضع DTR=true (RESET=LOW) و RTS=true (MODE=LOW) ثم انتظار 100ms...")
-        setControlLines(conn, dev, activeChipType, dtr = true, rts = true)
-        delay(100)
+        if (enableDtrRtsReset) {
+            onLog("2) تتابع Reset: DTR=true (RESET=LOW) و RTS=true (MODE=LOW) -> انتظار 100ms...")
+            setControlLines(conn, dev, activeChipType, dtr = true, rts = true, onLog = onLog)
+            delay(100)
 
-        onLog("3) رفع RESET: وضع DTR=false (RESET=HIGH) مع إبقاء RTS=true (MODE=LOW) ثم انتظار 150ms...")
-        setControlLines(conn, dev, activeChipType, dtr = false, rts = true)
-        delay(150)
+            onLog("3) رفع RESET: DTR=false (RESET=HIGH) مع إبقاء RTS=true (MODE=LOW) -> انتظار 150ms...")
+            setControlLines(conn, dev, activeChipType, dtr = false, rts = true, onLog = onLog)
+            delay(150)
+        } else {
+            onLog("2) نبضة DTR/RTS Reset معطلة — تحرير DTR=false و RTS=false (وضع التوصيل المباشر)...")
+            setControlLines(conn, dev, activeChipType, dtr = false, rts = false, onLog = onLog)
+            delay(60)
+        }
 
-        onLog("4) تفريغ Input Buffer من أي بيانات قديمة...")
-        drainInputBuffer(conn)
+        onLog("4) تفريغ Input Buffer (Flush) قبل بدء المزامنة...")
+        flushRxBuffer()
 
-        onLog("5) إرسال المزامنة: 16 بايت 0x00 بفاصل 25ms بين كل بايت...")
+        onLog("5) إرسال 16 بايت 0x00 بفاصل 25ms بين كل بايت...")
         val zeroByte = byteArrayOf(0x00)
         for (i in 0 until 16) {
-            if (!writeRawBytes(zeroByte)) {
-                onLog("TX ERROR: تعذر إرسال بايت المزامنة #${i + 1}")
+            val txErr = writeRawBytes(zeroByte)
+            if (txErr != null) {
+                onLog("TX ERROR (Sync byte #${i + 1}): $txErr")
                 return false
             }
             delay(25)
@@ -203,44 +401,41 @@ class UsbOtgProgrammerService(private val context: Context) {
 
         delay(50)
 
-        // Send baud-rate confirmation 0xB0 and read ACK
         val b0Reply = transmitAndLog(byteArrayOf(0xB0.toByte()), expectedMax = 8, timeoutMs = 250, onLog = onLog)
         if (b0Reply.isEmpty()) {
-            // Secondary sync nudge 0x00 in case bootloader needed 17th edge
             transmitAndLog(byteArrayOf(0x00), expectedMax = 8, timeoutMs = 200, onLog = onLog)
         }
         return true
     }
 
     suspend fun probeChipId(
+        context: Context,
         preferredChip: ProgrammerChipType?,
+        enableDtrRtsReset: Boolean,
         catalog: List<McuProcessor>,
         onLog: (String) -> Unit
     ): ChipAutoDetectResult = withContext(Dispatchers.IO) {
-        if (!isConnected()) {
-            onLog("جاري البحث عن مبرمجة USB OTG متصلة...")
-            when (val res = connect(preferredChip, 9600)) {
-                is UsbConnectResult.Failure -> return@withContext ChipAutoDetectResult.Failure(res.reason)
-                is UsbConnectResult.Success -> onLog("تم فتح المنفذ: ${res.deviceInfo.productName} (${res.deviceInfo.hexVidPid})")
-            }
+        externalLogSink = onLog
+        if (!ensureConnectionHealthy(context, preferredChip, 9600, enableDtrRtsReset, onLog)) {
+            return@withContext ChipAutoDetectResult.Failure("تعذر فتح منفذ USB OTG للفحص التلقائي.")
         }
 
-        performPcExactSyncHandshake(onLog)
+        if (!performSyncHandshake(enableDtrRtsReset, onLog)) {
+            return@withContext ChipAutoDetectResult.Failure("فشل إرسال نبضة المزامنة عبر USB. راجع تفاصيل الخطأ في السجل.")
+        }
 
-        // Step 3a: Request R8C Bootloader Version (0xFB -> expect 8 bytes e.g. VER.2.00)
-        onLog("إرسال طلب معلومات البوت لودر 0xFB (قراءة 8 بايت Version String)...")
+        onLog("إرسال طلب معلومات البوت لودر 0xFB...")
         val versionReply = transmitAndLog(byteArrayOf(0xFB.toByte()), expectedMax = 16, timeoutMs = 450, onLog = onLog)
         val versionAscii = toPrintableAscii(versionReply)
         if (versionReply.isNotEmpty()) {
             onLog("إصدار البوت لودر: \"$versionAscii\" [${toHex(versionReply)}]")
         }
 
-        // Step 3b: Attempt R8C default 0xFF ID unlock + status 0x70 + read info pages (0x00FE00 / 0x00FF00)
         var matchedMcu: McuProcessor? = matchCatalogBySignature(versionAscii, toHex(versionReply), catalog)
         val combinedSignatureData = ByteArrayOutputStream()
         combinedSignatureData.write(versionReply)
 
-        onLog("محاولة فك القفل الافتراضي 0xF5 (0xDF 0xFF 0x00 0x07 + 7×FF) لقراءة صفحة الهوية...")
+        onLog("إرسال فك القفل الافتراضي 0xF5 (DF FF 00 07 + 7×FF)...")
         val unlockFrame = byteArrayOf(
             0xF5.toByte(), 0xDF.toByte(), 0xFF.toByte(), 0x00.toByte(), 0x07.toByte(),
             0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte()
@@ -253,7 +448,6 @@ class UsbOtgProgrammerService(private val context: Context) {
         }
 
         if (matchedMcu == null && (versionReply.isNotEmpty() || statusReply.isNotEmpty())) {
-            // Read page 0x00FE00 (0x00, 0xFE, 0x00)
             onLog("قراءة صفحة المعلومات 0xFF للعنوان 0x00FE00...")
             val pageFe = transmitAndLog(
                 byteArrayOf(0xFF.toByte(), 0x00.toByte(), 0xFE.toByte(), 0x00.toByte()),
@@ -263,11 +457,9 @@ class UsbOtgProgrammerService(private val context: Context) {
             )
             if (pageFe.isNotEmpty()) {
                 combinedSignatureData.write(pageFe)
-                val asciiFe = toPrintableAscii(pageFe)
-                matchedMcu = matchCatalogBySignature(asciiFe, toHex(pageFe), catalog)
+                matchedMcu = matchCatalogBySignature(toPrintableAscii(pageFe), toHex(pageFe), catalog)
             }
 
-            // Read page 0x00FF00 (0x00, 0xFF, 0x00) if still unmatched
             if (matchedMcu == null) {
                 onLog("قراءة صفحة المعلومات 0xFF للعنوان 0x00FF00...")
                 val pageFf = transmitAndLog(
@@ -278,8 +470,7 @@ class UsbOtgProgrammerService(private val context: Context) {
                 )
                 if (pageFf.isNotEmpty()) {
                     combinedSignatureData.write(pageFf)
-                    val asciiFf = toPrintableAscii(pageFf)
-                    matchedMcu = matchCatalogBySignature(asciiFf, toHex(pageFf), catalog)
+                    matchedMcu = matchCatalogBySignature(toPrintableAscii(pageFf), toHex(pageFf), catalog)
                 }
             }
         }
@@ -289,7 +480,7 @@ class UsbOtgProgrammerService(private val context: Context) {
             val allHex = toHex(allBytes.take(32).toByteArray())
             val msg = when {
                 matchedMcu != null -> "تم التعرف على المعالج بنجاح: ${matchedMcu.partNumber} ($versionAscii)"
-                versionAscii.isNotBlank() -> "استجاب بوت لودر R8C بنجاح ($versionAscii | RX: $allHex). اختر رقم المعالج من القائمة أو تابع للخطوة التالية."
+                versionAscii.isNotBlank() -> "استجاب بوت لودر R8C بنجاح ($versionAscii | RX: $allHex)."
                 else -> "تم استلام رد من المعالج [RX: $allHex]."
             }
             return@withContext ChipAutoDetectResult.Matched(
@@ -299,8 +490,7 @@ class UsbOtgProgrammerService(private val context: Context) {
             )
         }
 
-        // Step 3c: RL78 fallback inquiry (0x00 then 0xC0 + Silicon Signature frame)
-        onLog("لم يرد على أوامر R8C، تجربة تسلسل RL78 (0x00 ثم 0xC0)...")
+        onLog("تجربة تسلسل RL78 (0x00 ثم 0xC0)...")
         transmitAndLog(byteArrayOf(0x00), expectedMax = 8, timeoutMs = 150, onLog = onLog)
         delay(20)
         var rl78Reply = transmitAndLog(byteArrayOf(0xC0.toByte()), expectedMax = 32, timeoutMs = 350, onLog = onLog)
@@ -329,33 +519,40 @@ class UsbOtgProgrammerService(private val context: Context) {
         }
 
         ChipAutoDetectResult.Failure(
-            "تم فتح المنفذ وتنفيذ Reset (DTR/RTS) والمزامنة (16×0x00 @ 25ms) ولكن RX لم يستلم أي بايتات. راجع سجل TX/RX وتأكد من أن المبرمجة في وضع Boot Mode وتوصيل TXD↔RXD."
+            "تم فتح المنفذ والاستماع المستمر للبيانات ولكن RX لم يستلم أي بايتات من المعالج. جرّب تبديل وضع (DTR/RTS Reset) أو عكس أطراف TXD/RXD وتأكد من الجهد 5V/3.3V."
         )
     }
 
     suspend fun executeReadFlash(
+        context: Context,
+        preferredChip: ProgrammerChipType?,
+        baudRate: Int,
+        enableDtrRtsReset: Boolean,
         processor: McuProcessor,
         idCodeBytes: ByteArray,
         onLog: (String) -> Unit,
         onProgress: (bytesDone: Int, totalBytes: Int, label: String) -> Unit
     ): FlashOperationResult = withContext(Dispatchers.IO) {
-        if (!isConnected()) {
+        externalLogSink = onLog
+        if (!ensureConnectionHealthy(context, preferredChip, baudRate, enableDtrRtsReset, onLog)) {
             return@withContext FlashOperationResult.Failure("يجب الاتصال بمبرمجة USB OTG أولاً.")
         }
 
         val totalSize = processor.flashSizeBytes
-        onProgress(0, totalSize, "مزامنة المعالج (Reset + 16×0x00)...")
-        performPcExactSyncHandshake(onLog)
+        onProgress(0, totalSize, "مزامنة المعالج...")
+        if (!performSyncHandshake(enableDtrRtsReset, onLog)) {
+            return@withContext FlashOperationResult.Failure("فشلت مرحلة الإرسال أثناء المزامنة (راجع سجل الأحداث).")
+        }
 
         if (processor.protocolType == ProtocolFamilyType.R8C_M16C) {
             if (idCodeBytes.size != 7) {
-                return@withContext FlashOperationResult.Failure("كود ID Code يجب أن يتكون من 14 حرف Hex (7 بايت).")
+                return@withContext FlashOperationResult.Failure("كود ID Code يجب أن يتكون من 7 بايت (FF..FF).")
             }
             onProgress(0, totalSize, "إرسال أمر فك القفل 0xF5...")
             val unlockOk = sendR8cUnlockFrame(idCodeBytes, onLog)
             if (!unlockOk) {
                 return@withContext FlashOperationResult.Failure(
-                    "فشل استجابة المعالج لأمر فك القفل (0xF5 ID Code Verify). راجع سجل TX/RX وتأكد من ID Code وتوصيل TXD/RXD/DTR/RTS."
+                    "فشل التحقق من فك القفل (0xF5). راجع سجل TX/RX وتفاصيل الاستثناء أعلاه."
                 )
             }
         }
@@ -373,10 +570,12 @@ class UsbOtgProgrammerService(private val context: Context) {
                 ((addr ushr 8) and 0xFF).toByte(),
                 ((addr ushr 16) and 0xFF).toByte()
             )
-            if (!writeRawBytes(cmd)) {
-                return@withContext FlashOperationResult.Failure("انقطع الاتصال بالمنفذ عند العنوان 0x%06X.".format(addr))
+            val txErr = writeRawBytes(cmd)
+            if (txErr != null) {
+                onLog("TX ERROR (Read 0x%06X): $txErr".format(addr))
+                return@withContext FlashOperationResult.Failure("فشل الإرسال عند 0x%06X: $txErr".format(addr))
             }
-            val chunk = readBytesWithTimeout(expectedMax = blockSize, timeoutMs = 450)
+            val chunk = readBufferedBytes(expectedMax = blockSize, timeoutMs = 450, onLog = onLog)
             if (chunk.isEmpty()) {
                 return@withContext FlashOperationResult.Failure(
                     "توقف المعالج عن إرسال البيانات عند العنوان 0x%06X (RX فارغ)."
@@ -394,23 +593,30 @@ class UsbOtgProgrammerService(private val context: Context) {
         }
 
         FlashOperationResult.Success(
-            message = "تمت قراءة وسحب ${bytesReadFromChip / 1024} KB (${bytesReadFromChip} بايت) من ${processor.partNumber} بنجاح.",
+            message = "تمت قراءة وسحب ${bytesReadFromChip / 1024} KB ($bytesReadFromChip بايت) من ${processor.partNumber} بنجاح.",
             bytesTransferred = resultBuffer
         )
     }
 
     suspend fun executeErase(
+        context: Context,
+        preferredChip: ProgrammerChipType?,
+        baudRate: Int,
+        enableDtrRtsReset: Boolean,
         processor: McuProcessor,
         eraseMode: String,
         idCodeBytes: ByteArray,
         onLog: (String) -> Unit,
         onProgress: (bytesDone: Int, totalBytes: Int, label: String) -> Unit
     ): FlashOperationResult = withContext(Dispatchers.IO) {
-        if (!isConnected()) {
+        externalLogSink = onLog
+        if (!ensureConnectionHealthy(context, preferredChip, baudRate, enableDtrRtsReset, onLog)) {
             return@withContext FlashOperationResult.Failure("يجب الاتصال بمبرمجة USB OTG أولاً.")
         }
         val totalSize = processor.flashSizeBytes
-        performPcExactSyncHandshake(onLog)
+        if (!performSyncHandshake(enableDtrRtsReset, onLog)) {
+            return@withContext FlashOperationResult.Failure("فشلت مرحلة الإرسال أثناء المزامنة.")
+        }
 
         if (processor.protocolType == ProtocolFamilyType.R8C_M16C && !sendR8cUnlockFrame(idCodeBytes, onLog)) {
             return@withContext FlashOperationResult.Failure("فشل التحقق من 7-Byte ID Code (0xF5) قبل المسح.")
@@ -424,13 +630,17 @@ class UsbOtgProgrammerService(private val context: Context) {
         }
         val ack = transmitAndLog(eraseCmd, expectedMax = 8, timeoutMs = 1500, onLog = onLog)
         if (ack.isEmpty()) {
-            return@withContext FlashOperationResult.Failure("لم يرد المعالج بتأكيد إتمام المسح (Timeout).")
+            return@withContext FlashOperationResult.Failure("لم يرد المعالج بتأكيد إتمام المسح (Timeout 1500ms).")
         }
         onProgress(totalSize, totalSize, "اكتمل المسح")
         FlashOperationResult.Success("تم مسح ذاكرة الفلاش بنجاح (${toHex(ack)}).")
     }
 
     suspend fun executeWriteAndVerify(
+        context: Context,
+        preferredChip: ProgrammerChipType?,
+        baudRate: Int,
+        enableDtrRtsReset: Boolean,
         processor: McuProcessor,
         firmwareBytes: ByteArray,
         idCodeBytes: ByteArray,
@@ -438,11 +648,14 @@ class UsbOtgProgrammerService(private val context: Context) {
         onLog: (String) -> Unit,
         onProgress: (bytesDone: Int, totalBytes: Int, label: String) -> Unit
     ): FlashOperationResult = withContext(Dispatchers.IO) {
-        if (!isConnected()) {
+        externalLogSink = onLog
+        if (!ensureConnectionHealthy(context, preferredChip, baudRate, enableDtrRtsReset, onLog)) {
             return@withContext FlashOperationResult.Failure("يجب الاتصال بمبرمجة USB OTG أولاً.")
         }
         val totalSize = firmwareBytes.size
-        performPcExactSyncHandshake(onLog)
+        if (!performSyncHandshake(enableDtrRtsReset, onLog)) {
+            return@withContext FlashOperationResult.Failure("فشلت مرحلة الإرسال أثناء المزامنة.")
+        }
 
         if (processor.protocolType == ProtocolFamilyType.R8C_M16C && !sendR8cUnlockFrame(idCodeBytes, onLog)) {
             return@withContext FlashOperationResult.Failure("فشل التحقق من 7-Byte ID Code (0xF5) قبل العملية.")
@@ -468,12 +681,14 @@ class UsbOtgProgrammerService(private val context: Context) {
                     ((offset ushr 8) and 0xFF).toByte(),
                     ((offset ushr 16) and 0xFF).toByte()
                 )
-                if (!writeRawBytes(readCmd)) {
-                    return@withContext FlashOperationResult.Failure("فشل إرسال طلب المطابقة عند 0x%06X.".format(offset))
+                val txErr = writeRawBytes(readCmd)
+                if (txErr != null) {
+                    onLog("TX ERROR (Verify 0x%06X): $txErr".format(offset))
+                    return@withContext FlashOperationResult.Failure("فشل الإرسال أثناء Verify عند 0x%06X: $txErr".format(offset))
                 }
-                val chipBytes = readBytesWithTimeout(expectedMax = len, timeoutMs = 450)
+                val chipBytes = readBufferedBytes(expectedMax = len, timeoutMs = 450, onLog = onLog)
                 if (chipBytes.size < len) {
-                    return@withContext FlashOperationResult.Failure("تعذر استلام الصفحة من المعالج عند 0x%06X أثناء Verify.".format(offset))
+                    return@withContext FlashOperationResult.Failure("تعذر استلام الصفحة عند 0x%06X أثناء Verify (استلم ${chipBytes.size}/$len بايت).".format(offset))
                 }
                 for (i in 0 until len) {
                     if (chipBytes[i] != slice[i]) {
@@ -490,10 +705,12 @@ class UsbOtgProgrammerService(private val context: Context) {
                     ((offset ushr 8) and 0xFF).toByte(),
                     ((offset ushr 16) and 0xFF).toByte()
                 )
-                if (!writeRawBytes(header + slice)) {
-                    return@withContext FlashOperationResult.Failure("فشل إرسال بيانات الصفحة 0x%06X عبر USB.".format(offset))
+                val txErr = writeRawBytes(header + slice)
+                if (txErr != null) {
+                    onLog("TX ERROR (Write 0x%06X): $txErr".format(offset))
+                    return@withContext FlashOperationResult.Failure("فشل إرسال صفحة 0x%06X: $txErr".format(offset))
                 }
-                val ack = readBytesWithTimeout(expectedMax = 4, timeoutMs = 450)
+                val ack = readBufferedBytes(expectedMax = 4, timeoutMs = 450, onLog = onLog)
                 if (ack.isEmpty()) {
                     return@withContext FlashOperationResult.Failure("لم يستجب المعالج بتأكيد كتابة الصفحة عند 0x%06X.".format(offset))
                 }
@@ -544,18 +761,19 @@ class UsbOtgProgrammerService(private val context: Context) {
         return true
     }
 
-    private fun transmitAndLog(
+    private suspend fun transmitAndLog(
         txBytes: ByteArray,
         expectedMax: Int,
         timeoutMs: Int,
         onLog: (String) -> Unit
     ): ByteArray {
         onLog("TX: ${toHex(txBytes)}")
-        if (!writeRawBytes(txBytes)) {
-            onLog("TX ERROR: فشل الإرسال عبر USB")
+        val txErr = writeRawBytes(txBytes)
+        if (txErr != null) {
+            onLog("TX ERROR: $txErr")
             return ByteArray(0)
         }
-        val rx = readBytesWithTimeout(expectedMax = expectedMax, timeoutMs = timeoutMs)
+        val rx = readBufferedBytes(expectedMax = expectedMax, timeoutMs = timeoutMs, onLog = onLog)
         onLog(if (rx.isEmpty()) "RX: (لا يوجد رد / Timeout ${timeoutMs}ms)" else "RX: ${toHex(rx)}")
         return rx
     }
@@ -586,12 +804,13 @@ class UsbOtgProgrammerService(private val context: Context) {
     }
 
     private suspend fun requestUsbPermission(manager: UsbManager, device: UsbDevice): Boolean {
+        val ctx = appContext ?: return false
         return suspendCancellableCoroutine { cont ->
             val receiver = object : BroadcastReceiver() {
-                override fun onReceive(ctx: Context?, intent: Intent?) {
+                override fun onReceive(c: Context?, intent: Intent?) {
                     if (intent?.action == ACTION_USB_PERMISSION) {
                         try {
-                            appContext.unregisterReceiver(this)
+                            ctx.unregisterReceiver(this)
                         } catch (_: Throwable) {}
                         val granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
                         if (cont.isActive) cont.resume(granted)
@@ -599,27 +818,27 @@ class UsbOtgProgrammerService(private val context: Context) {
                 }
             }
             val filter = IntentFilter(ACTION_USB_PERMISSION)
-            ContextCompat.registerReceiver(appContext, receiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
+            ContextCompat.registerReceiver(ctx, receiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
 
             val explicitIntent = Intent(ACTION_USB_PERMISSION).apply {
-                setPackage(appContext.packageName)
+                setPackage(ctx.packageName)
             }
             val flags = PendingIntent.FLAG_UPDATE_CURRENT or
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) PendingIntent.FLAG_MUTABLE else 0
-            val pendingIntent = PendingIntent.getBroadcast(appContext, 0, explicitIntent, flags)
+            val pendingIntent = PendingIntent.getBroadcast(ctx, 0, explicitIntent, flags)
 
             try {
                 manager.requestPermission(device, pendingIntent)
             } catch (_: Throwable) {
                 try {
-                    appContext.unregisterReceiver(receiver)
+                    ctx.unregisterReceiver(receiver)
                 } catch (_: Throwable) {}
                 if (cont.isActive) cont.resume(false)
             }
 
             cont.invokeOnCancellation {
                 try {
-                    appContext.unregisterReceiver(receiver)
+                    ctx.unregisterReceiver(receiver)
                 } catch (_: Throwable) {}
             }
         }
@@ -635,7 +854,7 @@ class UsbOtgProgrammerService(private val context: Context) {
 
         for (i in 0 until device.interfaceCount) {
             val iface = device.getInterface(i)
-            if (iface.interfaceClass == UsbConstants.USB_CLASS_COMM) {
+            if (iface.interfaceClass == UsbConstants.USB_CLASS_COMM || i == 0) {
                 controlInterfaceIndex = iface.id
             }
             if (connection.claimInterface(iface, true)) {
@@ -656,36 +875,43 @@ class UsbOtgProgrammerService(private val context: Context) {
         conn: UsbDeviceConnection,
         device: UsbDevice,
         chipType: ProgrammerChipType?,
-        baudRate: Int
+        baudRate: Int,
+        onLog: ((String) -> Unit)?
     ) {
         try {
             when (chipType) {
                 ProgrammerChipType.FT232RL -> {
-                    conn.controlTransfer(0x40, 0x00, 0x0000, 0, null, 0, 500) // Reset SIO
-                    conn.controlTransfer(0x40, 0x00, 0x0001, 0, null, 0, 500) // Purge RX
-                    conn.controlTransfer(0x40, 0x00, 0x0002, 0, null, 0, 500) // Purge TX
-                    conn.controlTransfer(0x40, 0x09, 0x0002, 0, null, 0, 500) // Latency timer = 2ms
+                    conn.controlTransfer(0x40, 0x00, 0x0000, 0, null, 0, 500)
+                    conn.controlTransfer(0x40, 0x00, 0x0001, 0, null, 0, 500)
+                    conn.controlTransfer(0x40, 0x00, 0x0002, 0, null, 0, 500)
+                    conn.controlTransfer(0x40, 0x09, 0x0002, 0, null, 0, 500)
                     val divisor = if (baudRate == 9600) 0x4138 else (3_000_000 / baudRate.coerceAtLeast(300))
-                    conn.controlTransfer(0x40, 0x03, divisor, 0, null, 0, 500) // Baudrate
-                    conn.controlTransfer(0x40, 0x04, 0x0008, 0, null, 0, 500) // 8N1
-                    conn.controlTransfer(0x40, 0x02, 0x0000, 0, null, 0, 500) // Flow Control OFF
+                    conn.controlTransfer(0x40, 0x03, divisor, 0, null, 0, 500)
+                    conn.controlTransfer(0x40, 0x04, 0x0008, 0, null, 0, 500)
+                    conn.controlTransfer(0x40, 0x02, 0x0000, 0, null, 0, 500)
                 }
                 ProgrammerChipType.CP2102 -> {
-                    conn.controlTransfer(0x41, 0x00, 0x0001, 0, null, 0, 500) // IFC_ENABLE
+                    val idx = controlInterfaceIndex
+                    val rEnable = conn.controlTransfer(0x41, 0x00, 0x0001, idx, null, 0, 500) // IFC_ENABLE
                     val baudBytes = byteArrayOf(
                         (baudRate and 0xFF).toByte(),
                         ((baudRate ushr 8) and 0xFF).toByte(),
                         ((baudRate ushr 16) and 0xFF).toByte(),
                         ((baudRate ushr 24) and 0xFF).toByte()
                     )
-                    conn.controlTransfer(0x41, 0x1E, 0, 0, baudBytes, baudBytes.size, 500)
-                    conn.controlTransfer(0x41, 0x03, 0x0800, 0, null, 0, 500) // 8N1
-                    val flowNone = ByteArray(16)
-                    conn.controlTransfer(0x41, 0x13, 0, 0, flowNone, flowNone.size, 500) // Flow OFF
+                    var rBaud = conn.controlTransfer(0x41, 0x1E, 0, idx, baudBytes, baudBytes.size, 500)
+                    if (rBaud < 0) {
+                        val div = (3686400 / baudRate.coerceAtLeast(300)) and 0xFFFF
+                        rBaud = conn.controlTransfer(0x41, 0x01, div, idx, null, 0, 500) // Legacy SET_BAUDDIV fallback
+                    }
+                    val rLine = conn.controlTransfer(0x41, 0x03, 0x0800, idx, null, 0, 500) // 8N1
+                    val rPurge = conn.controlTransfer(0x41, 0x12, 0x000F, idx, null, 0, 500) // Purge RX/TX
+                    if (rEnable < 0 || rBaud < 0 || rLine < 0) {
+                        onLog?.invoke("CP2102 Config Warning: en=$rEnable, baud=$rBaud, line=$rLine, purge=$rPurge, iface=$idx")
+                    }
                 }
                 ProgrammerChipType.CH340G -> {
-                    conn.controlTransfer(0x40, 0xA1, 0, 0, null, 0, 500) // Init
-                    // Exact Ch34xSerialDriver baud formula (1532620800 / baud)
+                    conn.controlTransfer(0x40, 0xA1, 0, 0, null, 0, 500)
                     var factor = 1532620800L / baudRate.coerceAtLeast(300)
                     var divisor = 3
                     while (factor > 0xFFF0L && divisor > 0) {
@@ -697,8 +923,8 @@ class UsbOtgProgrammerService(private val context: Context) {
                     val regB = (factor.toInt() and 0xFF)
                     conn.controlTransfer(0x40, 0x9A, 0x1312, regA, null, 0, 500)
                     conn.controlTransfer(0x40, 0x9A, 0x0F2C, regB, null, 0, 500)
-                    conn.controlTransfer(0x40, 0x9A, 0x2518, 0x00C3, null, 0, 500) // 8N1 + TX/RX enable
-                    conn.controlTransfer(0x40, 0x9A, 0x2727, 0x0000, null, 0, 500) // Flow OFF
+                    conn.controlTransfer(0x40, 0x9A, 0x2518, 0x00C3, null, 0, 500)
+                    conn.controlTransfer(0x40, 0x9A, 0x2727, 0x0000, null, 0, 500)
                 }
                 else -> {
                     val lineCoding = byteArrayOf(
@@ -713,7 +939,7 @@ class UsbOtgProgrammerService(private val context: Context) {
                 }
             }
         } catch (e: Throwable) {
-            Log.w(TAG, "UART config warning for ${device.deviceName}: ${e.message}")
+            onLog?.invoke("UART Config Exception (${device.deviceName}): ${e.toString()}")
         }
     }
 
@@ -722,20 +948,20 @@ class UsbOtgProgrammerService(private val context: Context) {
         device: UsbDevice,
         chipType: ProgrammerChipType?,
         dtr: Boolean,
-        rts: Boolean
+        rts: Boolean,
+        onLog: ((String) -> Unit)? = null
     ) {
         try {
-            when (chipType) {
+            val ret = when (chipType) {
                 ProgrammerChipType.FT232RL -> {
                     val value = (if (dtr) 0x0101 else 0x0100) or (if (rts) 0x0202 else 0x0200)
                     conn.controlTransfer(0x40, 0x01, value, 0, null, 0, 300)
                 }
                 ProgrammerChipType.CP2102 -> {
                     val value = 0x0300 or (if (dtr) 0x01 else 0x00) or (if (rts) 0x02 else 0x00)
-                    conn.controlTransfer(0x41, 0x07, value, 0, null, 0, 300)
+                    conn.controlTransfer(0x41, 0x07, value, controlInterfaceIndex, null, 0, 300)
                 }
                 ProgrammerChipType.CH340G -> {
-                    // Matches Ch34xSerialDriver: ~((dtr ? 0x20 : 0) | (rts ? 0x40 : 0)) & 0xFF
                     val mask = (if (dtr) 0x20 else 0) or (if (rts) 0x40 else 0)
                     conn.controlTransfer(0x40, 0xA4, mask.inv() and 0xFF, 0, null, 0, 300)
                 }
@@ -744,77 +970,75 @@ class UsbOtgProgrammerService(private val context: Context) {
                     conn.controlTransfer(0x21, 0x22, valMask, controlInterfaceIndex, null, 0, 300)
                 }
             }
+            if (ret < 0) {
+                onLog?.invoke("DTR/RTS Warning ($chipType): controlTransfer returned $ret")
+            }
         } catch (e: Throwable) {
-            Log.w(TAG, "Control line warning (${device.deviceName}): ${e.message}")
+            onLog?.invoke("DTR/RTS Exception (${device.deviceName}): ${e.toString()}")
         }
-    }
-
-    private fun writeRawBytes(data: ByteArray): Boolean {
-        val conn = activeConnection ?: return false
-        val out = outEndpoint ?: return false
-        var offset = 0
-        while (offset < data.size) {
-            val chunkLen = min(data.size - offset, out.maxPacketSize.coerceAtLeast(64))
-            val slice = if (offset == 0 && chunkLen == data.size) data
-            else data.copyOfRange(offset, offset + chunkLen)
-            val written = conn.bulkTransfer(out, slice, slice.size, 800)
-            if (written <= 0) return false
-            offset += written
-        }
-        return true
     }
 
     /**
-     * Loops until expectedMax bytes arrive OR timeout expires.
-     * Critically ignores FTDI 2-byte status-only USB packets so we don't return prematurely!
+     * Returns null on success, or the exact technical error string (including Exception e.toString()) on failure.
      */
-    private fun readBytesWithTimeout(expectedMax: Int, timeoutMs: Int): ByteArray {
-        val conn = activeConnection ?: return ByteArray(0)
-        val epIn = inEndpoint ?: return ByteArray(0)
-        val packetSize = epIn.maxPacketSize.coerceAtLeast(64)
-        val pktBuf = ByteArray(packetSize)
-        val acc = ByteArrayOutputStream()
-        val start = System.currentTimeMillis()
-        val hardDeadline = start + timeoutMs.toLong()
-        var lastDataTime = 0L
-
-        while (acc.size() < expectedMax) {
-            val now = System.currentTimeMillis()
-            val remaining = (hardDeadline - now).toInt()
-            if (remaining <= 0) break
-
-            // Once we started receiving payload bytes, cap idle wait to 50ms to finish variable-length frames fast
-            val perCallTimeout = if (lastDataTime > 0L) min(50, remaining) else min(80, remaining)
-            val readLen = conn.bulkTransfer(epIn, pktBuf, pktBuf.size, perCallTimeout)
-
-            if (readLen > 0) {
-                if (activeChipType == ProgrammerChipType.FT232RL) {
-                    if (readLen > 2) {
-                        val payloadLen = min(readLen - 2, expectedMax - acc.size())
-                        acc.write(pktBuf, 2, payloadLen)
-                        lastDataTime = System.currentTimeMillis()
-                    }
-                    // If readLen <= 2 on FTDI, it's ONLY the 2 modem-status bytes; keep waiting!
-                } else {
-                    val payloadLen = min(readLen, expectedMax - acc.size())
-                    acc.write(pktBuf, 0, payloadLen)
-                    lastDataTime = System.currentTimeMillis()
+    private fun writeRawBytes(data: ByteArray): String? {
+        return try {
+            val conn = activeConnection ?: return "UsbDeviceConnection is null (المنفذ مغلق)"
+            val out = outEndpoint ?: return "Bulk OUT endpoint is null"
+            var offset = 0
+            while (offset < data.size) {
+                val chunkLen = min(data.size - offset, out.maxPacketSize.coerceAtLeast(64))
+                val slice = if (offset == 0 && chunkLen == data.size) data
+                else data.copyOfRange(offset, offset + chunkLen)
+                val written = conn.bulkTransfer(out, slice, slice.size, 800)
+                if (written <= 0) {
+                    val attached = activeDevice?.deviceName?.let { usbManager?.deviceList?.containsKey(it) } ?: false
+                    return "bulkTransfer(OUT) returned $written (len=${slice.size}, ep=0x%02X, attached=$attached, chip=$activeChipType)"
+                        .format(out.address)
                 }
-            } else if (lastDataTime > 0L && (System.currentTimeMillis() - lastDataTime) >= 45L) {
-                break
+                offset += written
             }
+            null
+        } catch (e: Throwable) {
+            "Write Exception: ${e.toString()}"
         }
-        return acc.toByteArray()
     }
 
-    private fun drainInputBuffer(conn: UsbDeviceConnection) {
-        val epIn = inEndpoint ?: return
-        val buf = ByteArray(epIn.maxPacketSize.coerceAtLeast(64))
-        repeat(5) {
-            val n = conn.bulkTransfer(epIn, buf, buf.size, 15)
-            if (n <= 0) return
-            if (activeChipType == ProgrammerChipType.FT232RL && n <= 2) return
+    /**
+     * Reads up to expectedMax bytes from the continuous rxBuffer populated by startContinuousReaderLoop().
+     */
+    private suspend fun readBufferedBytes(
+        expectedMax: Int,
+        timeoutMs: Int,
+        onLog: (String) -> Unit
+    ): ByteArray {
+        val out = ByteArrayOutputStream()
+        val deadline = System.currentTimeMillis() + timeoutMs.toLong()
+        var lastByteAt = 0L
+
+        try {
+            while (out.size() < expectedMax) {
+                var drainedAny = false
+                synchronized(rxLock) {
+                    while (rxBuffer.isNotEmpty() && out.size() < expectedMax) {
+                        out.write(rxBuffer.removeFirst().toInt() and 0xFF)
+                        drainedAny = true
+                    }
+                }
+                val now = System.currentTimeMillis()
+                if (drainedAny) {
+                    lastByteAt = now
+                    if (out.size() >= expectedMax) break
+                }
+                if (now >= deadline) break
+                // If we already captured bytes and 45ms elapsed with no further bytes, return packet promptly
+                if (lastByteAt > 0L && (now - lastByteAt) >= 45L) break
+                delay(4)
+            }
+        } catch (e: Throwable) {
+            onLog("Read Exception: ${e.toString()}")
         }
+        return out.toByteArray()
     }
 
     private fun toHex(bytes: ByteArray): String = bytes.joinToString(" ") { "%02X".format(it) }

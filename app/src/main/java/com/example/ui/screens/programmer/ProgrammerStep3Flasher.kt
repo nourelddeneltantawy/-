@@ -63,6 +63,7 @@ import androidx.compose.material3.MenuAnchorType
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -103,6 +104,7 @@ fun ProgrammerStep3Flasher(
     state: McuProgrammerUiState,
     onToggleConnection: () -> Unit,
     onBaudRateChange: (Int) -> Unit,
+    onToggleDtrRtsReset: (Boolean) -> Unit,
     onIdCodeByteChange: (Int, String) -> Unit,
     onResetIdCode: () -> Unit,
     onClockChange: (String) -> Unit,
@@ -225,6 +227,41 @@ fun ProgrammerStep3Flasher(
                         onSelect = onBaudRateChange,
                         modifier = Modifier.weight(0.85f)
                     )
+                }
+
+                // DTR / RTS Reset Control Switch
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 4.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "تفعيل نبضة DTR/RTS Reset",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = if (state.enableDtrRtsReset) "إرسال نبضة Reset قبل المزامنة" else "تعطيل DTR/RTS (توصيل مباشر 4 أسلاك)",
+                                fontSize = 10.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Switch(
+                            checked = state.enableDtrRtsReset,
+                            onCheckedChange = onToggleDtrRtsReset,
+                            enabled = !state.isBusy,
+                            modifier = Modifier.testTag("step3_dtr_rts_switch")
+                        )
+                    }
                 }
             }
         }

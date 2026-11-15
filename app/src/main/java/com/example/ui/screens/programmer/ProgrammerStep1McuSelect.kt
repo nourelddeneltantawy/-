@@ -50,6 +50,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -76,6 +77,7 @@ fun ProgrammerStep1McuSelect(
     onSelectMainFamily: (String) -> Unit,
     onSelectSubFamily: (String) -> Unit,
     onSelectPartNumber: (McuProcessor) -> Unit,
+    onToggleDtrRtsReset: (Boolean) -> Unit,
     onAutoDetectChipId: () -> Unit,
     onNextStep: () -> Unit,
     modifier: Modifier = Modifier
@@ -242,6 +244,40 @@ fun ProgrammerStep1McuSelect(
                                 }
                             }
                         }
+                    }
+                }
+
+                // DTR/RTS Auto-Reset Pulse Toggle Switch
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 6.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "نبضة DTR/RTS Reset التلقائية",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = if (state.enableDtrRtsReset) "مفعّلة: تحكم تلقائي في RESET و MODE" else "معطّلة: اتصال UART مباشر (4 أسلاك)",
+                                fontSize = 10.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Switch(
+                            checked = state.enableDtrRtsReset,
+                            onCheckedChange = onToggleDtrRtsReset,
+                            modifier = Modifier.testTag("step1_dtr_rts_switch")
+                        )
                     }
                 }
 

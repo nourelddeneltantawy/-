@@ -197,6 +197,7 @@ fun McuProgrammerScreen(
                     onSelectMainFamily = programmerViewModel::selectMainFamily,
                     onSelectSubFamily = programmerViewModel::selectSubFamily,
                     onSelectPartNumber = programmerViewModel::selectPartNumber,
+                    onToggleDtrRtsReset = programmerViewModel::setEnableDtrRtsReset,
                     onAutoDetectChipId = programmerViewModel::autoDetectChipId,
                     onNextStep = { programmerViewModel.goToStep(2) }
                 )
@@ -211,6 +212,7 @@ fun McuProgrammerScreen(
                     state = state,
                     onToggleConnection = programmerViewModel::toggleUsbConnection,
                     onBaudRateChange = programmerViewModel::setBaudRate,
+                    onToggleDtrRtsReset = programmerViewModel::setEnableDtrRtsReset,
                     onIdCodeByteChange = programmerViewModel::updateIdCodeByte,
                     onResetIdCode = programmerViewModel::resetIdCodeDefault,
                     onClockChange = programmerViewModel::setClockFrequency,
