@@ -55,7 +55,7 @@ data class McuProgrammerUiState(
 
     // Step 3: Dynamic Flasher Controls & PC-Style Hex Viewer
     val baudRate: Int = 9600,
-    val idCodeHex: String = "FFFFFFFFFFFFFF", // Single 14-char (7-byte) hex field
+    val idCodeBytesHex: List<String> = List(7) { "FF" },
     val clockFrequency: String = "20 MHz",
     val eraseMode: String = "مسح كلي (Chip Erase)",
     val isConnected: Boolean = false,
@@ -346,15 +346,39 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
         _uiState.update { it.copy(baudRate = baud) }
     }
 
-    fun updateIdCodeHex(rawHex: String) {
-        val filtered = rawHex.uppercase()
-            .filter { it in '0'..'9' || it in 'A'..'F' }
-            .take(14)
-        _uiState.update { it.copy(idCodeHex = filtered) }
+    fun updateIdCodeByte(index: Int, rawHex: String) {
+        if (index !in 0..6) return
+        val filtered = rawHex.uppercase().filter { it in '0'..'9' || it in 'A'..'F' }
+        val current = _uiState.value.idCodeBytesHex.getOrElse(index) { "FF" }
+
+        // Support pasting a full 14-char hex string across all 7 boxes
+        if (filtered.length >= 14) {
+            val chunked = (0 until 7).map { i -> filtered.substring(i * 2, i * 2 + 2) }
+            _uiState.update { it.copy(idCodeBytesHex = chunked) }
+            return
+        }
+
+        val resolved = when {
+            current.length == 2 && filtered.length == 3 -> {
+                // Smoothly overwrite existing "FF" when user types a new hex digit
+                val extra = if (filtered.startsWith(current)) filtered.substring(2)
+                else if (filtered.endsWith(current)) filtered.substring(0, 1)
+                else filtered.takeLast(1)
+                extra.take(2)
+            }
+            else -> filtered.take(2)
+        }
+
+        _uiState.update { state ->
+            val list = state.idCodeBytesHex.toMutableList()
+            while (list.size < 7) list.add("FF")
+            list[index] = resolved
+            state.copy(idCodeBytesHex = list)
+        }
     }
 
     fun resetIdCodeDefault() {
-        _uiState.update { it.copy(idCodeHex = "FFFFFFFFFFFFFF") }
+        _uiState.update { it.copy(idCodeBytesHex = List(7) { "FF" }) }
     }
 
     fun setClockFrequency(clock: String) {
@@ -701,12 +725,13 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
     }
 
     private fun parseIdCodeBytes(): ByteArray? {
-        val clean = _uiState.value.idCodeHex.trim().uppercase()
-        if (clean.length != 14) return null
+        val parts = _uiState.value.idCodeBytesHex
+        if (parts.size != 7) return null
         val out = ByteArray(7)
         for (i in 0 until 7) {
-            val pair = clean.substring(i * 2, i * 2 + 2)
-            out[i] = (pair.toIntOrNull(16) ?: return null).toByte()
+            val p = parts[i].trim().uppercase()
+            if (p.length != 2) return null
+            out[i] = (p.toIntOrNull(16) ?: return null).toByte()
         }
         return out
     }

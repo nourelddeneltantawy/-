@@ -308,6 +308,49 @@ fun ProgrammerStep1McuSelect(
                         }
                     }
                 }
+
+                // Live TX / RX Raw Hex Diagnostic Panel on Step 1
+                if (state.logs.isNotEmpty()) {
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = Color(0xFF070B14),
+                        border = BorderStroke(1.dp, Color(0xFF1E293B)),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("step1_raw_hex_log")
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .padding(10.dp)
+                                .heightIn(max = 150.dp)
+                                .verticalScroll(rememberScrollState()),
+                            verticalArrangement = Arrangement.spacedBy(3.dp)
+                        ) {
+                            Text(
+                                text = "التشخيص المباشر (TX / RX Raw Hex Log):",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFF38BDF8)
+                            )
+                            state.logs.takeLast(20).reversed().forEach { entry ->
+                                val c = when {
+                                    entry.message.startsWith("RX:") && !entry.message.contains("لا يوجد") -> Color(0xFF34D399)
+                                    entry.message.startsWith("TX:") -> Color(0xFFFBBF24)
+                                    entry.level == com.example.data.model.LogLevel.ERROR -> Color(0xFFF87171)
+                                    entry.level == com.example.data.model.LogLevel.SUCCESS -> Color(0xFF34D399)
+                                    else -> Color(0xFFCBD5E1)
+                                }
+                                Text(
+                                    text = "[${entry.timestamp}] ${entry.message}",
+                                    fontSize = 10.sp,
+                                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                                    color = c,
+                                    lineHeight = 14.sp
+                                )
+                            }
+                        }
+                    }
+                }
             }
         }
 

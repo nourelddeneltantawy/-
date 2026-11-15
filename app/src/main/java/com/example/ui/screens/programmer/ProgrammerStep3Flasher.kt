@@ -27,7 +27,13 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CleaningServices
 import androidx.compose.material.icons.filled.CloudDownload
@@ -97,7 +103,7 @@ fun ProgrammerStep3Flasher(
     state: McuProgrammerUiState,
     onToggleConnection: () -> Unit,
     onBaudRateChange: (Int) -> Unit,
-    onIdCodeHexChange: (String) -> Unit,
+    onIdCodeByteChange: (Int, String) -> Unit,
     onResetIdCode: () -> Unit,
     onClockChange: (String) -> Unit,
     onEraseModeChange: (String) -> Unit,
@@ -223,12 +229,12 @@ fun ProgrammerStep3Flasher(
             }
         }
 
-        // 2. Dynamic Protocol Section (Single continuous 14-char field for R8C/M16C ID Code)
+        // 2. Dynamic Protocol Section (7 Separate Hex Byte Boxes with Auto-Focus for R8C/M16C)
         when (mcu.protocolType) {
             ProtocolFamilyType.R8C_M16C -> {
-                IdCodeSingleFieldCard(
-                    idCodeHex = state.idCodeHex,
-                    onIdCodeChange = onIdCodeHexChange,
+                IdCodeSevenBoxesCard(
+                    idCodeBytesHex = state.idCodeBytesHex,
+                    onByteChange = onIdCodeByteChange,
                     onResetFf = onResetIdCode
                 )
             }
@@ -508,15 +514,20 @@ fun ProgrammerStep3Flasher(
                         verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
                         state.logs.reversed().forEach { entry ->
-                            val logColor = when (entry.level) {
-                                LogLevel.SUCCESS -> Color(0xFF34D399)
-                                LogLevel.WARNING -> Color(0xFFFBBF24)
-                                LogLevel.ERROR -> Color(0xFFF87171)
-                                LogLevel.INFO -> Color(0xFFCBD5E1)
+                            val isTx = entry.message.startsWith("TX:")
+                            val isRxData = entry.message.startsWith("RX:") && !entry.message.contains("لا يوجد")
+                            val logColor = when {
+                                isRxData -> Color(0xFF34D399)
+                                isTx -> Color(0xFFFBBF24)
+                                entry.level == LogLevel.SUCCESS -> Color(0xFF34D399)
+                                entry.level == LogLevel.WARNING -> Color(0xFFFBBF24)
+                                entry.level == LogLevel.ERROR -> Color(0xFFF87171)
+                                else -> Color(0xFFCBD5E1)
                             }
                             Text(
                                 text = "[${entry.timestamp}] ${entry.message}",
                                 fontSize = 11.sp,
+                                fontFamily = if (isTx || entry.message.startsWith("RX:")) FontFamily.Monospace else FontFamily.Default,
                                 color = logColor,
                                 lineHeight = 15.sp
                             )
@@ -531,69 +542,175 @@ fun ProgrammerStep3Flasher(
 }
 
 @Composable
-private fun IdCodeSingleFieldCard(
-    idCodeHex: String,
-    onIdCodeChange: (String) -> Unit,
+private fun IdCodeSevenBoxesCard(
+    idCodeBytesHex: List<String>,
+    onByteChange: (Int, String) -> Unit,
     onResetFf: () -> Unit
 ) {
+    val focusRequesters = remember { List(7) { FocusRequester() } }
+    val allValid = idCodeBytesHex.size == 7 && idCodeBytesHex.all { it.length == 2 }
+    val combinedHex = idCodeBytesHex.joinToString(" ") { it.ifBlank { "--" } }
+
     Card(
         shape = RoundedCornerShape(18.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         border = BorderStroke(1.dp, Color(0xFFF59E0B).copy(alpha = 0.45f))
     ) {
-        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Default.Key, contentDescription = null, tint = Color(0xFFF59E0B), modifier = Modifier.size(18.dp))
-                Spacer(modifier = Modifier.width(6.dp))
-                Text(
-                    text = "كود الحماية (7-Byte ID Code Hex)",
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 13.sp,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
+        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Key, contentDescription = null, tint = Color(0xFFF59E0B), modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "كود الحماية (7-Byte ID Code Hex)",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 13.sp,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                }
+            }
+
+            CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    // Row 1: Byte 1 .. Byte 4
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        for (idx in 0..3) {
+                            IdByteInputBox(
+                                index = idx,
+                                value = idCodeBytesHex.getOrElse(idx) { "FF" },
+                                focusRequester = focusRequesters[idx],
+                                imeAction = ImeAction.Next,
+                                onValueChanged = { newVal ->
+                                    val prevVal = idCodeBytesHex.getOrElse(idx) { "FF" }
+                                    onByteChange(idx, newVal)
+                                    val cleanNew = newVal.uppercase().filter { it in '0'..'9' || it in 'A'..'F' }
+                                    val completedLen = when {
+                                        prevVal.length == 2 && cleanNew.length == 3 -> 1
+                                        else -> cleanNew.take(2).length
+                                    }
+                                    if (completedLen == 2 && idx < 6) {
+                                        focusRequesters[idx + 1].requestFocus()
+                                    }
+                                },
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    }
+
+                    // Row 2: Byte 5 .. Byte 7 + Fill All FF Button
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.Top
+                    ) {
+                        for (idx in 4..6) {
+                            IdByteInputBox(
+                                index = idx,
+                                value = idCodeBytesHex.getOrElse(idx) { "FF" },
+                                focusRequester = focusRequesters[idx],
+                                imeAction = if (idx < 6) ImeAction.Next else ImeAction.Done,
+                                onValueChanged = { newVal ->
+                                    val prevVal = idCodeBytesHex.getOrElse(idx) { "FF" }
+                                    onByteChange(idx, newVal)
+                                    val cleanNew = newVal.uppercase().filter { it in '0'..'9' || it in 'A'..'F' }
+                                    val completedLen = when {
+                                        prevVal.length == 2 && cleanNew.length == 3 -> 1
+                                        else -> cleanNew.take(2).length
+                                    }
+                                    if (completedLen == 2 && idx < 6) {
+                                        focusRequesters[idx + 1].requestFocus()
+                                    }
+                                },
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+
+                        OutlinedButton(
+                            onClick = onResetFf,
+                            shape = RoundedCornerShape(12.dp),
+                            border = BorderStroke(1.2.dp, Color(0xFFF59E0B)),
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                            modifier = Modifier
+                                .weight(1.25f)
+                                .height(54.dp)
+                                .testTag("id_code_fill_ff_button")
+                        ) {
+                            Text(
+                                text = "تعبئة الكل FF",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFFF59E0B),
+                                maxLines = 1
+                            )
+                        }
+                    }
+                }
             }
 
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
-                    OutlinedTextField(
-                        value = idCodeHex,
-                        onValueChange = onIdCodeChange,
-                        singleLine = true,
-                        placeholder = { Text("FFFFFFFFFFFFFF", fontFamily = FontFamily.Monospace, fontSize = 13.sp) },
-                        textStyle = MaterialTheme.typography.bodyMedium.copy(
-                            fontFamily = FontFamily.Monospace,
-                            fontWeight = FontWeight.Bold,
-                            letterSpacing = 1.5.sp
-                        ),
-                        shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier
-                            .weight(1f)
-                            .testTag("id_code_single_input")
-                    )
-                }
-
-                OutlinedButton(
-                    onClick = onResetFf,
-                    shape = RoundedCornerShape(12.dp),
-                    border = BorderStroke(1.dp, Color(0xFFF59E0B)),
-                    modifier = Modifier
-                        .heightIn(min = 52.dp)
-                        .testTag("id_code_fill_ff_button")
-                ) {
-                    Text("تعبئة FF", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color(0xFFF59E0B))
-                }
+                Text(
+                    text = if (allValid) "الكود الجاهز للإرسال (0xF5): $combinedHex" else "يرجى إكمال الحرفين في كل خانة (00 - FF)",
+                    fontSize = 11.sp,
+                    fontFamily = if (allValid) FontFamily.Monospace else FontFamily.Default,
+                    color = if (allValid) Color(0xFF10B981) else Color(0xFFF59E0B)
+                )
             }
-
-            Text(
-                text = "طول الكود الحالي: ${idCodeHex.length} / 14 حرف Hex (7 بايت)",
-                fontSize = 11.sp,
-                color = if (idCodeHex.length == 14) Color(0xFF10B981) else Color(0xFFF59E0B)
-            )
         }
+    }
+}
+
+@Composable
+private fun IdByteInputBox(
+    index: Int,
+    value: String,
+    focusRequester: FocusRequester,
+    imeAction: ImeAction,
+    onValueChanged: (String) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Column(
+        modifier = modifier,
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(3.dp)
+    ) {
+        OutlinedTextField(
+            value = value,
+            onValueChange = onValueChanged,
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(
+                capitalization = KeyboardCapitalization.Characters,
+                autoCorrectEnabled = false,
+                imeAction = imeAction
+            ),
+            textStyle = MaterialTheme.typography.bodyLarge.copy(
+                fontFamily = FontFamily.Monospace,
+                fontWeight = FontWeight.Bold,
+                textAlign = TextAlign.Center,
+                fontSize = 15.sp
+            ),
+            shape = RoundedCornerShape(12.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .focusRequester(focusRequester)
+                .testTag("id_code_byte_$index")
+        )
+        Text(
+            text = "Byte ${index + 1}",
+            fontSize = 10.sp,
+            fontFamily = FontFamily.Monospace,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
     }
 }
 
@@ -893,11 +1010,12 @@ private fun BaudRateSelector(
         modifier = modifier
     ) {
         OutlinedTextField(
-            value = "$selectedBaud bps",
+            value = "$selectedBaud",
             onValueChange = {},
             readOnly = true,
+            singleLine = true,
             enabled = enabled,
-            label = { Text("Baud Rate", fontSize = 11.sp) },
+            label = { Text("Baud Rate (bps)", fontSize = 11.sp, maxLines = 1) },
             trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
             shape = RoundedCornerShape(12.dp),
             modifier = Modifier

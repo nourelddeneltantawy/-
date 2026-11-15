@@ -211,7 +211,7 @@ fun McuProgrammerScreen(
                     state = state,
                     onToggleConnection = programmerViewModel::toggleUsbConnection,
                     onBaudRateChange = programmerViewModel::setBaudRate,
-                    onIdCodeHexChange = programmerViewModel::updateIdCodeHex,
+                    onIdCodeByteChange = programmerViewModel::updateIdCodeByte,
                     onResetIdCode = programmerViewModel::resetIdCodeDefault,
                     onClockChange = programmerViewModel::setClockFrequency,
                     onEraseModeChange = programmerViewModel::setEraseMode,
