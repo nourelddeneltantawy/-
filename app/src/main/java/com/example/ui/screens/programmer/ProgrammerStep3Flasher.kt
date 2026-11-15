@@ -4,23 +4,27 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -44,7 +48,6 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -58,26 +61,35 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.model.LogLevel
 import com.example.data.model.ProtocolFamilyType
 import com.example.ui.viewmodel.McuProgrammerUiState
+import kotlinx.coroutines.launch
 import kotlin.math.min
+import kotlin.math.roundToInt
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -85,11 +97,11 @@ fun ProgrammerStep3Flasher(
     state: McuProgrammerUiState,
     onToggleConnection: () -> Unit,
     onBaudRateChange: (Int) -> Unit,
-    onIdCodeByteChange: (Int, String) -> Unit,
+    onIdCodeHexChange: (String) -> Unit,
     onResetIdCode: () -> Unit,
     onClockChange: (String) -> Unit,
     onEraseModeChange: (String) -> Unit,
-    onSelectBlock: (Int) -> Unit,
+    onJumpToFirstData: () -> Unit,
     onLoadFirmwareUri: (android.net.Uri) -> Unit,
     onSaveDumpUri: (android.net.Uri, Boolean) -> Unit,
     onReadFlash: () -> Unit,
@@ -179,7 +191,6 @@ fun ProgrammerStep3Flasher(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    // Connect / Disconnect USB Button
                     Button(
                         onClick = onToggleConnection,
                         enabled = !state.isBusy,
@@ -197,11 +208,11 @@ fun ProgrammerStep3Flasher(
                         Text(
                             text = if (state.isConnected) "قطع الاتصال" else "اتصال USB OTG",
                             fontWeight = FontWeight.Bold,
-                            fontSize = 13.sp
+                            fontSize = 13.sp,
+                            maxLines = 1
                         )
                     }
 
-                    // Baud Rate Dropdown
                     BaudRateSelector(
                         selectedBaud = state.baudRate,
                         enabled = !state.isConnected && !state.isBusy,
@@ -212,13 +223,13 @@ fun ProgrammerStep3Flasher(
             }
         }
 
-        // 2. Dynamic Protocol Section (Adapts by MCU Family!)
+        // 2. Dynamic Protocol Section (Single continuous 14-char field for R8C/M16C ID Code)
         when (mcu.protocolType) {
             ProtocolFamilyType.R8C_M16C -> {
-                IdCodeSecurityCard(
-                    idCodeBytesHex = state.idCodeBytesHex,
-                    onByteChange = onIdCodeByteChange,
-                    onResetDefault = onResetIdCode
+                IdCodeSingleFieldCard(
+                    idCodeHex = state.idCodeHex,
+                    onIdCodeChange = onIdCodeHexChange,
+                    onResetFf = onResetIdCode
                 )
             }
             ProtocolFamilyType.RL78_RX -> {
@@ -232,7 +243,7 @@ fun ProgrammerStep3Flasher(
             else -> Unit
         }
 
-        // 3. Firmware File Loader & Save Dump
+        // 3. Firmware File Loader & Export Card (Clean non-wrapping button rows)
         Card(
             shape = RoundedCornerShape(18.dp),
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -246,36 +257,45 @@ fun ProgrammerStep3Flasher(
                     color = MaterialTheme.colorScheme.onSurface
                 )
 
+                Button(
+                    onClick = { openFirmwareLauncher.launch(arrayOf("*/*")) },
+                    enabled = !state.isBusy,
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                        contentColor = MaterialTheme.colorScheme.onSecondaryContainer
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 48.dp)
+                        .testTag("load_firmware_button")
+                ) {
+                    Icon(Icons.Default.FolderOpen, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "فتح ملف سوفت وير (.bin / .hex / .mot)",
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1
+                    )
+                }
+
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     OutlinedButton(
-                        onClick = { openFirmwareLauncher.launch(arrayOf("*/*")) },
-                        enabled = !state.isBusy,
-                        shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier
-                            .weight(1.2f)
-                            .heightIn(min = 48.dp)
-                            .testTag("load_firmware_button")
-                    ) {
-                        Icon(Icons.Default.FolderOpen, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("فتح سوفت", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                    }
-
-                    OutlinedButton(
                         onClick = { saveBinLauncher.launch("${mcu.partNumber}_dump.bin") },
                         enabled = !state.isBusy,
                         shape = RoundedCornerShape(12.dp),
                         modifier = Modifier
-                            .weight(0.9f)
-                            .heightIn(min = 48.dp)
+                            .weight(1f)
+                            .heightIn(min = 46.dp)
                             .testTag("save_bin_button")
                     ) {
                         Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("حفظ BIN", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("حفظ BIN", fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 1)
                     }
 
                     OutlinedButton(
@@ -283,21 +303,21 @@ fun ProgrammerStep3Flasher(
                         enabled = !state.isBusy,
                         shape = RoundedCornerShape(12.dp),
                         modifier = Modifier
-                            .weight(0.9f)
-                            .heightIn(min = 48.dp)
+                            .weight(1f)
+                            .heightIn(min = 46.dp)
                             .testTag("save_hex_button")
                     ) {
                         Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("تصدير HEX", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("تصدير HEX", fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 1)
                     }
                 }
 
                 Text(
                     text = if (state.loadedFileName != null) {
-                        "الملف النشط: ${state.loadedFileName} (${state.loadedFormat}) • ${state.loadedNonEmptyCount} بايت"
+                        "الملف النشط: ${state.loadedFileName} (${state.loadedFormat}) • ${state.loadedNonEmptyCount} بايت بيانات"
                     } else {
-                        "الذاكرة مهيأة بقيمة 0xFF بحجم ${mcu.flashKb}KB (${mcu.flashSizeBytes} بايت)"
+                        "الذاكرة مهيأة على 0xFF بحجم ${mcu.flashKb} KB (${mcu.flashSizeBytes} بايت)"
                     },
                     fontSize = 11.sp,
                     color = MaterialTheme.colorScheme.secondary
@@ -305,14 +325,15 @@ fun ProgrammerStep3Flasher(
             }
         }
 
-        // 4. Hex & Block Viewer
-        HexBlockViewerCard(
+        // 4. Professional PC-Style Hex View (Address : 16 Hex Bytes | ASCII + Fast Scrollbar)
+        PcStyleHexViewerCard(
             buffer = state.flashBuffer,
-            selectedBlockIndex = state.selectedBlockIndex,
-            onSelectBlock = onSelectBlock
+            firstNonEmptyRowIndex = state.firstNonEmptyRowIndex,
+            jumpSequence = state.hexJumpSequence,
+            onJumpToDataClick = onJumpToFirstData
         )
 
-        // 5. Flash Operations Grid (Read / Write / Erase / Verify)
+        // 5. Flash Operations Grid + Linear Progress Bar with Percentage & KB Counter
         Card(
             shape = RoundedCornerShape(18.dp),
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -374,29 +395,58 @@ fun ProgrammerStep3Flasher(
                     )
                 }
 
-                if (state.isBusy || state.progress > 0f) {
-                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        LinearProgressIndicator(
-                            progress = { state.progress.coerceIn(0f, 1f) },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(8.dp),
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween
+                // Linear Progress Bar + Percentage + Done KB / Total KB
+                val showProgress = state.isBusy || state.progress > 0f
+                val pct = (state.progress.coerceIn(0f, 1f) * 100f).roundToInt()
+                val totalKb = if (state.progressTotalBytes > 0) (state.progressTotalBytes / 1024) else mcu.flashKb
+                val doneKb = if (state.progressTotalBytes > 0) (state.progressBytesDone / 1024) else 0
+
+                if (showProgress) {
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("flash_progress_container")
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(10.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
-                            Text(
-                                text = state.progressLabel,
-                                fontSize = 11.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            Text(
-                                text = "${(state.progress * 100).toInt()}%",
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.primary
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = state.progressLabel.ifBlank { "جاري التنفيذ..." },
+                                    fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = "$doneKb KB / $totalKb KB  •  $pct%",
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    fontFamily = FontFamily.Monospace,
+                                    color = if (pct >= 100) Color(0xFF10B981) else MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.testTag("flash_progress_percentage")
+                                )
+                            }
+
+                            LinearProgressIndicator(
+                                progress = { state.progress.coerceIn(0f, 1f) },
+                                color = if (pct >= 100) Color(0xFF10B981) else MaterialTheme.colorScheme.primary,
+                                trackColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(9.dp)
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .testTag("flash_linear_progress_bar")
                             )
                         }
                     }
@@ -453,7 +503,7 @@ fun ProgrammerStep3Flasher(
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .heightIn(max = 180.dp)
+                            .heightIn(max = 190.dp)
                             .verticalScroll(rememberScrollState()),
                         verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
@@ -481,10 +531,10 @@ fun ProgrammerStep3Flasher(
 }
 
 @Composable
-private fun IdCodeSecurityCard(
-    idCodeBytesHex: List<String>,
-    onByteChange: (Int, String) -> Unit,
-    onResetDefault: () -> Unit
+private fun IdCodeSingleFieldCard(
+    idCodeHex: String,
+    onIdCodeChange: (String) -> Unit,
+    onResetFf: () -> Unit
 ) {
     Card(
         shape = RoundedCornerShape(18.dp),
@@ -492,54 +542,249 @@ private fun IdCodeSecurityCard(
         border = BorderStroke(1.dp, Color(0xFFF59E0B).copy(alpha = 0.45f))
     ) {
         Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.Key, contentDescription = null, tint = Color(0xFFF59E0B), modifier = Modifier.size(18.dp))
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(
+                    text = "كود الحماية (7-Byte ID Code Hex)",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 13.sp,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+                    OutlinedTextField(
+                        value = idCodeHex,
+                        onValueChange = onIdCodeChange,
+                        singleLine = true,
+                        placeholder = { Text("FFFFFFFFFFFFFF", fontFamily = FontFamily.Monospace, fontSize = 13.sp) },
+                        textStyle = MaterialTheme.typography.bodyMedium.copy(
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = 1.5.sp
+                        ),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier
+                            .weight(1f)
+                            .testTag("id_code_single_input")
+                    )
+                }
+
+                OutlinedButton(
+                    onClick = onResetFf,
+                    shape = RoundedCornerShape(12.dp),
+                    border = BorderStroke(1.dp, Color(0xFFF59E0B)),
+                    modifier = Modifier
+                        .heightIn(min = 52.dp)
+                        .testTag("id_code_fill_ff_button")
+                ) {
+                    Text("تعبئة FF", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color(0xFFF59E0B))
+                }
+            }
+
+            Text(
+                text = "طول الكود الحالي: ${idCodeHex.length} / 14 حرف Hex (7 بايت)",
+                fontSize = 11.sp,
+                color = if (idCodeHex.length == 14) Color(0xFF10B981) else Color(0xFFF59E0B)
+            )
+        }
+    }
+}
+
+@Composable
+private fun PcStyleHexViewerCard(
+    buffer: ByteArray,
+    firstNonEmptyRowIndex: Int,
+    jumpSequence: Int,
+    onJumpToDataClick: () -> Unit
+) {
+    val totalRows = ((buffer.size + 15) / 16).coerceAtLeast(1)
+    val listState = rememberLazyListState()
+    val horizontalScrollState = rememberScrollState()
+    val coroutineScope = rememberCoroutineScope()
+    val density = LocalDensity.current
+
+    LaunchedEffect(jumpSequence) {
+        if (jumpSequence > 0 && firstNonEmptyRowIndex in 0 until totalRows) {
+            listState.scrollToItem(firstNonEmptyRowIndex)
+        }
+    }
+
+    val firstVisibleRow by remember { derivedStateOf { listState.firstVisibleItemIndex } }
+    val currentAddrHex = remember(firstVisibleRow) { "0x%08X".format(firstVisibleRow * 16) }
+
+    Card(
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f))
+    ) {
+        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.Key, contentDescription = null, tint = Color(0xFFF59E0B), modifier = Modifier.size(18.dp))
-                    Spacer(modifier = Modifier.width(6.dp))
+                Column {
                     Text(
-                        text = "كود الأمان (7-Byte ID Code Hex)",
+                        text = "عارض السوفت وير الاحترافي (PC Hex View)",
                         fontWeight = FontWeight.Bold,
                         fontSize = 13.sp,
                         color = MaterialTheme.colorScheme.onSurface
                     )
+                    Text(
+                        text = "الموقع الحالي: $currentAddrHex • الحجم الكلي: ${buffer.size / 1024} KB",
+                        fontSize = 11.sp,
+                        fontFamily = FontFamily.Monospace,
+                        color = MaterialTheme.colorScheme.primary
+                    )
                 }
-                TextButton(onClick = onResetDefault) {
-                    Text("الافتراضي FF", fontSize = 11.sp)
+
+                if (firstNonEmptyRowIndex > 0) {
+                    TextButton(
+                        onClick = onJumpToDataClick,
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                    ) {
+                        Text(
+                            text = "أول بيانات (0x%06X)".format(firstNonEmptyRowIndex * 16),
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
                 }
             }
 
+            // Full PC-style Dark Console with Address + 16 Hex Bytes + ASCII + Draggable Fast Scrollbar
             CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
-                Row(
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = Color(0xFF070B14),
+                    border = BorderStroke(1.dp, Color(0xFF1E293B)),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        .height(340.dp)
+                        .testTag("pc_hex_viewer_surface")
                 ) {
-                    idCodeBytesHex.forEachIndexed { idx, hex ->
-                        OutlinedTextField(
-                            value = hex,
-                            onValueChange = { onByteChange(idx, it) },
-                            singleLine = true,
-                            label = { Text("B${idx + 1}", fontSize = 10.sp) },
-                            textStyle = MaterialTheme.typography.bodyMedium.copy(
-                                fontFamily = FontFamily.Monospace,
-                                fontWeight = FontWeight.Bold,
-                                textAlign = TextAlign.Center
-                            ),
-                            shape = RoundedCornerShape(10.dp),
+                    Row(modifier = Modifier.fillMaxSize()) {
+                        // Left scrollable table (Header + Rows)
+                        Column(
                             modifier = Modifier
-                                .width(56.dp)
-                                .testTag("id_code_byte_$idx")
-                        )
+                                .weight(1f)
+                                .fillMaxHeight()
+                                .horizontalScroll(horizontalScrollState)
+                                .padding(start = 8.dp, top = 6.dp, bottom = 6.dp)
+                        ) {
+                            // Column Header
+                            Text(
+                                text = "Address   00 01 02 03 04 05 06 07  08 09 0A 0B 0C 0D 0E 0F   ASCII",
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 10.5.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFF94A3B8)
+                            )
+                            HorizontalDivider(
+                                color = Color(0xFF1E293B),
+                                modifier = Modifier.padding(vertical = 4.dp)
+                            )
+
+                            LazyColumn(
+                                state = listState,
+                                modifier = Modifier.fillMaxHeight(),
+                                verticalArrangement = Arrangement.spacedBy(2.dp)
+                            ) {
+                                items(totalRows) { rowIdx ->
+                                    val rowAddr = rowIdx * 16
+                                    val rowLen = min(16, buffer.size - rowAddr)
+                                    val lineStr = remember(buffer, rowAddr, rowLen) {
+                                        buildPcHexLine(buffer, rowAddr, rowLen)
+                                    }
+                                    val hasData = remember(buffer, rowAddr, rowLen) {
+                                        (0 until rowLen).any { buffer[rowAddr + it] != 0xFF.toByte() }
+                                    }
+                                    Text(
+                                        text = lineStr,
+                                        fontFamily = FontFamily.Monospace,
+                                        fontSize = 10.5.sp,
+                                        color = if (hasData) Color(0xFF38BDF8) else Color(0xFF64748B)
+                                    )
+                                }
+                            }
+                        }
+
+                        // Fast Interactive Vertical Scrollbar Track (PC-style thumb drag & tap)
+                        BoxWithConstraints(
+                            modifier = Modifier
+                                .width(22.dp)
+                                .fillMaxHeight()
+                                .background(Color(0xFF0F172A))
+                                .padding(horizontal = 4.dp, vertical = 6.dp)
+                        ) {
+                            val trackHeightPx = with(density) { maxHeight.toPx() }.coerceAtLeast(1f)
+                            val thumbHeightDp = 36.dp
+                            val thumbHeightPx = with(density) { thumbHeightDp.toPx() }
+                            val usableTrackPx = (trackHeightPx - thumbHeightPx).coerceAtLeast(1f)
+
+                            val scrollFraction = if (totalRows <= 1) 0f
+                            else (firstVisibleRow.toFloat() / (totalRows - 1).toFloat()).coerceIn(0f, 1f)
+                            val thumbOffsetPx = (scrollFraction * usableTrackPx).roundToInt()
+
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .pointerInput(totalRows, usableTrackPx) {
+                                        detectTapGestures { offset ->
+                                            val frac = ((offset.y - thumbHeightPx / 2f) / usableTrackPx).coerceIn(0f, 1f)
+                                            val targetRow = (frac * (totalRows - 1)).roundToInt().coerceIn(0, totalRows - 1)
+                                            coroutineScope.launch { listState.scrollToItem(targetRow) }
+                                        }
+                                    }
+                                    .pointerInput(totalRows, usableTrackPx) {
+                                        detectDragGestures { change, _ ->
+                                            change.consume()
+                                            val frac = ((change.position.y - thumbHeightPx / 2f) / usableTrackPx).coerceIn(0f, 1f)
+                                            val targetRow = (frac * (totalRows - 1)).roundToInt().coerceIn(0, totalRows - 1)
+                                            coroutineScope.launch { listState.scrollToItem(targetRow) }
+                                        }
+                                    }
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .offset { IntOffset(0, thumbOffsetPx) }
+                                        .fillMaxWidth()
+                                        .height(thumbHeightDp)
+                                        .background(Color(0xFF38BDF8).copy(alpha = 0.75f), RoundedCornerShape(6.dp))
+                                )
+                            }
+                        }
                     }
                 }
             }
         }
     }
+}
+
+private fun buildPcHexLine(buffer: ByteArray, addr: Int, len: Int): String {
+    val sb = StringBuilder(82)
+    sb.append("%08X: ".format(addr))
+    for (i in 0 until 16) {
+        if (i == 8) sb.append(' ')
+        if (i < len) {
+            sb.append("%02X ".format(buffer[addr + i].toInt() and 0xFF))
+        } else {
+            sb.append("   ")
+        }
+    }
+    sb.append("| ")
+    for (i in 0 until len) {
+        val c = buffer[addr + i].toInt() and 0xFF
+        sb.append(if (c in 32..126) c.toChar() else '.')
+    }
+    return sb.toString()
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -674,121 +919,6 @@ private fun BaudRateSelector(
 }
 
 @Composable
-private fun HexBlockViewerCard(
-    buffer: ByteArray,
-    selectedBlockIndex: Int,
-    onSelectBlock: (Int) -> Unit
-) {
-    val blockSize = 1024 // 1KB per selectable memory block
-    val totalBlocks = ((buffer.size + blockSize - 1) / blockSize).coerceAtLeast(1)
-    val safeBlockIdx = selectedBlockIndex.coerceIn(0, totalBlocks - 1)
-    val blockStart = safeBlockIdx * blockSize
-    val blockEnd = min(buffer.size, blockStart + blockSize)
-    val rowCount = ((blockEnd - blockStart) + 15) / 16
-
-    Card(
-        shape = RoundedCornerShape(18.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f))
-    ) {
-        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "عارض الذاكرة (Hex & Block Viewer)",
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 13.sp,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-                Text(
-                    text = "Block $safeBlockIdx / ${totalBlocks - 1}",
-                    fontSize = 11.sp,
-                    fontFamily = FontFamily.Monospace,
-                    color = MaterialTheme.colorScheme.primary
-                )
-            }
-
-            // Memory Block Selector Chips
-            LazyRow(
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                contentPadding = PaddingValues(vertical = 2.dp)
-            ) {
-                items((0 until totalBlocks).toList()) { idx ->
-                    val offsetHex = "0x%05X".format(idx * blockSize)
-                    FilterChip(
-                        selected = idx == safeBlockIdx,
-                        onClick = { onSelectBlock(idx) },
-                        label = {
-                            Text(
-                                text = "B$idx ($offsetHex)",
-                                fontSize = 10.sp,
-                                fontFamily = FontFamily.Monospace
-                            )
-                        }
-                    )
-                }
-            }
-
-            // LTR Monospace Hex Grid
-            CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
-                Surface(
-                    shape = RoundedCornerShape(12.dp),
-                    color = Color(0xFF090E1A),
-                    border = BorderStroke(1.dp, Color(0xFF1E293B)),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(210.dp)
-                ) {
-                    LazyColumn(
-                        contentPadding = PaddingValues(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(2.dp),
-                        modifier = Modifier.horizontalScroll(rememberScrollState())
-                    ) {
-                        items(rowCount) { rowIdx ->
-                            val rowAddr = blockStart + rowIdx * 16
-                            val rowLen = min(16, blockEnd - rowAddr)
-                            val lineStr = remember(buffer, rowAddr, rowLen) {
-                                buildHexLine(buffer, rowAddr, rowLen)
-                            }
-                            val hasData = remember(buffer, rowAddr, rowLen) {
-                                (0 until rowLen).any { buffer[rowAddr + it] != 0xFF.toByte() }
-                            }
-                            Text(
-                                text = lineStr,
-                                fontFamily = FontFamily.Monospace,
-                                fontSize = 11.sp,
-                                color = if (hasData) Color(0xFF38BDF8) else Color(0xFF64748B)
-                            )
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-private fun buildHexLine(buffer: ByteArray, addr: Int, len: Int): String {
-    val sb = StringBuilder(78)
-    sb.append("%06X: ".format(addr))
-    for (i in 0 until 16) {
-        if (i < len) {
-            sb.append("%02X ".format(buffer[addr + i].toInt() and 0xFF))
-        } else {
-            sb.append("   ")
-        }
-    }
-    sb.append("| ")
-    for (i in 0 until len) {
-        val c = buffer[addr + i].toInt() and 0xFF
-        sb.append(if (c in 32..126) c.toChar() else '.')
-    }
-    return sb.toString()
-}
-
-@Composable
 private fun FlashActionButton(
     title: String,
     icon: ImageVector,
@@ -812,6 +942,6 @@ private fun FlashActionButton(
     ) {
         Icon(imageVector = icon, contentDescription = null, modifier = Modifier.size(18.dp))
         Spacer(modifier = Modifier.width(6.dp))
-        Text(text = title, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+        Text(text = title, fontWeight = FontWeight.Bold, fontSize = 12.sp, maxLines = 1)
     }
 }

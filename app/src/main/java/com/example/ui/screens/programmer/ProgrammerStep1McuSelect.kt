@@ -269,8 +269,13 @@ fun ProgrammerStep1McuSelect(
                         Text("جاري الفحص عبر USB OTG...", fontWeight = FontWeight.Bold, fontSize = 13.sp)
                     } else {
                         Icon(Icons.Default.Usb, contentDescription = "فحص USB OTG", modifier = Modifier.size(20.dp))
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("قراءة تلقائية للمعالج (Auto-Detect Chip ID)", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "قراءة تلقائية للمعالج (Auto-Detect)",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 13.sp,
+                            maxLines = 1
+                        )
                     }
                 }
 

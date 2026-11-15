@@ -53,21 +53,24 @@ data class McuProgrammerUiState(
     val selectedProgrammer: ProgrammerChipType = ProgrammerChipType.FT232RL,
     val attachedUsbDevices: List<UsbSerialDeviceInfo> = emptyList(),
 
-    // Step 3: Dynamic Flasher Controls & Hex Viewer
+    // Step 3: Dynamic Flasher Controls & PC-Style Hex Viewer
     val baudRate: Int = 9600,
-    val idCodeBytesHex: List<String> = List(7) { "FF" },
+    val idCodeHex: String = "FFFFFFFFFFFFFF", // Single 14-char (7-byte) hex field
     val clockFrequency: String = "20 MHz",
     val eraseMode: String = "مسح كلي (Chip Erase)",
     val isConnected: Boolean = false,
     val connectedDeviceLabel: String = "",
     val isBusy: Boolean = false,
     val progress: Float = 0f,
+    val progressBytesDone: Int = 0,
+    val progressTotalBytes: Int = 0,
     val progressLabel: String = "",
     val flashBuffer: ByteArray = ByteArray(1024) { 0xFF.toByte() },
     val loadedFileName: String? = null,
     val loadedFormat: String? = null,
     val loadedNonEmptyCount: Int = 0,
-    val selectedBlockIndex: Int = 0,
+    val firstNonEmptyRowIndex: Int = 0,
+    val hexJumpSequence: Int = 0,
     val logs: List<ProgrammerLogEntry> = emptyList()
 )
 
@@ -132,7 +135,7 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                     partNumbers = parts,
                     selectedProcessor = firstPart,
                     flashBuffer = buffer,
-                    selectedBlockIndex = 0
+                    firstNonEmptyRowIndex = 0
                 )
             }
             addLog(
@@ -185,7 +188,7 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                 partNumbers = parts,
                 selectedProcessor = mcu,
                 flashBuffer = newBuffer,
-                selectedBlockIndex = 0
+                firstNonEmptyRowIndex = computeFirstDataRow(newBuffer)
             )
         }
     }
@@ -199,9 +202,7 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
         val parts = allProcessors.filter {
             it.manufacturer == manufacturer && it.mainFamily == firstFam && it.subFamily == firstSub
         }.sortedBy { it.partNumber }
-        val firstPart = parts.firstOrNull()
-
-        updateCascadingState(manufacturer, families, firstFam, subs, firstSub, parts, firstPart)
+        updateCascadingState(manufacturer, families, firstFam, subs, firstSub, parts, parts.firstOrNull())
     }
 
     fun selectMainFamily(mainFamily: String) {
@@ -212,11 +213,7 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
         val parts = allProcessors.filter {
             it.manufacturer == man && it.mainFamily == mainFamily && it.subFamily == firstSub
         }.sortedBy { it.partNumber }
-        val firstPart = parts.firstOrNull()
-
-        updateCascadingState(
-            man, _uiState.value.mainFamilies, mainFamily, subs, firstSub, parts, firstPart
-        )
+        updateCascadingState(man, _uiState.value.mainFamilies, mainFamily, subs, firstSub, parts, parts.firstOrNull())
     }
 
     fun selectSubFamily(subFamily: String) {
@@ -225,11 +222,7 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
         val parts = allProcessors.filter {
             it.manufacturer == man && it.mainFamily == fam && it.subFamily == subFamily
         }.sortedBy { it.partNumber }
-        val firstPart = parts.firstOrNull()
-
-        updateCascadingState(
-            man, _uiState.value.mainFamilies, fam, _uiState.value.subFamilies, subFamily, parts, firstPart
-        )
+        updateCascadingState(man, _uiState.value.mainFamilies, fam, _uiState.value.subFamilies, subFamily, parts, parts.firstOrNull())
     }
 
     fun selectPartNumber(processor: McuProcessor) {
@@ -242,7 +235,7 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
             state.copy(
                 selectedProcessor = processor,
                 flashBuffer = resetBuf,
-                selectedBlockIndex = 0
+                firstNonEmptyRowIndex = computeFirstDataRow(resetBuf)
             )
         }
     }
@@ -269,7 +262,7 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                 partNumbers = parts,
                 selectedProcessor = selectedPart,
                 flashBuffer = buf,
-                selectedBlockIndex = 0
+                firstNonEmptyRowIndex = computeFirstDataRow(buf)
             )
         }
     }
@@ -280,11 +273,12 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
         if (target == 3) {
             val mcu = _uiState.value.selectedProcessor
             if (mcu != null && _uiState.value.loadedFileName == null && _uiState.value.flashBuffer.size != mcu.flashSizeBytes) {
+                val buf = FirmwareParser.createEmptyBuffer(mcu.flashSizeBytes)
                 _uiState.update {
                     it.copy(
                         currentStep = target,
-                        flashBuffer = FirmwareParser.createEmptyBuffer(mcu.flashSizeBytes),
-                        selectedBlockIndex = 0
+                        flashBuffer = buf,
+                        firstNonEmptyRowIndex = 0
                     )
                 }
                 return
@@ -309,11 +303,11 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
             _uiState.update {
                 it.copy(
                     isAutoDetecting = true,
-                    autoDetectStatus = "جاري فحص منفذ USB OTG وإرسال نبضة التزامن...",
+                    autoDetectStatus = "جاري فحص USB OTG وإرسال نبضة المزامنة (16×0x00)...",
                     autoDetectIsSuccess = false
                 )
             }
-            addLog("بدء الفحص التلقائي للمعالج (Auto-Detect Chip ID)...", LogLevel.INFO)
+            addLog("بدء التعرف التلقائي (Auto-Detect Chip ID)...", LogLevel.INFO)
 
             when (val res = usbService.probeChipId(_uiState.value.selectedProgrammer, allProcessors) { msg ->
                 addLog(msg, LogLevel.INFO)
@@ -352,18 +346,15 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
         _uiState.update { it.copy(baudRate = baud) }
     }
 
-    fun updateIdCodeByte(index: Int, rawHex: String) {
-        if (index !in 0..6) return
-        val filtered = rawHex.uppercase().filter { it in '0'..'9' || it in 'A'..'F' }.take(2)
-        _uiState.update { state ->
-            val list = state.idCodeBytesHex.toMutableList()
-            list[index] = filtered
-            state.copy(idCodeBytesHex = list)
-        }
+    fun updateIdCodeHex(rawHex: String) {
+        val filtered = rawHex.uppercase()
+            .filter { it in '0'..'9' || it in 'A'..'F' }
+            .take(14)
+        _uiState.update { it.copy(idCodeHex = filtered) }
     }
 
     fun resetIdCodeDefault() {
-        _uiState.update { it.copy(idCodeBytesHex = List(7) { "FF" }) }
+        _uiState.update { it.copy(idCodeHex = "FFFFFFFFFFFFFF") }
     }
 
     fun setClockFrequency(clock: String) {
@@ -374,24 +365,30 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
         _uiState.update { it.copy(eraseMode = mode) }
     }
 
-    fun selectBlock(blockIdx: Int) {
-        _uiState.update { it.copy(selectedBlockIndex = blockIdx.coerceAtLeast(0)) }
+    fun triggerJumpToFirstData() {
+        _uiState.update { it.copy(hexJumpSequence = it.hexJumpSequence + 1) }
     }
 
     fun toggleUsbConnection() {
         if (_uiState.value.isBusy) return
         if (_uiState.value.isConnected) {
             usbService.disconnect()
-            _uiState.update {
-                it.copy(isConnected = false, connectedDeviceLabel = "")
-            }
+            _uiState.update { it.copy(isConnected = false, connectedDeviceLabel = "") }
             addLog("تم فصل المبرمجة USB OTG.", LogLevel.INFO)
             refreshUsbDevices()
             return
         }
 
         viewModelScope.launch {
-            _uiState.update { it.copy(isBusy = true, progress = 0.2f, progressLabel = "جاري فتح منفذ USB OTG...") }
+            _uiState.update {
+                it.copy(
+                    isBusy = true,
+                    progress = 0.2f,
+                    progressBytesDone = 0,
+                    progressTotalBytes = 0,
+                    progressLabel = "جاري فتح منفذ USB OTG على سرعة ${_uiState.value.baudRate}..."
+                )
+            }
             val baud = _uiState.value.baudRate
             when (val res = usbService.connect(_uiState.value.selectedProgrammer, baud)) {
                 is UsbConnectResult.Success -> {
@@ -427,7 +424,15 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
     fun loadFirmwareFromUri(uri: Uri) {
         val mcu = _uiState.value.selectedProcessor ?: return
         viewModelScope.launch {
-            _uiState.update { it.copy(isBusy = true, progress = 0.4f, progressLabel = "جاري قراءة وتحليل ملف السوفت...") }
+            _uiState.update {
+                it.copy(
+                    isBusy = true,
+                    progress = 0.4f,
+                    progressBytesDone = 0,
+                    progressTotalBytes = mcu.flashSizeBytes,
+                    progressLabel = "جاري قراءة وتحليل ملف السوفت..."
+                )
+            }
             try {
                 val parsed = withContext(Dispatchers.IO) {
                     var fileName = "firmware.bin"
@@ -442,20 +447,25 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                     FirmwareParser.parseFirmware(bytes, fileName, mcu.flashSizeBytes)
                 }
 
+                val firstDataRow = computeFirstDataRow(parsed.bytes)
                 _uiState.update {
                     it.copy(
                         isBusy = false,
-                        progress = 0f,
-                        progressLabel = "",
+                        progress = 1f,
+                        progressBytesDone = mcu.flashSizeBytes,
+                        progressTotalBytes = mcu.flashSizeBytes,
+                        progressLabel = "تم تحميل الملف بنجاح",
                         flashBuffer = parsed.bytes,
                         loadedFileName = parsed.fileName,
                         loadedFormat = parsed.format,
                         loadedNonEmptyCount = parsed.nonEmptyBytesCount,
-                        selectedBlockIndex = 0
+                        firstNonEmptyRowIndex = firstDataRow,
+                        hexJumpSequence = it.hexJumpSequence + 1
                     )
                 }
+                val startHex = "0x%08X".format(firstDataRow * 16)
                 addLog(
-                    "تم تحميل الملف ${parsed.fileName} (${parsed.format}) - ${parsed.nonEmptyBytesCount} بايت فعلي في ذاكرة ${mcu.flashKb}KB",
+                    "تم عرض الملف ${parsed.fileName} (${parsed.format}) - بداية البيانات عند $startHex",
                     LogLevel.SUCCESS
                 )
             } catch (e: Throwable) {
@@ -491,37 +501,69 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
     fun readChipFlash() {
         val mcu = _uiState.value.selectedProcessor ?: return
         if (_uiState.value.isBusy) return
-        val idBytes = parseIdCodeBytes()
-        if (idBytes == null) {
-            addLog("صيغة 7-Byte ID Code غير مكتملة (أدخل 7 بايت Hex من 00 إلى FF).", LogLevel.ERROR)
+        val idBytes = parseIdCodeBytes() ?: run {
+            addLog("كود ID Code غير مكتمل: أدخل 14 حرف Hex بالضبط (7 بايت).", LogLevel.ERROR)
             return
         }
 
         viewModelScope.launch {
-            _uiState.update { it.copy(isBusy = true, progress = 0.02f, progressLabel = "بدء قراءة الفلاش...") }
+            _uiState.update {
+                it.copy(
+                    isBusy = true,
+                    progress = 0.01f,
+                    progressBytesDone = 0,
+                    progressTotalBytes = mcu.flashSizeBytes,
+                    progressLabel = "بدء قراءة الفلاش..."
+                )
+            }
             addLog("بدء قراءة ذاكرة ${mcu.partNumber} (${mcu.flashKb}KB)...", LogLevel.INFO)
 
-            when (val res = usbService.executeReadFlash(mcu, idBytes) { prog, msg ->
-                _uiState.update { it.copy(progress = prog, progressLabel = msg) }
-            }) {
+            when (val res = usbService.executeReadFlash(
+                processor = mcu,
+                idCodeBytes = idBytes,
+                onLog = { msg -> addLog(msg, LogLevel.INFO) },
+                onProgress = { done, total, msg ->
+                    val frac = if (total > 0) done.toFloat() / total.toFloat() else 0f
+                    _uiState.update {
+                        it.copy(
+                            progress = frac,
+                            progressBytesDone = done,
+                            progressTotalBytes = total,
+                            progressLabel = msg
+                        )
+                    }
+                }
+            )) {
                 is FlashOperationResult.Success -> {
                     val data = res.bytesTransferred ?: _uiState.value.flashBuffer
+                    val firstDataRow = computeFirstDataRow(data)
                     _uiState.update {
                         it.copy(
                             isBusy = false,
                             progress = 1f,
+                            progressBytesDone = mcu.flashSizeBytes,
+                            progressTotalBytes = mcu.flashSizeBytes,
                             progressLabel = "اكتملت القراءة",
                             flashBuffer = data,
                             loadedFileName = "Dump_${mcu.partNumber}.bin",
                             loadedFormat = "Chip Read",
                             loadedNonEmptyCount = data.count { b -> b != 0xFF.toByte() },
-                            selectedBlockIndex = 0
+                            firstNonEmptyRowIndex = firstDataRow,
+                            hexJumpSequence = it.hexJumpSequence + 1
                         )
                     }
                     addLog(res.message, LogLevel.SUCCESS)
                 }
                 is FlashOperationResult.Failure -> {
-                    _uiState.update { it.copy(isBusy = false, progress = 0f, progressLabel = "") }
+                    _uiState.update {
+                        it.copy(
+                            isBusy = false,
+                            progress = 0f,
+                            progressBytesDone = 0,
+                            progressTotalBytes = 0,
+                            progressLabel = ""
+                        )
+                    }
                     addLog(res.reason, LogLevel.ERROR)
                 }
             }
@@ -532,30 +574,57 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
         val mcu = _uiState.value.selectedProcessor ?: return
         if (_uiState.value.isBusy) return
         val idBytes = parseIdCodeBytes() ?: run {
-            addLog("أدخل 7 بايت صحيحة في خانة ID Code أولاً.", LogLevel.ERROR)
+            addLog("كود ID Code غير مكتمل: أدخل 14 حرف Hex بالضبط.", LogLevel.ERROR)
             return
         }
 
         viewModelScope.launch {
-            _uiState.update { it.copy(isBusy = true, progress = 0.1f, progressLabel = "جاري مسح الفلاش...") }
+            _uiState.update {
+                it.copy(
+                    isBusy = true,
+                    progress = 0.05f,
+                    progressBytesDone = 0,
+                    progressTotalBytes = mcu.flashSizeBytes,
+                    progressLabel = "جاري مسح الفلاش..."
+                )
+            }
             addLog("بدء مسح ذاكرة ${mcu.partNumber} (${_uiState.value.eraseMode})...", LogLevel.INFO)
-            when (val res = usbService.executeErase(mcu, _uiState.value.eraseMode, idBytes) { prog, msg ->
-                _uiState.update { it.copy(progress = prog, progressLabel = msg) }
-            }) {
+            when (val res = usbService.executeErase(
+                processor = mcu,
+                eraseMode = _uiState.value.eraseMode,
+                idCodeBytes = idBytes,
+                onLog = { msg -> addLog(msg, LogLevel.INFO) },
+                onProgress = { done, total, msg ->
+                    val frac = if (total > 0) done.toFloat() / total.toFloat() else 0f
+                    _uiState.update {
+                        it.copy(
+                            progress = frac,
+                            progressBytesDone = done,
+                            progressTotalBytes = total,
+                            progressLabel = msg
+                        )
+                    }
+                }
+            )) {
                 is FlashOperationResult.Success -> {
                     _uiState.update {
                         it.copy(
                             isBusy = false,
                             progress = 1f,
-                            progressLabel = "تم المسح",
+                            progressBytesDone = mcu.flashSizeBytes,
+                            progressTotalBytes = mcu.flashSizeBytes,
+                            progressLabel = "اكتمل المسح",
                             flashBuffer = FirmwareParser.createEmptyBuffer(mcu.flashSizeBytes),
-                            loadedNonEmptyCount = 0
+                            loadedNonEmptyCount = 0,
+                            firstNonEmptyRowIndex = 0
                         )
                     }
                     addLog(res.message, LogLevel.SUCCESS)
                 }
                 is FlashOperationResult.Failure -> {
-                    _uiState.update { it.copy(isBusy = false, progress = 0f, progressLabel = "") }
+                    _uiState.update {
+                        it.copy(isBusy = false, progress = 0f, progressBytesDone = 0, progressTotalBytes = 0, progressLabel = "")
+                    }
                     addLog(res.reason, LogLevel.ERROR)
                 }
             }
@@ -569,29 +638,58 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
         val mcu = _uiState.value.selectedProcessor ?: return
         if (_uiState.value.isBusy) return
         val idBytes = parseIdCodeBytes() ?: run {
-            addLog("أدخل 7 بايت صحيحة في خانة ID Code أولاً.", LogLevel.ERROR)
+            addLog("كود ID Code غير مكتمل: أدخل 14 حرف Hex بالضبط.", LogLevel.ERROR)
             return
         }
 
         viewModelScope.launch {
             val actionName = if (verifyOnly) "مطابقة (Verify)" else "كتابة (Write)"
-            _uiState.update { it.copy(isBusy = true, progress = 0.02f, progressLabel = "بدء $actionName...") }
+            val totalSize = _uiState.value.flashBuffer.size
+            _uiState.update {
+                it.copy(
+                    isBusy = true,
+                    progress = 0.01f,
+                    progressBytesDone = 0,
+                    progressTotalBytes = totalSize,
+                    progressLabel = "بدء $actionName..."
+                )
+            }
             addLog("بدء عملية $actionName على ${mcu.partNumber}...", LogLevel.INFO)
 
             when (val res = usbService.executeWriteAndVerify(
                 processor = mcu,
                 firmwareBytes = _uiState.value.flashBuffer,
                 idCodeBytes = idBytes,
-                verifyOnly = verifyOnly
-            ) { prog, msg ->
-                _uiState.update { it.copy(progress = prog, progressLabel = msg) }
-            }) {
+                verifyOnly = verifyOnly,
+                onLog = { msg -> addLog(msg, LogLevel.INFO) },
+                onProgress = { done, total, msg ->
+                    val frac = if (total > 0) done.toFloat() / total.toFloat() else 0f
+                    _uiState.update {
+                        it.copy(
+                            progress = frac,
+                            progressBytesDone = done,
+                            progressTotalBytes = total,
+                            progressLabel = msg
+                        )
+                    }
+                }
+            )) {
                 is FlashOperationResult.Success -> {
-                    _uiState.update { it.copy(isBusy = false, progress = 1f, progressLabel = "اكتملت العملية") }
+                    _uiState.update {
+                        it.copy(
+                            isBusy = false,
+                            progress = 1f,
+                            progressBytesDone = totalSize,
+                            progressTotalBytes = totalSize,
+                            progressLabel = "اكتملت العملية 100%"
+                        )
+                    }
                     addLog(res.message, LogLevel.SUCCESS)
                 }
                 is FlashOperationResult.Failure -> {
-                    _uiState.update { it.copy(isBusy = false, progress = 0f, progressLabel = "") }
+                    _uiState.update {
+                        it.copy(isBusy = false, progress = 0f, progressBytesDone = 0, progressTotalBytes = 0, progressLabel = "")
+                    }
                     addLog(res.reason, LogLevel.ERROR)
                 }
             }
@@ -603,16 +701,23 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
     }
 
     private fun parseIdCodeBytes(): ByteArray? {
-        val parts = _uiState.value.idCodeBytesHex
-        if (parts.size != 7) return null
+        val clean = _uiState.value.idCodeHex.trim().uppercase()
+        if (clean.length != 14) return null
         val out = ByteArray(7)
         for (i in 0 until 7) {
-            val p = parts[i].ifBlank { "FF" }
-            val v = p.toIntOrNull(16) ?: return null
-            if (v !in 0..255) return null
-            out[i] = v.toByte()
+            val pair = clean.substring(i * 2, i * 2 + 2)
+            out[i] = (pair.toIntOrNull(16) ?: return null).toByte()
         }
         return out
+    }
+
+    private fun computeFirstDataRow(buffer: ByteArray): Int {
+        for (i in buffer.indices) {
+            if (buffer[i] != 0xFF.toByte()) {
+                return i / 16
+            }
+        }
+        return 0
     }
 
     private fun addLog(message: String, level: LogLevel) {
