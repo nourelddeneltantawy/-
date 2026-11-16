@@ -306,7 +306,7 @@ fun ProgrammerStep1McuSelect(
                             )
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                text = "وضع Single-Wire UART Mode 3 لعائلة R8C: يتم إرسال واستقبال كل أمر عبر دالة sendAndReceiveR8C الذكية (انتظار N + Rx ثم تجاهل N بايت صدى الدايود) مع الاختيار اليدوي للمعالج لضمان دقة القراءة والكتابة والمسح.",
+                                text = "محرك R8C القياسي (r8c_protocol.hpp / r8c_prog.hpp): يضبط RTS=false و DTR=false مباشرة بدون نبضات Reset أو Break وبلا حذف صدى، ثم ينفذ 16×0x00 ← 0xB0 ← 0xB0 ← 0xFB ← 0xF5 (DF FF 00 07) ← 0x70.",
                                 fontSize = 11.sp,
                                 color = MaterialTheme.colorScheme.onSurface,
                                 lineHeight = 16.sp

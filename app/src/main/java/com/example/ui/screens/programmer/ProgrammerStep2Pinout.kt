@@ -428,7 +428,7 @@ private fun Diode1N4148SchematicCard(
                 ) {
                     Text(
                         text = when {
-                            isR8cFamily -> "Single-Wire Mode 3"
+                            isR8cFamily -> "r8c_protocol (Echo OFF)"
                             is78k0Flmd0 -> "وضع FLMD0"
                             else -> "وضع TOOL0/MODE"
                         },
@@ -483,22 +483,22 @@ private fun Diode1N4148SchematicCard(
 
             SchematicTableRow(
                 programmerSignal = "RTS",
-                bridgeComponent = "دايود D2 (1N4148)",
+                bridgeComponent = if (isR8cFamily) "RTS = false (ثابت)" else "دايود D2 (1N4148)",
                 mcuTarget = "RESET#",
                 accentColor = Color(0xFFF59E0B),
                 subNote = if (isR8cFamily) {
-                    "الكاثود جهة RTS — بعد رفع RTS=false (RESET=HIGH) ينتظر التطبيق 100ms لاستقرار المذبذب قبل 16×0x00"
+                    "حسب r8c_protocol.hpp: يُضبط RTS=false و DTR=false فوراً بدون نبضات أو Break على TX"
                 } else {
                     "الكاثود جهة RTS — ينفذ نبضة Reset 50ms ثم HIGH"
                 }
             )
             SchematicTableRow(
-                programmerSignal = "TX + RX",
-                bridgeComponent = if (isR8cFamily) "دايودات إلى MODE (Mode 3)" else "دايود D1 (1N4148)",
-                mcuTarget = if (isR8cFamily) "MODE (Single-Wire)" else "TOOL0 / MODE",
+                programmerSignal = if (isR8cFamily) "TXD / RXD" else "TX + RX",
+                bridgeComponent = if (isR8cFamily) "UART قياسي (Echo OFF)" else "دايود D1 (1N4148)",
+                mcuTarget = if (isR8cFamily) "RXD1 / TXD1" else "TOOL0 / MODE",
                 accentColor = Color(0xFF38BDF8),
                 subNote = if (isR8cFamily) {
-                    "Single-Wire UART Mode 3: دمج TX و RX عبر الدايودات على طرف MODE — ينتظر التطبيق N + expectedRx ثم يحذف N بايت صدى تلقائياً"
+                    "اتصال مباشر دون فلاتر صدى: 16×0x00 ← 0xB0 ← 0xB0 ← 0xFB ← 0xF5 ← 0x70"
                 } else {
                     "خط البيانات والـ Mode المشترك (مع إلغاء صدى D1 تلقائياً بالكود)"
                 }

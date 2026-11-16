@@ -161,7 +161,7 @@ object McuProtocolDefaults {
     fun defaultProtocolName(mainFamily: String, subFamily: String): String {
         val fam = mainFamily.trim().uppercase()
         return when {
-            fam.contains("R8C") -> "Renesas R8C Single-Wire UART Mode 3 (TX+RX Diode MODE + 7-Byte ID)"
+            fam.contains("R8C") -> "Renesas R8C Official Bootloader (r8c_protocol.hpp • Echo OFF)"
             fam.contains("M16C") -> "M16C Bootloader UART Mode (CNVss + RESET + 7-Byte ID)"
             fam.contains("RL78") -> "RL78 Single-Wire TOOL0 / 2-Wire UART Programming"
             fam.startsWith("RX") -> "RX SCI Boot Mode (MD + RESET + TXD/RXD)"
@@ -182,8 +182,9 @@ object McuProtocolDefaults {
                 McuPinMapping("GND (الأرضي)", "VSS / EVSS", "أرضي + مكثف REGC", "أرضي مشترك", "ربط الأرضي مباشرة + مكثف 0.47µF على طرف REGC")
             )
             fam.contains("R8C") -> listOf(
-                McuPinMapping("TX + RX (عبر دايودات 1N4148)", "MODE (Single-Wire)", "Mode 3 أحادي السلك", "ثنائي الاتجاه (صدى D1)", "تجميع TX و RX بالدايودات إلى طرف MODE — ينتظر التطبيق N + expectedRx ثم يحذف N بايت صدى ($pkgNote)"),
-                McuPinMapping("RTS (عبر دايود D2)", "RESET#", "تحكم بالبوت", "خرج Reset", "الكاثود جهة RTS — يرفع RESET=HIGH وينتظر 100ms لاستقرار المذبذب قبل 16×0x00 ثم تفريغ RX ثم 0xB0"),
+                McuPinMapping("TXD (UART مباشر)", "RXD1 / RXD0", "حسب الباكج (${mcu.pins}P)", "من المبرمجة إلى المعالج", "إرسال مباشر وفق r8c_protocol.hpp دون حذف الصدى ($pkgNote)"),
+                McuPinMapping("RXD (UART مباشر)", "TXD1 / TXD0", "حسب الباكج (${mcu.pins}P)", "من المعالج إلى المبرمجة", "استقبال مباشر لـ 0xB0 و 0xFB و 0x70 وصفحات 256 بايت"),
+                McuPinMapping("RTS / DTR", "RTS=false, DTR=false", "ثابت بدون نبضات", "تحكم المنفذ", "يُضبط RTS=false و DTR=false مباشرة بدون أي نبضات Reset أو Break"),
                 McuPinMapping("VCC (التغذية)", "VCC / AVCC", "2.7V - 5.5V", "تغذية", "تغذية مستقرة ${mcu.recommendedVoltage}"),
                 McuPinMapping("GND (الأرضي)", "VSS", "أرضي مشترك", "أرضي مشترك", "ربط الأرضي المشترك بين المبرمجة والكارتة")
             )

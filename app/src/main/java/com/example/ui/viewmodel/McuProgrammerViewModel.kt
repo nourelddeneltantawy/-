@@ -867,7 +867,7 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
 
     private fun defaultEchoCancelFor(mcu: McuProcessor?): Boolean {
         if (mcu == null) return false
-        return mcu.isDiodeSingleWireSchematicFamily() || mcu.protocolType == ProtocolFamilyType.R8C_M16C
+        return mcu.protocolType != ProtocolFamilyType.R8C_M16C
     }
 
     private fun defaultBaseAddressFor(mcu: McuProcessor?): Int {
