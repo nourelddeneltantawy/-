@@ -161,17 +161,17 @@ object R8cProtocolEngine {
     }
 
     /**
-     * 1. Fast Edge-Capture Boot Entry + Immediate Sync Sequence:
-     *    - Step 1: Set RTS = true (MODE=LOW via diode) and DTR = true (RESET=LOW) -> wait 100ms
-     *    - Step 2: Set DTR = false (RESET rises to HIGH) -> wait 10ms ONLY -> Set RTS = false (release MODE/RX)
-     *              and IMMEDIATELY begin sending 20 x 0x00 (15ms interval) so MCU captures 0x00 pulses on boot
-     *    - Step 3: Wait 40ms after last 0x00, clear rxQueue, then send 0xB0 (connection) -> 0xB0 (change_speed) -> 0xFB
+     * 1. Exact Windows Renesas R8C Tool (Table View) Hardware Boot Entry Sequence:
+     *    - Open port on 9600 bps (8N1) & attach continuous RX listener (rxQueue + Raw RX Monitor)
+     *    - Step 1 (SET_RTS & SET_DTR): setRTS(true) then setDTR(true) (MODE=LOW & RESET=LOW) -> wait 200ms
+     *    - Step 2 (CLR_DTR):           setDTR(false) (RESET=HIGH while RTS=true holds MODE=LOW) -> wait 100ms
+     *    - Step 3 (CLR_RTS & PURGE):   setRTS(false) (release MODE/RX) -> wait 50ms -> rxQueue.clear()
      */
     suspend fun startAndConnect(
         transport: SerialTransport,
         onLog: (String) -> Unit
     ): Boolean {
-        onLog("1) فتح المنفذ وضبط الإعدادات: port.setPortParameters(9600, 8, 1, 0)...")
+        onLog("1) فتح المنفذ على سرعة 9600 bps (8N1)...")
         if (!transport.configureUart(9600, onLog)) {
             return false
         }
@@ -182,42 +182,47 @@ object R8cProtocolEngine {
             return false
         }
 
-        onLog("3.1) ضبط RTS=true (سحب MODE لأسفل) و DTR=true (خفض RESET=LOW) -> انتظار 100ms...")
-        transport.setControlLines(dtr = true, rts = true, onLog = onLog)
+        onLog("الخطوة 1 (SET_RTS & SET_DTR): setRTS(true) ثم setDTR(true) [MODE=LOW و RESET=LOW] -> انتظار 200ms...")
+        transport.setRts(enabled = true, onLog = onLog)
+        transport.setDtr(enabled = true, onLog = onLog)
+        delay(200)
+
+        onLog("الخطوة 2 (CLR_DTR): setDTR(false) [RESET=HIGH أثناء بقاء RTS=true يمسك MODE=LOW] -> انتظار 100ms...")
+        transport.setDtr(enabled = false, onLog = onLog)
         delay(100)
 
-        onLog("3.2) رفع DTR=false (صعود RESET=HIGH) -> انتظار 10ms فقط ثم RTS=false وإرسال 0x00 ×20 فوراً...")
-        transport.setDtr(enabled = false, onLog = onLog)
-        delay(10)
+        onLog("الخطوة 3 (CLR_RTS & PURGE): setRTS(false) [تحرير MODE/RX] -> انتظار 50ms -> rxQueue.clear()...")
         transport.setRts(enabled = false, onLog = onLog)
+        delay(50)
+        transport.flushInputBuffer()
 
         return establishConnection(transport, onLog)
     }
 
     /**
-     * 2. connection() with immediate 20 x 0x00 (15ms interval) + 40ms + rxQueue.clear() + 0xB0:
-     *    - Immediately transmit 0x00 x 20 with 15ms interval after releasing RTS=false
+     * 2. Sync & Baud Lock (9600 bps) from Windows Table View log:
+     *    - Send 0x00 x 16 with 20ms interval
      *    - Wait 40ms then rxQueue.clear()
-     *    - Send [0xB0], collect all bytes arriving in rxQueue over 1000ms and log RX Raw: [...]
+     *    - Send [0xB0] (N=1), expect [0xB0, 0xB0] (or [0xB0] if no echo)
      */
     suspend fun establishConnection(
         transport: SerialTransport,
         onLog: (String) -> Unit
     ): Boolean {
-        onLog("TX: 00 x20 (فوراً بفاصل 15ms ثم انتظار 40ms وتفريغ rxQueue)")
+        onLog("TX: 00 x16 (فاصل 20ms بين كل بايت ثم انتظار 40ms وتفريغ rxQueue)")
         val zero = byteArrayOf(0x00)
-        for (i in 0 until 20) {
+        for (i in 0 until 16) {
             val err = transport.writeRaw(zero)
             if (err != null) {
                 onLog("TX ERROR (connection 0x00 #${i + 1}): $err")
                 return false
             }
-            delay(15)
+            delay(20)
         }
 
         delay(40)
         transport.flushInputBuffer()
-        onLog("rxQueue.clear() بعد 40ms — إرسال 0xB0 وجمع كامل RX خلال 1000ms...")
+        onLog("rxQueue.clear() بعد 40ms — إرسال 0xB0 الأولى (1000ms)...")
 
         onLog("TX: B0")
         val res = transport.sendAndCollectRawWindow(
@@ -245,7 +250,7 @@ object R8cProtocolEngine {
         }
 
         val finalAck = raw.last().toInt() and 0xFF
-        onLog("Connection OK (0x%02X — استُلم ${raw.size} بايت خام). الانتقال الفوري إلى 0xB0 الثانية (change_speed)...".format(finalAck))
+        onLog("Connection OK (0x%02X — استُلم ${raw.size} بايت خام). إرسال 0xB0 الثانية (change_speed)...".format(finalAck))
         return true
     }
 
