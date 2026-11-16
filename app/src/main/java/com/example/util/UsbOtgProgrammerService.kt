@@ -516,7 +516,7 @@ object UsbOtgProgrammerService {
         }
 
         override suspend fun writeBytes(bytes: ByteArray, clearStaleRx: Boolean, onLog: (String) -> Unit): String? {
-            return writeDirectNoEcho(bytes, clearStaleRx = clearStaleRx)
+            return writeWithMandatoryEchoFilter(bytes, clearStaleRx = clearStaleRx, onLog = onLog)
         }
 
         override suspend fun readExactBytes(expectedLen: Int, timeoutMs: Int, onLog: (String) -> Unit): ByteArray {
@@ -540,21 +540,61 @@ object UsbOtgProgrammerService {
         }
 
         val famUpper = targetMainFamily.orEmpty().trim().uppercase()
+        val isUniversalMode = famUpper.isBlank()
         val isExplicitR8c = famUpper.contains("R8C") || famUpper.contains("M16C")
         val initialMode = resolveBootSyncMode(targetMainFamily)
 
+        // Always enforce Echo Filter ON because the adapter links TX & RX via diode D1
+        setEchoCancellation(true)
+
+        if (isUniversalMode) {
+            onLog("وضع الفحص الشامل (Universal Auto-Detect): 1) اختبار Renesas R8C (400ms) ← 2) اختبار Renesas RL78...")
+            val r8cResult = probeR8cViaEngine(
+                enableDtrRtsReset = enableDtrRtsReset,
+                preferredPartNumber = null,
+                idCodeBytes = idCodeBytes,
+                catalog = catalog,
+                b0TimeoutMs = 400,
+                onLog = onLog
+            )
+            if (r8cResult != null) return@withContext r8cResult
+
+            onLog("لم يرد المعالج على اختبار R8C خلال 400ms — الانتقال التلقائي لاختبار Renesas RL78 (0x3A ثم 0xC0)...")
+            if (performSyncHandshake(enableDtrRtsReset, BootSyncMode.SINGLE_WIRE_RL78, onLog)) {
+                val rl78Result = probeRl78Or78k0Sequence(catalog, onLog)
+                if (rl78Result != null) return@withContext rl78Result
+            }
+
+            return@withContext ChipAutoDetectResult.Failure(
+                "تم اختبار Renesas R8C (400ms مع تصفية الصدى) ثم Renesas RL78 (0x3A + 0xC0)، ولكن المعالج لم يستجب. تأكد من التوصيلات والدايود D1/D2 والتغذية."
+            )
+        }
+
         if (isExplicitR8c) {
-            setEchoCancellation(false)
-            val r8cResult = probeR8cViaEngine(enableDtrRtsReset, preferredPartNumber, idCodeBytes, catalog, onLog)
+            val r8cResult = probeR8cViaEngine(
+                enableDtrRtsReset = enableDtrRtsReset,
+                preferredPartNumber = preferredPartNumber,
+                idCodeBytes = idCodeBytes,
+                catalog = catalog,
+                b0TimeoutMs = 400,
+                onLog = onLog
+            )
             if (r8cResult != null) return@withContext r8cResult
 
             return@withContext ChipAutoDetectResult.Failure(
-                "تم فتح المنفذ على 9600 bps (Echo Cancel=OFF، انتظار 100ms بعد RESET، ومهلة 1000ms لـ 0xB0)، ولكن معالج R8C لم يستجب عند 0xB0. تأكد من عكس أسلاك TX/RX المنفصلة، وضع MODE، وRESET، والتغذية."
+                "تم فتح المنفذ على 9600 bps (Echo Filter=ON، انتظار 100ms بعد RESET، ومهلة 400ms لـ 0xB0)، ولكن معالج R8C لم يستجب عند 0xB0. تأكد من توصيل TX/RX ودايود D1/D2 ووضع MODE وRESET والتغذية."
             )
         }
 
         if (initialMode == BootSyncMode.SINGLE_WIRE_R8C_78K0R) {
-            val r8cResult = probeR8cViaEngine(enableDtrRtsReset, preferredPartNumber, idCodeBytes, catalog, onLog)
+            val r8cResult = probeR8cViaEngine(
+                enableDtrRtsReset = enableDtrRtsReset,
+                preferredPartNumber = preferredPartNumber,
+                idCodeBytes = idCodeBytes,
+                catalog = catalog,
+                b0TimeoutMs = 400,
+                onLog = onLog
+            )
             if (r8cResult != null) return@withContext r8cResult
 
             onLog("لم يرد كمعالج R8C — إعادة تهيئة Boot Mode وتجربة RL78 (0x3A + Silicon Signature)...")
@@ -570,8 +610,15 @@ object UsbOtgProgrammerService {
             if (rl78Result != null) return@withContext rl78Result
 
             if (initialMode == BootSyncMode.SINGLE_WIRE_RL78) {
-                onLog("لم يرد كمعالج RL78 — إعادة تهيئة Boot Mode وتجربة R8C / 78K0R...")
-                val r8cResult = probeR8cViaEngine(enableDtrRtsReset, preferredPartNumber, idCodeBytes, catalog, onLog)
+                onLog("لم يرد كمعالج RL78 — إعادة تهيئة Boot Mode وتجربة R8C / 78K0R (400ms)...")
+                val r8cResult = probeR8cViaEngine(
+                    enableDtrRtsReset = enableDtrRtsReset,
+                    preferredPartNumber = null,
+                    idCodeBytes = idCodeBytes,
+                    catalog = catalog,
+                    b0TimeoutMs = 400,
+                    onLog = onLog
+                )
                 if (r8cResult != null) return@withContext r8cResult
             }
         }
@@ -586,6 +633,7 @@ object UsbOtgProgrammerService {
         preferredPartNumber: String?,
         idCodeBytes: ByteArray,
         catalog: List<McuProcessor>,
+        b0TimeoutMs: Int = 400,
         onLog: (String) -> Unit
     ): ChipAutoDetectResult.Matched? {
         val transport = createR8cTransport()
@@ -594,6 +642,7 @@ object UsbOtgProgrammerService {
             transport = transport,
             enableResetFlow = enableDtrRtsReset,
             idBytes = validId,
+            b0TimeoutMs = b0TimeoutMs,
             onLog = onLog
         ) ?: return null
 
@@ -726,7 +775,7 @@ object UsbOtgProgrammerService {
         }
 
         if (processor.protocolType == ProtocolFamilyType.R8C_M16C) {
-            setEchoCancellation(false)
+            setEchoCancellation(true)
             return@withContext R8cProtocolEngine.readMemory(
                 transport = createR8cTransport(),
                 processor = processor,
@@ -802,7 +851,7 @@ object UsbOtgProgrammerService {
         }
 
         if (processor.protocolType == ProtocolFamilyType.R8C_M16C) {
-            setEchoCancellation(false)
+            setEchoCancellation(true)
             return@withContext R8cProtocolEngine.eraseFlash(
                 transport = createR8cTransport(),
                 processor = processor,
@@ -853,7 +902,7 @@ object UsbOtgProgrammerService {
         }
 
         if (processor.protocolType == ProtocolFamilyType.R8C_M16C) {
-            setEchoCancellation(false)
+            setEchoCancellation(true)
             return@withContext R8cProtocolEngine.programOrVerifyFlash(
                 transport = createR8cTransport(),
                 processor = processor,
@@ -1229,18 +1278,30 @@ object UsbOtgProgrammerService {
     }
 
     /**
-     * Direct UART write with Echo Cancel = OFF (used by R8C where TX and RX are separate lines without a D1 diode).
+     * Mandatory Echo Filtering for Renesas R8C / RL78 / 78K0 when TX and RX are linked by a diode:
+     * Transmits txBytes and immediately discards the first txBytes.size echoed bytes arriving on RX
+     * before any genuine MCU response is read.
      */
-    private fun writeDirectNoEcho(
+    private suspend fun writeWithMandatoryEchoFilter(
         txBytes: ByteArray,
-        clearStaleRx: Boolean = true
+        clearStaleRx: Boolean = true,
+        onLog: ((String) -> Unit)? = null
     ): String? {
         if (clearStaleRx) {
             synchronized(rxLock) {
                 rxBuffer.clear()
             }
         }
-        return writeRawBytes(txBytes)
+        val txErr = writeRawBytes(txBytes)
+        if (txErr != null) return txErr
+
+        if (txBytes.isNotEmpty()) {
+            val dropped = discardEchoBytes(txBytes.size)
+            if (dropped < txBytes.size && txBytes.size > 1) {
+                onLog?.invoke("Echo Filter Notice: حُذف $dropped / ${txBytes.size} بايت صدى")
+            }
+        }
+        return null
     }
 
     /**
@@ -1272,7 +1333,7 @@ object UsbOtgProgrammerService {
     private suspend fun discardEchoBytes(expectedEchoCount: Int): Int {
         if (expectedEchoCount <= 0) return 0
         val baud = currentBaudRate.coerceAtLeast(300)
-        val wireWindowMs = ((expectedEchoCount * 11_000L) / baud) + 90L
+        val wireWindowMs = ((expectedEchoCount * 11_000L) / baud) + 120L
         val deadline = System.currentTimeMillis() + wireWindowMs
         var discarded = 0
 

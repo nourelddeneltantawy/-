@@ -131,17 +131,18 @@ object R8cProtocolEngine {
     }
 
     /**
-     * Port start + Bootloader Hardware Reset Flow + initial 9600 bps sync (Echo Cancel = OFF):
+     * Port start + Bootloader Hardware Reset Flow + initial 9600 bps sync (Mandatory Echo Filter = ON):
      * 1) RTS = true (RESET = LOW) + TX/MODE hold LOW for 50ms.
      * 2) RTS = false (RESET = HIGH), then wait 100ms for internal oscillator stabilization before 16x 0x00.
-     * 3) connection(): 16 x 0x00 (20ms gap) + 0xB0 -> verify 0xB0 response (1000ms timeout).
+     * 3) connection(): 16 x 0x00 (20ms gap) + 0xB0 -> discard TX echoes -> verify real 0xB0 response.
      */
     suspend fun startAndConnect(
         transport: SerialTransport,
         enableResetFlow: Boolean,
+        b0TimeoutMs: Int = 400,
         onLog: (String) -> Unit
     ): Boolean {
-        onLog("R8C Start: فتح المنفذ على سرعة 9600 bps (8N1) • Echo Cancel=OFF (TX/RX منفصلين)...")
+        onLog("R8C Start: فتح المنفذ على سرعة 9600 bps (8N1) • تصفية الصدى (Echo Filter=ON)...")
         if (!transport.configureUart(9600, onLog)) {
             return false
         }
@@ -174,7 +175,7 @@ object R8cProtocolEngine {
         }
         transport.flushInputBuffer()
 
-        return establishConnection(transport, onLog)
+        return establishConnection(transport, b0TimeoutMs = b0TimeoutMs, onLog = onLog)
     }
 
     /**
@@ -182,9 +183,10 @@ object R8cProtocolEngine {
      */
     suspend fun establishConnection(
         transport: SerialTransport,
+        b0TimeoutMs: Int = 400,
         onLog: (String) -> Unit
     ): Boolean {
-        onLog("TX: 00 x16 (فاصل 20ms بين كل بايت)")
+        onLog("TX: 00 x16 (فاصل 20ms • مع حذف صدى الدايود)")
         val zeroByte = byteArrayOf(0x00)
         for (i in 0 until 16) {
             val err = transport.writeBytes(zeroByte, clearStaleRx = (i == 0), onLog = onLog)
@@ -196,19 +198,19 @@ object R8cProtocolEngine {
         }
 
         delay(20)
-        onLog("TX: B0 (طلب تأكيد اتصال R8C)")
+        onLog("TX: B0 (طلب تأكيد اتصال R8C مع تجاهل الصدى)")
         val b0Err = transport.writeBytes(byteArrayOf(0xB0.toByte()), clearStaleRx = true, onLog = onLog)
         if (b0Err != null) {
             onLog("TX ERROR (0xB0): $b0Err")
             return false
         }
 
-        val reply = transport.readExactBytes(expectedLen = 1, timeoutMs = 1000, onLog = onLog)
+        val reply = transport.readExactBytes(expectedLen = 1, timeoutMs = b0TimeoutMs, onLog = onLog)
         if (reply.isEmpty()) {
-            onLog("RX: (لا يوجد رد / Timeout 1000ms لـ 0xB0)")
+            onLog("RX: (لا يوجد رد / Timeout ${b0TimeoutMs}ms لـ 0xB0 بعد حذف الصدى)")
             return false
         }
-        onLog("RX: ${toHex(reply)}")
+        onLog("RX: \u2066${toHex(reply)}\u2069")
         val b0 = reply[0].toInt() and 0xFF
         if (b0 != 0xB0) {
             onLog("R8C Sync Error: استجاب بـ 0x%02X بدلاً من 0xB0.".format(b0))
@@ -266,44 +268,38 @@ object R8cProtocolEngine {
 
     /**
      * Equivalent to r8c::protocol::get_version() -> 0xFB reads 8 ASCII bytes (e.g. "VER.1.00", "VER.2.00", "VER.2.10")
+     * Note: TX 0xFB echo is discarded automatically by SerialTransport before reading the 8-byte MCU reply.
      */
     suspend fun getVersion(
         transport: SerialTransport,
         onLog: (String) -> Unit
     ): String? {
-        onLog("TX: FB (قراءة إصدار البوتلودر)")
+        onLog("TX: FB (قراءة إصدار البوتلودر مع تجاهل صدى TX)")
         val err = transport.writeBytes(byteArrayOf(0xFB.toByte()), clearStaleRx = true, onLog = onLog)
         if (err != null) {
             onLog("TX ERROR (0xFB): $err")
             return null
         }
-        val rawReply = transport.readExactBytes(expectedLen = 8, timeoutMs = 600, onLog = onLog)
-        if (rawReply.isEmpty()) {
-            onLog("RX: (لا يوجد رد / Timeout 600ms لـ 0xFB)")
+        val reply = transport.readExactBytes(expectedLen = 8, timeoutMs = 600, onLog = onLog)
+        if (reply.isEmpty()) {
+            onLog("RX: (لا يوجد رد / Timeout 600ms لـ 0xFB بعد حذف الصدى)")
             return null
         }
-        val reply = if ((rawReply[0].toInt() and 0xFF) == 0xFB) {
-            val extra = transport.readExactBytes(expectedLen = 1, timeoutMs = 150, onLog = onLog)
-            val trimmed = rawReply.drop(1).toByteArray() + extra
-            if (trimmed.isNotEmpty()) trimmed else rawReply
-        } else {
-            rawReply
-        }
         val ascii = reply.filter { it in 32..126 }.map { it.toInt().toChar() }.joinToString("").trim()
-        onLog("RX: ${toHex(reply)} (\"$ascii\")")
+        onLog("RX: \u2066${toHex(reply)}\u2069 (\"$ascii\")")
         return ascii.ifBlank { toHex(reply) }
     }
 
     /**
      * Equivalent to r8c::protocol::get_status(status& st) -> 0x70 reads [SRD, SRD1]
-     * Uses a 300ms RX buffer loop to collect both complete status bytes (SRD & SRD1).
+     * Discards 1-byte 0x70 TX echo, then uses a 300ms RX buffer loop to collect [SRD, SRD1].
      */
     suspend fun getStatus(
         transport: SerialTransport,
         onLog: (String) -> Unit,
         quiet: Boolean = false
     ): R8cStatus? {
-        if (!quiet) onLog("TX: 70 (قراءة سجل الحالة SRD/SRD1 - انتظار 300ms)")
+        if (!quiet) onLog("TX: 70 (قراءة سجل الحالة SRD/SRD1 بعد حذف الصدى - انتظار 300ms)")
         val err = transport.writeBytes(byteArrayOf(0x70), clearStaleRx = true, onLog = onLog)
         if (err != null) {
             onLog("TX ERROR (0x70): $err")
@@ -311,7 +307,7 @@ object R8cProtocolEngine {
         }
         val reply = transport.readExactBytes(expectedLen = 2, timeoutMs = 300, onLog = onLog)
         if (reply.size < 2) {
-            val partialHex = if (reply.isEmpty()) "(فارغ)" else toHex(reply)
+            val partialHex = if (reply.isEmpty()) "(فارغ)" else "\u2066${toHex(reply)}\u2069"
             onLog("RX: $partialHex (نقص بايتات الحالة 0x70: استُلم ${reply.size}/2 خلال 300ms)")
             return null
         }
@@ -320,7 +316,7 @@ object R8cProtocolEngine {
             srd1 = reply[1].toInt() and 0xFF
         )
         if (!quiet) {
-            onLog("RX: ${toHex(reply)} [SRD=0x%02X, SRD1=0x%02X, ID_State=${st.idState}]".format(st.srd, st.srd1))
+            onLog("RX: \u2066${toHex(reply)}\u2069 [SRD=0x%02X, SRD1=0x%02X, ID_State=${st.idState}]".format(st.srd, st.srd1))
         }
         return st
     }
@@ -344,7 +340,7 @@ object R8cProtocolEngine {
 
     /**
      * Equivalent to r8c::protocol::id_inspection(const id_t& t)
-     * Sends [0xF5, 0xFF, 0xDF, 0x00, 0x07, ID0..ID6] (Little-Endian ID address 0x00DFFF),
+     * Exact 12-byte frame: [0xF5, 0xFF, 0xDF, 0x00, 0x07, ID0..ID6] (Little-Endian ID address 0x00DFFF),
      * then verifies get_status().get_id_state() == 3 via a 300ms buffer read for [SRD, SRD1].
      */
     suspend fun idInspection(
@@ -354,22 +350,25 @@ object R8cProtocolEngine {
     ): Pair<Boolean, R8cStatus?> {
         val effectiveId = if (idBytes.size == 7) idBytes else DEFAULT_ID_CODE.copyOf()
 
-        val frame = byteArrayOf(
-            0xF5.toByte(),
-            0xFF.toByte(),
-            0xDF.toByte(),
-            0x00.toByte(),
-            0x07.toByte()
-        ) + effectiveId
+        val frame = ByteArray(12).apply {
+            this[0] = 0xF5.toByte()
+            this[1] = 0xFF.toByte()
+            this[2] = 0xDF.toByte()
+            this[3] = 0x00.toByte()
+            this[4] = 0x07.toByte()
+            for (i in 0 until 7) {
+                this[5 + i] = effectiveId[i]
+            }
+        }
 
-        onLog("TX: ${toHex(frame)} (إرسال مفتاح الحماية 7-Byte ID للعنوان FF DF 00)")
+        onLog("TX (12B): \u2066${toHex(frame)}\u2069 (إرسال مفتاح 7-Byte ID للعنوان FF DF 00)")
         val err = transport.writeBytes(frame, clearStaleRx = true, onLog = onLog)
         if (err != null) {
             onLog("TX ERROR (0xF5 ID): $err")
             return false to null
         }
 
-        delay(30)
+        delay(25)
         val st = getStatus(transport, onLog, quiet = false) ?: return false to null
         if (!st.isIdVerified()) {
             onLog("ID Verification Failed: id_state=${st.idState} (المتوقع 3). تحقق من كود الحماية [SRD1=0x%02X].".format(st.srd1))
@@ -488,15 +487,16 @@ object R8cProtocolEngine {
     }
 
     /**
-     * Auto-Detect & Bootloader Probe for R8C.
+     * Auto-Detect & Bootloader Probe for R8C (with 400ms 0xB0 timeout for fast Universal Auto-Detect).
      */
     suspend fun probeAndIdentify(
         transport: SerialTransport,
         enableResetFlow: Boolean,
         idBytes: ByteArray,
+        b0TimeoutMs: Int = 400,
         onLog: (String) -> Unit
     ): ProbeOutput? {
-        if (!startAndConnect(transport, enableResetFlow, onLog)) {
+        if (!startAndConnect(transport, enableResetFlow, b0TimeoutMs = b0TimeoutMs, onLog = onLog)) {
             return null
         }
 
@@ -516,6 +516,67 @@ object R8cProtocolEngine {
         )
     }
 
+    /**
+     * Executes Locked-Chip Full Erase via R8C All-Block Erase command sequence (0xA7 then 0xD0)
+     * when ID code is unknown / locked (id_state != 3).
+     */
+    suspend fun eraseAllViaA7D0(
+        transport: SerialTransport,
+        totalSpan: Int,
+        onLog: (String) -> Unit,
+        onProgress: (bytesDone: Int, totalBytes: Int, label: String) -> Unit
+    ): FlashOperationResult {
+        onProgress((totalSpan * 0.25f).toInt(), totalSpan, "إرسال أمر مسح الشريحة وفك القفل (0xA7 ثم 0xD0)...")
+        clearStatus(transport, onLog, quiet = false)
+        delay(15)
+
+        onLog("TX: A7 (طلب مسح كامل للشريحة المقفلة All-Block Erase)")
+        val errA7 = transport.writeBytes(byteArrayOf(0xA7.toByte()), clearStaleRx = true, onLog = onLog)
+        if (errA7 != null) {
+            onLog("TX ERROR (0xA7): $errA7")
+            return FlashOperationResult.Failure("فشل إرسال أمر 0xA7: $errA7")
+        }
+        delay(15)
+
+        onLog("TX: D0 (تأكيد تنفيذ المسح الكلي Erase All Confirm)")
+        val errD0 = transport.writeBytes(byteArrayOf(0xD0.toByte()), clearStaleRx = true, onLog = onLog)
+        if (errD0 != null) {
+            onLog("TX ERROR (0xD0): $errD0")
+            return FlashOperationResult.Failure("فشل إرسال أمر 0xD0: $errD0")
+        }
+
+        var finalStatus: R8cStatus? = null
+        for (attempt in 1..25) {
+            delay(120)
+            val frac = (0.30f + 0.65f * (attempt / 25f)).coerceAtMost(0.95f)
+            onProgress((totalSpan * frac).toInt(), totalSpan, "انتظار اكتمال المسح الكلي (0xA7 + 0xD0)...")
+            val st = getStatus(transport, onLog, quiet = (attempt > 1))
+            if (st != null) {
+                finalStatus = st
+                val isReady = (st.srd and 0x80) != 0
+                if (isReady) {
+                    onLog("RX (0xA7/0xD0 Status): SRD=0x%02X, SRD1=0x%02X".format(st.srd, st.srd1))
+                    break
+                }
+            }
+        }
+
+        if (finalStatus == null) {
+            return FlashOperationResult.Failure("لم يستجب المعالج لحالة المسح الكلي بعد إرسال (0xA7 ثم 0xD0).")
+        }
+        if (finalStatus.sr5EraseError) {
+            return FlashOperationResult.Failure(
+                "فشل المسح الكلي عبر (0xA7 ثم 0xD0): مؤشر SR5=1 [SRD=0x%02X] — قد تكون حماية ROM مفعلة."
+                    .format(finalStatus.srd)
+            )
+        }
+        clearStatus(transport, onLog, quiet = true)
+        onProgress(totalSpan, totalSpan, "اكتمل المسح الكلي وفك القفل")
+        return FlashOperationResult.Success(
+            "تم مسح الشريحة بالكامل وفك قفل الـ ID Code عبر الأمر (0xA7 ثم 0xD0) بنجاح — يمكنك الآن القراءة أو الكتابة بكود FF."
+        )
+    }
+
     suspend fun readMemory(
         transport: SerialTransport,
         processor: McuProcessor,
@@ -530,7 +591,7 @@ object R8cProtocolEngine {
         val startAddr = layout.romArea.org
 
         onProgress(0, totalSize, "مزامنة R8C (16×0x00 + 0xB0)...")
-        if (!startAndConnect(transport, enableResetFlow, onLog)) {
+        if (!startAndConnect(transport, enableResetFlow, b0TimeoutMs = 800, onLog = onLog)) {
             return FlashOperationResult.Failure("فشلت المزامنة التسلسلية R8C (16×0x00 + 0xB0). راجع سجل TX/RX.")
         }
         if (!changeSpeed(transport, baudRate, onLog)) {
@@ -543,7 +604,7 @@ object R8cProtocolEngine {
         onProgress(0, totalSize, "التحقق من مفتاح الحماية 7-Byte ID (0xF5)...")
         val (idOk, _) = idInspection(transport, idBytes, onLog)
         if (!idOk) {
-            return FlashOperationResult.Failure("فشل التحقق من مفتاح الحماية 7-Byte ID (id_state != 3).")
+            return FlashOperationResult.Failure("فشل التحقق من مفتاح الحماية 7-Byte ID (id_state != 3). يمكنك استخدام زر المسح (Erase) لمسح الشريحة عبر 0xA7 + 0xD0.")
         }
 
         val resultBuffer = FirmwareParser.createEmptyBuffer(totalSize)
@@ -598,16 +659,22 @@ object R8cProtocolEngine {
         val totalSpan = areasToErase.sumOf { it.sizeBytes }.coerceAtLeast(1024)
 
         onProgress(0, totalSpan, "مزامنة R8C قبل المسح...")
-        if (!startAndConnect(transport, enableResetFlow, onLog)) {
+        if (!startAndConnect(transport, enableResetFlow, b0TimeoutMs = 800, onLog = onLog)) {
             return FlashOperationResult.Failure("فشلت المزامنة التسلسلية R8C قبل المسح.")
         }
         if (!changeSpeed(transport, baudRate, onLog)) {
             return FlashOperationResult.Failure("فشل تحويل سرعة الباود إلى $baudRate bps.")
         }
         getVersion(transport, onLog)
-        val (idOk, _) = idInspection(transport, idBytes, onLog)
+        val (idOk, st) = idInspection(transport, idBytes, onLog)
         if (!idOk) {
-            return FlashOperationResult.Failure("فشل التحقق من 7-Byte ID Code (0xF5) قبل المسح.")
+            onLog("تنبيه: الشريحة مقفلة بمفتاح ID خاص (id_state=${st?.idState ?: "?"} != 3) — تنفيذ المسح الكلي عبر (0xA7 ثم 0xD0)...")
+            return eraseAllViaA7D0(
+                transport = transport,
+                totalSpan = totalSpan,
+                onLog = onLog,
+                onProgress = onProgress
+            )
         }
 
         // Collect unique erase block base addresses (1KB for < 0x8000, 4KB for >= 0x8000 as in r8c_prog.hpp)
@@ -659,7 +726,7 @@ object R8cProtocolEngine {
         val totalSize = firmwareBytes.size
 
         onProgress(0, totalSize, "مزامنة R8C (16×0x00 + 0xB0)...")
-        if (!startAndConnect(transport, enableResetFlow, onLog)) {
+        if (!startAndConnect(transport, enableResetFlow, b0TimeoutMs = 800, onLog = onLog)) {
             return FlashOperationResult.Failure("فشلت المزامنة التسلسلية R8C قبل العملية.")
         }
         if (!changeSpeed(transport, baudRate, onLog)) {

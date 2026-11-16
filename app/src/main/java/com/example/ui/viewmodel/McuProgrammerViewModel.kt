@@ -47,6 +47,7 @@ data class McuProgrammerUiState(
     val selectedSubFamily: String = "",
     val partNumbers: List<McuProcessor> = emptyList(),
     val selectedProcessor: McuProcessor? = null,
+    val hasUserSelectedFamily: Boolean = false,
     val isAutoDetecting: Boolean = false,
     val autoDetectStatus: String? = null,
     val autoDetectIsSuccess: Boolean = false,
@@ -124,14 +125,17 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
             val manufacturers = allProcessors.map { it.manufacturer }.distinct().sorted()
             val firstMan = manufacturers.firstOrNull().orEmpty()
             val families = allProcessors.filter { it.manufacturer == firstMan }.map { it.mainFamily }.distinct().sorted()
-            val firstFam = families.firstOrNull().orEmpty()
+            val firstFam = families.firstOrNull { it.equals("R8C", ignoreCase = true) }
+                ?: families.firstOrNull().orEmpty()
             val subs = allProcessors.filter { it.manufacturer == firstMan && it.mainFamily == firstFam }
                 .map { it.subFamily }.distinct().sorted()
-            val firstSub = subs.firstOrNull().orEmpty()
+            val firstSub = subs.firstOrNull { it.equals("R8C/25", ignoreCase = true) }
+                ?: subs.firstOrNull().orEmpty()
             val parts = allProcessors.filter {
                 it.manufacturer == firstMan && it.mainFamily == firstFam && it.subFamily == firstSub
             }.sortedBy { it.partNumber }
-            val firstPart = parts.firstOrNull()
+            val firstPart = parts.firstOrNull { it.partNumber.equals("R5F21258", ignoreCase = true) }
+                ?: parts.firstOrNull()
 
             val defaultEcho = defaultEchoCancelFor(firstPart)
             UsbOtgProgrammerService.setEchoCancellation(defaultEcho)
@@ -150,6 +154,7 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                     selectedSubFamily = firstSub,
                     partNumbers = parts,
                     selectedProcessor = firstPart,
+                    hasUserSelectedFamily = false,
                     enableEchoCancellation = defaultEcho,
                     flashBuffer = buffer,
                     flashBaseAddress = defaultBaseAddressFor(firstPart),
@@ -178,10 +183,14 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
     }
 
     fun selectSearchMatch(mcu: McuProcessor) {
-        applySelectedMcuHierarchy(mcu, clearSearch = true)
+        applySelectedMcuHierarchy(mcu, clearSearch = true, markUserSelected = true)
     }
 
-    private fun applySelectedMcuHierarchy(mcu: McuProcessor, clearSearch: Boolean = false) {
+    private fun applySelectedMcuHierarchy(
+        mcu: McuProcessor,
+        clearSearch: Boolean = false,
+        markUserSelected: Boolean = true
+    ) {
         val families = allProcessors.filter { it.manufacturer == mcu.manufacturer }.map { it.mainFamily }.distinct().sorted()
         val subs = allProcessors.filter { it.manufacturer == mcu.manufacturer && it.mainFamily == mcu.mainFamily }
             .map { it.subFamily }.distinct().sorted()
@@ -208,6 +217,7 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                 selectedSubFamily = mcu.subFamily,
                 partNumbers = parts,
                 selectedProcessor = mcu,
+                hasUserSelectedFamily = if (markUserSelected) true else state.hasUserSelectedFamily,
                 enableEchoCancellation = defaultEcho,
                 flashBuffer = newBuffer,
                 flashBaseAddress = if (resetNeeded) defaultBaseAddressFor(mcu) else state.flashBaseAddress,
@@ -259,12 +269,18 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
             }
             state.copy(
                 selectedProcessor = processor,
+                hasUserSelectedFamily = true,
                 enableEchoCancellation = defaultEcho,
                 flashBuffer = resetBuf,
                 flashBaseAddress = if (state.loadedFileName == null) defaultBaseAddressFor(processor) else state.flashBaseAddress,
                 firstNonEmptyRowIndex = computeFirstDataRow(resetBuf)
             )
         }
+    }
+
+    fun clearFamilySelectionForUniversalAutoDetect() {
+        _uiState.update { it.copy(hasUserSelectedFamily = false) }
+        addLog("تم تفعيل الفحص الشامل التلقائي (R8C أولاً خلال 400ms ← ثم RL78).", LogLevel.INFO)
     }
 
     private fun updateCascadingState(
@@ -290,6 +306,7 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                 selectedSubFamily = selectedSub,
                 partNumbers = parts,
                 selectedProcessor = selectedPart,
+                hasUserSelectedFamily = true,
                 enableEchoCancellation = defaultEcho,
                 flashBuffer = buf,
                 flashBaseAddress = if (state.loadedFileName == null) defaultBaseAddressFor(selectedPart) else state.flashBaseAddress,
@@ -353,20 +370,36 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
     fun autoDetectChipId() {
         if (_uiState.value.isAutoDetecting || _uiState.value.isBusy) return
         viewModelScope.launch {
-            val familyHint = _uiState.value.selectedProcessor?.mainFamily ?: _uiState.value.selectedMainFamily
-            val isR8cHint = familyHint.contains("R8C", ignoreCase = true) || familyHint.contains("M16C", ignoreCase = true)
+            val userScoped = _uiState.value.hasUserSelectedFamily
+            val familyHint = if (userScoped) {
+                _uiState.value.selectedProcessor?.mainFamily ?: _uiState.value.selectedMainFamily
+            } else {
+                null
+            }
+            val preferredPart = if (userScoped) _uiState.value.selectedProcessor?.partNumber else null
+            val isR8cHint = familyHint?.let {
+                it.contains("R8C", ignoreCase = true) || it.contains("M16C", ignoreCase = true)
+            } ?: false
+
             _uiState.update {
                 it.copy(
                     isAutoDetecting = true,
-                    autoDetectStatus = if (isR8cHint) {
-                        "جاري فحص معالج R8C عبر USB OTG (انتظار 100ms بعد RESET • Echo Cancel=OFF)..."
-                    } else {
-                        "جاري فحص USB OTG مع تتابع RTS/TX Break وإلغاء صدى D1..."
+                    autoDetectStatus = when {
+                        familyHint == null ->
+                            "جاري الفحص التلقائي الشامل (اختبار R8C خلال 400ms ثم RL78) مع تصفية الصدى..."
+                        isR8cHint ->
+                            "جاري فحص معالج R8C عبر USB OTG (انتظار 100ms بعد RESET • Echo Filter=ON • 400ms)..."
+                        else ->
+                            "جاري فحص $familyHint عبر USB OTG مع تتابع RTS/TX Break وتصفية صدى D1..."
                     },
                     autoDetectIsSuccess = false
                 )
             }
-            addLog("بدء التعرف التلقائي (Auto-Detect Chip ID)...", LogLevel.INFO)
+            addLog(
+                if (familyHint == null) "بدء التعرف التلقائي الشامل (Universal Auto-Detect: R8C ← RL78)..."
+                else "بدء التعرف التلقائي للعائلة ($familyHint)...",
+                LogLevel.INFO
+            )
 
             val idBytes = parseIdCodeBytes() ?: R8cProtocolEngine.DEFAULT_ID_CODE.copyOf()
             when (val res = UsbOtgProgrammerService.probeChipId(
@@ -374,7 +407,7 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                 preferredChip = _uiState.value.selectedProgrammer,
                 enableDtrRtsReset = _uiState.value.enableDtrRtsReset,
                 targetMainFamily = familyHint,
-                preferredPartNumber = _uiState.value.selectedProcessor?.partNumber,
+                preferredPartNumber = preferredPart,
                 idCodeBytes = idBytes,
                 catalog = allProcessors
             ) { msg ->
@@ -382,7 +415,7 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
             }) {
                 is ChipAutoDetectResult.Matched -> {
                     res.matchedProcessor?.let { matched ->
-                        applySelectedMcuHierarchy(matched, clearSearch = true)
+                        applySelectedMcuHierarchy(matched, clearSearch = true, markUserSelected = false)
                     }
                     _uiState.update {
                         it.copy(
@@ -679,7 +712,9 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
     fun eraseChipFlash() {
         val mcu = _uiState.value.selectedProcessor ?: return
         if (_uiState.value.isBusy) return
-        val idBytes = parseIdCodeBytes() ?: run {
+        val idBytes = parseIdCodeBytes() ?: if (mcu.protocolType == ProtocolFamilyType.R8C_M16C) {
+            R8cProtocolEngine.DEFAULT_ID_CODE.copyOf()
+        } else {
             addLog("كود ID Code غير مكتمل: أدخل حرفين Hex في كل خانة.", LogLevel.ERROR)
             return
         }
@@ -827,10 +862,7 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
         return out
     }
 
-    private fun defaultEchoCancelFor(mcu: McuProcessor?): Boolean {
-        if (mcu == null) return true
-        return mcu.protocolType != ProtocolFamilyType.R8C_M16C
-    }
+    private fun defaultEchoCancelFor(mcu: McuProcessor?): Boolean = true
 
     private fun defaultBaseAddressFor(mcu: McuProcessor?): Int {
         if (mcu == null) return 0

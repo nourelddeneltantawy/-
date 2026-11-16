@@ -79,6 +79,7 @@ fun ProgrammerStep1McuSelect(
     onSelectPartNumber: (McuProcessor) -> Unit,
     onToggleDtrRtsReset: (Boolean) -> Unit,
     onAutoDetectChipId: () -> Unit,
+    onResetUniversalAutoDetect: () -> Unit = {},
     onNextStep: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -278,6 +279,42 @@ fun ProgrammerStep1McuSelect(
                             onCheckedChange = onToggleDtrRtsReset,
                             modifier = Modifier.testTag("step1_dtr_rts_switch")
                         )
+                    }
+                }
+
+                // Auto-Detect Mode Indicator (Universal R8C -> RL78 vs Family-Scoped)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = if (state.hasUserSelectedFamily) {
+                            "وضع الفحص: مقيد بـ ${state.selectedMainFamily}"
+                        } else {
+                            "وضع الفحص: شامل تلقائي (R8C ← RL78)"
+                        },
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = if (state.hasUserSelectedFamily) Color(0xFFF59E0B) else Color(0xFF34D399)
+                    )
+                    if (state.hasUserSelectedFamily) {
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = MaterialTheme.colorScheme.secondary.copy(alpha = 0.14f),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.secondary.copy(alpha = 0.4f)),
+                            modifier = Modifier
+                                .clickable(onClick = onResetUniversalAutoDetect)
+                                .testTag("reset_universal_autodetect_btn")
+                        ) {
+                            Text(
+                                text = "تفعيل الفحص الشامل",
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.secondary,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                            )
+                        }
                     }
                 }
 

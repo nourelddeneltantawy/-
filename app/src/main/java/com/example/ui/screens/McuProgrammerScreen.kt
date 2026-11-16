@@ -199,6 +199,7 @@ fun McuProgrammerScreen(
                     onSelectPartNumber = programmerViewModel::selectPartNumber,
                     onToggleDtrRtsReset = programmerViewModel::setEnableDtrRtsReset,
                     onAutoDetectChipId = programmerViewModel::autoDetectChipId,
+                    onResetUniversalAutoDetect = programmerViewModel::clearFamilySelectionForUniversalAutoDetect,
                     onNextStep = { programmerViewModel.goToStep(2) }
                 )
                 2 -> ProgrammerStep2Pinout(
