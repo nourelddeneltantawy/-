@@ -428,7 +428,7 @@ private fun Diode1N4148SchematicCard(
                 ) {
                     Text(
                         text = when {
-                            isR8cFamily -> "r8c_protocol (Echo OFF)"
+                            isR8cFamily -> "Auto Boot + Mode 3"
                             is78k0Flmd0 -> "وضع FLMD0"
                             else -> "وضع TOOL0/MODE"
                         },
@@ -483,35 +483,39 @@ private fun Diode1N4148SchematicCard(
 
             SchematicTableRow(
                 programmerSignal = "RTS",
-                bridgeComponent = if (isR8cFamily) "RTS = false (ثابت)" else "دايود D2 (1N4148)",
-                mcuTarget = "RESET#",
+                bridgeComponent = if (isR8cFamily) "دايود (كاثود على RTS)" else "دايود D2 (1N4148)",
+                mcuTarget = if (isR8cFamily) "MODE / RX" else "RESET#",
                 accentColor = Color(0xFFF59E0B),
                 subNote = if (isR8cFamily) {
-                    "حسب r8c_protocol.hpp: يُضبط RTS=false و DTR=false فوراً بدون نبضات أو Break على TX"
+                    "RTS=true يسحب MODE للـ LOW (30ms قبل نبضة DTR و 60ms بعدها) ثم RTS=false لتحرير الخط"
                 } else {
                     "الكاثود جهة RTS — ينفذ نبضة Reset 50ms ثم HIGH"
                 }
             )
             SchematicTableRow(
-                programmerSignal = if (isR8cFamily) "TXD / RXD" else "TX + RX",
-                bridgeComponent = if (isR8cFamily) "UART قياسي (Echo OFF)" else "دايود D1 (1N4148)",
-                mcuTarget = if (isR8cFamily) "RXD1 / TXD1" else "TOOL0 / MODE",
+                programmerSignal = "TX + RX",
+                bridgeComponent = if (isR8cFamily) "دايود TX + RX مباشر" else "دايود D1 (1N4148)",
+                mcuTarget = if (isR8cFamily) "MODE (Single-Wire)" else "TOOL0 / MODE",
                 accentColor = Color(0xFF38BDF8),
                 subNote = if (isR8cFamily) {
-                    "اتصال مباشر دون فلاتر صدى: 16×0x00 ← 0xB0 ← 0xB0 ← 0xFB ← 0xF5 ← 0x70"
+                    "كاثود TX على TXD وأنوده مع RX إلى MODE — دالة sendAndReceiveR8C تحذف N بايت صدى وتُبقي رد المعالج فقط"
                 } else {
                     "خط البيانات والـ Mode المشترك (مع إلغاء صدى D1 تلقائياً بالكود)"
                 }
             )
             SchematicTableRow(
                 programmerSignal = "DTR",
-                bridgeComponent = if (is78k0Flmd0) "توصيل مباشر (HIGH)" else "اختياري (FLMD0)",
-                mcuTarget = "FLMD0",
-                accentColor = if (is78k0Flmd0) Color(0xFF10B981) else Color(0xFF94A3B8),
-                subNote = if (is78k0Flmd0) {
-                    "أساسي لعائلة 78K0: يُرفع إلى 5V HIGH عبر DTR = false قبل Reset"
-                } else {
-                    "مخصص لعائلة 78K0 (غير مطلوب في وضع R8C / TOOL0)"
+                bridgeComponent = when {
+                    isR8cFamily -> "توصيل مباشر (RESET)"
+                    is78k0Flmd0 -> "توصيل مباشر (HIGH)"
+                    else -> "اختياري (FLMD0)"
+                },
+                mcuTarget = if (isR8cFamily) "RESET#" else "FLMD0",
+                accentColor = if (isR8cFamily || is78k0Flmd0) Color(0xFF10B981) else Color(0xFF94A3B8),
+                subNote = when {
+                    isR8cFamily -> "متصل مباشرة بطرف RESET: يُضبط DTR=true (50ms) أثناء سحب MODE ثم DTR=false لبدء البوتلودر"
+                    is78k0Flmd0 -> "أساسي لعائلة 78K0: يُرفع إلى 5V HIGH عبر DTR = false قبل Reset"
+                    else -> "مخصص لعائلة 78K0 (غير مطلوب في وضع TOOL0)"
                 }
             )
             SchematicTableRow(

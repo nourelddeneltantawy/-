@@ -509,13 +509,18 @@ object UsbOtgProgrammerService {
             return writeRawBytes(bytes)
         }
 
-        override suspend fun readExactRaw(expectedLen: Int, timeoutMs: Int, onLog: (String) -> Unit): ByteArray {
-            val conn = activeConnection
-            val epIn = inEndpoint
-            if (conn != null && epIn != null && readerJob?.isActive != true) {
-                startContinuousReaderLoop(conn, epIn)
-            }
-            return readExactFromBuffer(expectedLen = expectedLen, timeoutMs = timeoutMs, onLog = onLog)
+        override suspend fun sendAndReceiveR8C(
+            txBytes: ByteArray,
+            expectedRxLength: Int,
+            timeoutMs: Int,
+            onLog: (String) -> Unit
+        ): R8cProtocolEngine.R8cExchangeResult {
+            return executeStrictEchoExchange(
+                txBytes = txBytes,
+                expectedRxLength = expectedRxLength,
+                timeoutMs = timeoutMs,
+                onLog = onLog
+            )
         }
     }
 
@@ -609,7 +614,7 @@ object UsbOtgProgrammerService {
         }
 
         if (processor.protocolType == ProtocolFamilyType.R8C_M16C) {
-            setEchoCancellation(false)
+            setEchoCancellation(true)
             return@withContext R8cProtocolEngine.readMemory(
                 transport = createR8cTransport(),
                 processor = processor,
@@ -684,7 +689,7 @@ object UsbOtgProgrammerService {
         }
 
         if (processor.protocolType == ProtocolFamilyType.R8C_M16C) {
-            setEchoCancellation(false)
+            setEchoCancellation(true)
             return@withContext R8cProtocolEngine.eraseFlash(
                 transport = createR8cTransport(),
                 processor = processor,
@@ -733,7 +738,7 @@ object UsbOtgProgrammerService {
         }
 
         if (processor.protocolType == ProtocolFamilyType.R8C_M16C) {
-            setEchoCancellation(false)
+            setEchoCancellation(true)
             return@withContext R8cProtocolEngine.programOrVerifyFlash(
                 transport = createR8cTransport(),
                 processor = processor,
@@ -1109,6 +1114,77 @@ object UsbOtgProgrammerService {
             onLog?.invoke("TX Break Exception (${device.deviceName}): ${e.toString()}")
             false
         }
+    }
+
+    /**
+     * Strict Single-Wire UART Mode 3 Echo Exchange (sendAndReceiveR8C):
+     * Sends [txBytes] (length N), waits up to [timeoutMs] (or wire budget for N + expectedRxLength bytes)
+     * until N + [expectedRxLength] bytes accumulate in rxBuffer, drops the first N echoed bytes,
+     * and returns ONLY the genuine M ([expectedRxLength]) MCU reply bytes.
+     */
+    private suspend fun executeStrictEchoExchange(
+        txBytes: ByteArray,
+        expectedRxLength: Int,
+        timeoutMs: Int,
+        onLog: (String) -> Unit
+    ): R8cProtocolEngine.R8cExchangeResult {
+        val conn = activeConnection
+        val epIn = inEndpoint
+        if (conn != null && epIn != null && readerJob?.isActive != true) {
+            startContinuousReaderLoop(conn, epIn)
+        }
+        synchronized(rxLock) {
+            rxBuffer.clear()
+        }
+        val txErr = writeRawBytes(txBytes)
+        if (txErr != null) {
+            return R8cProtocolEngine.R8cExchangeResult(txError = txErr)
+        }
+
+        val n = txBytes.size
+        val neededReply = expectedRxLength.coerceAtLeast(0)
+        val totalNeeded = n + neededReply
+        if (totalNeeded <= 0) {
+            return R8cProtocolEngine.R8cExchangeResult()
+        }
+
+        val baud = currentBaudRate.coerceAtLeast(300)
+        val wireBudgetMs = ((totalNeeded * 11_500L) / baud) + 250L
+        val effectiveTimeoutMs = maxOf(timeoutMs.toLong(), wireBudgetMs)
+        val deadline = System.currentTimeMillis() + effectiveTimeoutMs
+
+        val rawStream = ByteArrayOutputStream(totalNeeded.coerceAtLeast(16))
+        try {
+            while (rawStream.size() < totalNeeded) {
+                var drainedAny = false
+                synchronized(rxLock) {
+                    while (rxBuffer.isNotEmpty() && rawStream.size() < totalNeeded) {
+                        rawStream.write(rxBuffer.removeFirst().toInt() and 0xFF)
+                        drainedAny = true
+                    }
+                }
+                if (rawStream.size() >= totalNeeded) break
+                if (System.currentTimeMillis() >= deadline) break
+                delay(if (drainedAny) 2L else 3L)
+            }
+        } catch (e: Throwable) {
+            onLog("R8C Exchange Exception: ${e.toString()}")
+        }
+
+        val rawBytes = rawStream.toByteArray()
+        val echoCount = min(n, rawBytes.size)
+        val reply = if (rawBytes.size > n) {
+            rawBytes.copyOfRange(n, rawBytes.size)
+        } else {
+            ByteArray(0)
+        }
+        return R8cProtocolEngine.R8cExchangeResult(
+            txError = null,
+            totalRawReceived = rawBytes.size,
+            echoedCount = echoCount,
+            replyBytes = reply,
+            rawBytes = rawBytes
+        )
     }
 
     /**

@@ -161,7 +161,7 @@ object McuProtocolDefaults {
     fun defaultProtocolName(mainFamily: String, subFamily: String): String {
         val fam = mainFamily.trim().uppercase()
         return when {
-            fam.contains("R8C") -> "Renesas R8C Official Bootloader (r8c_protocol.hpp • Echo OFF)"
+            fam.contains("R8C") -> "Renesas R8C Automatic Boot + Single-Wire Mode 3 (DTR=RESET, RTS+TX/RX=MODE)"
             fam.contains("M16C") -> "M16C Bootloader UART Mode (CNVss + RESET + 7-Byte ID)"
             fam.contains("RL78") -> "RL78 Single-Wire TOOL0 / 2-Wire UART Programming"
             fam.startsWith("RX") -> "RX SCI Boot Mode (MD + RESET + TXD/RXD)"
@@ -182,9 +182,9 @@ object McuProtocolDefaults {
                 McuPinMapping("GND (الأرضي)", "VSS / EVSS", "أرضي + مكثف REGC", "أرضي مشترك", "ربط الأرضي مباشرة + مكثف 0.47µF على طرف REGC")
             )
             fam.contains("R8C") -> listOf(
-                McuPinMapping("TXD (UART مباشر)", "RXD1 / RXD0", "حسب الباكج (${mcu.pins}P)", "من المبرمجة إلى المعالج", "إرسال مباشر وفق r8c_protocol.hpp دون حذف الصدى ($pkgNote)"),
-                McuPinMapping("RXD (UART مباشر)", "TXD1 / TXD0", "حسب الباكج (${mcu.pins}P)", "من المعالج إلى المبرمجة", "استقبال مباشر لـ 0xB0 و 0xFB و 0x70 وصفحات 256 بايت"),
-                McuPinMapping("RTS / DTR", "RTS=false, DTR=false", "ثابت بدون نبضات", "تحكم المنفذ", "يُضبط RTS=false و DTR=false مباشرة بدون أي نبضات Reset أو Break"),
+                McuPinMapping("DTR (مباشر)", "RESET#", "نبضة Boot التلقائية", "خرج Reset", "DTR=true يخفض RESET (50ms) أثناء سحب MODE ثم DTR=false لرفعه"),
+                McuPinMapping("RTS (دايود — كاثود على RTS)", "MODE / RX", "خفض MODE للبوت", "تحكم بالبوت", "RTS=true يسحب MODE للـ LOW (30ms قبل Reset و 60ms بعده) ثم RTS=false"),
+                McuPinMapping("TX (دايود) + RX (مباشر)", "MODE (Single-Wire)", "Mode 3 أحادي السلك", "ثنائي الاتجاه (صدى D)", "كاثود TX والأنود على RX/MODE — دالة sendAndReceiveR8C تحذف N بايت صدى ($pkgNote)"),
                 McuPinMapping("VCC (التغذية)", "VCC / AVCC", "2.7V - 5.5V", "تغذية", "تغذية مستقرة ${mcu.recommendedVoltage}"),
                 McuPinMapping("GND (الأرضي)", "VSS", "أرضي مشترك", "أرضي مشترك", "ربط الأرضي المشترك بين المبرمجة والكارتة")
             )
