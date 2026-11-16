@@ -306,7 +306,7 @@ fun ProgrammerStep1McuSelect(
                             )
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                text = "محرك R8C التلقائي: فتح 9600 (8N1) وربط RX Monitor ← setRTS(true) 50ms ← setDTR(true) 80ms ← setDTR(false) 120ms ← setRTS(false) 30ms، مع طباعة RX Raw وتصفية الصدى الذكية.",
+                                text = "محرك R8C التلقائي: فتح 9600 (8N1) ← setRTS(false) 50ms ← setDTR(false) 80ms ← setDTR(true) 120ms ← setRTS(true) 30ms، مع طباعة RX Raw وتصفية الصدى الذكية.",
                                 fontSize = 11.sp,
                                 color = MaterialTheme.colorScheme.onSurface,
                                 lineHeight = 16.sp

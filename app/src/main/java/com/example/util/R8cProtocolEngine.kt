@@ -161,14 +161,14 @@ object R8cProtocolEngine {
     }
 
     /**
-     * 1. Android USB OTG Boot Entry Sequence:
+     * 1. Android USB OTG Boot Entry Sequence (Inverted Active-High Logic):
      *    - Step 1: Open port & configure parameters (9600, 8, 1, 0 -> 8N1)
      *    - Step 2: Attach continuous RX listener (rxQueue + immediate Raw RX Monitor)
-     *    - Step 3: Bootloader entry sequence:
-     *        1) setRTS(true)  (pull MODE LOW via diode)   -> wait 50ms
-     *        2) setDTR(true)  (pull RESET = LOW)          -> wait 80ms
-     *        3) setDTR(false) (release RESET = HIGH)      -> wait 120ms (OTG power & internal osc stabilization)
-     *        4) setRTS(false) (release MODE/RX for UART)  -> wait 30ms
+     *    - Step 3: Bootloader entry sequence (false = 0V / LOW, true = 3.3V / HIGH):
+     *        1) setRTS(false) (pull MODE LOW = 0V via diode) -> wait 50ms
+     *        2) setDTR(false) (pull RESET = 0V / LOW)       -> wait 80ms
+     *        3) setDTR(true)  (raise RESET = 3.3V / HIGH)   -> wait 120ms (OTG power & internal osc stabilization)
+     *        4) setRTS(true)  (set RTS = 3.3V, release MODE/RX) -> wait 30ms
      */
     suspend fun startAndConnect(
         transport: SerialTransport,
@@ -184,25 +184,25 @@ object R8cProtocolEngine {
         if (!transport.ensureReaderListening(onLog)) {
             return false
         }
-        // Ensure clean idle pin state before starting the boot pulse sequence
-        transport.setDtr(enabled = false, onLog = onLog)
-        transport.setRts(enabled = false, onLog = onLog)
-        delay(10)
-
-        onLog("3.1) setRTS(true) [خفض MODE عبر الديود] -> انتظار 50ms...")
+        // Ensure clean HIGH idle pin state (true = 3.3V) before starting Boot Entry pulse
+        transport.setDtr(enabled = true, onLog = onLog)
         transport.setRts(enabled = true, onLog = onLog)
+        delay(15)
+
+        onLog("3.1) setRTS(false) [جعل RTS=0V لخفض MODE=LOW عبر الديود] -> انتظار 50ms...")
+        transport.setRts(enabled = false, onLog = onLog)
         delay(50)
 
-        onLog("3.2) setDTR(true) [خفض RESET = LOW] -> انتظار 80ms...")
-        transport.setDtr(enabled = true, onLog = onLog)
+        onLog("3.2) setDTR(false) [جعل RESET=0V / LOW] -> انتظار 80ms...")
+        transport.setDtr(enabled = false, onLog = onLog)
         delay(80)
 
-        onLog("3.3) setDTR(false) [رفع RESET = HIGH] -> انتظار 120ms لاستقرار جهد OTG والمذبذب...")
-        transport.setDtr(enabled = false, onLog = onLog)
+        onLog("3.3) setDTR(true) [رفع RESET=3.3V / HIGH لإقلاع البوتلودر] -> انتظار 120ms...")
+        transport.setDtr(enabled = true, onLog = onLog)
         delay(120)
 
-        onLog("3.4) setRTS(false) [تحرير MODE/RX لبدء الاتصال] -> انتظار 30ms...")
-        transport.setRts(enabled = false, onLog = onLog)
+        onLog("3.4) setRTS(true) [رفع RTS=3.3V لتحرير خط MODE/RX] -> انتظار 30ms...")
+        transport.setRts(enabled = true, onLog = onLog)
         delay(30)
 
         transport.flushInputBuffer()
@@ -311,7 +311,7 @@ object R8cProtocolEngine {
             if (!transport.configureUart(targetBaudRate, onLog)) {
                 return false
             }
-            transport.setControlLines(dtr = false, rts = false, onLog = onLog)
+            transport.setControlLines(dtr = true, rts = true, onLog = onLog)
             delay(15)
             transport.flushInputBuffer()
         }
