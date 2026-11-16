@@ -52,7 +52,8 @@ object R8cProtocolEngine {
         val txError: String? = null,
         val totalRawReceived: Int = 0,
         val echoedCount: Int = 0,
-        val replyBytes: ByteArray = ByteArray(0)
+        val replyBytes: ByteArray = ByteArray(0),
+        val rawBytes: ByteArray = ByteArray(0)
     )
 
     interface SerialTransport {
@@ -175,7 +176,7 @@ object R8cProtocolEngine {
     suspend fun startAndConnect(
         transport: SerialTransport,
         enableResetFlow: Boolean,
-        b0TimeoutMs: Int = 500,
+        b0TimeoutMs: Int = 600,
         onLog: (String) -> Unit
     ): Boolean {
         onLog("R8C Start: فتح المنفذ على سرعة 9600 bps (8N1) • Single-Wire UART Mode 3 (N + Rx Echo Filter)...")
@@ -209,6 +210,7 @@ object R8cProtocolEngine {
             transport.setRts(false, onLog)
             delay(100)
         }
+        delay(30)
         transport.flushInputBuffer()
 
         return establishConnection(transport, b0TimeoutMs = b0TimeoutMs, onLog = onLog)
@@ -216,16 +218,19 @@ object R8cProtocolEngine {
 
     /**
      * Equivalent to r8c::protocol::connection() for Single-Wire Mode 3:
-     * 1) Sends 16 x 0x00 (20ms interval), waits briefly, then calls flushInputBuffer()
-     *    to purge all 16 diode-echoed 0x00 bytes before sending 0xB0.
-     * 2) Sends [0xB0] via sendAndReceiveR8C(expectedRxLength = 1) which waits for 1 echo + 1 real 0xB0.
+     * 1) Sends 16 x 0x00 (20ms interval), waits 30ms, then clears rxQueue via flushInputBuffer()
+     *    without closing/cancelling the continuous RX listener.
+     * 2) Sends [0xB0] and waits up to 600ms for [0xB0, 0xB0]:
+     *    - 2 bytes [0xB0, 0xB0] -> discards first echo byte and accepts second byte as MCU ACK.
+     *    - 1 byte [0xB0] -> logs echo-only hardware/power/MODE/RESET warning.
+     *    - 0 bytes -> logs missing RX loopback wiring warning.
      */
     suspend fun establishConnection(
         transport: SerialTransport,
-        b0TimeoutMs: Int = 500,
+        b0TimeoutMs: Int = 600,
         onLog: (String) -> Unit
     ): Boolean {
-        onLog("TX: 00 x16 (فاصل 20ms بين كل بايت ثم تفريغ صدى المزامنة)")
+        onLog("TX: 00 x16 (فاصل 20ms بين كل بايت ثم انتظار 30ms وتفريغ rxQueue)")
         val zeroByte = byteArrayOf(0x00)
         for (i in 0 until 16) {
             val err = transport.writeRawOnly(zeroByte)
@@ -236,11 +241,10 @@ object R8cProtocolEngine {
             delay(20)
         }
 
-        // Wait briefly for the final 0x00 echo to land on USB RX, then purge all 16 echoes
-        delay(35)
+        delay(30)
         transport.flushInputBuffer()
 
-        onLog("TX: B0 (طلب تأكيد اتصال R8C: انتظار 1 صدى + 1 بايت 0xB0)")
+        onLog("TX: B0 (طلب تأكيد اتصال R8C — انتظار 600ms على rxQueue لـ [B0 B0])")
         val res = sendAndReceiveR8C(
             transport = transport,
             txBytes = byteArrayOf(0xB0.toByte()),
@@ -253,15 +257,26 @@ object R8cProtocolEngine {
             return false
         }
 
-        val reply = res.replyBytes
-        if (reply.isEmpty()) {
-            onLog("RX: (لا يوجد رد / Timeout ${b0TimeoutMs}ms لـ 0xB0 — الخام المستلم ${res.totalRawReceived}/2 بايت)")
+        val raw = res.rawBytes
+        if (raw.isEmpty()) {
+            onLog("RX: (0 بايت خلال ${b0TimeoutMs}ms) — لا يوجد أي بايت مرتد على RX — تأكد من توصيل أسلاك المبرمجة بالبوردة")
             return false
         }
-        onLog("RX: \u2066${toHex(reply)}\u2069 (رد المعالج الحقيقي بعد إزالة صدى الدايود)")
+        if (raw.size == 1) {
+            val single = raw[0].toInt() and 0xFF
+            if (single == 0xB0) {
+                onLog("RX: B0 — تم استلام بايت صدى واحد فقط (0xB0) بدون رد المعالج — تأكد من تغذية البوردة وتوصيل طرفي MODE و RESET")
+            } else {
+                onLog("RX: \u2066%02X\u2069 — استُلم بايت واحد غير متوقع بدون رد المعالج (المطلوب B0 B0).".format(single))
+            }
+            return false
+        }
+
+        val reply = res.replyBytes
+        onLog("RX: \u2066${toHex(raw)}\u2069 ➔ حذف الصدى الأول، رد المعالج: \u2066${toHex(reply)}\u2069")
         val b0 = reply[0].toInt() and 0xFF
         if (b0 != 0xB0) {
-            onLog("R8C Sync Error: استجاب بـ 0x%02X بدلاً من 0xB0.".format(b0))
+            onLog("R8C Sync Error: استجاب المعالج بـ 0x%02X بدلاً من 0xB0.".format(b0))
             return false
         }
         onLog("R8C Connection OK (0xB0).")
@@ -610,7 +625,7 @@ object R8cProtocolEngine {
         transport: SerialTransport,
         enableResetFlow: Boolean,
         idBytes: ByteArray,
-        b0TimeoutMs: Int = 500,
+        b0TimeoutMs: Int = 600,
         onLog: (String) -> Unit
     ): ProbeOutput? {
         if (!startAndConnect(transport, enableResetFlow, b0TimeoutMs = b0TimeoutMs, onLog = onLog)) {
@@ -710,7 +725,7 @@ object R8cProtocolEngine {
         val startAddr = layout.romArea.org
 
         onProgress(0, totalSize, "مزامنة R8C (16×0x00 + 0xB0)...")
-        if (!startAndConnect(transport, enableResetFlow, b0TimeoutMs = 500, onLog = onLog)) {
+        if (!startAndConnect(transport, enableResetFlow, b0TimeoutMs = 600, onLog = onLog)) {
             return FlashOperationResult.Failure("فشلت المزامنة التسلسلية R8C (16×0x00 + 0xB0). راجع سجل TX/RX.")
         }
         if (!changeSpeed(transport, baudRate, onLog)) {
@@ -777,7 +792,7 @@ object R8cProtocolEngine {
         val totalSpan = layout.romArea.sizeBytes.coerceAtLeast(1024)
 
         onProgress(0, totalSpan, "مزامنة R8C قبل المسح الكلي...")
-        if (!startAndConnect(transport, enableResetFlow, b0TimeoutMs = 500, onLog = onLog)) {
+        if (!startAndConnect(transport, enableResetFlow, b0TimeoutMs = 600, onLog = onLog)) {
             return FlashOperationResult.Failure("فشلت المزامنة التسلسلية R8C قبل المسح.")
         }
         if (!changeSpeed(transport, baudRate, onLog)) {
@@ -811,7 +826,7 @@ object R8cProtocolEngine {
         val totalSize = firmwareBytes.size
 
         onProgress(0, totalSize, "مزامنة R8C (16×0x00 + 0xB0)...")
-        if (!startAndConnect(transport, enableResetFlow, b0TimeoutMs = 500, onLog = onLog)) {
+        if (!startAndConnect(transport, enableResetFlow, b0TimeoutMs = 600, onLog = onLog)) {
             return FlashOperationResult.Failure("فشلت المزامنة التسلسلية R8C قبل العملية.")
         }
         if (!changeSpeed(transport, baudRate, onLog)) {

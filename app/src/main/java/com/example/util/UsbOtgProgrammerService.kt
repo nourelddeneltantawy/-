@@ -91,6 +91,8 @@ object UsbOtgProgrammerService {
     @Volatile
     private var currentBaudRate: Int = 9600
     @Volatile
+    private var isUartLineConfigured: Boolean = false
+    @Volatile
     private var echoCancellationEnabled: Boolean = true
 
     private enum class BootSyncMode {
@@ -192,6 +194,7 @@ object UsbOtgProgrammerService {
         activeDevice = null
         activeChipType = null
         controlInterfaceIndex = 0
+        isUartLineConfigured = false
         _isConnectedFlow.value = false
         _connectedLabelFlow.value = ""
     }
@@ -259,7 +262,7 @@ object UsbOtgProgrammerService {
             outEndpoint = endpoints.second
             activeChipType = ProgrammerChipType.fromVendorId(targetDevice.vendorId)
 
-            configureUartHardware(conn, targetDevice, activeChipType, baudRate, onLog)
+            configureUartHardware(conn, targetDevice, activeChipType, baudRate, onLog, purgeHardwareFifo = true)
             if (!enableDtrRtsReset) {
                 setControlLines(conn, targetDevice, activeChipType, dtr = false, rts = false, onLog = onLog)
             }
@@ -333,16 +336,10 @@ object UsbOtgProgrammerService {
     }
 
     private fun flushRxBuffer() {
+        // Only clear the cumulative rxBuffer queue; never cancel readerJob or send USB control PURGE while stream is open.
         synchronized(rxLock) {
             rxBuffer.clear()
         }
-        // Also purge CP2102 hardware FIFO if applicable
-        try {
-            val conn = activeConnection ?: return
-            if (activeChipType == ProgrammerChipType.CP2102) {
-                conn.controlTransfer(0x41, 0x12, 0x000F, controlInterfaceIndex, null, 0, 200)
-            }
-        } catch (_: Throwable) {}
     }
 
     /**
@@ -396,7 +393,9 @@ object UsbOtgProgrammerService {
         val dev = activeDevice ?: return false
 
         onLog("1) تهيئة المنفذ: 9600 Baud, 8N1, Flow Control OFF (Echo Cancel=${if (echoCancellationEnabled) "ON" else "OFF"})...")
-        configureUartHardware(conn, dev, activeChipType, 9600, onLog)
+        if (!isUartLineConfigured || currentBaudRate != 9600) {
+            configureUartHardware(conn, dev, activeChipType, 9600, onLog, purgeHardwareFifo = (readerJob?.isActive != true))
+        }
         setTxBreak(conn, dev, activeChipType, enabled = false, onLog = onLog)
 
         if (!enableDtrRtsReset) {
@@ -489,7 +488,10 @@ object UsbOtgProgrammerService {
         override fun configureUart(baudRate: Int, onLog: (String) -> Unit): Boolean {
             val conn = activeConnection ?: return false
             val dev = activeDevice ?: return false
-            configureUartHardware(conn, dev, activeChipType, baudRate, onLog)
+            if (isUartLineConfigured && currentBaudRate == baudRate && readerJob?.isActive == true) {
+                return true
+            }
+            configureUartHardware(conn, dev, activeChipType, baudRate, onLog, purgeHardwareFifo = (readerJob?.isActive != true))
             return true
         }
 
@@ -991,7 +993,8 @@ object UsbOtgProgrammerService {
         device: UsbDevice,
         chipType: ProgrammerChipType?,
         baudRate: Int,
-        onLog: ((String) -> Unit)?
+        onLog: ((String) -> Unit)?,
+        purgeHardwareFifo: Boolean = false
     ) {
         currentBaudRate = baudRate
         try {
@@ -1021,7 +1024,9 @@ object UsbOtgProgrammerService {
                         rBaud = conn.controlTransfer(0x41, 0x01, div, idx, null, 0, 500) // Legacy SET_BAUDDIV fallback
                     }
                     val rLine = conn.controlTransfer(0x41, 0x03, 0x0800, idx, null, 0, 500) // 8N1
-                    val rPurge = conn.controlTransfer(0x41, 0x12, 0x000F, idx, null, 0, 500) // Purge RX/TX
+                    val rPurge = if (purgeHardwareFifo) {
+                        conn.controlTransfer(0x41, 0x12, 0x000F, idx, null, 0, 500)
+                    } else 0
                     if (rEnable < 0 || rBaud < 0 || rLine < 0) {
                         onLog?.invoke("CP2102 Config Warning: en=$rEnable, baud=$rBaud, line=$rLine, purge=$rPurge, iface=$idx")
                     }
@@ -1054,6 +1059,7 @@ object UsbOtgProgrammerService {
                     conn.controlTransfer(0x21, 0x22, 0x0003, controlInterfaceIndex, null, 0, 500)
                 }
             }
+            isUartLineConfigured = true
         } catch (e: Throwable) {
             onLog?.invoke("UART Config Exception (${device.deviceName}): ${e.toString()}")
         }
@@ -1138,6 +1144,11 @@ object UsbOtgProgrammerService {
         timeoutMs: Int,
         onLog: (String) -> Unit
     ): R8cProtocolEngine.R8cExchangeResult {
+        val conn = activeConnection
+        val epIn = inEndpoint
+        if (conn != null && epIn != null && readerJob?.isActive != true) {
+            startContinuousReaderLoop(conn, epIn)
+        }
         synchronized(rxLock) {
             rxBuffer.clear()
         }
@@ -1187,7 +1198,8 @@ object UsbOtgProgrammerService {
             txError = null,
             totalRawReceived = rawBytes.size,
             echoedCount = echoCount,
-            replyBytes = reply
+            replyBytes = reply,
+            rawBytes = rawBytes
         )
     }
 
