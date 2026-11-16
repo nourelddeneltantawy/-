@@ -487,7 +487,7 @@ private fun Diode1N4148SchematicCard(
                 mcuTarget = if (isR8cFamily) "MODE / RX" else "RESET#",
                 accentColor = Color(0xFFF59E0B),
                 subNote = if (isR8cFamily) {
-                    "setRTS(true) يسحب MODE لأسفل (50ms) أثناء نبضة RESET، ثم setRTS(false) لمدة 30ms لتحرير الخط"
+                    "RTS=true مع DTR=true لمدة 100ms، ثم بعد رفع DTR=false بـ 10ms يُرفع RTS=false مع إرسال 0x00×20 فوراً"
                 } else {
                     "الكاثود جهة RTS — ينفذ نبضة Reset 50ms ثم HIGH"
                 }
@@ -513,7 +513,7 @@ private fun Diode1N4148SchematicCard(
                 mcuTarget = if (isR8cFamily) "RESET#" else "FLMD0",
                 accentColor = if (isR8cFamily || is78k0Flmd0) Color(0xFF10B981) else Color(0xFF94A3B8),
                 subNote = when {
-                    isR8cFamily -> "متصل مباشرة بـ RESET: setDTR(false) لمدة 100ms (0V LOW) ← setDTR(true) لمدة 150ms (3.3V HIGH)"
+                    isR8cFamily -> "متصل مباشرة بـ RESET: DTR=true لمدة 100ms (LOW) ثم DTR=false (HIGH) وقبل تحرير RTS بـ 10ms"
                     is78k0Flmd0 -> "أساسي لعائلة 78K0: يُرفع إلى 5V HIGH عبر DTR = false قبل Reset"
                     else -> "مخصص لعائلة 78K0 (غير مطلوب في وضع TOOL0)"
                 }

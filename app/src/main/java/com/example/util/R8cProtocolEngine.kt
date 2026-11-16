@@ -161,14 +161,11 @@ object R8cProtocolEngine {
     }
 
     /**
-     * 1. Verified Hardware Boot Entry Sequence:
-     *    - RTS: true = pull MODE LOW via diode, false = release MODE/RX
-     *    - DTR: false = RESET 0V / LOW, true = RESET 3.3V / HIGH
-     *    - Sequence:
-     *        1) setRTS(true)  (pull MODE LOW via diode)        -> wait 50ms
-     *        2) setDTR(false) (RESET = 0V / LOW)                -> wait 100ms
-     *        3) setDTR(true)  (RESET = 3.3V / HIGH -> Boot Mode)-> wait 150ms
-     *        4) setRTS(false) (release MODE/RX for UART)        -> wait 30ms
+     * 1. Fast Edge-Capture Boot Entry + Immediate Sync Sequence:
+     *    - Step 1: Set RTS = true (MODE=LOW via diode) and DTR = true (RESET=LOW) -> wait 100ms
+     *    - Step 2: Set DTR = false (RESET rises to HIGH) -> wait 10ms ONLY -> Set RTS = false (release MODE/RX)
+     *              and IMMEDIATELY begin sending 20 x 0x00 (15ms interval) so MCU captures 0x00 pulses on boot
+     *    - Step 3: Wait 40ms after last 0x00, clear rxQueue, then send 0xB0 (connection) -> 0xB0 (change_speed) -> 0xFB
      */
     suspend fun startAndConnect(
         transport: SerialTransport,
@@ -184,56 +181,43 @@ object R8cProtocolEngine {
         if (!transport.ensureReaderListening(onLog)) {
             return false
         }
-        // Start idle with RESET=HIGH (dtr=true) and MODE/RX released (rts=false)
-        transport.setDtr(enabled = true, onLog = onLog)
-        transport.setRts(enabled = false, onLog = onLog)
-        delay(15)
 
-        onLog("3.1) setRTS(true) [سحب طرف MODE لأسفل عبر الديود] -> انتظار 50ms...")
-        transport.setRts(enabled = true, onLog = onLog)
-        delay(50)
-
-        onLog("3.2) setDTR(false) [خفض RESET = 0V / LOW لإعادة تشغيل المعالج] -> انتظار 100ms...")
-        transport.setDtr(enabled = false, onLog = onLog)
+        onLog("3.1) ضبط RTS=true (سحب MODE لأسفل) و DTR=true (خفض RESET=LOW) -> انتظار 100ms...")
+        transport.setControlLines(dtr = true, rts = true, onLog = onLog)
         delay(100)
 
-        onLog("3.3) setDTR(true) [رفع RESET = 3.3V / HIGH لإقلاع البوتلودر] -> انتظار 150ms...")
-        transport.setDtr(enabled = true, onLog = onLog)
-        delay(150)
-
-        onLog("3.4) setRTS(false) [تحرير خط MODE/RX لبدء الإرسال والاستقبال] -> انتظار 30ms...")
+        onLog("3.2) رفع DTR=false (صعود RESET=HIGH) -> انتظار 10ms فقط ثم RTS=false وإرسال 0x00 ×20 فوراً...")
+        transport.setDtr(enabled = false, onLog = onLog)
+        delay(10)
         transport.setRts(enabled = false, onLog = onLog)
-        delay(30)
 
-        transport.flushInputBuffer()
         return establishConnection(transport, onLog)
     }
 
     /**
-     * 2. connection() with Raw RX Monitor:
-     *    - Send 0x00 x 16 with 20ms interval
-     *    - Wait 50ms then rxQueue.clear()
+     * 2. connection() with immediate 20 x 0x00 (15ms interval) + 40ms + rxQueue.clear() + 0xB0:
+     *    - Immediately transmit 0x00 x 20 with 15ms interval after releasing RTS=false
+     *    - Wait 40ms then rxQueue.clear()
      *    - Send [0xB0], collect all bytes arriving in rxQueue over 1000ms and log RX Raw: [...]
-     *    - If received bytes contain 0xB0 (whether [B0, B0] or [B0]), take last byte -> Connection OK
      */
     suspend fun establishConnection(
         transport: SerialTransport,
         onLog: (String) -> Unit
     ): Boolean {
-        onLog("TX: 00 x16 (فاصل 20ms بين كل بايت ثم انتظار 50ms وتفريغ rxQueue)")
+        onLog("TX: 00 x20 (فوراً بفاصل 15ms ثم انتظار 40ms وتفريغ rxQueue)")
         val zero = byteArrayOf(0x00)
-        for (i in 0 until 16) {
+        for (i in 0 until 20) {
             val err = transport.writeRaw(zero)
             if (err != null) {
                 onLog("TX ERROR (connection 0x00 #${i + 1}): $err")
                 return false
             }
-            delay(20)
+            delay(15)
         }
 
-        delay(50)
+        delay(40)
         transport.flushInputBuffer()
-        onLog("rxQueue.clear() بعد 50ms — إرسال 0xB0 وجمع كامل RX خلال 1000ms...")
+        onLog("rxQueue.clear() بعد 40ms — إرسال 0xB0 وجمع كامل RX خلال 1000ms...")
 
         onLog("TX: B0")
         val res = transport.sendAndCollectRawWindow(
@@ -311,7 +295,7 @@ object R8cProtocolEngine {
             if (!transport.configureUart(targetBaudRate, onLog)) {
                 return false
             }
-            transport.setControlLines(dtr = true, rts = false, onLog = onLog)
+            transport.setControlLines(dtr = false, rts = false, onLog = onLog)
             delay(15)
             transport.flushInputBuffer()
         }
