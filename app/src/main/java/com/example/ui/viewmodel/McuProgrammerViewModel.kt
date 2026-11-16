@@ -368,12 +368,13 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
             }
             addLog("بدء التعرف التلقائي (Auto-Detect Chip ID)...", LogLevel.INFO)
 
-            val idBytes = parseIdCodeBytes() ?: ByteArray(7) { 0xFF.toByte() }
+            val idBytes = parseIdCodeBytes() ?: R8cProtocolEngine.DEFAULT_ID_CODE.copyOf()
             when (val res = UsbOtgProgrammerService.probeChipId(
                 context = appContext,
                 preferredChip = _uiState.value.selectedProgrammer,
                 enableDtrRtsReset = _uiState.value.enableDtrRtsReset,
                 targetMainFamily = familyHint,
+                preferredPartNumber = _uiState.value.selectedProcessor?.partNumber,
                 idCodeBytes = idBytes,
                 catalog = allProcessors
             ) { msg ->

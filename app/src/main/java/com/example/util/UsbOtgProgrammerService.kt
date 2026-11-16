@@ -529,7 +529,8 @@ object UsbOtgProgrammerService {
         preferredChip: ProgrammerChipType?,
         enableDtrRtsReset: Boolean,
         targetMainFamily: String? = null,
-        idCodeBytes: ByteArray = ByteArray(7) { 0xFF.toByte() },
+        preferredPartNumber: String? = null,
+        idCodeBytes: ByteArray = R8cProtocolEngine.DEFAULT_ID_CODE.copyOf(),
         catalog: List<McuProcessor>,
         onLog: (String) -> Unit
     ): ChipAutoDetectResult = withContext(Dispatchers.IO) {
@@ -544,7 +545,7 @@ object UsbOtgProgrammerService {
 
         if (isExplicitR8c) {
             setEchoCancellation(false)
-            val r8cResult = probeR8cViaEngine(enableDtrRtsReset, idCodeBytes, catalog, onLog)
+            val r8cResult = probeR8cViaEngine(enableDtrRtsReset, preferredPartNumber, idCodeBytes, catalog, onLog)
             if (r8cResult != null) return@withContext r8cResult
 
             return@withContext ChipAutoDetectResult.Failure(
@@ -553,7 +554,7 @@ object UsbOtgProgrammerService {
         }
 
         if (initialMode == BootSyncMode.SINGLE_WIRE_R8C_78K0R) {
-            val r8cResult = probeR8cViaEngine(enableDtrRtsReset, idCodeBytes, catalog, onLog)
+            val r8cResult = probeR8cViaEngine(enableDtrRtsReset, preferredPartNumber, idCodeBytes, catalog, onLog)
             if (r8cResult != null) return@withContext r8cResult
 
             onLog("لم يرد كمعالج R8C — إعادة تهيئة Boot Mode وتجربة RL78 (0x3A + Silicon Signature)...")
@@ -570,7 +571,7 @@ object UsbOtgProgrammerService {
 
             if (initialMode == BootSyncMode.SINGLE_WIRE_RL78) {
                 onLog("لم يرد كمعالج RL78 — إعادة تهيئة Boot Mode وتجربة R8C / 78K0R...")
-                val r8cResult = probeR8cViaEngine(enableDtrRtsReset, idCodeBytes, catalog, onLog)
+                val r8cResult = probeR8cViaEngine(enableDtrRtsReset, preferredPartNumber, idCodeBytes, catalog, onLog)
                 if (r8cResult != null) return@withContext r8cResult
             }
         }
@@ -582,12 +583,13 @@ object UsbOtgProgrammerService {
 
     private suspend fun probeR8cViaEngine(
         enableDtrRtsReset: Boolean,
+        preferredPartNumber: String?,
         idCodeBytes: ByteArray,
         catalog: List<McuProcessor>,
         onLog: (String) -> Unit
     ): ChipAutoDetectResult.Matched? {
         val transport = createR8cTransport()
-        val validId = if (idCodeBytes.size == 7) idCodeBytes else ByteArray(7) { 0xFF.toByte() }
+        val validId = if (idCodeBytes.size == 7) idCodeBytes else R8cProtocolEngine.DEFAULT_ID_CODE.copyOf()
         val probe = R8cProtocolEngine.probeAndIdentify(
             transport = transport,
             enableResetFlow = enableDtrRtsReset,
@@ -603,16 +605,71 @@ object UsbOtgProgrammerService {
                 matchedMcu = matchCatalogBySignature(toPrintableAscii(pageFe), toHex(pageFe), catalog)
             }
         }
-        val idNote = if (probe.idVerified) " • تم التحقق من ID Code (0xF5)" else " • تنبيه: لم يُفتح القفل بـ 7-Byte ID"
+        if (matchedMcu == null) {
+            matchedMcu = matchR8cByBootloaderVersion(probe.version, preferredPartNumber, catalog)
+            if (matchedMcu != null) {
+                onLog("Smart Auto-Detect: تم ربط إصدار البوتلودر (${probe.version}) بسلسلة ${matchedMcu.subFamily} -> ${matchedMcu.partNumber}")
+            }
+        }
+
+        val idNote = if (probe.idVerified) " • تم التحقق من 7-Byte ID (0xF5)" else " • تنبيه: لم يُفتح القفل بـ 7-Byte ID"
         val msg = when {
-            matchedMcu != null -> "تم التعرف على معالج R8C بنجاح: ${matchedMcu.partNumber} (${probe.version})$idNote"
-            else -> "استجاب بوتلودر R8C بنجاح (${probe.version})$idNote"
+            matchedMcu != null ->
+                "تم التعرف على المعالج: ${matchedMcu.partNumber} (${matchedMcu.subFamily}) • البوتلودر: ${probe.version} • الفلاش: ${matchedMcu.flashKb} KB$idNote"
+            else ->
+                "استجاب بوتلودر R8C بنجاح (${probe.version})$idNote"
         }
         return ChipAutoDetectResult.Matched(
             rawSignatureHex = probe.rawHex,
             matchedProcessor = matchedMcu,
             diagnosticMessage = msg
         )
+    }
+
+    private fun matchR8cByBootloaderVersion(
+        version: String,
+        preferredPartNumber: String?,
+        catalog: List<McuProcessor>
+    ): McuProcessor? {
+        val verUpper = version.trim().uppercase()
+        val r8cList = catalog.filter { it.mainFamily.equals("R8C", ignoreCase = true) }
+        if (r8cList.isEmpty()) return null
+
+        val currentProc = preferredPartNumber?.let { part ->
+            r8cList.firstOrNull { it.partNumber.equals(part, ignoreCase = true) }
+        }
+
+        return when {
+            verUpper.contains("VER.1") || verUpper.contains("1.00") -> {
+                val r8c1x = r8cList.filter { it.subFamily.startsWith("R8C/1", ignoreCase = true) }
+                if (currentProc != null && currentProc.subFamily.startsWith("R8C/1", ignoreCase = true)) {
+                    currentProc
+                } else {
+                    r8c1x.firstOrNull { it.partNumber.equals("R5F21102", ignoreCase = true) }
+                        ?: r8c1x.firstOrNull()
+                }
+            }
+            verUpper.contains("VER.2") || verUpper.contains("2.00") || verUpper.contains("2.10") -> {
+                val r8c2x = r8cList.filter { it.subFamily.startsWith("R8C/2", ignoreCase = true) }
+                if (currentProc != null && currentProc.subFamily.startsWith("R8C/2", ignoreCase = true)) {
+                    currentProc
+                } else {
+                    r8c2x.firstOrNull { it.partNumber.equals("R5F21258", ignoreCase = true) }
+                        ?: r8c2x.firstOrNull { it.partNumber.startsWith("R5F2125", ignoreCase = true) }
+                        ?: r8c2x.firstOrNull()
+                }
+            }
+            verUpper.contains("VER.3") -> {
+                val r8c3x = r8cList.filter { it.subFamily.startsWith("R8C/3", ignoreCase = true) }
+                if (currentProc != null && currentProc.subFamily.startsWith("R8C/3", ignoreCase = true)) {
+                    currentProc
+                } else {
+                    r8c3x.firstOrNull { it.partNumber.equals("R5F21354", ignoreCase = true) }
+                        ?: r8c3x.firstOrNull()
+                }
+            }
+            else -> currentProc
+        }
     }
 
     private suspend fun probeRl78Or78k0Sequence(
@@ -622,12 +679,20 @@ object UsbOtgProgrammerService {
         onLog("إرسال إطار طلب توقيع السليكون RL78/78K0 (01 01 C0 3F 03)...")
         var reply = transmitAndLog(
             byteArrayOf(0x01, 0x01, 0xC0.toByte(), 0x3F, 0x03),
-            expectedMax = 32,
-            timeoutMs = 350,
+            expectedMax = 48,
+            timeoutMs = 400,
             onLog = onLog
         )
+        // RL78 sends ACK (e.g. 02 01 06 F9 03) followed by Silicon Signature Data Frame
+        if (reply.isNotEmpty() && reply.size <= 6 && !toPrintableAscii(reply).contains("R5F", ignoreCase = true)) {
+            val sigFollowUp = readBufferedBytes(expectedMax = 48, timeoutMs = 450, onLog = onLog)
+            if (sigFollowUp.isNotEmpty()) {
+                onLog("RX (Signature Frame): ${toHex(sigFollowUp)}")
+                reply += sigFollowUp
+            }
+        }
         if (reply.isEmpty()) {
-            reply = transmitAndLog(byteArrayOf(0xC0.toByte()), expectedMax = 32, timeoutMs = 300, onLog = onLog)
+            reply = transmitAndLog(byteArrayOf(0xC0.toByte()), expectedMax = 48, timeoutMs = 350, onLog = onLog)
         }
         if (reply.isEmpty()) return null
 
@@ -638,7 +703,7 @@ object UsbOtgProgrammerService {
             rawSignatureHex = hexStr,
             matchedProcessor = matched,
             diagnosticMessage = if (matched != null) {
-                "تم التعرف على المعالج تلقائياً: ${matched.partNumber} ($ascii)"
+                "تم التعرف على المعالج تلقائياً: ${matched.partNumber} (${matched.mainFamily} / ${matched.subFamily}) • الفلاش: ${matched.flashKb} KB"
             } else {
                 "استجاب المعالج بالبيانات [$ascii | $hexStr]"
             }
@@ -885,8 +950,8 @@ object UsbOtgProgrammerService {
     ): Boolean {
         val frame = byteArrayOf(
             0xF5.toByte(),
-            0xDF.toByte(),
             0xFF.toByte(),
+            0xDF.toByte(),
             0x00.toByte(),
             0x07.toByte()
         ) + idCodeBytes
@@ -894,7 +959,7 @@ object UsbOtgProgrammerService {
         var ack = transmitAndLog(frame, expectedMax = 8, timeoutMs = 350, onLog = onLog)
         if (ack.isEmpty()) {
             delay(20)
-            ack = transmitAndLog(byteArrayOf(0x70), expectedMax = 4, timeoutMs = 350, onLog = onLog)
+            ack = transmitAndLog(byteArrayOf(0x70), expectedMax = 4, timeoutMs = 300, onLog = onLog)
         }
 
         if (ack.isEmpty()) {
@@ -931,24 +996,28 @@ object UsbOtgProgrammerService {
         hexStr: String,
         catalog: List<McuProcessor>
     ): McuProcessor? {
-        val regex = Regex("""R[45]F\d{4,6}|M3\d{4,6}|uPD78F\d{4,5}""", RegexOption.IGNORE_CASE)
-        regex.find(ascii)?.value?.let { extracted ->
+        val regex = Regex("""R[45]F[A-Z0-9]{4,10}|M3[A-Z0-9]{4,10}|uPD78F[A-Z0-9]{4,8}""", RegexOption.IGNORE_CASE)
+        regex.findAll(ascii).forEach { match ->
+            val extracted = match.value.trim()
+            catalog.firstOrNull { it.partNumber.equals(extracted, ignoreCase = true) }?.let { return it }
+            catalog.filter { extracted.startsWith(it.partNumber, ignoreCase = true) }
+                .maxByOrNull { it.partNumber.length }
+                ?.let { return it }
             catalog.firstOrNull {
-                it.partNumber.equals(extracted, ignoreCase = true) ||
-                    it.partNumber.contains(extracted, ignoreCase = true) ||
-                    extracted.contains(it.partNumber, ignoreCase = true)
+                it.partNumber.startsWith(extracted, ignoreCase = true) ||
+                    it.partNumber.contains(extracted, ignoreCase = true)
             }?.let { return it }
         }
         val cleanAscii = ascii.replace(Regex("[^A-Za-z0-9]"), "")
         if (cleanAscii.length >= 4) {
+            catalog.filter { cleanAscii.contains(it.partNumber, ignoreCase = true) }
+                .maxByOrNull { it.partNumber.length }
+                ?.let { return it }
             catalog.firstOrNull {
-                cleanAscii.contains(it.partNumber, ignoreCase = true) ||
-                    (it.partNumber.length >= 5 && cleanAscii.contains(it.partNumber.take(6), ignoreCase = true))
+                it.partNumber.length >= 5 && cleanAscii.contains(it.partNumber.take(6), ignoreCase = true)
             }?.let { return it }
         }
-        return catalog.firstOrNull {
-            hexStr.contains(it.partNumber.take(4), ignoreCase = true)
-        }
+        return null
     }
 
     private suspend fun requestUsbPermission(manager: UsbManager, device: UsbDevice): Boolean {

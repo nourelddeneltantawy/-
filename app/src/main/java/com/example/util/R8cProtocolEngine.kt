@@ -14,12 +14,14 @@ import kotlin.math.min
  * - Get Version:    0xFB -> reads 8 ASCII bytes (e.g. "VER.2.00")
  * - Get Status:     0x70 -> reads 2 bytes [SRD, SRD1]
  * - Clear Status:   0x50
- * - ID Inspection:  0xF5, 0xDF, 0xFF, 0x00, 0x07, ID[0..6] -> checks get_id_state() == 3
+ * - ID Inspection:  0xF5, 0xFF, 0xDF, 0x00, 0x07, ID[0..6] -> checks get_id_state() == 3
  * - Read Page:      0xFF, (addr >> 8) & 0xFF, (addr >> 16) & 0xFF -> reads 256 bytes
  * - Write Page:     0x41, (addr >> 8) & 0xFF, (addr >> 16) & 0xFF + 256 bytes -> SR4 == 0 + 0x50
  * - Erase Page:     0x20, (addr >> 8) & 0xFF, (addr >> 16) & 0xFF, 0xD0 -> SR5 == 0 + 0x50
  */
 object R8cProtocolEngine {
+
+    val DEFAULT_ID_CODE: ByteArray = ByteArray(7) { 0xFF.toByte() }
 
     data class R8cStatus(
         val srd: Int,
@@ -263,7 +265,7 @@ object R8cProtocolEngine {
     }
 
     /**
-     * Equivalent to r8c::protocol::get_version() -> 0xFB reads 8 ASCII bytes
+     * Equivalent to r8c::protocol::get_version() -> 0xFB reads 8 ASCII bytes (e.g. "VER.1.00", "VER.2.00", "VER.2.10")
      */
     suspend fun getVersion(
         transport: SerialTransport,
@@ -275,10 +277,17 @@ object R8cProtocolEngine {
             onLog("TX ERROR (0xFB): $err")
             return null
         }
-        val reply = transport.readExactBytes(expectedLen = 8, timeoutMs = 500, onLog = onLog)
-        if (reply.isEmpty()) {
-            onLog("RX: (لا يوجد رد / Timeout 500ms لـ 0xFB)")
+        val rawReply = transport.readExactBytes(expectedLen = 8, timeoutMs = 600, onLog = onLog)
+        if (rawReply.isEmpty()) {
+            onLog("RX: (لا يوجد رد / Timeout 600ms لـ 0xFB)")
             return null
+        }
+        val reply = if ((rawReply[0].toInt() and 0xFF) == 0xFB) {
+            val extra = transport.readExactBytes(expectedLen = 1, timeoutMs = 150, onLog = onLog)
+            val trimmed = rawReply.drop(1).toByteArray() + extra
+            if (trimmed.isNotEmpty()) trimmed else rawReply
+        } else {
+            rawReply
         }
         val ascii = reply.filter { it in 32..126 }.map { it.toInt().toChar() }.joinToString("").trim()
         onLog("RX: ${toHex(reply)} (\"$ascii\")")
@@ -287,21 +296,23 @@ object R8cProtocolEngine {
 
     /**
      * Equivalent to r8c::protocol::get_status(status& st) -> 0x70 reads [SRD, SRD1]
+     * Uses a 300ms RX buffer loop to collect both complete status bytes (SRD & SRD1).
      */
     suspend fun getStatus(
         transport: SerialTransport,
         onLog: (String) -> Unit,
         quiet: Boolean = false
     ): R8cStatus? {
-        if (!quiet) onLog("TX: 70 (قراءة سجل الحالة SRD/SRD1)")
+        if (!quiet) onLog("TX: 70 (قراءة سجل الحالة SRD/SRD1 - انتظار 300ms)")
         val err = transport.writeBytes(byteArrayOf(0x70), clearStaleRx = true, onLog = onLog)
         if (err != null) {
             onLog("TX ERROR (0x70): $err")
             return null
         }
-        val reply = transport.readExactBytes(expectedLen = 2, timeoutMs = 500, onLog = onLog)
+        val reply = transport.readExactBytes(expectedLen = 2, timeoutMs = 300, onLog = onLog)
         if (reply.size < 2) {
-            onLog("RX: (نقص بايتات الحالة 0x70: استُلم ${reply.size}/2)")
+            val partialHex = if (reply.isEmpty()) "(فارغ)" else toHex(reply)
+            onLog("RX: $partialHex (نقص بايتات الحالة 0x70: استُلم ${reply.size}/2 خلال 300ms)")
             return null
         }
         val st = R8cStatus(
@@ -333,34 +344,32 @@ object R8cProtocolEngine {
 
     /**
      * Equivalent to r8c::protocol::id_inspection(const id_t& t)
-     * Sends [0xF5, 0xDF, 0xFF, 0x00, 0x07, ID0..ID6], then verifies get_status().get_id_state() == 3.
+     * Sends [0xF5, 0xFF, 0xDF, 0x00, 0x07, ID0..ID6] (Little-Endian ID address 0x00DFFF),
+     * then verifies get_status().get_id_state() == 3 via a 300ms buffer read for [SRD, SRD1].
      */
     suspend fun idInspection(
         transport: SerialTransport,
         idBytes: ByteArray,
         onLog: (String) -> Unit
     ): Pair<Boolean, R8cStatus?> {
-        if (idBytes.size != 7) {
-            onLog("ID Error: طول مفتاح الحماية يجب أن يكون 7 بايت بالضبط.")
-            return false to null
-        }
+        val effectiveId = if (idBytes.size == 7) idBytes else DEFAULT_ID_CODE.copyOf()
 
         val frame = byteArrayOf(
             0xF5.toByte(),
-            0xDF.toByte(),
             0xFF.toByte(),
+            0xDF.toByte(),
             0x00.toByte(),
             0x07.toByte()
-        ) + idBytes
+        ) + effectiveId
 
-        onLog("TX: ${toHex(frame)} (إرسال مفتاح الحماية 7-Byte ID)")
+        onLog("TX: ${toHex(frame)} (إرسال مفتاح الحماية 7-Byte ID للعنوان FF DF 00)")
         val err = transport.writeBytes(frame, clearStaleRx = true, onLog = onLog)
         if (err != null) {
             onLog("TX ERROR (0xF5 ID): $err")
             return false to null
         }
 
-        delay(15)
+        delay(30)
         val st = getStatus(transport, onLog, quiet = false) ?: return false to null
         if (!st.isIdVerified()) {
             onLog("ID Verification Failed: id_state=${st.idState} (المتوقع 3). تحقق من كود الحماية [SRD1=0x%02X].".format(st.srd1))
