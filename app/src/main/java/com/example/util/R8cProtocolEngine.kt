@@ -161,15 +161,14 @@ object R8cProtocolEngine {
     }
 
     /**
-     * 1. Android CP2102 Boot Entry Sequence with PCB RESET RC Capacitor Stabilization:
-     *    (CP2102 native polarity: true = 0V / LOW, false = 3.3V / HIGH)
-     *    - Step 1: Open port & configure parameters (9600, 8, 1, 0 -> 8N1)
-     *    - Step 2: Attach continuous RX listener (rxQueue + immediate Raw RX Monitor)
-     *    - Step 3: Bootloader entry sequence:
-     *        1) setRTS(true)  (RTS = 0V / LOW, pulls MODE LOW via diode)     -> wait 50ms
-     *        2) setDTR(true)  (DTR = 0V / LOW, discharges RESET cap to LOW)   -> wait 150ms
-     *        3) setDTR(false) (DTR = 3.3V / HIGH, RESET cap charges while MODE=LOW) -> wait 350ms
-     *        4) setRTS(false) (RTS = 3.3V / HIGH, releases MODE/RX for UART)  -> wait 30ms
+     * 1. Verified Hardware Boot Entry Sequence:
+     *    - RTS: true = pull MODE LOW via diode, false = release MODE/RX
+     *    - DTR: false = RESET 0V / LOW, true = RESET 3.3V / HIGH
+     *    - Sequence:
+     *        1) setRTS(true)  (pull MODE LOW via diode)        -> wait 50ms
+     *        2) setDTR(false) (RESET = 0V / LOW)                -> wait 100ms
+     *        3) setDTR(true)  (RESET = 3.3V / HIGH -> Boot Mode)-> wait 150ms
+     *        4) setRTS(false) (release MODE/RX for UART)        -> wait 30ms
      */
     suspend fun startAndConnect(
         transport: SerialTransport,
@@ -185,22 +184,22 @@ object R8cProtocolEngine {
         if (!transport.ensureReaderListening(onLog)) {
             return false
         }
-        // Ensure clean HIGH idle pin state (false = 3.3V) before starting Boot Entry pulse
-        transport.setDtr(enabled = false, onLog = onLog)
+        // Start idle with RESET=HIGH (dtr=true) and MODE/RX released (rts=false)
+        transport.setDtr(enabled = true, onLog = onLog)
         transport.setRts(enabled = false, onLog = onLog)
         delay(15)
 
-        onLog("3.1) setRTS(true) [RTS=0V / LOW لسحب MODE لأسفل عبر الديود] -> انتظار 50ms...")
+        onLog("3.1) setRTS(true) [سحب طرف MODE لأسفل عبر الديود] -> انتظار 50ms...")
         transport.setRts(enabled = true, onLog = onLog)
         delay(50)
 
-        onLog("3.2) setDTR(true) [DTR=0V / LOW لتفريغ مكثف RESET وخفضه إلى LOW] -> انتظار 150ms...")
+        onLog("3.2) setDTR(false) [خفض RESET = 0V / LOW لإعادة تشغيل المعالج] -> انتظار 100ms...")
+        transport.setDtr(enabled = false, onLog = onLog)
+        delay(100)
+
+        onLog("3.3) setDTR(true) [رفع RESET = 3.3V / HIGH لإقلاع البوتلودر] -> انتظار 150ms...")
         transport.setDtr(enabled = true, onLog = onLog)
         delay(150)
-
-        onLog("3.3) setDTR(false) [رفع RESET=HIGH أثناء بقاء MODE منخفضاً] -> انتظار 350ms لشحن المكثف واستقرار البوتلودر...")
-        transport.setDtr(enabled = false, onLog = onLog)
-        delay(350)
 
         onLog("3.4) setRTS(false) [تحرير خط MODE/RX لبدء الإرسال والاستقبال] -> انتظار 30ms...")
         transport.setRts(enabled = false, onLog = onLog)
@@ -312,7 +311,7 @@ object R8cProtocolEngine {
             if (!transport.configureUart(targetBaudRate, onLog)) {
                 return false
             }
-            transport.setControlLines(dtr = false, rts = false, onLog = onLog)
+            transport.setControlLines(dtr = true, rts = false, onLog = onLog)
             delay(15)
             transport.flushInputBuffer()
         }

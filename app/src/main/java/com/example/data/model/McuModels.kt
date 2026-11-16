@@ -182,8 +182,8 @@ object McuProtocolDefaults {
                 McuPinMapping("GND (الأرضي)", "VSS / EVSS", "أرضي + مكثف REGC", "أرضي مشترك", "ربط الأرضي مباشرة + مكثف 0.47µF على طرف REGC")
             )
             fam.contains("R8C") -> listOf(
-                McuPinMapping("DTR (مباشر)", "RESET#", "نبضة Boot + شحن المكثف", "خرج Reset", "DTR=true (150ms LOW لتفريغ المكثف) ثم DTR=false (350ms HIGH لشحن المكثف)"),
-                McuPinMapping("RTS (دايود — كاثود على RTS)", "MODE / RX", "خفض MODE للبوت", "تحكم بالبوت", "RTS=true يسحب MODE للـ LOW (50ms قبل Reset ويبقى حتى شحن RESET 350ms) ثم RTS=false (30ms)"),
+                McuPinMapping("DTR (مباشر)", "RESET#", "نبضة Boot التلقائية", "خرج Reset", "DTR=false (100ms LOW) ثم DTR=true (3.3V HIGH 150ms لإقلاع البوتلودر)"),
+                McuPinMapping("RTS (دايود — كاثود على RTS)", "MODE / RX", "خفض MODE للبوت", "تحكم بالبوت", "RTS=true يسحب MODE لأسفل (50ms قبل RESET) ثم RTS=false (30ms) لتحرير الخط"),
                 McuPinMapping("TX (دايود) + RX (مباشر)", "MODE (Single-Wire)", "Mode 3 أحادي السلك", "ثنائي الاتجاه (صدى D)", "مراقبة RX الخام + حذف الصدى المطابق تلقائياً ($pkgNote)"),
                 McuPinMapping("VCC (التغذية)", "VCC / AVCC", "2.7V - 5.5V", "تغذية", "تغذية مستقرة ${mcu.recommendedVoltage}"),
                 McuPinMapping("GND (الأرضي)", "VSS", "أرضي مشترك", "أرضي مشترك", "ربط الأرضي المشترك بين المبرمجة والكارتة")
