@@ -169,9 +169,10 @@ object R8cProtocolEngine {
 
     /**
      * Port start + Bootloader Hardware Reset Flow + initial 9600 bps sync (Single-Wire Mode 3):
-     * 1) RTS = true (RESET = LOW) + TX/MODE hold LOW for 50ms.
-     * 2) RTS = false (RESET = HIGH), then wait 100ms for internal oscillator stabilization before 16x 0x00.
-     * 3) connection(): 16 x 0x00 -> flushInputBuffer() -> 0xB0 via sendAndReceiveR8C(N=1, expectedRx=1).
+     * 1) Configure 9600 bps 8N1 WITHOUT touching TX Break (TX stays idle HIGH — never force TX LOW on CP2102).
+     * 2) RTS = true (RESET = LOW) for 50ms.
+     * 3) RTS = false (RESET = HIGH), then wait 100ms for internal oscillator stabilization.
+     * 4) establishConnection(): 16 x 0x00 (40ms gap) -> 50ms settle -> 0xB0 -> accept >=1 0xB0 byte within 600ms.
      */
     suspend fun startAndConnect(
         transport: SerialTransport,
@@ -179,38 +180,26 @@ object R8cProtocolEngine {
         b0TimeoutMs: Int = 600,
         onLog: (String) -> Unit
     ): Boolean {
-        onLog("R8C Start: فتح المنفذ على سرعة 9600 bps (8N1) • Single-Wire UART Mode 3 (N + Rx Echo Filter)...")
+        onLog("R8C Start: فتح المنفذ على سرعة 9600 bps (8N1) • تتابع RTS Reset فقط دون لمس TX...")
         if (!transport.configureUart(9600, onLog)) {
             return false
         }
-        transport.setTxBreak(false, onLog)
 
         if (enableResetFlow) {
-            onLog("R8C Boot Flow: تفعيل RTS=true (RESET=LOW) + خفض MODE/TX لمدة 50ms...")
+            onLog("R8C Boot Flow: تفعيل RTS=true (RESET=LOW) لمدة 50ms...")
             transport.setDtr(false, onLog)
             transport.setRts(true, onLog)
-            val breakSupported = transport.setTxBreak(true, onLog)
-            if (!breakSupported) {
-                repeat(4) {
-                    transport.writeRawOnly(byteArrayOf(0x00, 0x00, 0x00, 0x00))
-                    delay(12)
-                }
-            } else {
-                delay(50)
-            }
+            delay(50)
 
-            onLog("R8C Boot Flow: رفع RTS=false (RESET=HIGH) -> انتظار 100ms لاستقرار المذبذب الداخلي ودخول Boot Mode...")
+            onLog("R8C Boot Flow: رفع RTS=false (RESET=HIGH) -> انتظار 100ms بدون إرسال Break على TX...")
             transport.setRts(false, onLog)
-            delay(20)
-            transport.setTxBreak(false, onLog)
-            delay(80) // إجمالي 100ms بعد RESET=HIGH قبل إرسال 16x 0x00
+            delay(100)
         } else {
             onLog("R8C Boot Flow: نبضة RTS Reset معطلة — تحرير RTS=false و DTR=false -> انتظار 100ms...")
             transport.setDtr(false, onLog)
             transport.setRts(false, onLog)
             delay(100)
         }
-        delay(30)
         transport.flushInputBuffer()
 
         return establishConnection(transport, b0TimeoutMs = b0TimeoutMs, onLog = onLog)
@@ -218,19 +207,17 @@ object R8cProtocolEngine {
 
     /**
      * Equivalent to r8c::protocol::connection() for Single-Wire Mode 3:
-     * 1) Sends 16 x 0x00 (20ms interval), waits 30ms, then clears rxQueue via flushInputBuffer()
-     *    without closing/cancelling the continuous RX listener.
-     * 2) Sends [0xB0] and waits up to 600ms for [0xB0, 0xB0]:
-     *    - 2 bytes [0xB0, 0xB0] -> discards first echo byte and accepts second byte as MCU ACK.
-     *    - 1 byte [0xB0] -> logs echo-only hardware/power/MODE/RESET warning.
-     *    - 0 bytes -> logs missing RX loopback wiring warning.
+     * 1) Sends 16 x 0x00 with 40ms spacing between each byte.
+     * 2) Waits 50ms, clears rxQueue via flushInputBuffer(), then sends 0xB0.
+     * 3) Reads all bytes arriving in rxQueue within 600ms, logs them as-is ([B0] or [B0 B0]),
+     *    and succeeds if at least one 0xB0 byte was received so 0xFB & 0xF5 run immediately.
      */
     suspend fun establishConnection(
         transport: SerialTransport,
         b0TimeoutMs: Int = 600,
         onLog: (String) -> Unit
     ): Boolean {
-        onLog("TX: 00 x16 (فاصل 20ms بين كل بايت ثم انتظار 30ms وتفريغ rxQueue)")
+        onLog("TX: 00 x16 (فاصل 40ms بين كل بايت)")
         val zeroByte = byteArrayOf(0x00)
         for (i in 0 until 16) {
             val err = transport.writeRawOnly(zeroByte)
@@ -238,13 +225,13 @@ object R8cProtocolEngine {
                 onLog("TX ERROR (R8C Sync #${i + 1}): $err")
                 return false
             }
-            delay(20)
+            delay(40)
         }
 
-        delay(30)
+        delay(50)
         transport.flushInputBuffer()
 
-        onLog("TX: B0 (طلب تأكيد اتصال R8C — انتظار 600ms على rxQueue لـ [B0 B0])")
+        onLog("TX: B0 (طلب تأكيد اتصال R8C — قراءة rxQueue خلال ${b0TimeoutMs}ms)")
         val res = sendAndReceiveR8C(
             transport = transport,
             txBytes = byteArrayOf(0xB0.toByte()),
@@ -262,21 +249,11 @@ object R8cProtocolEngine {
             onLog("RX: (0 بايت خلال ${b0TimeoutMs}ms) — لا يوجد أي بايت مرتد على RX — تأكد من توصيل أسلاك المبرمجة بالبوردة")
             return false
         }
-        if (raw.size == 1) {
-            val single = raw[0].toInt() and 0xFF
-            if (single == 0xB0) {
-                onLog("RX: B0 — تم استلام بايت صدى واحد فقط (0xB0) بدون رد المعالج — تأكد من تغذية البوردة وتوصيل طرفي MODE و RESET")
-            } else {
-                onLog("RX: \u2066%02X\u2069 — استُلم بايت واحد غير متوقع بدون رد المعالج (المطلوب B0 B0).".format(single))
-            }
-            return false
-        }
 
-        val reply = res.replyBytes
-        onLog("RX: \u2066${toHex(raw)}\u2069 ➔ حذف الصدى الأول، رد المعالج: \u2066${toHex(reply)}\u2069")
-        val b0 = reply[0].toInt() and 0xFF
-        if (b0 != 0xB0) {
-            onLog("R8C Sync Error: استجاب المعالج بـ 0x%02X بدلاً من 0xB0.".format(b0))
+        onLog("RX: \u2066${toHex(raw)}\u2069")
+        val hasB0 = raw.any { (it.toInt() and 0xFF) == 0xB0 }
+        if (!hasB0) {
+            onLog("R8C Sync Error: استجاب بـ \u2066${toHex(raw)}\u2069 بدلاً من 0xB0.")
             return false
         }
         onLog("R8C Connection OK (0xB0).")
