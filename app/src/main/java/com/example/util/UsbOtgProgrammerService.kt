@@ -94,6 +94,12 @@ object UsbOtgProgrammerService {
     private var isUartLineConfigured: Boolean = false
     @Volatile
     private var echoCancellationEnabled: Boolean = true
+    @Volatile
+    private var rawRxMonitorEnabled: Boolean = false
+    @Volatile
+    private var currentDtrState: Boolean = false
+    @Volatile
+    private var currentRtsState: Boolean = false
 
     private enum class BootSyncMode {
         SINGLE_WIRE_RL78,
@@ -195,6 +201,9 @@ object UsbOtgProgrammerService {
         activeChipType = null
         controlInterfaceIndex = 0
         isUartLineConfigured = false
+        rawRxMonitorEnabled = false
+        currentDtrState = false
+        currentRtsState = false
         _isConnectedFlow.value = false
         _connectedLabelFlow.value = ""
     }
@@ -263,9 +272,7 @@ object UsbOtgProgrammerService {
             activeChipType = ProgrammerChipType.fromVendorId(targetDevice.vendorId)
 
             configureUartHardware(conn, targetDevice, activeChipType, baudRate, onLog, purgeHardwareFifo = true)
-            if (!enableDtrRtsReset) {
-                setControlLines(conn, targetDevice, activeChipType, dtr = false, rts = false, onLog = onLog)
-            }
+            setControlLines(conn, targetDevice, activeChipType, dtr = false, rts = false, onLog = onLog)
 
             startContinuousReaderLoop(conn, endpoints.first)
 
@@ -309,10 +316,14 @@ object UsbOtgProgrammerService {
                     if (n > 0) {
                         val startIdx = if (activeChipType == ProgrammerChipType.FT232RL) 2 else 0
                         if (n > startIdx) {
+                            val chunk = buf.copyOfRange(startIdx, n)
                             synchronized(rxLock) {
-                                for (i in startIdx until n) {
-                                    rxBuffer.addLast(buf[i])
+                                for (b in chunk) {
+                                    rxBuffer.addLast(b)
                                 }
+                            }
+                            if (rawRxMonitorEnabled) {
+                                externalLogSink?.invoke("RX Raw Live (+${chunk.size}B): [${chunk.joinToString(", ") { "%02X".format(it) }}]")
                             }
                         }
                     } else if (n < 0) {
@@ -488,17 +499,41 @@ object UsbOtgProgrammerService {
         override fun configureUart(baudRate: Int, onLog: (String) -> Unit): Boolean {
             val conn = activeConnection ?: return false
             val dev = activeDevice ?: return false
-            if (isUartLineConfigured && currentBaudRate == baudRate && readerJob?.isActive == true) {
-                return true
-            }
             configureUartHardware(conn, dev, activeChipType, baudRate, onLog, purgeHardwareFifo = (readerJob?.isActive != true))
             return true
+        }
+
+        override fun ensureReaderListening(onLog: (String) -> Unit): Boolean {
+            val conn = activeConnection ?: run {
+                onLog("RX Listener Error: لا يوجد اتصال USB نشط.")
+                return false
+            }
+            val epIn = inEndpoint ?: run {
+                onLog("RX Listener Error: نقطة Bulk IN غير متاحة.")
+                return false
+            }
+            if (readerJob?.isActive != true) {
+                startContinuousReaderLoop(conn, epIn)
+            }
+            return true
+        }
+
+        override fun setRawRxMonitor(enabled: Boolean) {
+            rawRxMonitorEnabled = enabled
         }
 
         override fun setControlLines(dtr: Boolean, rts: Boolean, onLog: (String) -> Unit) {
             val conn = activeConnection ?: return
             val dev = activeDevice ?: return
             this@UsbOtgProgrammerService.setControlLines(conn, dev, activeChipType, dtr = dtr, rts = rts, onLog = onLog)
+        }
+
+        override fun setDtr(enabled: Boolean, onLog: (String) -> Unit) {
+            setSingleDtr(enabled, onLog)
+        }
+
+        override fun setRts(enabled: Boolean, onLog: (String) -> Unit) {
+            setSingleRts(enabled, onLog)
         }
 
         override fun flushInputBuffer() {
@@ -509,13 +544,27 @@ object UsbOtgProgrammerService {
             return writeRawBytes(bytes)
         }
 
+        override suspend fun sendAndCollectRawWindow(
+            txBytes: ByteArray,
+            minExpectedToShortCircuit: Int,
+            timeoutMs: Int,
+            onLog: (String) -> Unit
+        ): R8cProtocolEngine.R8cExchangeResult {
+            return executeRawCollectionWindow(
+                txBytes = txBytes,
+                minExpectedToShortCircuit = minExpectedToShortCircuit,
+                timeoutMs = timeoutMs,
+                onLog = onLog
+            )
+        }
+
         override suspend fun sendAndReceiveR8C(
             txBytes: ByteArray,
             expectedRxLength: Int,
             timeoutMs: Int,
             onLog: (String) -> Unit
         ): R8cProtocolEngine.R8cExchangeResult {
-            return executeStrictEchoExchange(
+            return executeSmartEchoExchange(
                 txBytes = txBytes,
                 expectedRxLength = expectedRxLength,
                 timeoutMs = timeoutMs,
@@ -609,7 +658,8 @@ object UsbOtgProgrammerService {
         onProgress: (bytesDone: Int, totalBytes: Int, label: String) -> Unit
     ): FlashOperationResult = withContext(Dispatchers.IO) {
         externalLogSink = onLog
-        if (!ensureConnectionHealthy(context, preferredChip, baudRate, enableDtrRtsReset, onLog)) {
+        val initialBaud = if (processor.protocolType == ProtocolFamilyType.R8C_M16C) 9600 else baudRate
+        if (!ensureConnectionHealthy(context, preferredChip, initialBaud, enableDtrRtsReset, onLog)) {
             return@withContext FlashOperationResult.Failure("يجب الاتصال بمبرمجة USB OTG أولاً.")
         }
 
@@ -684,7 +734,8 @@ object UsbOtgProgrammerService {
         onProgress: (bytesDone: Int, totalBytes: Int, label: String) -> Unit
     ): FlashOperationResult = withContext(Dispatchers.IO) {
         externalLogSink = onLog
-        if (!ensureConnectionHealthy(context, preferredChip, baudRate, enableDtrRtsReset, onLog)) {
+        val initialBaud = if (processor.protocolType == ProtocolFamilyType.R8C_M16C) 9600 else baudRate
+        if (!ensureConnectionHealthy(context, preferredChip, initialBaud, enableDtrRtsReset, onLog)) {
             return@withContext FlashOperationResult.Failure("يجب الاتصال بمبرمجة USB OTG أولاً.")
         }
 
@@ -733,7 +784,8 @@ object UsbOtgProgrammerService {
         onProgress: (bytesDone: Int, totalBytes: Int, label: String) -> Unit
     ): FlashOperationResult = withContext(Dispatchers.IO) {
         externalLogSink = onLog
-        if (!ensureConnectionHealthy(context, preferredChip, baudRate, enableDtrRtsReset, onLog)) {
+        val initialBaud = if (processor.protocolType == ProtocolFamilyType.R8C_M16C) 9600 else baudRate
+        if (!ensureConnectionHealthy(context, preferredChip, initialBaud, enableDtrRtsReset, onLog)) {
             return@withContext FlashOperationResult.Failure("يجب الاتصال بمبرمجة USB OTG أولاً.")
         }
 
@@ -1057,6 +1109,8 @@ object UsbOtgProgrammerService {
         rts: Boolean,
         onLog: ((String) -> Unit)? = null
     ) {
+        currentDtrState = dtr
+        currentRtsState = rts
         try {
             val ret = when (chipType) {
                 ProgrammerChipType.FT232RL -> {
@@ -1081,6 +1135,60 @@ object UsbOtgProgrammerService {
             }
         } catch (e: Throwable) {
             onLog?.invoke("DTR/RTS Exception (${device.deviceName}): ${e.toString()}")
+        }
+    }
+
+    private fun setSingleDtr(enabled: Boolean, onLog: ((String) -> Unit)? = null) {
+        currentDtrState = enabled
+        val conn = activeConnection ?: return
+        val dev = activeDevice ?: return
+        try {
+            val ret = when (activeChipType) {
+                ProgrammerChipType.CP2102 -> {
+                    val value = if (enabled) 0x0101 else 0x0100
+                    conn.controlTransfer(0x41, 0x07, value, controlInterfaceIndex, null, 0, 300)
+                }
+                ProgrammerChipType.FT232RL -> {
+                    val value = if (enabled) 0x0101 else 0x0100
+                    conn.controlTransfer(0x40, 0x01, value, 0, null, 0, 300)
+                }
+                else -> {
+                    setControlLines(conn, dev, activeChipType, dtr = currentDtrState, rts = currentRtsState, onLog = onLog)
+                    0
+                }
+            }
+            if (ret < 0) {
+                onLog?.invoke("setDTR($enabled) Warning ($activeChipType): controlTransfer returned $ret")
+            }
+        } catch (e: Throwable) {
+            onLog?.invoke("setDTR($enabled) Exception: ${e.toString()}")
+        }
+    }
+
+    private fun setSingleRts(enabled: Boolean, onLog: ((String) -> Unit)? = null) {
+        currentRtsState = enabled
+        val conn = activeConnection ?: return
+        val dev = activeDevice ?: return
+        try {
+            val ret = when (activeChipType) {
+                ProgrammerChipType.CP2102 -> {
+                    val value = if (enabled) 0x0202 else 0x0200
+                    conn.controlTransfer(0x41, 0x07, value, controlInterfaceIndex, null, 0, 300)
+                }
+                ProgrammerChipType.FT232RL -> {
+                    val value = if (enabled) 0x0202 else 0x0200
+                    conn.controlTransfer(0x40, 0x01, value, 0, null, 0, 300)
+                }
+                else -> {
+                    setControlLines(conn, dev, activeChipType, dtr = currentDtrState, rts = currentRtsState, onLog = onLog)
+                    0
+                }
+            }
+            if (ret < 0) {
+                onLog?.invoke("setRTS($enabled) Warning ($activeChipType): controlTransfer returned $ret")
+            }
+        } catch (e: Throwable) {
+            onLog?.invoke("setRTS($enabled) Exception: ${e.toString()}")
         }
     }
 
@@ -1117,12 +1225,75 @@ object UsbOtgProgrammerService {
     }
 
     /**
-     * Strict Single-Wire UART Mode 3 Echo Exchange (sendAndReceiveR8C):
-     * Sends [txBytes] (length N), waits up to [timeoutMs] (or wire budget for N + expectedRxLength bytes)
-     * until N + [expectedRxLength] bytes accumulate in rxBuffer, drops the first N echoed bytes,
-     * and returns ONLY the genuine M ([expectedRxLength]) MCU reply bytes.
+     * Collects ALL raw bytes arriving in rxQueue over [timeoutMs] (e.g. 1000ms for 0xB0 connection/change_speed).
+     * If at least [minExpectedToShortCircuit] bytes arrive and the line stays quiet for 55ms, completes early.
      */
-    private suspend fun executeStrictEchoExchange(
+    private suspend fun executeRawCollectionWindow(
+        txBytes: ByteArray,
+        minExpectedToShortCircuit: Int,
+        timeoutMs: Int,
+        onLog: (String) -> Unit
+    ): R8cProtocolEngine.R8cExchangeResult {
+        val conn = activeConnection
+        val epIn = inEndpoint
+        if (conn != null && epIn != null && readerJob?.isActive != true) {
+            startContinuousReaderLoop(conn, epIn)
+        }
+        synchronized(rxLock) {
+            rxBuffer.clear()
+        }
+        val txErr = writeRawBytes(txBytes)
+        if (txErr != null) {
+            return R8cProtocolEngine.R8cExchangeResult(txError = txErr)
+        }
+
+        val deadline = System.currentTimeMillis() + timeoutMs.toLong()
+        val rawStream = ByteArrayOutputStream(16)
+        var lastByteAt = 0L
+
+        try {
+            while (true) {
+                var drainedAny = false
+                synchronized(rxLock) {
+                    while (rxBuffer.isNotEmpty()) {
+                        rawStream.write(rxBuffer.removeFirst().toInt() and 0xFF)
+                        drainedAny = true
+                    }
+                }
+                val now = System.currentTimeMillis()
+                if (drainedAny) {
+                    lastByteAt = now
+                }
+                if (now >= deadline) break
+                if (rawStream.size() >= minExpectedToShortCircuit &&
+                    lastByteAt > 0L && (now - lastByteAt) >= 55L
+                ) {
+                    break
+                }
+                delay(if (drainedAny) 2L else 5L)
+            }
+        } catch (e: Throwable) {
+            onLog("R8C Raw Collect Exception: ${e.toString()}")
+        }
+
+        val rawBytes = rawStream.toByteArray()
+        return R8cProtocolEngine.R8cExchangeResult(
+            txError = null,
+            totalRawReceived = rawBytes.size,
+            echoedCount = 0,
+            replyBytes = rawBytes,
+            rawBytes = rawBytes
+        )
+    }
+
+    /**
+     * Smart Echo-Stripping Exchange:
+     * Sends [txBytes] (length N) and collects incoming bytes in rxBuffer.
+     * Automatically detects whether the leading bytes match [txBytes] (diode echo):
+     * - If the leading bytes match [txBytes], strips those N echo bytes and returns remaining MCU reply bytes.
+     * - If the leading bytes do NOT match [txBytes], preserves all received bytes as genuine MCU reply.
+     */
+    private suspend fun executeSmartEchoExchange(
         txBytes: ByteArray,
         expectedRxLength: Int,
         timeoutMs: Int,
@@ -1142,29 +1313,50 @@ object UsbOtgProgrammerService {
         }
 
         val n = txBytes.size
-        val neededReply = expectedRxLength.coerceAtLeast(0)
-        val totalNeeded = n + neededReply
-        if (totalNeeded <= 0) {
+        val m = expectedRxLength.coerceAtLeast(0)
+        val totalWithEcho = n + m
+        if (totalWithEcho <= 0) {
             return R8cProtocolEngine.R8cExchangeResult()
         }
 
         val baud = currentBaudRate.coerceAtLeast(300)
-        val wireBudgetMs = ((totalNeeded * 11_500L) / baud) + 250L
-        val effectiveTimeoutMs = maxOf(timeoutMs.toLong(), wireBudgetMs)
+        val effectiveTimeoutMs = if (m == 0) {
+            val echoWireBudget = ((n * 11_000L) / baud) + 85L
+            minOf(timeoutMs.toLong(), echoWireBudget).coerceAtLeast(85L)
+        } else {
+            val wireBudgetMs = ((totalWithEcho * 11_500L) / baud) + 250L
+            maxOf(timeoutMs.toLong(), wireBudgetMs)
+        }
         val deadline = System.currentTimeMillis() + effectiveTimeoutMs
 
-        val rawStream = ByteArrayOutputStream(totalNeeded.coerceAtLeast(16))
+        val rawStream = ByteArrayOutputStream(totalWithEcho.coerceAtLeast(16))
+        var lastByteAt = 0L
+
         try {
-            while (rawStream.size() < totalNeeded) {
+            while (rawStream.size() < totalWithEcho) {
                 var drainedAny = false
                 synchronized(rxLock) {
-                    while (rxBuffer.isNotEmpty() && rawStream.size() < totalNeeded) {
+                    while (rxBuffer.isNotEmpty() && rawStream.size() < totalWithEcho) {
                         rawStream.write(rxBuffer.removeFirst().toInt() and 0xFF)
                         drainedAny = true
                     }
                 }
-                if (rawStream.size() >= totalNeeded) break
-                if (System.currentTimeMillis() >= deadline) break
+                val now = System.currentTimeMillis()
+                if (drainedAny) {
+                    lastByteAt = now
+                }
+                if (rawStream.size() >= totalWithEcho) break
+                if (now >= deadline) break
+
+                if (m == 0 && rawStream.size() >= n && lastByteAt > 0L && (now - lastByteAt) >= 15L) {
+                    break
+                }
+                if (m > 0 && rawStream.size() >= m && lastByteAt > 0L && (now - lastByteAt) >= 45L) {
+                    val snapshot = rawStream.toByteArray()
+                    if (!startsWithBytes(snapshot, txBytes)) {
+                        break
+                    }
+                }
                 delay(if (drainedAny) 2L else 3L)
             }
         } catch (e: Throwable) {
@@ -1172,19 +1364,48 @@ object UsbOtgProgrammerService {
         }
 
         val rawBytes = rawStream.toByteArray()
-        val echoCount = min(n, rawBytes.size)
-        val reply = if (rawBytes.size > n) {
-            rawBytes.copyOfRange(n, rawBytes.size)
-        } else {
-            ByteArray(0)
+        val echoedCount: Int
+        val reply: ByteArray
+
+        when {
+            n > 0 && rawBytes.size >= n && startsWithBytes(rawBytes, txBytes) -> {
+                echoedCount = n
+                val afterEcho = rawBytes.copyOfRange(n, rawBytes.size)
+                reply = if (m > 0 && afterEcho.size > m) afterEcho.copyOfRange(0, m) else afterEcho
+            }
+            n > 0 && rawBytes.isNotEmpty() && rawBytes.size < n && isPrefixOf(rawBytes, txBytes) -> {
+                echoedCount = rawBytes.size
+                reply = ByteArray(0)
+            }
+            else -> {
+                echoedCount = 0
+                reply = if (m > 0 && rawBytes.size > m) rawBytes.copyOfRange(0, m) else rawBytes
+            }
         }
+
         return R8cProtocolEngine.R8cExchangeResult(
             txError = null,
             totalRawReceived = rawBytes.size,
-            echoedCount = echoCount,
+            echoedCount = echoedCount,
             replyBytes = reply,
             rawBytes = rawBytes
         )
+    }
+
+    private fun startsWithBytes(buffer: ByteArray, prefix: ByteArray): Boolean {
+        if (prefix.isEmpty() || buffer.size < prefix.size) return false
+        for (i in prefix.indices) {
+            if (buffer[i] != prefix[i]) return false
+        }
+        return true
+    }
+
+    private fun isPrefixOf(buffer: ByteArray, full: ByteArray): Boolean {
+        if (buffer.isEmpty() || buffer.size > full.size) return false
+        for (i in buffer.indices) {
+            if (buffer[i] != full[i]) return false
+        }
+        return true
     }
 
     /**

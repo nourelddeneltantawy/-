@@ -54,9 +54,19 @@ object R8cProtocolEngine {
 
     interface SerialTransport {
         fun configureUart(baudRate: Int, onLog: (String) -> Unit): Boolean
+        fun ensureReaderListening(onLog: (String) -> Unit): Boolean
+        fun setRawRxMonitor(enabled: Boolean)
         fun setControlLines(dtr: Boolean, rts: Boolean, onLog: (String) -> Unit)
+        fun setDtr(enabled: Boolean, onLog: (String) -> Unit)
+        fun setRts(enabled: Boolean, onLog: (String) -> Unit)
         fun flushInputBuffer()
         suspend fun writeRaw(bytes: ByteArray): String?
+        suspend fun sendAndCollectRawWindow(
+            txBytes: ByteArray,
+            minExpectedToShortCircuit: Int,
+            timeoutMs: Int,
+            onLog: (String) -> Unit
+        ): R8cExchangeResult
         suspend fun sendAndReceiveR8C(
             txBytes: ByteArray,
             expectedRxLength: Int,
@@ -131,9 +141,9 @@ object R8cProtocolEngine {
     }
 
     /**
-     * 2. Diode-Echo-Filtered Exchange Helper:
-     * Sends `txBytes` (length N), waits until `N + expectedRxLength` bytes accumulate in rxQueue,
-     * discards the first N echoed bytes, and returns only the last M genuine MCU reply bytes.
+     * Smart Echo-Stripping Exchange Helper:
+     * Sends `txBytes` (length N), collects RX bytes into rxQueue, and if the leading bytes
+     * match `txBytes` (diode echo), removes them automatically and returns the remaining MCU reply.
      */
     suspend fun sendAndReceiveR8C(
         transport: SerialTransport,
@@ -151,53 +161,66 @@ object R8cProtocolEngine {
     }
 
     /**
-     * 1. Mandatory 100% Automatic Hardware Boot Entry:
-     *    - Open 9600 bps (8N1)
-     *    - Step A (Pull MODE LOW): set RTS = true, DTR = false -> wait 30ms
-     *    - Step B (RESET Pulse):   keep RTS = true, set DTR = true (RESET=LOW) -> wait 50ms -> set DTR = false (RESET=HIGH)
-     *    - Step C (Boot Capture):  wait 60ms while MCU samples MODE=LOW -> set RTS = false to release MODE/RX
+     * 1. Android USB OTG Boot Entry Sequence:
+     *    - Step 1: Open port & configure parameters (9600, 8, 1, 0 -> 8N1)
+     *    - Step 2: Attach continuous RX listener (rxQueue + immediate Raw RX Monitor)
+     *    - Step 3: Bootloader entry sequence:
+     *        1) setRTS(true)  (pull MODE LOW via diode)   -> wait 50ms
+     *        2) setDTR(true)  (pull RESET = LOW)          -> wait 80ms
+     *        3) setDTR(false) (release RESET = HIGH)      -> wait 120ms (OTG power & internal osc stabilization)
+     *        4) setRTS(false) (release MODE/RX for UART)  -> wait 30ms
      */
     suspend fun startAndConnect(
         transport: SerialTransport,
         onLog: (String) -> Unit
     ): Boolean {
-        onLog("R8C Boot Entry: فتح المنفذ على سرعة 9600 bps (8N1)...")
+        onLog("1) فتح المنفذ وضبط الإعدادات: port.setPortParameters(9600, 8, 1, 0)...")
         if (!transport.configureUart(9600, onLog)) {
             return false
         }
 
-        // الخطوة أ: خفض MODE عبر دايود RTS
-        onLog("الخطوة أ (خفض MODE): RTS=true (سحب MODE=LOW) -> انتظار 30ms...")
-        transport.setControlLines(dtr = false, rts = true, onLog = onLog)
+        onLog("2) ربط مستمع الاستقبال (RX Listener -> rxQueue + Raw RX Monitor)...")
+        transport.setRawRxMonitor(true)
+        if (!transport.ensureReaderListening(onLog)) {
+            return false
+        }
+        // Ensure clean idle pin state before starting the boot pulse sequence
+        transport.setDtr(enabled = false, onLog = onLog)
+        transport.setRts(enabled = false, onLog = onLog)
+        delay(10)
+
+        onLog("3.1) setRTS(true) [خفض MODE عبر الديود] -> انتظار 50ms...")
+        transport.setRts(enabled = true, onLog = onLog)
+        delay(50)
+
+        onLog("3.2) setDTR(true) [خفض RESET = LOW] -> انتظار 80ms...")
+        transport.setDtr(enabled = true, onLog = onLog)
+        delay(80)
+
+        onLog("3.3) setDTR(false) [رفع RESET = HIGH] -> انتظار 120ms لاستقرار جهد OTG والمذبذب...")
+        transport.setDtr(enabled = false, onLog = onLog)
+        delay(120)
+
+        onLog("3.4) setRTS(false) [تحرير MODE/RX لبدء الاتصال] -> انتظار 30ms...")
+        transport.setRts(enabled = false, onLog = onLog)
         delay(30)
 
-        // الخطوة ب: نبضة RESET عبر DTR مع إبقاء RTS=true
-        onLog("الخطوة ب (نبضة RESET): DTR=true (RESET=LOW) مع إبقاء RTS=true لمدة 50ms ثم DTR=false (RESET=HIGH)...")
-        transport.setControlLines(dtr = true, rts = true, onLog = onLog)
-        delay(50)
-        transport.setControlLines(dtr = false, rts = true, onLog = onLog)
-
-        // الخطوة ج: انتظار 60ms لدخول البوتلودر ثم تحرير خط MODE/RX
-        onLog("الخطوة ج (التقاط البوتلودر): انتظار 60ms ثم تحرير RTS=false لفتح خط MODE/RX...")
-        delay(60)
-        transport.setControlLines(dtr = false, rts = false, onLog = onLog)
-        delay(10)
         transport.flushInputBuffer()
-
         return establishConnection(transport, onLog)
     }
 
     /**
-     * 3a. connection():
-     *     - Send 0x00 x 16 with 20ms interval
-     *     - Wait 30ms and clear rxQueue
-     *     - Send [0xB0] (N=1, M=1), drop first echo byte, verify second byte == 0xB0
+     * 2. connection() with Raw RX Monitor:
+     *    - Send 0x00 x 16 with 20ms interval
+     *    - Wait 50ms then rxQueue.clear()
+     *    - Send [0xB0], collect all bytes arriving in rxQueue over 1000ms and log RX Raw: [...]
+     *    - If received bytes contain 0xB0 (whether [B0, B0] or [B0]), take last byte -> Connection OK
      */
     suspend fun establishConnection(
         transport: SerialTransport,
         onLog: (String) -> Unit
     ): Boolean {
-        onLog("TX: 00 x16 (فاصل 20ms بين كل بايت)")
+        onLog("TX: 00 x16 (فاصل 20ms بين كل بايت ثم انتظار 50ms وتفريغ rxQueue)")
         val zero = byteArrayOf(0x00)
         for (i in 0 until 16) {
             val err = transport.writeRaw(zero)
@@ -208,14 +231,14 @@ object R8cProtocolEngine {
             delay(20)
         }
 
-        delay(30)
+        delay(50)
         transport.flushInputBuffer()
+        onLog("rxQueue.clear() بعد 50ms — إرسال 0xB0 وجمع كامل RX خلال 1000ms...")
 
-        onLog("TX: B0 (connection: N=1 صدى + M=1 تأكيد 0xB0)")
-        val res = sendAndReceiveR8C(
-            transport = transport,
+        onLog("TX: B0")
+        val res = transport.sendAndCollectRawWindow(
             txBytes = byteArrayOf(0xB0.toByte()),
-            expectedRxLength = 1,
+            minExpectedToShortCircuit = 2,
             timeoutMs = 1000,
             onLog = onLog
         )
@@ -225,29 +248,27 @@ object R8cProtocolEngine {
         }
 
         val raw = res.rawBytes
+        onLog("RX Raw: [${toHexComma(raw)}]")
         if (raw.isEmpty()) {
-            onLog("RX: (0 بايت خلال 1000ms) — لا يوجد أي بايت مرتد على RX.")
+            onLog("connection() Failed: لا توجد أي بايتات مستلمة (RX Raw: []) خلال 1000ms.")
             return false
         }
-        val reply = res.replyBytes
-        if (reply.isEmpty()) {
-            onLog("RX: \u2066${toHex(raw)}\u2069 (تم استلام الصدى فقط بدون رد المعالج 1/2 بايت — تأكد من البوتلودر وتغذية البوردة).")
+
+        val hasB0 = raw.any { (it.toInt() and 0xFF) == 0xB0 }
+        if (!hasB0) {
+            onLog("connection() Error: البايتات الخام [${toHexComma(raw)}] لا تحتوي على 0xB0.")
             return false
         }
-        onLog("RX: \u2066${toHex(raw)}\u2069 ➔ حذف الصدى، رد المعالج: \u2066${toHex(reply)}\u2069")
-        val ack = reply[0].toInt() and 0xFF
-        if (ack != 0xB0) {
-            onLog("connection() Error: استجاب بـ 0x%02X بدلاً من 0xB0.".format(ack))
-            return false
-        }
-        onLog("connection() OK (0xB0).")
+
+        val finalAck = raw.last().toInt() and 0xFF
+        onLog("Connection OK (0x%02X — استُلم ${raw.size} بايت خام). الانتقال الفوري إلى 0xB0 الثانية (change_speed)...".format(finalAck))
         return true
     }
 
     /**
      * 3b. change_speed():
-     *     - Send [0xB0] a second time for 9600 bps (or 0xB1..0xB4), N=1, M=1
-     *     - Drop echo byte and verify second byte == cmd
+     *     - Send [0xB0] a second time for 9600 bps (or 0xB1..0xB4 for higher rates)
+     *     - Collect Raw RX during 1000ms, log RX Raw: [...], accept if contains target cmd byte
      */
     suspend fun changeSpeed(
         transport: SerialTransport,
@@ -267,11 +288,10 @@ object R8cProtocolEngine {
         }
 
         val tx = byteArrayOf(cmd.toByte())
-        onLog("TX: \u2066${toHex(tx)}\u2069 (change_speed $targetBaudRate bps: N=1 صدى + M=1 تأكيد)")
-        val res = sendAndReceiveR8C(
-            transport = transport,
+        onLog("TX: \u2066${toHex(tx)}\u2069 (change_speed $targetBaudRate bps)")
+        val res = transport.sendAndCollectRawWindow(
             txBytes = tx,
-            expectedRxLength = 1,
+            minExpectedToShortCircuit = 2,
             timeoutMs = 1000,
             onLog = onLog
         )
@@ -279,15 +299,11 @@ object R8cProtocolEngine {
             onLog("TX ERROR (change_speed): ${res.txError}")
             return false
         }
-        val reply = res.replyBytes
-        if (reply.isEmpty()) {
-            onLog("RX: (Timeout 1000ms أثناء change_speed — الخام \u2066${toHex(res.rawBytes)}\u2069)")
-            return false
-        }
-        onLog("RX: \u2066${toHex(res.rawBytes)}\u2069 ➔ \u2066${toHex(reply)}\u2069")
-        val ack = reply[0].toInt() and 0xFF
-        if (ack != cmd) {
-            onLog("change_speed Error: استلم 0x%02X بدلاً من 0x%02X.".format(ack, cmd))
+
+        val raw = res.rawBytes
+        onLog("RX Raw: [${toHexComma(raw)}]")
+        if (!raw.any { (it.toInt() and 0xFF) == cmd }) {
+            onLog("change_speed Error: لم يحتوي RX Raw على 0x%02X خلال 1000ms.".format(cmd))
             return false
         }
 
@@ -305,58 +321,65 @@ object R8cProtocolEngine {
 
     /**
      * 3c. get_version():
-     *     - Send [0xFB] (N=1, M=8), discard byte 0 echo, display genuine 8-byte ASCII version (e.g. "VER.2.10")
+     *     - Send [0xFB], print RX Raw: [...], strip leading echo [0xFB] if present, decode 8 ASCII chars
      */
     suspend fun getVersion(
         transport: SerialTransport,
         onLog: (String) -> Unit
     ): String? {
-        onLog("TX: FB (get_version: N=1 صدى + M=8 بايت)")
+        onLog("TX: FB (get_version)")
         val res = sendAndReceiveR8C(
             transport = transport,
             txBytes = byteArrayOf(0xFB.toByte()),
             expectedRxLength = 8,
-            timeoutMs = 500,
+            timeoutMs = 700,
             onLog = onLog
         )
         if (res.txError != null) {
             onLog("TX ERROR (0xFB): ${res.txError}")
             return null
         }
+        onLog("RX Raw (0xFB): [${toHexComma(res.rawBytes)}]")
         val reply = res.replyBytes
+        if (res.echoedCount > 0) {
+            onLog("تصفية الصدى (0xFB): حذف ${res.echoedCount} بايت صدى ➔ [${toHexComma(reply)}]")
+        }
         if (reply.size < 8) {
-            onLog("RX: \u2066${toHex(res.rawBytes)}\u2069 (استُلم ${reply.size}/8 بايت حقيقي لـ 0xFB)")
+            onLog("get_version Error: استُلم ${reply.size}/8 بايت حقيقي بعد التصفية.")
             return null
         }
         val ascii = reply.filter { it in 32..126 }.map { it.toInt().toChar() }.joinToString("").trim()
-        onLog("RX: \u2066${toHex(reply)}\u2069 (\"$ascii\")")
+        onLog("R8C Bootloader Version: \"$ascii\" (\u2066${toHex(reply)}\u2069)")
         return ascii.ifBlank { toHex(reply) }
     }
 
     /**
      * get_status():
-     * - Send [0x70] (N=1, M=2), drop echo byte, read [SRD, SRD1]
+     * - Send [0x70], auto-strip echo [0x70] if present, read [SRD, SRD1]
      */
     suspend fun getStatus(
         transport: SerialTransport,
         onLog: (String) -> Unit,
         quiet: Boolean = false
     ): R8cStatus? {
-        if (!quiet) onLog("TX: 70 (get_status: N=1 صدى + M=2 بايت [SRD, SRD1])")
+        if (!quiet) onLog("TX: 70 (get_status)")
         val res = sendAndReceiveR8C(
             transport = transport,
             txBytes = byteArrayOf(0x70),
             expectedRxLength = 2,
-            timeoutMs = 500,
+            timeoutMs = 600,
             onLog = onLog
         )
         if (res.txError != null) {
             onLog("TX ERROR (0x70): ${res.txError}")
             return null
         }
+        if (!quiet) {
+            onLog("RX Raw (0x70): [${toHexComma(res.rawBytes)}]")
+        }
         val reply = res.replyBytes
         if (reply.size < 2) {
-            onLog("RX: \u2066${toHex(res.rawBytes)}\u2069 (استُلم ${reply.size}/2 بايت حقيقي من 0x70)")
+            onLog("get_status Error: استُلم ${reply.size}/2 بايت حقيقي [Raw=${toHexComma(res.rawBytes)}]")
             return null
         }
         val st = R8cStatus(
@@ -364,13 +387,13 @@ object R8cProtocolEngine {
             srd1 = reply[1].toInt() and 0xFF
         )
         if (!quiet) {
-            onLog("RX: \u2066${toHex(reply)}\u2069 [SRD=0x%02X, SRD1=0x%02X]".format(st.srd, st.srd1))
+            onLog("RX Status: [${toHexComma(reply)}] -> SRD=0x%02X, SRD1=0x%02X".format(st.srd, st.srd1))
         }
         return st
     }
 
     /**
-     * clear_status(): Send [0x50] (N=1, M=0) and drop echo
+     * clear_status(): Send [0x50] and auto-strip echo if present
      */
     suspend fun clearStatus(
         transport: SerialTransport,
@@ -382,7 +405,7 @@ object R8cProtocolEngine {
             transport = transport,
             txBytes = byteArrayOf(0x50),
             expectedRxLength = 0,
-            timeoutMs = 500,
+            timeoutMs = 400,
             onLog = onLog
         )
         if (res.txError != null) {
@@ -394,8 +417,8 @@ object R8cProtocolEngine {
 
     /**
      * 3d. id_inspection():
-     *     - Send [0xF5, 0xDF, 0xFF, 0x00, 0x07, id0..id6] (N=12, M=0) -> discard 12 echo bytes
-     *     - Send [0x70] (N=1, M=2) -> discard byte 0 echo -> check (SRD1 >> 2) & 3 == 3
+     *     - Send [0xF5, 0xDF, 0xFF, 0x00, 0x07, id0..id6], strip echo if received
+     *     - Send [0x70] and check ((SRD1 >> 2) & 3) == 3
      */
     suspend fun idInspection(
         transport: SerialTransport,
@@ -414,7 +437,7 @@ object R8cProtocolEngine {
             }
         }
 
-        onLog("TX (12B): \u2066${toHex(frame)}\u2069 (id_inspection: حذف 12 بايت صدى)")
+        onLog("TX (12B): \u2066${toHex(frame)}\u2069 (id_inspection 0xF5)")
         val res = sendAndReceiveR8C(
             transport = transport,
             txBytes = frame,
@@ -425,6 +448,9 @@ object R8cProtocolEngine {
         if (res.txError != null) {
             onLog("TX ERROR (0xF5): ${res.txError}")
             return false to null
+        }
+        if (res.rawBytes.isNotEmpty()) {
+            onLog("RX Raw (0xF5): [${toHexComma(res.rawBytes)}] (صدى=${res.echoedCount}B)")
         }
 
         val st = getStatus(transport, onLog, quiet = false) ?: return false to null
@@ -439,8 +465,8 @@ object R8cProtocolEngine {
 
     /**
      * 3e. read_page():
-     *     - Send [0xFF, (address >> 8) & 0xFF, (address >> 16) & 0xFF] (N=3, M=256)
-     *     - Discard first 3 echo bytes and return 256 genuine flash bytes
+     *     - Send [0xFF, (address >> 8) & 0xFF, (address >> 16) & 0xFF]
+     *     - Auto-strip leading echo if present and return 256 genuine flash bytes
      */
     suspend fun readPage(
         transport: SerialTransport,
@@ -454,7 +480,7 @@ object R8cProtocolEngine {
             ((address ushr 16) and 0xFF).toByte()
         )
         if (verboseFrameLog) {
-            onLog("TX: \u2066${toHex(cmd)}\u2069 (read_page 0x%05X: N=3 صدى + M=256 بايت)".format(address))
+            onLog("TX: \u2066${toHex(cmd)}\u2069 (read_page 0x%05X)".format(address))
         }
         val res = sendAndReceiveR8C(
             transport = transport,
@@ -467,13 +493,17 @@ object R8cProtocolEngine {
             onLog("TX ERROR (read_page 0x%05X): ${res.txError}".format(address))
             return null
         }
+        if (verboseFrameLog && res.rawBytes.isNotEmpty()) {
+            val preview = res.rawBytes.take(16).toByteArray()
+            onLog("RX Raw (0xFF @ 0x%05X, ${res.rawBytes.size}B, صدى=${res.echoedCount}B): [${toHexComma(preview)} ...]".format(address))
+        }
         val page = res.replyBytes
         if (page.size < 256) {
-            onLog("RX Error (read_page 0x%05X): استُلم ${page.size}/256 بايت حقيقي (الخام=${res.totalRawReceived}/259).".format(address))
+            onLog("RX Error (read_page 0x%05X): استُلم ${page.size}/256 بايت حقيقي (الخام=${res.totalRawReceived}).".format(address))
             return null
         }
         if (verboseFrameLog) {
-            onLog("RX (256B @ 0x%05X): \u2066${toHex(page.take(16).toByteArray())}\u2069 ...".format(address))
+            onLog("RX Flash (256B @ 0x%05X): \u2066${toHex(page.take(16).toByteArray())}\u2069 ...".format(address))
         }
         return page
     }
@@ -618,26 +648,31 @@ object R8cProtocolEngine {
         val totalPages = (totalSize + 255) / 256
         var bytesRead = 0
 
-        for (pageIdx in 0 until totalPages) {
-            val physicalAddr = (startAddr + pageIdx * 256) and 0xFFFFFF00.toInt()
-            val chunk = readPage(
-                transport = transport,
-                address = physicalAddr,
-                onLog = onLog,
-                verboseFrameLog = (pageIdx == 0 || pageIdx == totalPages - 1)
-            ) ?: return FlashOperationResult.Failure("فشلت قراءة الصفحة عند العنوان 0x%06X.".format(physicalAddr))
+        try {
+            for (pageIdx in 0 until totalPages) {
+                transport.setRawRxMonitor(pageIdx == 0)
+                val physicalAddr = (startAddr + pageIdx * 256) and 0xFFFFFF00.toInt()
+                val chunk = readPage(
+                    transport = transport,
+                    address = physicalAddr,
+                    onLog = onLog,
+                    verboseFrameLog = (pageIdx == 0 || pageIdx == totalPages - 1)
+                ) ?: return FlashOperationResult.Failure("فشلت قراءة الصفحة عند العنوان 0x%06X.".format(physicalAddr))
 
-            val dstOffset = pageIdx * 256
-            val copyLen = min(256, totalSize - dstOffset)
-            System.arraycopy(chunk, 0, resultBuffer, dstOffset, copyLen)
-            bytesRead += copyLen
+                val dstOffset = pageIdx * 256
+                val copyLen = min(256, totalSize - dstOffset)
+                System.arraycopy(chunk, 0, resultBuffer, dstOffset, copyLen)
+                bytesRead += copyLen
 
-            val pct = ((bytesRead * 100L) / totalSize.coerceAtLeast(1)).toInt()
-            onProgress(
-                bytesRead,
-                totalSize,
-                "قراءة ${processor.partNumber}: $pct% (0x%05X)".format(physicalAddr)
-            )
+                val pct = ((bytesRead * 100L) / totalSize.coerceAtLeast(1)).toInt()
+                onProgress(
+                    bytesRead,
+                    totalSize,
+                    "قراءة ${processor.partNumber}: $pct% (0x%05X)".format(physicalAddr)
+                )
+            }
+        } finally {
+            transport.setRawRxMonitor(false)
         }
 
         return FlashOperationResult.Success(
@@ -675,6 +710,7 @@ object R8cProtocolEngine {
             return FlashOperationResult.Failure(LOCKED_CHIP_MESSAGE)
         }
 
+        transport.setRawRxMonitor(false)
         val blocks = buildEraseBlocks(layout.romArea.org, layout.romArea.end)
         for ((idx, blockAddr) in blocks.withIndex()) {
             onProgress(
@@ -729,70 +765,75 @@ object R8cProtocolEngine {
         val totalPages = (totalSize + 255) / 256
         val erasedBlocks = HashSet<Int>()
 
-        for (pageIdx in 0 until totalPages) {
-            val relOffset = pageIdx * 256
-            val len = min(256, totalSize - relOffset)
-            val bytesDone = min(relOffset + len, totalSize)
-            val slice = firmwareBytes.copyOfRange(relOffset, relOffset + len)
-            val physicalAddr = (baseAddr + relOffset) and 0xFFFFFF00.toInt()
+        try {
+            for (pageIdx in 0 until totalPages) {
+                transport.setRawRxMonitor(pageIdx == 0)
+                val relOffset = pageIdx * 256
+                val len = min(256, totalSize - relOffset)
+                val bytesDone = min(relOffset + len, totalSize)
+                val slice = firmwareBytes.copyOfRange(relOffset, relOffset + len)
+                val physicalAddr = (baseAddr + relOffset) and 0xFFFFFF00.toInt()
 
-            if (slice.all { it == 0xFF.toByte() }) {
-                onProgress(bytesDone, totalSize, "تخطي صفحة فارغة 0x%05X".format(physicalAddr))
-                continue
-            }
-
-            if (verifyOnly) {
-                val chipPage = readPage(
-                    transport = transport,
-                    address = physicalAddr,
-                    onLog = onLog,
-                    verboseFrameLog = (pageIdx == 0)
-                ) ?: return FlashOperationResult.Failure("تعذر قراءة الصفحة 0x%05X للمطابقة.".format(physicalAddr))
-
-                for (i in 0 until len) {
-                    if (chipPage[i] != slice[i]) {
-                        val mismatchMsg = "اختلاف المطابقة عند 0x%05X: المتوقع 0x%02X والمقروء 0x%02X."
-                            .format(physicalAddr + i, slice[i].toInt() and 0xFF, chipPage[i].toInt() and 0xFF)
-                        onLog("Verify Mismatch: $mismatchMsg")
-                        return FlashOperationResult.Failure(mismatchMsg)
-                    }
+                if (slice.all { it == 0xFF.toByte() }) {
+                    onProgress(bytesDone, totalSize, "تخطي صفحة فارغة 0x%05X".format(physicalAddr))
+                    continue
                 }
-                onProgress(
-                    bytesDone,
-                    totalSize,
-                    "مطابقة صفحة ${pageIdx + 1}/$totalPages (0x%05X)".format(physicalAddr)
-                )
-            } else {
-                val blockSize = if (physicalAddr < 0x8000) 1024 else 4096
-                val blockBase = physicalAddr and (blockSize - 1).inv()
-                if (erasedBlocks.add(blockBase)) {
+
+                if (verifyOnly) {
+                    val chipPage = readPage(
+                        transport = transport,
+                        address = physicalAddr,
+                        onLog = onLog,
+                        verboseFrameLog = (pageIdx == 0)
+                    ) ?: return FlashOperationResult.Failure("تعذر قراءة الصفحة 0x%05X للمطابقة.".format(physicalAddr))
+
+                    for (i in 0 until len) {
+                        if (chipPage[i] != slice[i]) {
+                            val mismatchMsg = "اختلاف المطابقة عند 0x%05X: المتوقع 0x%02X والمقروء 0x%02X."
+                                .format(physicalAddr + i, slice[i].toInt() and 0xFF, chipPage[i].toInt() and 0xFF)
+                            onLog("Verify Mismatch: $mismatchMsg")
+                            return FlashOperationResult.Failure(mismatchMsg)
+                        }
+                    }
                     onProgress(
-                        bytesDone.coerceAtLeast(1) - 1,
+                        bytesDone,
                         totalSize,
-                        "مسح بلوك 0x%05X قبل الكتابة...".format(blockBase)
+                        "مطابقة صفحة ${pageIdx + 1}/$totalPages (0x%05X)".format(physicalAddr)
                     )
-                    if (!erasePage(transport, blockBase, onLog)) {
-                        return FlashOperationResult.Failure("فشل مسح البلوك 0x%05X قبل البرمجة.".format(blockBase))
+                } else {
+                    val blockSize = if (physicalAddr < 0x8000) 1024 else 4096
+                    val blockBase = physicalAddr and (blockSize - 1).inv()
+                    if (erasedBlocks.add(blockBase)) {
+                        onProgress(
+                            bytesDone.coerceAtLeast(1) - 1,
+                            totalSize,
+                            "مسح بلوك 0x%05X قبل الكتابة...".format(blockBase)
+                        )
+                        if (!erasePage(transport, blockBase, onLog)) {
+                            return FlashOperationResult.Failure("فشل مسح البلوك 0x%05X قبل البرمجة.".format(blockBase))
+                        }
                     }
-                }
 
-                val ok = writePage(
-                    transport = transport,
-                    address = physicalAddr,
-                    data256 = slice,
-                    onLog = onLog,
-                    verboseFrameLog = (pageIdx == 0 || pageIdx == totalPages - 1)
-                )
-                if (!ok) {
-                    return FlashOperationResult.Failure("فشلت كتابة الصفحة عند 0x%05X.".format(physicalAddr))
+                    val ok = writePage(
+                        transport = transport,
+                        address = physicalAddr,
+                        data256 = slice,
+                        onLog = onLog,
+                        verboseFrameLog = (pageIdx == 0 || pageIdx == totalPages - 1)
+                    )
+                    if (!ok) {
+                        return FlashOperationResult.Failure("فشلت كتابة الصفحة عند 0x%05X.".format(physicalAddr))
+                    }
+                    val pct = ((bytesDone * 100L) / totalSize.coerceAtLeast(1)).toInt()
+                    onProgress(
+                        bytesDone,
+                        totalSize,
+                        "كتابة ${processor.partNumber}: $pct% (0x%05X)".format(physicalAddr)
+                    )
                 }
-                val pct = ((bytesDone * 100L) / totalSize.coerceAtLeast(1)).toInt()
-                onProgress(
-                    bytesDone,
-                    totalSize,
-                    "كتابة ${processor.partNumber}: $pct% (0x%05X)".format(physicalAddr)
-                )
             }
+        } finally {
+            transport.setRawRxMonitor(false)
         }
 
         val doneMsg = if (verifyOnly) {
@@ -815,4 +856,6 @@ object R8cProtocolEngine {
     }
 
     private fun toHex(bytes: ByteArray): String = bytes.joinToString(" ") { "%02X".format(it) }
+
+    private fun toHexComma(bytes: ByteArray): String = bytes.joinToString(", ") { "%02X".format(it) }
 }
