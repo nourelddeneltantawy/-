@@ -368,38 +368,31 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
     }
 
     fun autoDetectChipId() {
-        if (_uiState.value.isAutoDetecting || _uiState.value.isBusy) return
-        viewModelScope.launch {
-            val userScoped = _uiState.value.hasUserSelectedFamily
-            val familyHint = if (userScoped) {
-                _uiState.value.selectedProcessor?.mainFamily ?: _uiState.value.selectedMainFamily
-            } else {
-                null
-            }
-            val preferredPart = if (userScoped) _uiState.value.selectedProcessor?.partNumber else null
-            val isR8cHint = familyHint?.let {
-                it.contains("R8C", ignoreCase = true) || it.contains("M16C", ignoreCase = true)
-            } ?: false
-
+        val current = _uiState.value.selectedProcessor
+        val isR8c = current?.protocolType == ProtocolFamilyType.R8C_M16C ||
+            _uiState.value.selectedMainFamily.contains("R8C", ignoreCase = true) ||
+            _uiState.value.selectedMainFamily.contains("M16C", ignoreCase = true)
+        if (isR8c) {
             _uiState.update {
                 it.copy(
-                    isAutoDetecting = true,
-                    autoDetectStatus = when {
-                        familyHint == null ->
-                            "جاري الفحص التلقائي الشامل (اختبار R8C خلال 400ms ثم RL78) مع تصفية الصدى..."
-                        isR8cHint ->
-                            "جاري فحص معالج R8C عبر USB OTG (انتظار 100ms بعد RESET • Echo Filter=ON • 400ms)..."
-                        else ->
-                            "جاري فحص $familyHint عبر USB OTG مع تتابع RTS/TX Break وتصفية صدى D1..."
-                    },
+                    autoDetectStatus = "تم إيقاف الفحص التلقائي لعائلة R8C — اختر المعالج يدوياً ثم انتقل للتوصيل والبرمجة.",
                     autoDetectIsSuccess = false
                 )
             }
-            addLog(
-                if (familyHint == null) "بدء التعرف التلقائي الشامل (Universal Auto-Detect: R8C ← RL78)..."
-                else "بدء التعرف التلقائي للعائلة ($familyHint)...",
-                LogLevel.INFO
-            )
+            addLog("ملاحظة: ميزة الفحص التلقائي موقفة لعائلة R8C؛ استخدم الاختيار اليدوي.", LogLevel.INFO)
+            return
+        }
+        if (_uiState.value.isAutoDetecting || _uiState.value.isBusy) return
+        viewModelScope.launch {
+            val familyHint = _uiState.value.selectedProcessor?.mainFamily ?: _uiState.value.selectedMainFamily
+            _uiState.update {
+                it.copy(
+                    isAutoDetecting = true,
+                    autoDetectStatus = "جاري فحص $familyHint عبر USB OTG مع تتابع RTS/TX Break وتصفية صدى D1...",
+                    autoDetectIsSuccess = false
+                )
+            }
+            addLog("بدء التعرف التلقائي للعائلة ($familyHint)...", LogLevel.INFO)
 
             val idBytes = parseIdCodeBytes() ?: R8cProtocolEngine.DEFAULT_ID_CODE.copyOf()
             when (val res = UsbOtgProgrammerService.probeChipId(
@@ -407,7 +400,7 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                 preferredChip = _uiState.value.selectedProgrammer,
                 enableDtrRtsReset = _uiState.value.enableDtrRtsReset,
                 targetMainFamily = familyHint,
-                preferredPartNumber = preferredPart,
+                preferredPartNumber = _uiState.value.selectedProcessor?.partNumber,
                 idCodeBytes = idBytes,
                 catalog = allProcessors
             ) { msg ->
@@ -415,7 +408,7 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
             }) {
                 is ChipAutoDetectResult.Matched -> {
                     res.matchedProcessor?.let { matched ->
-                        applySelectedMcuHierarchy(matched, clearSearch = true, markUserSelected = false)
+                        applySelectedMcuHierarchy(matched, clearSearch = true, markUserSelected = true)
                     }
                     _uiState.update {
                         it.copy(
@@ -575,11 +568,16 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                     }
                     val bytes = appContext.contentResolver.openInputStream(uri)?.use { it.readBytes() }
                         ?: throw IllegalStateException("تعذر فتح الملف المختار.")
-                    FirmwareParser.parseFirmware(bytes, fileName, mcu.flashSizeBytes)
+                    FirmwareParser.parseFirmware(
+                        rawBytes = bytes,
+                        fileName = fileName,
+                        targetFlashSizeBytes = mcu.flashSizeBytes,
+                        preferredBaseAddress = defaultBaseAddressFor(mcu)
+                    )
                 }
 
                 val firstDataRow = computeFirstDataRow(parsed.bytes)
-                val resolvedBase = if (parsed.startAddress > 0) parsed.startAddress else defaultBaseAddressFor(mcu)
+                val resolvedBase = parsed.startAddress
                 _uiState.update {
                     it.copy(
                         isBusy = false,
@@ -760,6 +758,11 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                             progressTotalBytes = mcu.flashSizeBytes,
                             progressLabel = "اكتمل المسح",
                             flashBuffer = FirmwareParser.createEmptyBuffer(mcu.flashSizeBytes),
+                            idCodeBytesHex = if (mcu.protocolType == ProtocolFamilyType.R8C_M16C) {
+                                List(7) { "FF" }
+                            } else {
+                                it.idCodeBytesHex
+                            },
                             loadedNonEmptyCount = 0,
                             firstNonEmptyRowIndex = 0
                         )
@@ -862,7 +865,10 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
         return out
     }
 
-    private fun defaultEchoCancelFor(mcu: McuProcessor?): Boolean = true
+    private fun defaultEchoCancelFor(mcu: McuProcessor?): Boolean {
+        if (mcu == null) return false
+        return mcu.protocolType != ProtocolFamilyType.R8C_M16C
+    }
 
     private fun defaultBaseAddressFor(mcu: McuProcessor?): Int {
         if (mcu == null) return 0

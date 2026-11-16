@@ -421,21 +421,21 @@ private fun Diode1N4148SchematicCard(
                 Surface(
                     shape = RoundedCornerShape(8.dp),
                     color = when {
-                        isR8cFamily -> Color(0xFF10B981).copy(alpha = 0.16f)
+                        isR8cFamily -> Color(0xFF38BDF8).copy(alpha = 0.16f)
                         is78k0Flmd0 -> Color(0xFFF59E0B).copy(alpha = 0.16f)
                         else -> Color(0xFF10B981).copy(alpha = 0.16f)
                     }
                 ) {
                     Text(
                         text = when {
-                            isR8cFamily -> "Echo Filter = ON"
+                            isR8cFamily -> "Echo Filter = OFF"
                             is78k0Flmd0 -> "وضع FLMD0"
                             else -> "وضع TOOL0/MODE"
                         },
                         fontSize = 10.sp,
                         fontWeight = FontWeight.Bold,
                         color = when {
-                            isR8cFamily -> Color(0xFF10B981)
+                            isR8cFamily -> Color(0xFF38BDF8)
                             is78k0Flmd0 -> Color(0xFFF59E0B)
                             else -> Color(0xFF10B981)
                         },
@@ -493,12 +493,12 @@ private fun Diode1N4148SchematicCard(
                 }
             )
             SchematicTableRow(
-                programmerSignal = "TX + RX",
-                bridgeComponent = "دايود D1 (1N4148)",
-                mcuTarget = if (isR8cFamily) "TOOL0 / MODE (RX+TX)" else "TOOL0 / MODE",
+                programmerSignal = if (isR8cFamily) "TXD / RXD" else "TX + RX",
+                bridgeComponent = if (isR8cFamily) "UART مباشر (Echo OFF)" else "دايود D1 (1N4148)",
+                mcuTarget = if (isR8cFamily) "RXD1 / TXD1" else "TOOL0 / MODE",
                 accentColor = Color(0xFF38BDF8),
                 subNote = if (isR8cFamily) {
-                    "خط مشترك بالدايود D1 — تصفية الصدى (Echo Filter=ON) مفعّلة إجبارياً لحذف صدى TX قبل قراءة 0xB0 و 0xFB و 0x70"
+                    "إلغاء حذف الصدى (Echo Filter=OFF): لا تُحذف أي بايتات من RX لأن 0xB0 وردود الذاكرة تأتي مباشرة من المعالج"
                 } else {
                     "خط البيانات والـ Mode المشترك (مع إلغاء صدى D1 تلقائياً بالكود)"
                 }

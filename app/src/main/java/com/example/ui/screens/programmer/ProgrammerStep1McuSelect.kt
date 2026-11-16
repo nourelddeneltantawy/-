@@ -66,6 +66,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.model.McuProcessor
+import com.example.data.model.ProtocolFamilyType
 import com.example.ui.viewmodel.McuProgrammerUiState
 
 @Composable
@@ -282,83 +283,15 @@ fun ProgrammerStep1McuSelect(
                     }
                 }
 
-                // Auto-Detect Mode Indicator (Universal R8C -> RL78 vs Family-Scoped)
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = if (state.hasUserSelectedFamily) {
-                            "وضع الفحص: مقيد بـ ${state.selectedMainFamily}"
-                        } else {
-                            "وضع الفحص: شامل تلقائي (R8C ← RL78)"
-                        },
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Medium,
-                        color = if (state.hasUserSelectedFamily) Color(0xFFF59E0B) else Color(0xFF34D399)
-                    )
-                    if (state.hasUserSelectedFamily) {
-                        Surface(
-                            shape = RoundedCornerShape(8.dp),
-                            color = MaterialTheme.colorScheme.secondary.copy(alpha = 0.14f),
-                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.secondary.copy(alpha = 0.4f)),
-                            modifier = Modifier
-                                .clickable(onClick = onResetUniversalAutoDetect)
-                                .testTag("reset_universal_autodetect_btn")
-                        ) {
-                            Text(
-                                text = "تفعيل الفحص الشامل",
-                                fontSize = 10.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.secondary,
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                            )
-                        }
-                    }
-                }
+                val isR8cManualMode = state.selectedProcessor?.protocolType == ProtocolFamilyType.R8C_M16C ||
+                    state.selectedMainFamily.contains("R8C", ignoreCase = true) ||
+                    state.selectedMainFamily.contains("M16C", ignoreCase = true)
 
-                // Auto-Detect Chip ID Button
-                OutlinedButton(
-                    onClick = onAutoDetectChipId,
-                    enabled = !state.isAutoDetecting && !state.isLoadingDb,
-                    shape = RoundedCornerShape(14.dp),
-                    border = BorderStroke(1.2.dp, MaterialTheme.colorScheme.secondary),
-                    colors = ButtonDefaults.outlinedButtonColors(
-                        contentColor = MaterialTheme.colorScheme.secondary
-                    ),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(min = 48.dp)
-                        .testTag("auto_detect_chip_button")
-                ) {
-                    if (state.isAutoDetecting) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(18.dp),
-                            strokeWidth = 2.dp,
-                            color = MaterialTheme.colorScheme.secondary
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("جاري الفحص عبر USB OTG...", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                    } else {
-                        Icon(Icons.Default.Usb, contentDescription = "فحص USB OTG", modifier = Modifier.size(20.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(
-                            text = "قراءة تلقائية للمعالج (Auto-Detect)",
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 13.sp,
-                            maxLines = 1
-                        )
-                    }
-                }
-
-                // Auto-Detect Status Feedback Banner
-                if (!state.autoDetectStatus.isNullOrBlank()) {
-                    val accent = if (state.autoDetectIsSuccess) Color(0xFF10B981) else Color(0xFFF59E0B)
+                if (isR8cManualMode) {
                     Surface(
                         shape = RoundedCornerShape(12.dp),
-                        color = accent.copy(alpha = 0.12f),
-                        border = BorderStroke(1.dp, accent.copy(alpha = 0.45f)),
+                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.10f),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)),
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Row(
@@ -366,18 +299,82 @@ fun ProgrammerStep1McuSelect(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Icon(
-                                imageVector = if (state.autoDetectIsSuccess) Icons.Default.CheckCircle else Icons.Default.Info,
+                                imageVector = Icons.Default.Info,
                                 contentDescription = null,
-                                tint = accent,
+                                tint = MaterialTheme.colorScheme.primary,
                                 modifier = Modifier.size(18.dp)
                             )
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                text = state.autoDetectStatus,
-                                fontSize = 12.sp,
+                                text = "الوضع اليدوي المعتمد لعائلة R8C: تم إيقاف الفحص التلقائي وحذف الصدى (Echo Filter=OFF) لضمان دقة القراءة والكتابة والمسح. اختر المعالج يدوياً من البحث أو القوائم بالأسفل.",
+                                fontSize = 11.sp,
                                 color = MaterialTheme.colorScheme.onSurface,
-                                lineHeight = 17.sp
+                                lineHeight = 16.sp
                             )
+                        }
+                    }
+                } else {
+                    // Auto-Detect Chip ID Button (RL78 / 78K0)
+                    OutlinedButton(
+                        onClick = onAutoDetectChipId,
+                        enabled = !state.isAutoDetecting && !state.isLoadingDb,
+                        shape = RoundedCornerShape(14.dp),
+                        border = BorderStroke(1.2.dp, MaterialTheme.colorScheme.secondary),
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            contentColor = MaterialTheme.colorScheme.secondary
+                        ),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 48.dp)
+                            .testTag("auto_detect_chip_button")
+                    ) {
+                        if (state.isAutoDetecting) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(18.dp),
+                                strokeWidth = 2.dp,
+                                color = MaterialTheme.colorScheme.secondary
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("جاري الفحص عبر USB OTG...", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                        } else {
+                            Icon(Icons.Default.Usb, contentDescription = "فحص USB OTG", modifier = Modifier.size(20.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "قراءة تلقائية للمعالج (Auto-Detect)",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp,
+                                maxLines = 1
+                            )
+                        }
+                    }
+
+                    // Auto-Detect Status Feedback Banner
+                    if (!state.autoDetectStatus.isNullOrBlank()) {
+                        val accent = if (state.autoDetectIsSuccess) Color(0xFF10B981) else Color(0xFFF59E0B)
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = accent.copy(alpha = 0.12f),
+                            border = BorderStroke(1.dp, accent.copy(alpha = 0.45f)),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(10.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = if (state.autoDetectIsSuccess) Icons.Default.CheckCircle else Icons.Default.Info,
+                                    contentDescription = null,
+                                    tint = accent,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = state.autoDetectStatus,
+                                    fontSize = 12.sp,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    lineHeight = 17.sp
+                                )
+                            }
                         }
                     }
                 }

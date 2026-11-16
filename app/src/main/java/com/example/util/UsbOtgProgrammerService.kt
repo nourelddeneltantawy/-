@@ -516,7 +516,7 @@ object UsbOtgProgrammerService {
         }
 
         override suspend fun writeBytes(bytes: ByteArray, clearStaleRx: Boolean, onLog: (String) -> Unit): String? {
-            return writeWithMandatoryEchoFilter(bytes, clearStaleRx = clearStaleRx, onLog = onLog)
+            return writeDirectNoEcho(bytes, clearStaleRx = clearStaleRx)
         }
 
         override suspend fun readExactBytes(expectedLen: Int, timeoutMs: Int, onLog: (String) -> Unit): ByteArray {
@@ -540,185 +540,24 @@ object UsbOtgProgrammerService {
         }
 
         val famUpper = targetMainFamily.orEmpty().trim().uppercase()
-        val isUniversalMode = famUpper.isBlank()
-        val isExplicitR8c = famUpper.contains("R8C") || famUpper.contains("M16C")
+        val isR8cFamily = famUpper.isBlank() || famUpper.contains("R8C") || famUpper.contains("M16C")
+        if (isR8cFamily) {
+            return@withContext ChipAutoDetectResult.Failure(
+                "تم إيقاف ميزة التعرف التلقائي وحذف الصدى في عائلة Renesas R8C. اختر المعالج يدوياً ثم انتقل لتنفيذ القراءة والكتابة والمسح مباشرة."
+            )
+        }
+
         val initialMode = resolveBootSyncMode(targetMainFamily)
-
-        // Always enforce Echo Filter ON because the adapter links TX & RX via diode D1
         setEchoCancellation(true)
-
-        if (isUniversalMode) {
-            onLog("وضع الفحص الشامل (Universal Auto-Detect): 1) اختبار Renesas R8C (400ms) ← 2) اختبار Renesas RL78...")
-            val r8cResult = probeR8cViaEngine(
-                enableDtrRtsReset = enableDtrRtsReset,
-                preferredPartNumber = null,
-                idCodeBytes = idCodeBytes,
-                catalog = catalog,
-                b0TimeoutMs = 400,
-                onLog = onLog
-            )
-            if (r8cResult != null) return@withContext r8cResult
-
-            onLog("لم يرد المعالج على اختبار R8C خلال 400ms — الانتقال التلقائي لاختبار Renesas RL78 (0x3A ثم 0xC0)...")
-            if (performSyncHandshake(enableDtrRtsReset, BootSyncMode.SINGLE_WIRE_RL78, onLog)) {
-                val rl78Result = probeRl78Or78k0Sequence(catalog, onLog)
-                if (rl78Result != null) return@withContext rl78Result
-            }
-
-            return@withContext ChipAutoDetectResult.Failure(
-                "تم اختبار Renesas R8C (400ms مع تصفية الصدى) ثم Renesas RL78 (0x3A + 0xC0)، ولكن المعالج لم يستجب. تأكد من التوصيلات والدايود D1/D2 والتغذية."
-            )
+        if (!performSyncHandshake(enableDtrRtsReset, initialMode, onLog)) {
+            return@withContext ChipAutoDetectResult.Failure("فشل إرسال نبضة المزامنة عبر USB. راجع تفاصيل الخطأ في السجل.")
         }
-
-        if (isExplicitR8c) {
-            val r8cResult = probeR8cViaEngine(
-                enableDtrRtsReset = enableDtrRtsReset,
-                preferredPartNumber = preferredPartNumber,
-                idCodeBytes = idCodeBytes,
-                catalog = catalog,
-                b0TimeoutMs = 400,
-                onLog = onLog
-            )
-            if (r8cResult != null) return@withContext r8cResult
-
-            return@withContext ChipAutoDetectResult.Failure(
-                "تم فتح المنفذ على 9600 bps (Echo Filter=ON، انتظار 100ms بعد RESET، ومهلة 400ms لـ 0xB0)، ولكن معالج R8C لم يستجب عند 0xB0. تأكد من توصيل TX/RX ودايود D1/D2 ووضع MODE وRESET والتغذية."
-            )
-        }
-
-        if (initialMode == BootSyncMode.SINGLE_WIRE_R8C_78K0R) {
-            val r8cResult = probeR8cViaEngine(
-                enableDtrRtsReset = enableDtrRtsReset,
-                preferredPartNumber = preferredPartNumber,
-                idCodeBytes = idCodeBytes,
-                catalog = catalog,
-                b0TimeoutMs = 400,
-                onLog = onLog
-            )
-            if (r8cResult != null) return@withContext r8cResult
-
-            onLog("لم يرد كمعالج R8C — إعادة تهيئة Boot Mode وتجربة RL78 (0x3A + Silicon Signature)...")
-            if (performSyncHandshake(enableDtrRtsReset, BootSyncMode.SINGLE_WIRE_RL78, onLog)) {
-                val rl78Result = probeRl78Or78k0Sequence(catalog, onLog)
-                if (rl78Result != null) return@withContext rl78Result
-            }
-        } else {
-            if (!performSyncHandshake(enableDtrRtsReset, initialMode, onLog)) {
-                return@withContext ChipAutoDetectResult.Failure("فشل إرسال نبضة المزامنة عبر USB. راجع تفاصيل الخطأ في السجل.")
-            }
-            val rl78Result = probeRl78Or78k0Sequence(catalog, onLog)
-            if (rl78Result != null) return@withContext rl78Result
-
-            if (initialMode == BootSyncMode.SINGLE_WIRE_RL78) {
-                onLog("لم يرد كمعالج RL78 — إعادة تهيئة Boot Mode وتجربة R8C / 78K0R (400ms)...")
-                val r8cResult = probeR8cViaEngine(
-                    enableDtrRtsReset = enableDtrRtsReset,
-                    preferredPartNumber = null,
-                    idCodeBytes = idCodeBytes,
-                    catalog = catalog,
-                    b0TimeoutMs = 400,
-                    onLog = onLog
-                )
-                if (r8cResult != null) return@withContext r8cResult
-            }
-        }
+        val rl78Result = probeRl78Or78k0Sequence(catalog, onLog)
+        if (rl78Result != null) return@withContext rl78Result
 
         ChipAutoDetectResult.Failure(
             "تم فتح المنفذ وتنفيذ تتابع RTS/TX Break وإلغاء صدى الدايود D1، ولكن المعالج لم يرد بأي بايتات. تأكد من دايود D1/D2 والتغذية والجهد."
         )
-    }
-
-    private suspend fun probeR8cViaEngine(
-        enableDtrRtsReset: Boolean,
-        preferredPartNumber: String?,
-        idCodeBytes: ByteArray,
-        catalog: List<McuProcessor>,
-        b0TimeoutMs: Int = 400,
-        onLog: (String) -> Unit
-    ): ChipAutoDetectResult.Matched? {
-        val transport = createR8cTransport()
-        val validId = if (idCodeBytes.size == 7) idCodeBytes else R8cProtocolEngine.DEFAULT_ID_CODE.copyOf()
-        val probe = R8cProtocolEngine.probeAndIdentify(
-            transport = transport,
-            enableResetFlow = enableDtrRtsReset,
-            idBytes = validId,
-            b0TimeoutMs = b0TimeoutMs,
-            onLog = onLog
-        ) ?: return null
-
-        var matchedMcu: McuProcessor? = matchCatalogBySignature(probe.version, probe.rawHex, catalog)
-        if (matchedMcu == null && probe.idVerified) {
-            onLog("قراءة صفحة المعلومات 0xFF للعنوان 0x00FE00...")
-            val pageFe = R8cProtocolEngine.readPage(transport, 0x00FE00, onLog, verboseFrameLog = true)
-            if (pageFe != null) {
-                matchedMcu = matchCatalogBySignature(toPrintableAscii(pageFe), toHex(pageFe), catalog)
-            }
-        }
-        if (matchedMcu == null) {
-            matchedMcu = matchR8cByBootloaderVersion(probe.version, preferredPartNumber, catalog)
-            if (matchedMcu != null) {
-                onLog("Smart Auto-Detect: تم ربط إصدار البوتلودر (${probe.version}) بسلسلة ${matchedMcu.subFamily} -> ${matchedMcu.partNumber}")
-            }
-        }
-
-        val idNote = if (probe.idVerified) " • تم التحقق من 7-Byte ID (0xF5)" else " • تنبيه: لم يُفتح القفل بـ 7-Byte ID"
-        val msg = when {
-            matchedMcu != null ->
-                "تم التعرف على المعالج: ${matchedMcu.partNumber} (${matchedMcu.subFamily}) • البوتلودر: ${probe.version} • الفلاش: ${matchedMcu.flashKb} KB$idNote"
-            else ->
-                "استجاب بوتلودر R8C بنجاح (${probe.version})$idNote"
-        }
-        return ChipAutoDetectResult.Matched(
-            rawSignatureHex = probe.rawHex,
-            matchedProcessor = matchedMcu,
-            diagnosticMessage = msg
-        )
-    }
-
-    private fun matchR8cByBootloaderVersion(
-        version: String,
-        preferredPartNumber: String?,
-        catalog: List<McuProcessor>
-    ): McuProcessor? {
-        val verUpper = version.trim().uppercase()
-        val r8cList = catalog.filter { it.mainFamily.equals("R8C", ignoreCase = true) }
-        if (r8cList.isEmpty()) return null
-
-        val currentProc = preferredPartNumber?.let { part ->
-            r8cList.firstOrNull { it.partNumber.equals(part, ignoreCase = true) }
-        }
-
-        return when {
-            verUpper.contains("VER.1") || verUpper.contains("1.00") -> {
-                val r8c1x = r8cList.filter { it.subFamily.startsWith("R8C/1", ignoreCase = true) }
-                if (currentProc != null && currentProc.subFamily.startsWith("R8C/1", ignoreCase = true)) {
-                    currentProc
-                } else {
-                    r8c1x.firstOrNull { it.partNumber.equals("R5F21102", ignoreCase = true) }
-                        ?: r8c1x.firstOrNull()
-                }
-            }
-            verUpper.contains("VER.2") || verUpper.contains("2.00") || verUpper.contains("2.10") -> {
-                val r8c2x = r8cList.filter { it.subFamily.startsWith("R8C/2", ignoreCase = true) }
-                if (currentProc != null && currentProc.subFamily.startsWith("R8C/2", ignoreCase = true)) {
-                    currentProc
-                } else {
-                    r8c2x.firstOrNull { it.partNumber.equals("R5F21258", ignoreCase = true) }
-                        ?: r8c2x.firstOrNull { it.partNumber.startsWith("R5F2125", ignoreCase = true) }
-                        ?: r8c2x.firstOrNull()
-                }
-            }
-            verUpper.contains("VER.3") -> {
-                val r8c3x = r8cList.filter { it.subFamily.startsWith("R8C/3", ignoreCase = true) }
-                if (currentProc != null && currentProc.subFamily.startsWith("R8C/3", ignoreCase = true)) {
-                    currentProc
-                } else {
-                    r8c3x.firstOrNull { it.partNumber.equals("R5F21354", ignoreCase = true) }
-                        ?: r8c3x.firstOrNull()
-                }
-            }
-            else -> currentProc
-        }
     }
 
     private suspend fun probeRl78Or78k0Sequence(
@@ -775,7 +614,7 @@ object UsbOtgProgrammerService {
         }
 
         if (processor.protocolType == ProtocolFamilyType.R8C_M16C) {
-            setEchoCancellation(true)
+            setEchoCancellation(false)
             return@withContext R8cProtocolEngine.readMemory(
                 transport = createR8cTransport(),
                 processor = processor,
@@ -851,7 +690,7 @@ object UsbOtgProgrammerService {
         }
 
         if (processor.protocolType == ProtocolFamilyType.R8C_M16C) {
-            setEchoCancellation(true)
+            setEchoCancellation(false)
             return@withContext R8cProtocolEngine.eraseFlash(
                 transport = createR8cTransport(),
                 processor = processor,
@@ -902,7 +741,7 @@ object UsbOtgProgrammerService {
         }
 
         if (processor.protocolType == ProtocolFamilyType.R8C_M16C) {
-            setEchoCancellation(true)
+            setEchoCancellation(false)
             return@withContext R8cProtocolEngine.programOrVerifyFlash(
                 transport = createR8cTransport(),
                 processor = processor,
@@ -1278,30 +1117,19 @@ object UsbOtgProgrammerService {
     }
 
     /**
-     * Mandatory Echo Filtering for Renesas R8C / RL78 / 78K0 when TX and RX are linked by a diode:
-     * Transmits txBytes and immediately discards the first txBytes.size echoed bytes arriving on RX
-     * before any genuine MCU response is read.
+     * Direct UART write with Echo Filter = OFF for Renesas R8C:
+     * Never discards any bytes from RX because incoming 0xB0 / status / flash data are genuine MCU replies.
      */
-    private suspend fun writeWithMandatoryEchoFilter(
+    private fun writeDirectNoEcho(
         txBytes: ByteArray,
-        clearStaleRx: Boolean = true,
-        onLog: ((String) -> Unit)? = null
+        clearStaleRx: Boolean = true
     ): String? {
         if (clearStaleRx) {
             synchronized(rxLock) {
                 rxBuffer.clear()
             }
         }
-        val txErr = writeRawBytes(txBytes)
-        if (txErr != null) return txErr
-
-        if (txBytes.isNotEmpty()) {
-            val dropped = discardEchoBytes(txBytes.size)
-            if (dropped < txBytes.size && txBytes.size > 1) {
-                onLog?.invoke("Echo Filter Notice: حُذف $dropped / ${txBytes.size} بايت صدى")
-            }
-        }
-        return null
+        return writeRawBytes(txBytes)
     }
 
     /**
@@ -1425,7 +1253,7 @@ object UsbOtgProgrammerService {
         onLog: (String) -> Unit
     ): ByteArray {
         val out = ByteArrayOutputStream()
-        val wireBudget = ((expectedLen * 11_000L) / currentBaudRate.coerceAtLeast(300)) + 150L
+        val wireBudget = ((expectedLen * 11_000L) / currentBaudRate.coerceAtLeast(300)) + 250L
         val effectiveTimeout = maxOf(timeoutMs.toLong(), wireBudget)
         val deadline = System.currentTimeMillis() + effectiveTimeout
 

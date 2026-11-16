@@ -12,7 +12,8 @@ object FirmwareParser {
     fun parseFirmware(
         rawBytes: ByteArray,
         fileName: String,
-        targetFlashSizeBytes: Int
+        targetFlashSizeBytes: Int,
+        preferredBaseAddress: Int = 0
     ): FirmwareFileData {
         val lower = fileName.lowercase()
         val textPreview = try {
@@ -23,15 +24,25 @@ object FirmwareParser {
 
         return when {
             lower.endsWith(".hex") || textPreview.startsWith(":") -> {
-                parseIntelHex(rawBytes.toString(Charsets.US_ASCII), fileName, targetFlashSizeBytes)
+                parseIntelHex(
+                    rawBytes.toString(Charsets.US_ASCII),
+                    fileName,
+                    targetFlashSizeBytes,
+                    preferredBaseAddress
+                )
             }
             lower.endsWith(".mot") || lower.endsWith(".srec") || lower.endsWith(".s19") ||
                 lower.endsWith(".s28") || lower.endsWith(".s37") || textPreview.startsWith("S0") ||
                 textPreview.startsWith("S1") || textPreview.startsWith("S2") || textPreview.startsWith("S3") -> {
-                parseMotorolaSRecord(rawBytes.toString(Charsets.US_ASCII), fileName, targetFlashSizeBytes)
+                parseMotorolaSRecord(
+                    rawBytes.toString(Charsets.US_ASCII),
+                    fileName,
+                    targetFlashSizeBytes,
+                    preferredBaseAddress
+                )
             }
             else -> {
-                parseRawBinary(rawBytes, fileName, targetFlashSizeBytes)
+                parseRawBinary(rawBytes, fileName, targetFlashSizeBytes, preferredBaseAddress)
             }
         }
     }
@@ -39,7 +50,8 @@ object FirmwareParser {
     private fun parseRawBinary(
         rawBytes: ByteArray,
         fileName: String,
-        targetFlashSizeBytes: Int
+        targetFlashSizeBytes: Int,
+        preferredBaseAddress: Int = 0
     ): FirmwareFileData {
         val buffer = createEmptyBuffer(targetFlashSizeBytes)
         val count = min(rawBytes.size, buffer.size)
@@ -49,7 +61,7 @@ object FirmwareParser {
             format = "BIN",
             bytes = buffer,
             nonEmptyBytesCount = count,
-            startAddress = 0
+            startAddress = preferredBaseAddress
         )
     }
 
@@ -58,7 +70,8 @@ object FirmwareParser {
     private fun parseIntelHex(
         content: String,
         fileName: String,
-        targetFlashSizeBytes: Int
+        targetFlashSizeBytes: Int,
+        preferredBaseAddress: Int = 0
     ): FirmwareFileData {
         val chunks = mutableListOf<AddressChunk>()
         var extendedSegmentAddress = 0L
@@ -103,13 +116,14 @@ object FirmwareParser {
             }
         }
 
-        return materializeChunks(chunks, fileName, "Intel HEX", targetFlashSizeBytes)
+        return materializeChunks(chunks, fileName, "Intel HEX", targetFlashSizeBytes, preferredBaseAddress)
     }
 
     private fun parseMotorolaSRecord(
         content: String,
         fileName: String,
-        targetFlashSizeBytes: Int
+        targetFlashSizeBytes: Int,
+        preferredBaseAddress: Int = 0
     ): FirmwareFileData {
         val chunks = mutableListOf<AddressChunk>()
 
@@ -138,25 +152,29 @@ object FirmwareParser {
             chunks.add(AddressChunk(address, data))
         }
 
-        return materializeChunks(chunks, fileName, "Motorola S-Record", targetFlashSizeBytes)
+        return materializeChunks(chunks, fileName, "Motorola S-Record", targetFlashSizeBytes, preferredBaseAddress)
     }
 
     private fun materializeChunks(
         chunks: List<AddressChunk>,
         fileName: String,
         format: String,
-        targetFlashSizeBytes: Int
+        targetFlashSizeBytes: Int,
+        preferredBaseAddress: Int = 0
     ): FirmwareFileData {
         val buffer = createEmptyBuffer(targetFlashSizeBytes)
         if (chunks.isEmpty()) {
-            return FirmwareFileData(fileName, format, buffer, 0, 0)
+            return FirmwareFileData(fileName, format, buffer, 0, preferredBaseAddress)
         }
 
         val minAddr = chunks.minOf { it.address }
         val maxAddr = chunks.maxOf { it.address + it.data.size }
-        // Many MCUs (e.g., R8C / M16C / RX) place flash at high physical addresses (0x04000, 0xE0000, 0xFFF80000).
-        // If maxAddr exceeds targetFlashSizeBytes, rebase relative to minAddr (aligned to 16 bytes) so it fits cleanly.
-        val baseOffset = if (maxAddr <= targetFlashSizeBytes.toLong()) 0L else (minAddr and 0xFFFFFFF0L)
+        val prefBase = preferredBaseAddress.toLong().coerceAtLeast(0L)
+        val baseOffset = when {
+            prefBase > 0L && minAddr >= prefBase && maxAddr <= (prefBase + targetFlashSizeBytes.toLong()) -> prefBase
+            maxAddr <= targetFlashSizeBytes.toLong() && prefBase == 0L -> 0L
+            else -> (minAddr and 0xFFFFFF00L)
+        }
         var writtenBytes = 0
 
         for (chunk in chunks) {
