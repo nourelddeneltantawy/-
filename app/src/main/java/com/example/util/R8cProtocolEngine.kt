@@ -48,14 +48,26 @@ object R8cProtocolEngine {
         val dataAreas: List<R8cArea>
     )
 
+    data class R8cExchangeResult(
+        val txError: String? = null,
+        val totalRawReceived: Int = 0,
+        val echoedCount: Int = 0,
+        val replyBytes: ByteArray = ByteArray(0)
+    )
+
     interface SerialTransport {
         fun configureUart(baudRate: Int, onLog: (String) -> Unit): Boolean
         fun setRts(activeLow: Boolean, onLog: (String) -> Unit)
         fun setDtr(activeLow: Boolean, onLog: (String) -> Unit)
         fun setTxBreak(enabled: Boolean, onLog: (String) -> Unit): Boolean
         fun flushInputBuffer()
-        suspend fun writeBytes(bytes: ByteArray, clearStaleRx: Boolean, onLog: (String) -> Unit): String?
-        suspend fun readExactBytes(expectedLen: Int, timeoutMs: Int, onLog: (String) -> Unit): ByteArray
+        suspend fun writeRawOnly(bytes: ByteArray): String?
+        suspend fun sendAndReceiveR8C(
+            txBytes: ByteArray,
+            expectedRxLength: Int,
+            timeoutMs: Int = 500,
+            onLog: (String) -> Unit
+        ): R8cExchangeResult
     }
 
     data class ProbeOutput(
@@ -134,18 +146,39 @@ object R8cProtocolEngine {
     }
 
     /**
-     * Port start + Bootloader Hardware Reset Flow + initial 9600 bps sync (Mandatory Echo Filter = ON):
+     * Strict Single-Wire UART Mode 3 (TX + RX diode-bridged to MODE) exchange:
+     * Sends `txBytes` (length N), waits up to `timeoutMs` (or UART wire-time budget)
+     * until `N + expectedRxLength` total bytes accumulate in RX, discards the first
+     * `N` echo bytes, and returns strictly the `expectedRxLength` genuine MCU bytes.
+     */
+    suspend fun sendAndReceiveR8C(
+        transport: SerialTransport,
+        txBytes: ByteArray,
+        expectedRxLength: Int,
+        timeoutMs: Int = 500,
+        onLog: (String) -> Unit
+    ): R8cExchangeResult {
+        return transport.sendAndReceiveR8C(
+            txBytes = txBytes,
+            expectedRxLength = expectedRxLength,
+            timeoutMs = timeoutMs,
+            onLog = onLog
+        )
+    }
+
+    /**
+     * Port start + Bootloader Hardware Reset Flow + initial 9600 bps sync (Single-Wire Mode 3):
      * 1) RTS = true (RESET = LOW) + TX/MODE hold LOW for 50ms.
      * 2) RTS = false (RESET = HIGH), then wait 100ms for internal oscillator stabilization before 16x 0x00.
-     * 3) connection(): 16 x 0x00 (20ms gap) + 0xB0 -> discard TX echoes -> verify real 0xB0 response.
+     * 3) connection(): 16 x 0x00 -> flushInputBuffer() -> 0xB0 via sendAndReceiveR8C(N=1, expectedRx=1).
      */
     suspend fun startAndConnect(
         transport: SerialTransport,
         enableResetFlow: Boolean,
-        b0TimeoutMs: Int = 1000,
+        b0TimeoutMs: Int = 500,
         onLog: (String) -> Unit
     ): Boolean {
-        onLog("R8C Start: فتح المنفذ على سرعة 9600 bps (8N1) • Echo Filter = OFF...")
+        onLog("R8C Start: فتح المنفذ على سرعة 9600 bps (8N1) • Single-Wire UART Mode 3 (N + Rx Echo Filter)...")
         if (!transport.configureUart(9600, onLog)) {
             return false
         }
@@ -158,7 +191,7 @@ object R8cProtocolEngine {
             val breakSupported = transport.setTxBreak(true, onLog)
             if (!breakSupported) {
                 repeat(4) {
-                    transport.writeBytes(byteArrayOf(0x00, 0x00, 0x00, 0x00), clearStaleRx = false, onLog = onLog)
+                    transport.writeRawOnly(byteArrayOf(0x00, 0x00, 0x00, 0x00))
                     delay(12)
                 }
             } else {
@@ -182,17 +215,20 @@ object R8cProtocolEngine {
     }
 
     /**
-     * Equivalent to r8c::protocol::connection()
+     * Equivalent to r8c::protocol::connection() for Single-Wire Mode 3:
+     * 1) Sends 16 x 0x00 (20ms interval), waits briefly, then calls flushInputBuffer()
+     *    to purge all 16 diode-echoed 0x00 bytes before sending 0xB0.
+     * 2) Sends [0xB0] via sendAndReceiveR8C(expectedRxLength = 1) which waits for 1 echo + 1 real 0xB0.
      */
     suspend fun establishConnection(
         transport: SerialTransport,
-        b0TimeoutMs: Int = 1000,
+        b0TimeoutMs: Int = 500,
         onLog: (String) -> Unit
     ): Boolean {
-        onLog("TX: 00 x16 (فاصل 20ms بين كل بايت)")
+        onLog("TX: 00 x16 (فاصل 20ms بين كل بايت ثم تفريغ صدى المزامنة)")
         val zeroByte = byteArrayOf(0x00)
         for (i in 0 until 16) {
-            val err = transport.writeBytes(zeroByte, clearStaleRx = (i == 0), onLog = onLog)
+            val err = transport.writeRawOnly(zeroByte)
             if (err != null) {
                 onLog("TX ERROR (R8C Sync #${i + 1}): $err")
                 return false
@@ -200,20 +236,29 @@ object R8cProtocolEngine {
             delay(20)
         }
 
-        delay(20)
-        onLog("TX: B0 (طلب تأكيد اتصال R8C)")
-        val b0Err = transport.writeBytes(byteArrayOf(0xB0.toByte()), clearStaleRx = true, onLog = onLog)
-        if (b0Err != null) {
-            onLog("TX ERROR (0xB0): $b0Err")
+        // Wait briefly for the final 0x00 echo to land on USB RX, then purge all 16 echoes
+        delay(35)
+        transport.flushInputBuffer()
+
+        onLog("TX: B0 (طلب تأكيد اتصال R8C: انتظار 1 صدى + 1 بايت 0xB0)")
+        val res = sendAndReceiveR8C(
+            transport = transport,
+            txBytes = byteArrayOf(0xB0.toByte()),
+            expectedRxLength = 1,
+            timeoutMs = b0TimeoutMs,
+            onLog = onLog
+        )
+        if (res.txError != null) {
+            onLog("TX ERROR (0xB0): ${res.txError}")
             return false
         }
 
-        val reply = transport.readExactBytes(expectedLen = 1, timeoutMs = b0TimeoutMs, onLog = onLog)
+        val reply = res.replyBytes
         if (reply.isEmpty()) {
-            onLog("RX: (لا يوجد رد / Timeout ${b0TimeoutMs}ms لـ 0xB0)")
+            onLog("RX: (لا يوجد رد / Timeout ${b0TimeoutMs}ms لـ 0xB0 — الخام المستلم ${res.totalRawReceived}/2 بايت)")
             return false
         }
-        onLog("RX: \u2066${toHex(reply)}\u2069")
+        onLog("RX: \u2066${toHex(reply)}\u2069 (رد المعالج الحقيقي بعد إزالة صدى الدايود)")
         val b0 = reply[0].toInt() and 0xFF
         if (b0 != 0xB0) {
             onLog("R8C Sync Error: استجاب بـ 0x%02X بدلاً من 0xB0.".format(b0))
@@ -244,15 +289,21 @@ object R8cProtocolEngine {
         }
 
         val tx = byteArrayOf(cmd.toByte())
-        onLog("TX: ${toHex(tx)} (تغيير السرعة إلى $targetBaudRate bps)")
-        val err = transport.writeBytes(tx, clearStaleRx = true, onLog = onLog)
-        if (err != null) {
-            onLog("TX ERROR (change_speed): $err")
+        onLog("TX: ${toHex(tx)} (تغيير السرعة إلى $targetBaudRate bps: انتظار 1 صدى + 1 بايت)")
+        val res = sendAndReceiveR8C(
+            transport = transport,
+            txBytes = tx,
+            expectedRxLength = 1,
+            timeoutMs = 500,
+            onLog = onLog
+        )
+        if (res.txError != null) {
+            onLog("TX ERROR (change_speed): ${res.txError}")
             return false
         }
-        val reply = transport.readExactBytes(expectedLen = 1, timeoutMs = 350, onLog = onLog)
+        val reply = res.replyBytes
         if (reply.isEmpty()) {
-            onLog("RX: (Timeout أثناء تغيير السرعة إلى $targetBaudRate)")
+            onLog("RX: (Timeout أثناء تغيير السرعة إلى $targetBaudRate — الخام ${res.totalRawReceived}/2)")
             return false
         }
         onLog("RX: ${toHex(reply)}")
@@ -264,28 +315,35 @@ object R8cProtocolEngine {
         val ok = transport.configureUart(targetBaudRate, onLog)
         if (ok) {
             delay(15)
+            transport.flushInputBuffer()
             onLog("Change speed OK: $targetBaudRate [bps]")
         }
         return ok
     }
 
     /**
-     * Equivalent to r8c::protocol::get_version() -> 0xFB reads 8 ASCII bytes (e.g. "VER.1.00", "VER.2.00", "VER.2.10")
-     * Note: TX 0xFB echo is discarded automatically by SerialTransport before reading the 8-byte MCU reply.
+     * 0xFB (N=1): sends [0xFB], waits for 1 echo byte + 8 ASCII version bytes (e.g. "VER.2.10"),
+     * drops byte 0 (echo), and returns the 8-byte genuine MCU bootloader string.
      */
     suspend fun getVersion(
         transport: SerialTransport,
         onLog: (String) -> Unit
     ): String? {
-        onLog("TX: FB (قراءة إصدار البوتلودر)")
-        val err = transport.writeBytes(byteArrayOf(0xFB.toByte()), clearStaleRx = true, onLog = onLog)
-        if (err != null) {
-            onLog("TX ERROR (0xFB): $err")
+        onLog("TX: FB (قراءة إصدار البوتلودر: انتظار 1 صدى + 8 بايت)")
+        val res = sendAndReceiveR8C(
+            transport = transport,
+            txBytes = byteArrayOf(0xFB.toByte()),
+            expectedRxLength = 8,
+            timeoutMs = 500,
+            onLog = onLog
+        )
+        if (res.txError != null) {
+            onLog("TX ERROR (0xFB): ${res.txError}")
             return null
         }
-        val reply = transport.readExactBytes(expectedLen = 8, timeoutMs = 450, onLog = onLog)
+        val reply = res.replyBytes
         if (reply.isEmpty()) {
-            onLog("RX: (لا يوجد رد لـ 0xFB خلال 450ms)")
+            onLog("RX: (لا يوجد رد لـ 0xFB خلال 500ms — الخام المستلم ${res.totalRawReceived}/9 بايت)")
             return null
         }
         val ascii = reply.filter { it in 32..126 }.map { it.toInt().toChar() }.joinToString("").trim()
@@ -294,24 +352,30 @@ object R8cProtocolEngine {
     }
 
     /**
-     * Equivalent to r8c::protocol::get_status(status& st) -> 0x70 reads [SRD, SRD1]
-     * Waits up to 300ms for full 2 bytes [SRD, SRD1] from RX without echo stripping.
+     * 0x70 (N=1): waits for 1 echo byte + 2 genuine status bytes [SRD, SRD1] (500ms timeout),
+     * drops the first 0x70 echo byte, and returns [SRD, SRD1].
      */
     suspend fun getStatus(
         transport: SerialTransport,
         onLog: (String) -> Unit,
         quiet: Boolean = false
     ): R8cStatus? {
-        if (!quiet) onLog("TX: 70 (قراءة سجل الحالة SRD/SRD1 - انتظار 300ms لـ 2 بايت)")
-        val err = transport.writeBytes(byteArrayOf(0x70), clearStaleRx = true, onLog = onLog)
-        if (err != null) {
-            onLog("TX ERROR (0x70): $err")
+        if (!quiet) onLog("TX: 70 (قراءة الحالة: انتظار 1 صدى + 2 بايت حقيقي SRD/SRD1)")
+        val res = sendAndReceiveR8C(
+            transport = transport,
+            txBytes = byteArrayOf(0x70),
+            expectedRxLength = 2,
+            timeoutMs = 500,
+            onLog = onLog
+        )
+        if (res.txError != null) {
+            onLog("TX ERROR (0x70): ${res.txError}")
             return null
         }
-        val reply = transport.readExactBytes(expectedLen = 2, timeoutMs = 300, onLog = onLog)
+        val reply = res.replyBytes
         if (reply.size < 2) {
             val partialHex = if (reply.isEmpty()) "(فارغ)" else "\u2066${toHex(reply)}\u2069"
-            onLog("RX: $partialHex (نقص بايتات الحالة 0x70: استُلم ${reply.size}/2 خلال 300ms)")
+            onLog("RX: $partialHex (نقص بايتات الحالة 0x70: استُلم ${reply.size}/2 حقيقي من إجمالي ${res.totalRawReceived}/3 بايت)")
             return null
         }
         val st = R8cStatus(
@@ -325,7 +389,7 @@ object R8cProtocolEngine {
     }
 
     /**
-     * Equivalent to r8c::protocol::clear_status() -> 0x50
+     * 0x50 (N=1): sends Clear Status and drops the 1 echoed byte.
      */
     suspend fun clearStatus(
         transport: SerialTransport,
@@ -333,17 +397,23 @@ object R8cProtocolEngine {
         quiet: Boolean = true
     ): Boolean {
         if (!quiet) onLog("TX: 50 (مسح سجل الحالة Clear Status)")
-        val err = transport.writeBytes(byteArrayOf(0x50), clearStaleRx = true, onLog = onLog)
-        if (err != null) {
-            onLog("TX ERROR (0x50): $err")
+        val res = sendAndReceiveR8C(
+            transport = transport,
+            txBytes = byteArrayOf(0x50),
+            expectedRxLength = 0,
+            timeoutMs = 500,
+            onLog = onLog
+        )
+        if (res.txError != null) {
+            onLog("TX ERROR (0x50): ${res.txError}")
             return false
         }
         return true
     }
 
     /**
-     * Exact 12-byte frame: [0xF5, 0xFF, 0xDF, 0x00, 0x07, ID0..ID6],
-     * then reads 2 status bytes via 0x70 (300ms) and checks:
+     * 0xF5 (N=12): sends [0xF5, 0xFF, 0xDF, 0x00, 0x07, ID0..ID6], drops all 12 echoed bytes,
+     * then calls 0x70 (1 echo + 2 real bytes [SRD, SRD1]) and verifies:
      * (SRD1 & 0x04) != 0 || (SRD1 & 0x0C) == 0x0C.
      */
     suspend fun idInspection(
@@ -364,14 +434,20 @@ object R8cProtocolEngine {
             }
         }
 
-        onLog("TX (12B): \u2066${toHex(frame)}\u2069 (فحص مفتاح الحماية 7-Byte ID)")
-        val err = transport.writeBytes(frame, clearStaleRx = true, onLog = onLog)
-        if (err != null) {
-            onLog("TX ERROR (0xF5 ID): $err")
+        onLog("TX (12B): \u2066${toHex(frame)}\u2069 (فحص مفتاح الحماية + تجاهل 12 بايت صدى)")
+        val res = sendAndReceiveR8C(
+            transport = transport,
+            txBytes = frame,
+            expectedRxLength = 0,
+            timeoutMs = 500,
+            onLog = onLog
+        )
+        if (res.txError != null) {
+            onLog("TX ERROR (0xF5 ID): ${res.txError}")
             return false to null
         }
 
-        delay(25)
+        delay(20)
         val st = getStatus(transport, onLog, quiet = false) ?: return false to null
         if (!st.isIdVerified()) {
             onLog("$LOCKED_CHIP_MESSAGE [SRD1=0x%02X]".format(st.srd1))
@@ -382,7 +458,8 @@ object R8cProtocolEngine {
     }
 
     /**
-     * Sends [0xFF, addrMid, addrHigh] and reads 256 bytes.
+     * 0xFF (N=3): sends [0xFF, addrMid, addrHigh], waits for 3 echo bytes + 256 data bytes,
+     * drops the first 3 echo bytes, and returns the exact 256-byte flash page.
      */
     suspend fun readPage(
         transport: SerialTransport,
@@ -396,27 +473,33 @@ object R8cProtocolEngine {
             ((address ushr 16) and 0xFF).toByte()
         )
         if (verboseFrameLog) {
-            onLog("TX: \u2066${toHex(cmd)}\u2069 (قراءة صفحة 0x%06X)".format(address))
+            onLog("TX: \u2066${toHex(cmd)}\u2069 (قراءة صفحة 0x%05X: انتظار 3 صدى + 256 بايت)".format(address))
         }
-        val err = transport.writeBytes(cmd, clearStaleRx = true, onLog = onLog)
-        if (err != null) {
-            onLog("TX ERROR (read_page 0x%06X): $err".format(address))
+        val res = sendAndReceiveR8C(
+            transport = transport,
+            txBytes = cmd,
+            expectedRxLength = 256,
+            timeoutMs = 500,
+            onLog = onLog
+        )
+        if (res.txError != null) {
+            onLog("TX ERROR (read_page 0x%05X): ${res.txError}".format(address))
             return null
         }
-        val page = transport.readExactBytes(expectedLen = 256, timeoutMs = 800, onLog = onLog)
+        val page = res.replyBytes
         if (page.size < 256) {
-            onLog("RX Error (read_page 0x%06X): استُلم ${page.size}/256 بايت فقط.".format(address))
+            onLog("RX Error (read_page 0x%05X): استُلم ${page.size}/256 بايت حقيقي فقط (الخام=${res.totalRawReceived}/259).".format(address))
             return null
         }
         if (verboseFrameLog) {
-            onLog("RX: [256B @ 0x%06X] \u2066${toHex(page.take(16).toByteArray())}\u2069 ...".format(address))
+            onLog("RX: [256B @ 0x%05X] \u2066${toHex(page.take(16).toByteArray())}\u2069 ...".format(address))
         }
         return page
     }
 
     /**
-     * Sends [0x41, addrMid, addrHigh, ...pageData256Bytes] in one frame, waits for UART transit +
-     * flash programming, then checks 0x70 (SRD ready & SR4 == 0) and sends 0x50.
+     * 0x41 (N=259): sends [0x41, addrMid, addrHigh, ...pageData256Bytes],
+     * waits for all 259 echoed bytes & discards them, then polls 0x70 (1 echo + 2 real [SRD, SRD1]).
      */
     suspend fun writePage(
         transport: SerialTransport,
@@ -435,22 +518,27 @@ object R8cProtocolEngine {
             }
         }
         if (verboseFrameLog) {
-            onLog("TX: \u2066%02X %02X %02X\u2069 + 256B (كتابة صفحة 0x%06X)".format(
+            onLog("TX: \u2066%02X %02X %02X\u2069 + 256B (كتابة صفحة 0x%05X + تجاهل 259 بايت صدى)".format(
                 frame[0].toInt() and 0xFF,
                 frame[1].toInt() and 0xFF,
                 frame[2].toInt() and 0xFF,
                 address
             ))
         }
-        val errFrame = transport.writeBytes(frame, clearStaleRx = true, onLog = onLog)
-        if (errFrame != null) {
-            onLog("TX ERROR (write_page 0x%06X): $errFrame".format(address))
+        val res = sendAndReceiveR8C(
+            transport = transport,
+            txBytes = frame,
+            expectedRxLength = 0,
+            timeoutMs = 500,
+            onLog = onLog
+        )
+        if (res.txError != null) {
+            onLog("TX ERROR (write_page 0x%05X): ${res.txError}".format(address))
             return false
         }
 
-        // Wait for all 259 bytes to shift out over UART + flash page write time before polling 0x70
-        val wireAndProgMs = ((frame.size * 10_500L) / baudRate.coerceAtLeast(300)) + 25L
-        delay(wireAndProgMs)
+        // Brief flash internal page programming settle time before checking 0x70
+        delay(18)
 
         var st: R8cStatus? = null
         for (attempt in 1..6) {
@@ -463,15 +551,15 @@ object R8cProtocolEngine {
         }
         val finalSt = st ?: return false
         if (finalSt.sr4ProgramError) {
-            onLog("Write Error @ 0x%06X: مؤشر SR4=1 (فشل كتابة الصفحة؛ تأكد من مسح الفلاش أولاً). [SRD=0x%02X]".format(address, finalSt.srd))
+            onLog("Write Error @ 0x%05X: مؤشر SR4=1 (فشل كتابة الصفحة؛ تأكد من مسح الفلاش أولاً). [SRD=0x%02X]".format(address, finalSt.srd))
             return false
         }
         return clearStatus(transport, onLog, quiet = true)
     }
 
     /**
-     * Equivalent to r8c::protocol::erase_page(uint32_t address)
-     * Sends 4 bytes [0x20, A15..A8, A23..A16, 0xD0] -> polls 0x70 SR5 == 0 -> 0x50.
+     * 0x20..0xD0 (N=4): sends [0x20, addrMid, addrHigh, 0xD0], drops 4 echoed bytes,
+     * then checks 0x70 SR5 == 0 -> 0x50.
      */
     suspend fun erasePage(
         transport: SerialTransport,
@@ -484,10 +572,16 @@ object R8cProtocolEngine {
             ((address ushr 16) and 0xFF).toByte(),
             0xD0.toByte()
         )
-        onLog("TX: \u2066${toHex(cmd)}\u2069 (مسح بلوك 0x%06X)".format(address))
-        val err = transport.writeBytes(cmd, clearStaleRx = true, onLog = onLog)
-        if (err != null) {
-            onLog("TX ERROR (erase_page 0x%06X): $err".format(address))
+        onLog("TX: \u2066${toHex(cmd)}\u2069 (مسح بلوك 0x%05X + تجاهل 4 بايت صدى)".format(address))
+        val res = sendAndReceiveR8C(
+            transport = transport,
+            txBytes = cmd,
+            expectedRxLength = 0,
+            timeoutMs = 500,
+            onLog = onLog
+        )
+        if (res.txError != null) {
+            onLog("TX ERROR (erase_page 0x%05X): ${res.txError}".format(address))
             return false
         }
 
@@ -503,20 +597,20 @@ object R8cProtocolEngine {
         }
         val finalSt = st ?: return false
         if (finalSt.sr5EraseError) {
-            onLog("Erase Error @ 0x%06X: مؤشر SR5=1 (فشل مسح البلوك). [SRD=0x%02X]".format(address, finalSt.srd))
+            onLog("Erase Error @ 0x%05X: مؤشر SR5=1 (فشل مسح البلوك). [SRD=0x%02X]".format(address, finalSt.srd))
             return false
         }
         return clearStatus(transport, onLog, quiet = true)
     }
 
     /**
-     * Auto-Detect & Bootloader Probe for R8C (with 400ms 0xB0 timeout for fast Universal Auto-Detect).
+     * Auto-Detect & Bootloader Probe for R8C
      */
     suspend fun probeAndIdentify(
         transport: SerialTransport,
         enableResetFlow: Boolean,
         idBytes: ByteArray,
-        b0TimeoutMs: Int = 400,
+        b0TimeoutMs: Int = 500,
         onLog: (String) -> Unit
     ): ProbeOutput? {
         if (!startAndConnect(transport, enableResetFlow, b0TimeoutMs = b0TimeoutMs, onLog = onLog)) {
@@ -540,8 +634,8 @@ object R8cProtocolEngine {
     }
 
     /**
-     * Executes Full Chip Erase via R8C All-Block Erase command [0xA7, 0xD0],
-     * waits 500ms, then checks status 0x70 to confirm full erase and ID reset to FF.
+     * Executes Full Chip Erase via R8C All-Block Erase command [0xA7, 0xD0] (N=2),
+     * drops the 2 echoed bytes, waits 500ms, then checks status 0x70 (1 echo + 2 real bytes).
      */
     suspend fun eraseAllViaA7D0(
         transport: SerialTransport,
@@ -554,11 +648,17 @@ object R8cProtocolEngine {
         delay(15)
 
         val eraseAllCmd = byteArrayOf(0xA7.toByte(), 0xD0.toByte())
-        onLog("TX: \u2066${toHex(eraseAllCmd)}\u2069 (أمر المسح الكامل وإعادة تعيين الـ ID إلى FF)")
-        val errCmd = transport.writeBytes(eraseAllCmd, clearStaleRx = true, onLog = onLog)
-        if (errCmd != null) {
-            onLog("TX ERROR (A7 D0): $errCmd")
-            return FlashOperationResult.Failure("فشل إرسال أمر المسح الكلي [A7 D0]: $errCmd")
+        onLog("TX: \u2066${toHex(eraseAllCmd)}\u2069 (أمر المسح الكامل + تجاهل 2 بايت صدى)")
+        val res = sendAndReceiveR8C(
+            transport = transport,
+            txBytes = eraseAllCmd,
+            expectedRxLength = 0,
+            timeoutMs = 500,
+            onLog = onLog
+        )
+        if (res.txError != null) {
+            onLog("TX ERROR (A7 D0): ${res.txError}")
+            return FlashOperationResult.Failure("فشل إرسال أمر المسح الكلي [A7 D0]: ${res.txError}")
         }
 
         onProgress((totalSpan * 0.55f).toInt(), totalSpan, "انتظار 500ms لإتمام مسح الشريحة...")
@@ -610,7 +710,7 @@ object R8cProtocolEngine {
         val startAddr = layout.romArea.org
 
         onProgress(0, totalSize, "مزامنة R8C (16×0x00 + 0xB0)...")
-        if (!startAndConnect(transport, enableResetFlow, b0TimeoutMs = 1000, onLog = onLog)) {
+        if (!startAndConnect(transport, enableResetFlow, b0TimeoutMs = 500, onLog = onLog)) {
             return FlashOperationResult.Failure("فشلت المزامنة التسلسلية R8C (16×0x00 + 0xB0). راجع سجل TX/RX.")
         }
         if (!changeSpeed(transport, baudRate, onLog)) {
@@ -677,7 +777,7 @@ object R8cProtocolEngine {
         val totalSpan = layout.romArea.sizeBytes.coerceAtLeast(1024)
 
         onProgress(0, totalSpan, "مزامنة R8C قبل المسح الكلي...")
-        if (!startAndConnect(transport, enableResetFlow, b0TimeoutMs = 1000, onLog = onLog)) {
+        if (!startAndConnect(transport, enableResetFlow, b0TimeoutMs = 500, onLog = onLog)) {
             return FlashOperationResult.Failure("فشلت المزامنة التسلسلية R8C قبل المسح.")
         }
         if (!changeSpeed(transport, baudRate, onLog)) {
@@ -711,7 +811,7 @@ object R8cProtocolEngine {
         val totalSize = firmwareBytes.size
 
         onProgress(0, totalSize, "مزامنة R8C (16×0x00 + 0xB0)...")
-        if (!startAndConnect(transport, enableResetFlow, b0TimeoutMs = 1000, onLog = onLog)) {
+        if (!startAndConnect(transport, enableResetFlow, b0TimeoutMs = 500, onLog = onLog)) {
             return FlashOperationResult.Failure("فشلت المزامنة التسلسلية R8C قبل العملية.")
         }
         if (!changeSpeed(transport, baudRate, onLog)) {

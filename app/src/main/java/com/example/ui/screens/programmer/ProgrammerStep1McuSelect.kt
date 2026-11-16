@@ -306,7 +306,7 @@ fun ProgrammerStep1McuSelect(
                             )
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                text = "الوضع اليدوي المعتمد لعائلة R8C: تم إيقاف الفحص التلقائي وحذف الصدى (Echo Filter=OFF) لضمان دقة القراءة والكتابة والمسح. اختر المعالج يدوياً من البحث أو القوائم بالأسفل.",
+                                text = "وضع Single-Wire UART Mode 3 لعائلة R8C: يتم إرسال واستقبال كل أمر عبر دالة sendAndReceiveR8C الذكية (انتظار N + Rx ثم تجاهل N بايت صدى الدايود) مع الاختيار اليدوي للمعالج لضمان دقة القراءة والكتابة والمسح.",
                                 fontSize = 11.sp,
                                 color = MaterialTheme.colorScheme.onSurface,
                                 lineHeight = 16.sp

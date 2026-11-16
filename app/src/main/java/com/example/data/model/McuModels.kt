@@ -161,7 +161,7 @@ object McuProtocolDefaults {
     fun defaultProtocolName(mainFamily: String, subFamily: String): String {
         val fam = mainFamily.trim().uppercase()
         return when {
-            fam.contains("R8C") -> "Renesas Standard Serial I/O Mode 2 (UART + MODE + 7-Byte ID)"
+            fam.contains("R8C") -> "Renesas R8C Single-Wire UART Mode 3 (TX+RX Diode MODE + 7-Byte ID)"
             fam.contains("M16C") -> "M16C Bootloader UART Mode (CNVss + RESET + 7-Byte ID)"
             fam.contains("RL78") -> "RL78 Single-Wire TOOL0 / 2-Wire UART Programming"
             fam.startsWith("RX") -> "RX SCI Boot Mode (MD + RESET + TXD/RXD)"
@@ -182,11 +182,10 @@ object McuProtocolDefaults {
                 McuPinMapping("GND (الأرضي)", "VSS / EVSS", "أرضي + مكثف REGC", "أرضي مشترك", "ربط الأرضي مباشرة + مكثف 0.47µF على طرف REGC")
             )
             fam.contains("R8C") -> listOf(
-                McuPinMapping("TXD (UART مباشر)", "RXD1 / RXD0", "حسب الباكج (${mcu.pins}P)", "من المبرمجة إلى المعالج", "تصفية الصدى متوقفة (Echo Filter=OFF) — عدم حذف أي بايت مستلم من RX ($pkgNote)"),
-                McuPinMapping("RXD (UART مباشر)", "TXD1 / TXD0", "حسب الباكج (${mcu.pins}P)", "من المعالج إلى المبرمجة", "بايت 0xB0 وبيانات الحالة والذاكرة تُستقبل مباشرة من المعالج"),
-                McuPinMapping("RTS (عبر دايود D2)", "RESET#", "تحكم بالبوت", "خرج Reset", "يُرفع RESET=HIGH ثم ينتظر التطبيق 100ms لاستقرار المذبذب قبل 16×0x00 ثم 0xB0"),
-                McuPinMapping("GND / Boot Mode", "MODE / VSS", "LOW وقت الإقلاع", "تفعيل البوتلودر", "تأكد من سحب طرف MODE للـ LOW عند رفع RESET ثم ربط الأرضي المشترك"),
-                McuPinMapping("VCC (التغذية)", "VCC / AVCC", "2.7V - 5.5V", "تغذية", "تغذية مستقرة ${mcu.recommendedVoltage}")
+                McuPinMapping("TX + RX (عبر دايودات 1N4148)", "MODE (Single-Wire)", "Mode 3 أحادي السلك", "ثنائي الاتجاه (صدى D1)", "تجميع TX و RX بالدايودات إلى طرف MODE — ينتظر التطبيق N + expectedRx ثم يحذف N بايت صدى ($pkgNote)"),
+                McuPinMapping("RTS (عبر دايود D2)", "RESET#", "تحكم بالبوت", "خرج Reset", "الكاثود جهة RTS — يرفع RESET=HIGH وينتظر 100ms لاستقرار المذبذب قبل 16×0x00 ثم تفريغ RX ثم 0xB0"),
+                McuPinMapping("VCC (التغذية)", "VCC / AVCC", "2.7V - 5.5V", "تغذية", "تغذية مستقرة ${mcu.recommendedVoltage}"),
+                McuPinMapping("GND (الأرضي)", "VSS", "أرضي مشترك", "أرضي مشترك", "ربط الأرضي المشترك بين المبرمجة والكارتة")
             )
             fam.contains("78K0R") -> listOf(
                 McuPinMapping("TX + RX (عبر دايود 1N4148 D1)", "TOOL0 / MODE", "حسب الباكج (${mcu.pins}P)", "ثنائي الاتجاه (D1)", "دمج TX و RX عبر دايود D1 (1N4148) لتكوين خط TOOL0 / MODE المشترك ($pkgNote)"),

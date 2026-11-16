@@ -428,7 +428,7 @@ private fun Diode1N4148SchematicCard(
                 ) {
                     Text(
                         text = when {
-                            isR8cFamily -> "Echo Filter = OFF"
+                            isR8cFamily -> "Single-Wire Mode 3"
                             is78k0Flmd0 -> "وضع FLMD0"
                             else -> "وضع TOOL0/MODE"
                         },
@@ -493,12 +493,12 @@ private fun Diode1N4148SchematicCard(
                 }
             )
             SchematicTableRow(
-                programmerSignal = if (isR8cFamily) "TXD / RXD" else "TX + RX",
-                bridgeComponent = if (isR8cFamily) "UART مباشر (Echo OFF)" else "دايود D1 (1N4148)",
-                mcuTarget = if (isR8cFamily) "RXD1 / TXD1" else "TOOL0 / MODE",
+                programmerSignal = "TX + RX",
+                bridgeComponent = if (isR8cFamily) "دايودات إلى MODE (Mode 3)" else "دايود D1 (1N4148)",
+                mcuTarget = if (isR8cFamily) "MODE (Single-Wire)" else "TOOL0 / MODE",
                 accentColor = Color(0xFF38BDF8),
                 subNote = if (isR8cFamily) {
-                    "إلغاء حذف الصدى (Echo Filter=OFF): لا تُحذف أي بايتات من RX لأن 0xB0 وردود الذاكرة تأتي مباشرة من المعالج"
+                    "Single-Wire UART Mode 3: دمج TX و RX عبر الدايودات على طرف MODE — ينتظر التطبيق N + expectedRx ثم يحذف N بايت صدى تلقائياً"
                 } else {
                     "خط البيانات والـ Mode المشترك (مع إلغاء صدى D1 تلقائياً بالكود)"
                 }
