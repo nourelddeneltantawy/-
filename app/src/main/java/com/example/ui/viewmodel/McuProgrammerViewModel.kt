@@ -9,11 +9,13 @@ import com.example.data.model.LogLevel
 import com.example.data.model.McuProcessor
 import com.example.data.model.ProgrammerChipType
 import com.example.data.model.ProgrammerLogEntry
+import com.example.data.model.ProtocolFamilyType
 import com.example.data.model.UsbSerialDeviceInfo
 import com.example.data.repository.McuDatabaseRepository
 import com.example.util.ChipAutoDetectResult
 import com.example.util.FirmwareParser
 import com.example.util.FlashOperationResult
+import com.example.util.R8cProtocolEngine
 import com.example.util.UsbConnectResult
 import com.example.util.UsbOtgProgrammerService
 import kotlinx.coroutines.Dispatchers
@@ -68,6 +70,7 @@ data class McuProgrammerUiState(
     val progressTotalBytes: Int = 0,
     val progressLabel: String = "",
     val flashBuffer: ByteArray = ByteArray(1024) { 0xFF.toByte() },
+    val flashBaseAddress: Int = 0,
     val loadedFileName: String? = null,
     val loadedFormat: String? = null,
     val loadedNonEmptyCount: Int = 0,
@@ -146,6 +149,7 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                     partNumbers = parts,
                     selectedProcessor = firstPart,
                     flashBuffer = buffer,
+                    flashBaseAddress = defaultBaseAddressFor(firstPart),
                     firstNonEmptyRowIndex = 0
                 )
             }
@@ -183,7 +187,8 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
         }.sortedBy { it.partNumber }
 
         _uiState.update { state ->
-            val newBuffer = if (state.loadedFileName == null || state.flashBuffer.size != mcu.flashSizeBytes) {
+            val resetNeeded = state.loadedFileName == null || state.flashBuffer.size != mcu.flashSizeBytes
+            val newBuffer = if (resetNeeded) {
                 FirmwareParser.createEmptyBuffer(mcu.flashSizeBytes)
             } else {
                 state.flashBuffer
@@ -199,6 +204,7 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                 partNumbers = parts,
                 selectedProcessor = mcu,
                 flashBuffer = newBuffer,
+                flashBaseAddress = if (resetNeeded) defaultBaseAddressFor(mcu) else state.flashBaseAddress,
                 firstNonEmptyRowIndex = computeFirstDataRow(newBuffer)
             )
         }
@@ -246,6 +252,7 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
             state.copy(
                 selectedProcessor = processor,
                 flashBuffer = resetBuf,
+                flashBaseAddress = if (state.loadedFileName == null) defaultBaseAddressFor(processor) else state.flashBaseAddress,
                 firstNonEmptyRowIndex = computeFirstDataRow(resetBuf)
             )
         }
@@ -273,6 +280,7 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                 partNumbers = parts,
                 selectedProcessor = selectedPart,
                 flashBuffer = buf,
+                flashBaseAddress = if (state.loadedFileName == null) defaultBaseAddressFor(selectedPart) else state.flashBaseAddress,
                 firstNonEmptyRowIndex = computeFirstDataRow(buf)
             )
         }
@@ -343,11 +351,13 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
             addLog("بدء التعرف التلقائي (Auto-Detect Chip ID)...", LogLevel.INFO)
 
             val familyHint = _uiState.value.selectedProcessor?.mainFamily ?: _uiState.value.selectedMainFamily
+            val idBytes = parseIdCodeBytes() ?: ByteArray(7) { 0xFF.toByte() }
             when (val res = UsbOtgProgrammerService.probeChipId(
                 context = appContext,
                 preferredChip = _uiState.value.selectedProgrammer,
                 enableDtrRtsReset = _uiState.value.enableDtrRtsReset,
                 targetMainFamily = familyHint,
+                idCodeBytes = idBytes,
                 catalog = allProcessors
             ) { msg ->
                 addLog(msg, LogLevel.INFO)
@@ -518,6 +528,7 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                 }
 
                 val firstDataRow = computeFirstDataRow(parsed.bytes)
+                val resolvedBase = if (parsed.startAddress > 0) parsed.startAddress else defaultBaseAddressFor(mcu)
                 _uiState.update {
                     it.copy(
                         isBusy = false,
@@ -526,6 +537,7 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                         progressTotalBytes = mcu.flashSizeBytes,
                         progressLabel = "تم تحميل الملف بنجاح",
                         flashBuffer = parsed.bytes,
+                        flashBaseAddress = resolvedBase,
                         loadedFileName = parsed.fileName,
                         loadedFormat = parsed.format,
                         loadedNonEmptyCount = parsed.nonEmptyBytesCount,
@@ -533,7 +545,7 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                         hexJumpSequence = it.hexJumpSequence + 1
                     )
                 }
-                val startHex = "0x%08X".format(firstDataRow * 16)
+                val startHex = "0x%08X".format(resolvedBase + firstDataRow * 16)
                 addLog(
                     "تم عرض الملف ${parsed.fileName} (${parsed.format}) - بداية البيانات عند $startHex",
                     LogLevel.SUCCESS
@@ -547,12 +559,13 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
 
     fun saveDumpToUri(uri: Uri, asIntelHex: Boolean) {
         val buffer = _uiState.value.flashBuffer
+        val baseAddr = _uiState.value.flashBaseAddress
         viewModelScope.launch {
             try {
                 withContext(Dispatchers.IO) {
                     appContext.contentResolver.openOutputStream(uri)?.use { out ->
                         if (asIntelHex) {
-                            out.write(FirmwareParser.toIntelHex(buffer).toByteArray(Charsets.US_ASCII))
+                            out.write(FirmwareParser.toIntelHex(buffer, baseAddr).toByteArray(Charsets.US_ASCII))
                         } else {
                             out.write(buffer)
                         }
@@ -615,10 +628,11 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                         it.copy(
                             isBusy = false,
                             progress = 1f,
-                            progressBytesDone = mcu.flashSizeBytes,
-                            progressTotalBytes = mcu.flashSizeBytes,
+                            progressBytesDone = data.size,
+                            progressTotalBytes = data.size,
                             progressLabel = "اكتملت القراءة",
                             flashBuffer = data,
+                            flashBaseAddress = res.baseAddress,
                             loadedFileName = "Dump_${mcu.partNumber}.bin",
                             loadedFormat = "Chip Read",
                             loadedNonEmptyCount = data.count { b -> b != 0xFF.toByte() },
@@ -741,6 +755,7 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                 enableDtrRtsReset = _uiState.value.enableDtrRtsReset,
                 processor = mcu,
                 firmwareBytes = _uiState.value.flashBuffer,
+                firmwareStartAddress = _uiState.value.flashBaseAddress,
                 idCodeBytes = idBytes,
                 verifyOnly = verifyOnly,
                 onLog = { msg -> addLog(msg, LogLevel.INFO) },
@@ -792,6 +807,15 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
             out[i] = (p.toIntOrNull(16) ?: return null).toByte()
         }
         return out
+    }
+
+    private fun defaultBaseAddressFor(mcu: McuProcessor?): Int {
+        if (mcu == null) return 0
+        return if (mcu.protocolType == ProtocolFamilyType.R8C_M16C) {
+            R8cProtocolEngine.resolveDeviceLayout(mcu).romArea.org
+        } else {
+            0
+        }
     }
 
     private fun computeFirstDataRow(buffer: ByteArray): Int {

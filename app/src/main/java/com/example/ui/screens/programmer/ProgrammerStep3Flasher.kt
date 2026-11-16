@@ -407,6 +407,7 @@ fun ProgrammerStep3Flasher(
         // 4. Professional PC-Style Hex View (Address : 16 Hex Bytes | ASCII + Fast Scrollbar)
         PcStyleHexViewerCard(
             buffer = state.flashBuffer,
+            baseAddress = state.flashBaseAddress,
             firstNonEmptyRowIndex = state.firstNonEmptyRowIndex,
             jumpSequence = state.hexJumpSequence,
             onJumpToDataClick = onJumpToFirstData
@@ -790,6 +791,7 @@ private fun IdByteInputBox(
 @Composable
 private fun PcStyleHexViewerCard(
     buffer: ByteArray,
+    baseAddress: Int,
     firstNonEmptyRowIndex: Int,
     jumpSequence: Int,
     onJumpToDataClick: () -> Unit
@@ -807,7 +809,9 @@ private fun PcStyleHexViewerCard(
     }
 
     val firstVisibleRow by remember { derivedStateOf { listState.firstVisibleItemIndex } }
-    val currentAddrHex = remember(firstVisibleRow) { "0x%08X".format(firstVisibleRow * 16) }
+    val currentAddrHex = remember(firstVisibleRow, baseAddress) {
+        "0x%08X".format(baseAddress + firstVisibleRow * 16)
+    }
 
     Card(
         shape = RoundedCornerShape(18.dp),
@@ -841,7 +845,7 @@ private fun PcStyleHexViewerCard(
                         contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
                     ) {
                         Text(
-                            text = "أول بيانات (0x%06X)".format(firstNonEmptyRowIndex * 16),
+                            text = "أول بيانات (0x%06X)".format(baseAddress + firstNonEmptyRowIndex * 16),
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Bold
                         )
@@ -890,8 +894,8 @@ private fun PcStyleHexViewerCard(
                                 items(totalRows) { rowIdx ->
                                     val rowAddr = rowIdx * 16
                                     val rowLen = min(16, buffer.size - rowAddr)
-                                    val lineStr = remember(buffer, rowAddr, rowLen) {
-                                        buildPcHexLine(buffer, rowAddr, rowLen)
+                                    val lineStr = remember(buffer, rowAddr, rowLen, baseAddress) {
+                                        buildPcHexLine(buffer, rowAddr, rowLen, baseAddress)
                                     }
                                     val hasData = remember(buffer, rowAddr, rowLen) {
                                         (0 until rowLen).any { buffer[rowAddr + it] != 0xFF.toByte() }
@@ -958,9 +962,9 @@ private fun PcStyleHexViewerCard(
     }
 }
 
-private fun buildPcHexLine(buffer: ByteArray, addr: Int, len: Int): String {
+private fun buildPcHexLine(buffer: ByteArray, addr: Int, len: Int, baseAddress: Int): String {
     val sb = StringBuilder(82)
-    sb.append("%08X: ".format(addr))
+    sb.append("%08X: ".format(baseAddress + addr))
     for (i in 0 until 16) {
         if (i == 8) sb.append(' ')
         if (i < len) {

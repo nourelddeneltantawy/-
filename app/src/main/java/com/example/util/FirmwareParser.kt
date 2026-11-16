@@ -180,25 +180,26 @@ object FirmwareParser {
         )
     }
 
-    fun toIntelHex(bytes: ByteArray): String {
+    fun toIntelHex(bytes: ByteArray, baseAddress: Int = 0): String {
         val sb = StringBuilder()
         var currentUpper = -1
-        var addr = 0
-        while (addr < bytes.size) {
-            val upper = (addr ushr 16) and 0xFFFF
-            if (upper != currentUpper) {
-                currentUpper = upper
-                val hi = (upper ushr 8) and 0xFF
-                val lo = upper and 0xFF
-                val sum = (2 + 0 + 0 + 4 + hi + lo) and 0xFF
-                val chk = ((0x100 - sum) and 0xFF)
-                sb.append(":02000004%04X%02X\r\n".format(upper, chk))
-            }
-            val len = min(16, bytes.size - addr)
-            val slice = bytes.copyOfRange(addr, addr + len)
+        var offset = 0
+        while (offset < bytes.size) {
+            val len = min(16, bytes.size - offset)
+            val slice = bytes.copyOfRange(offset, offset + len)
             // Skip completely 0xFF records to keep exported HEX compact and standard
             if (slice.any { it != 0xFF.toByte() }) {
-                val lowAddr = addr and 0xFFFF
+                val physicalAddr = baseAddress + offset
+                val upper = (physicalAddr ushr 16) and 0xFFFF
+                if (upper != currentUpper) {
+                    currentUpper = upper
+                    val hi = (upper ushr 8) and 0xFF
+                    val lo = upper and 0xFF
+                    val sum = (2 + 0 + 0 + 4 + hi + lo) and 0xFF
+                    val chk = ((0x100 - sum) and 0xFF)
+                    sb.append(":02000004%04X%02X\r\n".format(upper, chk))
+                }
+                val lowAddr = physicalAddr and 0xFFFF
                 var sum = len + ((lowAddr ushr 8) and 0xFF) + (lowAddr and 0xFF)
                 sb.append(":%02X%04X00".format(len, lowAddr))
                 for (b in slice) {
@@ -209,7 +210,7 @@ object FirmwareParser {
                 val chk = ((0x100 - (sum and 0xFF)) and 0xFF)
                 sb.append("%02X\r\n".format(chk))
             }
-            addr += len
+            offset += len
         }
         sb.append(":00000001FF\r\n")
         return sb.toString()
