@@ -516,7 +516,7 @@ object UsbOtgProgrammerService {
         }
 
         override suspend fun writeBytes(bytes: ByteArray, clearStaleRx: Boolean, onLog: (String) -> Unit): String? {
-            return writeWithEchoCancel(bytes, clearStaleRx = clearStaleRx, onLog = onLog)
+            return writeDirectNoEcho(bytes, clearStaleRx = clearStaleRx)
         }
 
         override suspend fun readExactBytes(expectedLen: Int, timeoutMs: Int, onLog: (String) -> Unit): ByteArray {
@@ -538,7 +538,19 @@ object UsbOtgProgrammerService {
             return@withContext ChipAutoDetectResult.Failure("تعذر فتح منفذ USB OTG للفحص التلقائي.")
         }
 
+        val famUpper = targetMainFamily.orEmpty().trim().uppercase()
+        val isExplicitR8c = famUpper.contains("R8C") || famUpper.contains("M16C")
         val initialMode = resolveBootSyncMode(targetMainFamily)
+
+        if (isExplicitR8c) {
+            setEchoCancellation(false)
+            val r8cResult = probeR8cViaEngine(enableDtrRtsReset, idCodeBytes, catalog, onLog)
+            if (r8cResult != null) return@withContext r8cResult
+
+            return@withContext ChipAutoDetectResult.Failure(
+                "تم فتح المنفذ على 9600 bps (Echo Cancel=OFF، انتظار 100ms بعد RESET، ومهلة 1000ms لـ 0xB0)، ولكن معالج R8C لم يستجب عند 0xB0. تأكد من عكس أسلاك TX/RX المنفصلة، وضع MODE، وRESET، والتغذية."
+            )
+        }
 
         if (initialMode == BootSyncMode.SINGLE_WIRE_R8C_78K0R) {
             val r8cResult = probeR8cViaEngine(enableDtrRtsReset, idCodeBytes, catalog, onLog)
@@ -649,6 +661,7 @@ object UsbOtgProgrammerService {
         }
 
         if (processor.protocolType == ProtocolFamilyType.R8C_M16C) {
+            setEchoCancellation(false)
             return@withContext R8cProtocolEngine.readMemory(
                 transport = createR8cTransport(),
                 processor = processor,
@@ -724,6 +737,7 @@ object UsbOtgProgrammerService {
         }
 
         if (processor.protocolType == ProtocolFamilyType.R8C_M16C) {
+            setEchoCancellation(false)
             return@withContext R8cProtocolEngine.eraseFlash(
                 transport = createR8cTransport(),
                 processor = processor,
@@ -774,6 +788,7 @@ object UsbOtgProgrammerService {
         }
 
         if (processor.protocolType == ProtocolFamilyType.R8C_M16C) {
+            setEchoCancellation(false)
             return@withContext R8cProtocolEngine.programOrVerifyFlash(
                 transport = createR8cTransport(),
                 processor = processor,
@@ -1142,6 +1157,21 @@ object UsbOtgProgrammerService {
             onLog?.invoke("TX Break Exception (${device.deviceName}): ${e.toString()}")
             false
         }
+    }
+
+    /**
+     * Direct UART write with Echo Cancel = OFF (used by R8C where TX and RX are separate lines without a D1 diode).
+     */
+    private fun writeDirectNoEcho(
+        txBytes: ByteArray,
+        clearStaleRx: Boolean = true
+    ): String? {
+        if (clearStaleRx) {
+            synchronized(rxLock) {
+                rxBuffer.clear()
+            }
+        }
+        return writeRawBytes(txBytes)
     }
 
     /**

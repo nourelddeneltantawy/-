@@ -182,10 +182,11 @@ object McuProtocolDefaults {
                 McuPinMapping("GND (الأرضي)", "VSS / EVSS", "أرضي + مكثف REGC", "أرضي مشترك", "ربط الأرضي مباشرة + مكثف 0.47µF على طرف REGC")
             )
             fam.contains("R8C") -> listOf(
-                McuPinMapping("TX + RX (عبر دايود 1N4148 D1)", "TOOL0 / MODE (RXD/TXD)", "حسب الباكج (${mcu.pins}P)", "ثنائي الاتجاه (D1)", "دمج TX و RX عبر دايود D1 (1N4148) لتكوين خط البيانات و MODE المشترك ($pkgNote)"),
-                McuPinMapping("RTS (عبر دايود 1N4148 D2)", "RESET#", "تحكم بالبوت", "خرج Reset", "طرف RTS يتحكم في RESET عبر دايود D2 أثناء سحب TX/MODE للأسفل 50ms"),
-                McuPinMapping("VCC (التغذية)", "VCC / AVCC", "2.7V - 5.5V", "تغذية", "تغذية مستقرة ${mcu.recommendedVoltage}"),
-                McuPinMapping("GND (الأرضي)", "VSS", "مرجع مشترك", "أرضي مشترك", "ربط مباشر بأرضي البوردة")
+                McuPinMapping("TXD (مباشر - بدون D1)", "RXD1 / RXD0", "حسب الباكج (${mcu.pins}P)", "من المبرمجة إلى المعالج", "خط إرسال منفصل عن RX (إلغاء الصدى Echo Cancel = OFF) ($pkgNote)"),
+                McuPinMapping("RXD (مباشر - بدون D1)", "TXD1 / TXD0", "حسب الباكج (${mcu.pins}P)", "من المعالج إلى المبرمجة", "خط استقبال منفصل عن TX — لا تضع دايود D1 بينهما"),
+                McuPinMapping("RTS (عبر دايود D2 أو مباشر)", "RESET#", "تحكم بالبوت", "خرج Reset", "يُرفع RESET=HIGH ثم ينتظر التطبيق 100ms لاستقرار المذبذب قبل 16×0x00"),
+                McuPinMapping("GND / Boot Mode", "MODE / VSS", "LOW وقت الإقلاع", "تفعيل البوتلودر", "تأكد من سحب طرف MODE للـ LOW عند رفع RESET ثم ربط الأرضي المشترك"),
+                McuPinMapping("VCC (التغذية)", "VCC / AVCC", "2.7V - 5.5V", "تغذية", "تغذية مستقرة ${mcu.recommendedVoltage}")
             )
             fam.contains("78K0R") -> listOf(
                 McuPinMapping("TX + RX (عبر دايود 1N4148 D1)", "TOOL0 / MODE", "حسب الباكج (${mcu.pins}P)", "ثنائي الاتجاه (D1)", "دمج TX و RX عبر دايود D1 (1N4148) لتكوين خط TOOL0 / MODE المشترك ($pkgNote)"),

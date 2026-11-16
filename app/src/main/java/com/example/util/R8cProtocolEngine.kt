@@ -129,24 +129,24 @@ object R8cProtocolEngine {
     }
 
     /**
-     * Port start + RTS/TX-Break Bootloader Hardware Reset Flow + initial 9600 bps sync:
-     * 1) RTS = true (RESET = LOW) + TX Break LOW (MODE/TOOL0 = LOW) for 50ms.
-     * 2) RTS = false (RESET = HIGH) while TX/MODE still LOW for 20ms, then release TX Break & flush.
-     * 3) connection(): 16 x 0x00 (20ms gap) + 0xB0 -> verify 0xB0 response.
+     * Port start + Bootloader Hardware Reset Flow + initial 9600 bps sync (Echo Cancel = OFF):
+     * 1) RTS = true (RESET = LOW) + TX/MODE hold LOW for 50ms.
+     * 2) RTS = false (RESET = HIGH), then wait 100ms for internal oscillator stabilization before 16x 0x00.
+     * 3) connection(): 16 x 0x00 (20ms gap) + 0xB0 -> verify 0xB0 response (1000ms timeout).
      */
     suspend fun startAndConnect(
         transport: SerialTransport,
         enableResetFlow: Boolean,
         onLog: (String) -> Unit
     ): Boolean {
-        onLog("R8C Start: فتح المنفذ على سرعة 9600 bps (8N1)...")
+        onLog("R8C Start: فتح المنفذ على سرعة 9600 bps (8N1) • Echo Cancel=OFF (TX/RX منفصلين)...")
         if (!transport.configureUart(9600, onLog)) {
             return false
         }
         transport.setTxBreak(false, onLog)
 
         if (enableResetFlow) {
-            onLog("R8C Boot Flow: تفعيل RTS=true (RESET=LOW) + خفض TX/MODE (Break) لمدة 50ms...")
+            onLog("R8C Boot Flow: تفعيل RTS=true (RESET=LOW) + خفض MODE/TX لمدة 50ms...")
             transport.setDtr(false, onLog)
             transport.setRts(true, onLog)
             val breakSupported = transport.setTxBreak(true, onLog)
@@ -159,16 +159,16 @@ object R8cProtocolEngine {
                 delay(50)
             }
 
-            onLog("R8C Boot Flow: رفع RTS=false (RESET=HIGH) لالتقاط Boot Mode -> انتظار 20ms...")
+            onLog("R8C Boot Flow: رفع RTS=false (RESET=HIGH) -> انتظار 100ms لاستقرار المذبذب الداخلي ودخول Boot Mode...")
             transport.setRts(false, onLog)
             delay(20)
             transport.setTxBreak(false, onLog)
-            delay(8)
+            delay(80) // إجمالي 100ms بعد RESET=HIGH قبل إرسال 16x 0x00
         } else {
-            onLog("R8C Boot Flow: نبضة RTS Reset معطلة — تحرير RTS=false و DTR=false...")
+            onLog("R8C Boot Flow: نبضة RTS Reset معطلة — تحرير RTS=false و DTR=false -> انتظار 100ms...")
             transport.setDtr(false, onLog)
             transport.setRts(false, onLog)
-            delay(40)
+            delay(100)
         }
         transport.flushInputBuffer()
 
@@ -201,9 +201,9 @@ object R8cProtocolEngine {
             return false
         }
 
-        val reply = transport.readExactBytes(expectedLen = 1, timeoutMs = 450, onLog = onLog)
+        val reply = transport.readExactBytes(expectedLen = 1, timeoutMs = 1000, onLog = onLog)
         if (reply.isEmpty()) {
-            onLog("RX: (لا يوجد رد / Timeout 450ms لـ 0xB0)")
+            onLog("RX: (لا يوجد رد / Timeout 1000ms لـ 0xB0)")
             return false
         }
         onLog("RX: ${toHex(reply)}")

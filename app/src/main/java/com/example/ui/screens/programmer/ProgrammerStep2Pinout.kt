@@ -188,11 +188,13 @@ fun ProgrammerStep2Pinout(
         // Pinout Mapping Diagram & Table
         if (mcu != null) {
             if (mcu.isDiodeSingleWireSchematicFamily()) {
+                val isR8cSeparateUart = mcu.mainFamily.trim().uppercase().contains("R8C")
                 Diode1N4148SchematicCard(
                     familyName = mcu.mainFamily,
                     partNumber = mcu.partNumber,
                     chipModel = state.selectedProgrammer.chipModel,
                     is78k0Flmd0 = mcu.is78k0Flmd0Mode(),
+                    isR8cSeparateUart = isR8cSeparateUart,
                     voltage = mcu.recommendedVoltage
                 )
             }
@@ -388,6 +390,7 @@ private fun Diode1N4148SchematicCard(
     partNumber: String,
     chipModel: String,
     is78k0Flmd0: Boolean,
+    isR8cSeparateUart: Boolean,
     voltage: String
 ) {
     Card(
@@ -404,7 +407,11 @@ private fun Diode1N4148SchematicCard(
             ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = "المخطط الهندسي المعتمد (1N4148 Diodes)",
+                        text = if (isR8cSeparateUart) {
+                            "المخطط الهندسي المعتمد (UART منفصل • R8C)"
+                        } else {
+                            "المخطط الهندسي المعتمد (1N4148 Diodes)"
+                        },
                         fontWeight = FontWeight.Bold,
                         fontSize = 14.sp,
                         color = Color(0xFF38BDF8)
@@ -417,14 +424,25 @@ private fun Diode1N4148SchematicCard(
                 }
                 Surface(
                     shape = RoundedCornerShape(8.dp),
-                    color = if (is78k0Flmd0) Color(0xFFF59E0B).copy(alpha = 0.16f)
-                    else Color(0xFF10B981).copy(alpha = 0.16f)
+                    color = when {
+                        isR8cSeparateUart -> Color(0xFF38BDF8).copy(alpha = 0.16f)
+                        is78k0Flmd0 -> Color(0xFFF59E0B).copy(alpha = 0.16f)
+                        else -> Color(0xFF10B981).copy(alpha = 0.16f)
+                    }
                 ) {
                     Text(
-                        text = if (is78k0Flmd0) "وضع FLMD0" else "وضع TOOL0/MODE",
+                        text = when {
+                            isR8cSeparateUart -> "Echo Cancel = OFF"
+                            is78k0Flmd0 -> "وضع FLMD0"
+                            else -> "وضع TOOL0/MODE"
+                        },
                         fontSize = 10.sp,
                         fontWeight = FontWeight.Bold,
-                        color = if (is78k0Flmd0) Color(0xFFF59E0B) else Color(0xFF10B981),
+                        color = when {
+                            isR8cSeparateUart -> Color(0xFF38BDF8)
+                            is78k0Flmd0 -> Color(0xFFF59E0B)
+                            else -> Color(0xFF10B981)
+                        },
                         modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                     )
                 }
@@ -469,18 +487,32 @@ private fun Diode1N4148SchematicCard(
 
             SchematicTableRow(
                 programmerSignal = "RTS",
-                bridgeComponent = "دايود D2 (1N4148)",
+                bridgeComponent = if (isR8cSeparateUart) "مباشر أو D2" else "دايود D2 (1N4148)",
                 mcuTarget = "RESET#",
                 accentColor = Color(0xFFF59E0B),
-                subNote = "الكاثود جهة RTS — ينفذ نبضة Reset 50ms ثم HIGH"
+                subNote = if (isR8cSeparateUart) {
+                    "بعد رفع RTS=false (RESET=HIGH) ينتظر التطبيق 100ms لاستقرار المذبذب قبل 16×0x00"
+                } else {
+                    "الكاثود جهة RTS — ينفذ نبضة Reset 50ms ثم HIGH"
+                }
             )
-            SchematicTableRow(
-                programmerSignal = "TX + RX",
-                bridgeComponent = "دايود D1 (1N4148)",
-                mcuTarget = "TOOL0 / MODE",
-                accentColor = Color(0xFF38BDF8),
-                subNote = "خط البيانات والـ Mode المشترك (مع إلغاء صدى D1 تلقائياً بالكود)"
-            )
+            if (isR8cSeparateUart) {
+                SchematicTableRow(
+                    programmerSignal = "TXD / RXD",
+                    bridgeComponent = "توصيل منفصل (بدون D1)",
+                    mcuTarget = "RXD1 / TXD1",
+                    accentColor = Color(0xFF38BDF8),
+                    subNote = "خطوط TX و RX منفصلة في R8C ولا يمر بينها دايود — يتم تعطيل Echo Cancel = OFF تلقائياً"
+                )
+            } else {
+                SchematicTableRow(
+                    programmerSignal = "TX + RX",
+                    bridgeComponent = "دايود D1 (1N4148)",
+                    mcuTarget = "TOOL0 / MODE",
+                    accentColor = Color(0xFF38BDF8),
+                    subNote = "خط البيانات والـ Mode المشترك (مع إلغاء صدى D1 تلقائياً بالكود)"
+                )
+            }
             SchematicTableRow(
                 programmerSignal = "DTR",
                 bridgeComponent = if (is78k0Flmd0) "توصيل مباشر (HIGH)" else "اختياري (FLMD0)",
@@ -489,7 +521,7 @@ private fun Diode1N4148SchematicCard(
                 subNote = if (is78k0Flmd0) {
                     "أساسي لعائلة 78K0: يُرفع إلى 5V HIGH عبر DTR = false قبل Reset"
                 } else {
-                    "مخصص لعائلة 78K0 (غير مطلوب في وضع TOOL0 الأحادي)"
+                    "مخصص لعائلة 78K0 (غير مطلوب في وضع R8C / TOOL0)"
                 }
             )
             SchematicTableRow(

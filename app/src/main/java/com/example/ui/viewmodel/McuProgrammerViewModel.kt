@@ -133,6 +133,8 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
             }.sortedBy { it.partNumber }
             val firstPart = parts.firstOrNull()
 
+            val defaultEcho = defaultEchoCancelFor(firstPart)
+            UsbOtgProgrammerService.setEchoCancellation(defaultEcho)
             _uiState.update { state ->
                 val buffer = firstPart?.let { FirmwareParser.createEmptyBuffer(it.flashSizeBytes) }
                     ?: FirmwareParser.createEmptyBuffer(64 * 1024)
@@ -148,6 +150,7 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                     selectedSubFamily = firstSub,
                     partNumbers = parts,
                     selectedProcessor = firstPart,
+                    enableEchoCancellation = defaultEcho,
                     flashBuffer = buffer,
                     flashBaseAddress = defaultBaseAddressFor(firstPart),
                     firstNonEmptyRowIndex = 0
@@ -186,6 +189,8 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
             it.manufacturer == mcu.manufacturer && it.mainFamily == mcu.mainFamily && it.subFamily == mcu.subFamily
         }.sortedBy { it.partNumber }
 
+        val defaultEcho = defaultEchoCancelFor(mcu)
+        UsbOtgProgrammerService.setEchoCancellation(defaultEcho)
         _uiState.update { state ->
             val resetNeeded = state.loadedFileName == null || state.flashBuffer.size != mcu.flashSizeBytes
             val newBuffer = if (resetNeeded) {
@@ -203,6 +208,7 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                 selectedSubFamily = mcu.subFamily,
                 partNumbers = parts,
                 selectedProcessor = mcu,
+                enableEchoCancellation = defaultEcho,
                 flashBuffer = newBuffer,
                 flashBaseAddress = if (resetNeeded) defaultBaseAddressFor(mcu) else state.flashBaseAddress,
                 firstNonEmptyRowIndex = computeFirstDataRow(newBuffer)
@@ -243,6 +249,8 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
     }
 
     fun selectPartNumber(processor: McuProcessor) {
+        val defaultEcho = defaultEchoCancelFor(processor)
+        UsbOtgProgrammerService.setEchoCancellation(defaultEcho)
         _uiState.update { state ->
             val resetBuf = if (state.loadedFileName == null) {
                 FirmwareParser.createEmptyBuffer(processor.flashSizeBytes)
@@ -251,6 +259,7 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
             }
             state.copy(
                 selectedProcessor = processor,
+                enableEchoCancellation = defaultEcho,
                 flashBuffer = resetBuf,
                 flashBaseAddress = if (state.loadedFileName == null) defaultBaseAddressFor(processor) else state.flashBaseAddress,
                 firstNonEmptyRowIndex = computeFirstDataRow(resetBuf)
@@ -267,6 +276,8 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
         parts: List<McuProcessor>,
         selectedPart: McuProcessor?
     ) {
+        val defaultEcho = defaultEchoCancelFor(selectedPart)
+        UsbOtgProgrammerService.setEchoCancellation(defaultEcho)
         _uiState.update { state ->
             val buf = selectedPart?.let {
                 if (state.loadedFileName == null) FirmwareParser.createEmptyBuffer(it.flashSizeBytes) else state.flashBuffer
@@ -279,6 +290,7 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                 selectedSubFamily = selectedSub,
                 partNumbers = parts,
                 selectedProcessor = selectedPart,
+                enableEchoCancellation = defaultEcho,
                 flashBuffer = buf,
                 flashBaseAddress = if (state.loadedFileName == null) defaultBaseAddressFor(selectedPart) else state.flashBaseAddress,
                 firstNonEmptyRowIndex = computeFirstDataRow(buf)
@@ -341,16 +353,21 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
     fun autoDetectChipId() {
         if (_uiState.value.isAutoDetecting || _uiState.value.isBusy) return
         viewModelScope.launch {
+            val familyHint = _uiState.value.selectedProcessor?.mainFamily ?: _uiState.value.selectedMainFamily
+            val isR8cHint = familyHint.contains("R8C", ignoreCase = true) || familyHint.contains("M16C", ignoreCase = true)
             _uiState.update {
                 it.copy(
                     isAutoDetecting = true,
-                    autoDetectStatus = "جاري فحص USB OTG مع تتابع RTS/TX Break وإلغاء صدى D1...",
+                    autoDetectStatus = if (isR8cHint) {
+                        "جاري فحص معالج R8C عبر USB OTG (انتظار 100ms بعد RESET • Echo Cancel=OFF)..."
+                    } else {
+                        "جاري فحص USB OTG مع تتابع RTS/TX Break وإلغاء صدى D1..."
+                    },
                     autoDetectIsSuccess = false
                 )
             }
             addLog("بدء التعرف التلقائي (Auto-Detect Chip ID)...", LogLevel.INFO)
 
-            val familyHint = _uiState.value.selectedProcessor?.mainFamily ?: _uiState.value.selectedMainFamily
             val idBytes = parseIdCodeBytes() ?: ByteArray(7) { 0xFF.toByte() }
             when (val res = UsbOtgProgrammerService.probeChipId(
                 context = appContext,
@@ -807,6 +824,11 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
             out[i] = (p.toIntOrNull(16) ?: return null).toByte()
         }
         return out
+    }
+
+    private fun defaultEchoCancelFor(mcu: McuProcessor?): Boolean {
+        if (mcu == null) return true
+        return mcu.protocolType != ProtocolFamilyType.R8C_M16C
     }
 
     private fun defaultBaseAddressFor(mcu: McuProcessor?): Int {
