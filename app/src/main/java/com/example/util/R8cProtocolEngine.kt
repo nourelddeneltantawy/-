@@ -506,33 +506,38 @@ object R8cProtocolEngine {
             ((address ushr 8) and 0xFF).toByte(),
             ((address ushr 16) and 0xFF).toByte()
         )
-        if (verboseFrameLog) {
-            onLog("TX: \u2066${toHex(cmd)}\u2069 (read_page ${fmtAddr(address)})")
+        val maxAttempts = 3
+        for (attempt in 1..maxAttempts) {
+            if (verboseFrameLog && attempt == 1) {
+                onLog("TX: \u2066${toHex(cmd)}\u2069 (read_page ${fmtAddr(address)})")
+            }
+            val res = sendAndReceiveR8C(
+                transport = transport,
+                txBytes = cmd,
+                expectedRxLength = 256,
+                timeoutMs = 1500,
+                onLog = onLog
+            )
+            if (res.txError == null && res.replyBytes.size >= 256) {
+                val page = res.replyBytes
+                if (verboseFrameLog) {
+                    onLog("RX Flash (256B @ ${fmtAddr(address)}): \u2066${toHex(page.take(16).toByteArray())}\u2069 ...")
+                }
+                return page
+            }
+
+            if (attempt < maxAttempts) {
+                transport.flushInputBuffer()
+                delay(50)
+            } else {
+                if (res.txError != null) {
+                    onLog("TX ERROR (read_page ${fmtAddr(address)} بعد $maxAttempts محاولات): ${res.txError}")
+                } else {
+                    onLog("RX End/Timeout (read_page ${fmtAddr(address)} بعد $maxAttempts محاولات): استُلم ${res.replyBytes.size}/256 بايت حقيقي (الخام=${res.totalRawReceived}).")
+                }
+            }
         }
-        val res = sendAndReceiveR8C(
-            transport = transport,
-            txBytes = cmd,
-            expectedRxLength = 256,
-            timeoutMs = 1000,
-            onLog = onLog
-        )
-        if (res.txError != null) {
-            onLog("TX ERROR (read_page ${fmtAddr(address)}): ${res.txError}")
-            return null
-        }
-        if (verboseFrameLog && res.rawBytes.isNotEmpty()) {
-            val preview = res.rawBytes.take(16).toByteArray()
-            onLog("RX Raw (0xFF @ ${fmtAddr(address)}, ${res.rawBytes.size}B, صدى=${res.echoedCount}B): [${toHexComma(preview)} ...]")
-        }
-        val page = res.replyBytes
-        if (page.size < 256) {
-            onLog("RX Error (read_page ${fmtAddr(address)}): استُلم ${page.size}/256 بايت حقيقي (الخام=${res.totalRawReceived}).")
-            return null
-        }
-        if (verboseFrameLog) {
-            onLog("RX Flash (256B @ ${fmtAddr(address)}): \u2066${toHex(page.take(16).toByteArray())}\u2069 ...")
-        }
-        return page
+        return null
     }
 
     /**
@@ -682,6 +687,7 @@ object R8cProtocolEngine {
         val resultBuffer = FirmwareParser.createEmptyBuffer(totalSize)
         val totalPages = (totalSize + pageSize - 1) / pageSize
         var bytesRead = 0
+        var stoppedAtChipEnd = false
 
         transport.setRawRxMonitor(false)
         onProgress(0, totalSize, "قراءة ${processor.partNumber}: 0% (${fmtAddr(startAddr)})...")
@@ -693,8 +699,18 @@ object R8cProtocolEngine {
                     transport = transport,
                     address = physicalAddr,
                     onLog = onLog,
-                    verboseFrameLog = (pageIdx == 0 || pageIdx == totalPages - 1)
-                ) ?: return FlashOperationResult.Failure("فشلت قراءة الصفحة عند العنوان ${fmtAddr(physicalAddr, 6)}.")
+                    verboseFrameLog = false
+                )
+                if (chunk == null) {
+                    if (bytesRead > 0) {
+                        stoppedAtChipEnd = true
+                        break
+                    } else {
+                        return FlashOperationResult.Failure(
+                            "فشلت قراءة الصفحة الأولى عند العنوان ${fmtAddr(physicalAddr)} بعد 3 محاولات."
+                        )
+                    }
+                }
 
                 val dstOffset = pageIdx * pageSize
                 val copyLen = min(pageSize, totalSize - dstOffset)
@@ -707,6 +723,9 @@ object R8cProtocolEngine {
                     totalSize,
                     "قراءة ${processor.partNumber}: $pct% (${fmtAddr(physicalAddr)})"
                 )
+                if (pageIdx == 0 || (pageIdx + 1) % 8 == 0 || pageIdx == totalPages - 1) {
+                    onLog("قراءة الفلاش: صفحة ${pageIdx + 1}/$totalPages (${fmtAddr(physicalAddr)}) — $pct% (${bytesRead / 1024} KB)")
+                }
             }
         } catch (t: Throwable) {
             onLog("Read Flash Exception: ${t.toString()}")
@@ -715,9 +734,15 @@ object R8cProtocolEngine {
             transport.setRawRxMonitor(false)
         }
 
+        val actualEndAddr: Int = startAddr + bytesRead - 1
+        val finalBuffer = if (stoppedAtChipEnd) resultBuffer.copyOf(bytesRead) else resultBuffer
+        val completionMsg = "اكتملت قراءة الفلاش المتاح بنجاح حتى العنوان ${fmtAddr(actualEndAddr)}"
+        onProgress(finalBuffer.size, finalBuffer.size, "$completionMsg (100%)")
+        onLog(completionMsg)
+
         return FlashOperationResult.Success(
-            message = "تمت قراءة ${bytesRead / 1024} KB من ${processor.partNumber} (${fmtAddr(startAddr)}..${fmtAddr(endAddr)}) بنجاح.",
-            bytesTransferred = resultBuffer,
+            message = "$completionMsg (${bytesRead / 1024} KB • $bytesRead بايت).",
+            bytesTransferred = finalBuffer,
             baseAddress = startAddr
         )
     }
