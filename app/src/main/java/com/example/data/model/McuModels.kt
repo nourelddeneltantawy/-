@@ -182,9 +182,9 @@ object McuProtocolDefaults {
                 McuPinMapping("GND (الأرضي)", "VSS / EVSS", "أرضي + مكثف REGC", "أرضي مشترك", "ربط الأرضي مباشرة + مكثف 0.47µF على طرف REGC")
             )
             fam.contains("R8C") -> listOf(
-                McuPinMapping("DTR (مباشر)", "RESET#", "نبضة Boot التلقائية", "خرج Reset", "DTR=true مع RTS=true (200ms) ← CLR_DTR (false) 100ms لإقلاع البوتلودر"),
-                McuPinMapping("RTS (دايود — كاثود على RTS)", "MODE / RX", "خفض MODE للبوت", "تحكم بالبوت", "SET_RTS (true) 200ms + 100ms أثناء صعود RESET ← CLR_RTS (false) 50ms + Purge ثم 16×0x00"),
-                McuPinMapping("TX (دايود) + RX (مباشر)", "MODE (Single-Wire)", "Mode 3 أحادي السلك", "ثنائي الاتجاه (صدى D)", "مراقبة RX الخام + حذف الصدى المطابق تلقائياً ($pkgNote)"),
+                McuPinMapping("DTR (مباشر)", "RESET#", "نبضة Boot التلقائية", "خرج Reset", "DTR+RTS=true (250ms) ← رفع DTR (150ms) مع ارتداد تلقائي لقطبية DTR عند الحاجة"),
+                McuPinMapping("RTS (دايود — كاثود على RTS)", "MODE / RX", "خفض MODE للبوت", "تحكم بالبوت", "يبقى RTS=true أثناء صعود RESET (250ms+150ms) ← RTS=false (100ms) + مسح المخزن"),
+                McuPinMapping("TX (دايود) + RX (مباشر)", "MODE (Single-Wire)", "Mode 3 أحادي السلك", "ثنائي الاتجاه (صدى D)", "16×0x00 بايت-ببايت ← 0xB0 مرة واحدة [B0, B0] ← 0xFB ← 0x50 ← 0xF5+0x70 ($pkgNote)"),
                 McuPinMapping("VCC (التغذية)", "VCC / AVCC", "2.7V - 5.5V", "تغذية", "تغذية مستقرة ${mcu.recommendedVoltage}"),
                 McuPinMapping("GND (الأرضي)", "VSS", "أرضي مشترك", "أرضي مشترك", "ربط الأرضي المشترك بين المبرمجة والكارتة")
             )

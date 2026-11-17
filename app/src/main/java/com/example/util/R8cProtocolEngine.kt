@@ -52,6 +52,11 @@ object R8cProtocolEngine {
         val rawBytes: ByteArray = ByteArray(0)
     )
 
+    data class BootSessionResult(
+        val connected: Boolean,
+        val dtrIdleHigh: Boolean = false
+    )
+
     interface SerialTransport {
         fun configureUart(baudRate: Int, onLog: (String) -> Unit): Boolean
         fun ensureReaderListening(onLog: (String) -> Unit): Boolean
@@ -61,12 +66,7 @@ object R8cProtocolEngine {
         fun setRts(enabled: Boolean, onLog: (String) -> Unit)
         fun flushInputBuffer()
         suspend fun writeRaw(bytes: ByteArray): String?
-        suspend fun sendAndCollectRawWindow(
-            txBytes: ByteArray,
-            minExpectedToShortCircuit: Int,
-            timeoutMs: Int,
-            onLog: (String) -> Unit
-        ): R8cExchangeResult
+        suspend fun waitForByteInRxQueue(expectedByte: Byte, timeoutMs: Int): Boolean
         suspend fun sendAndReceiveR8C(
             txBytes: ByteArray,
             expectedRxLength: Int,
@@ -161,73 +161,107 @@ object R8cProtocolEngine {
     }
 
     /**
-     * 1. Exact Windows Renesas R8C Tool (Table View) Hardware Boot Entry Sequence:
-     *    - Open port on 9600 bps (8N1) & attach continuous RX listener (rxQueue + Raw RX Monitor)
-     *    - Step 1 (SET_RTS & SET_DTR): setRTS(true) then setDTR(true) (MODE=LOW & RESET=LOW) -> wait 200ms
-     *    - Step 2 (CLR_DTR):           setDTR(false) (RESET=HIGH while RTS=true holds MODE=LOW) -> wait 100ms
-     *    - Step 3 (CLR_RTS & PURGE):   setRTS(false) (release MODE/RX) -> wait 50ms -> rxQueue.clear()
+     * 1. Literal R8CTool.EXE Hardware Boot Sequence + Android CP2102 DTR-Inversion Fallback:
+     *    - Open 9600 bps (8N1) & attach continuous RX listener
+     *    - Attempt 1 (Standard):
+     *        A: setRTS(true) + setDTR(true) -> wait 250ms
+     *        B: setDTR(false) -> wait 150ms
+     *        C: setRTS(false) -> wait 100ms -> rxQueue.clear()
+     *        Then run Byte-by-Byte Sync (16x 0x00) + 0xB0 (expect [0xB0, 0xB0]).
+     *    - Attempt 2 (Automatic CP2102 DTR Inversion Fallback if Attempt 1's 0xB0 fails):
+     *        A: setRTS(true) + setDTR(false) -> wait 250ms
+     *        B: setDTR(true) -> wait 150ms
+     *        C: setRTS(false) -> wait 100ms -> rxQueue.clear()
+     *        Then re-run Byte-by-Byte Sync (16x 0x00) + 0xB0 (expect [0xB0, 0xB0]).
      */
     suspend fun startAndConnect(
         transport: SerialTransport,
         onLog: (String) -> Unit
-    ): Boolean {
+    ): BootSessionResult {
         onLog("1) فتح المنفذ على سرعة 9600 bps (8N1)...")
         if (!transport.configureUart(9600, onLog)) {
-            return false
+            return BootSessionResult(connected = false)
         }
 
         onLog("2) ربط مستمع الاستقبال (RX Listener -> rxQueue + Raw RX Monitor)...")
         transport.setRawRxMonitor(true)
         if (!transport.ensureReaderListening(onLog)) {
-            return false
+            return BootSessionResult(connected = false)
         }
 
-        onLog("الخطوة 1 (SET_RTS & SET_DTR): setRTS(true) ثم setDTR(true) [MODE=LOW و RESET=LOW] -> انتظار 200ms...")
+        // Attempt 1: Standard R8CTool.EXE DTR polarity (setDTR(true) LOW -> setDTR(false) HIGH)
+        onLog("المحاولة 1 (تتابع R8CTool.EXE القياسي):")
+        runBootResetSequence(transport = transport, invertDtr = false, onLog = onLog)
+        if (establishConnection(transport, onLog)) {
+            return BootSessionResult(connected = true, dtrIdleHigh = false)
+        }
+
+        // Attempt 2: Automatic Android CP2102 fallback inverting DTR ONLY
+        onLog("فشلت المزامنة 0xB0 بالقطبية الأولى — المحاولة 2 (عكس حالة DTR فقط لتوافق CP2102):")
+        runBootResetSequence(transport = transport, invertDtr = true, onLog = onLog)
+        if (establishConnection(transport, onLog)) {
+            return BootSessionResult(connected = true, dtrIdleHigh = true)
+        }
+
+        return BootSessionResult(connected = false)
+    }
+
+    private suspend fun runBootResetSequence(
+        transport: SerialTransport,
+        invertDtr: Boolean,
+        onLog: (String) -> Unit
+    ) {
+        val dtrResetLow = !invertDtr
+        val dtrResetHigh = invertDtr
+
+        onLog("التسلسل أ: setRTS(true) و setDTR($dtrResetLow) [MODE=LOW و RESET=LOW] -> انتظار 250ms...")
         transport.setRts(enabled = true, onLog = onLog)
-        transport.setDtr(enabled = true, onLog = onLog)
-        delay(200)
+        transport.setDtr(enabled = dtrResetLow, onLog = onLog)
+        delay(250)
 
-        onLog("الخطوة 2 (CLR_DTR): setDTR(false) [RESET=HIGH أثناء بقاء RTS=true يمسك MODE=LOW] -> انتظار 100ms...")
-        transport.setDtr(enabled = false, onLog = onLog)
-        delay(100)
+        onLog("التسلسل ب: setDTR($dtrResetHigh) [RESET=HIGH مع بقاء RTS=true يمسك MODE=LOW] -> انتظار 150ms...")
+        transport.setDtr(enabled = dtrResetHigh, onLog = onLog)
+        delay(150)
 
-        onLog("الخطوة 3 (CLR_RTS & PURGE): setRTS(false) [تحرير MODE/RX] -> انتظار 50ms -> rxQueue.clear()...")
+        onLog("التسلسل ج: setRTS(false) [تحرير MODE/RX] -> انتظار 100ms -> rxQueue.clear()...")
         transport.setRts(enabled = false, onLog = onLog)
-        delay(50)
+        delay(100)
         transport.flushInputBuffer()
-
-        return establishConnection(transport, onLog)
     }
 
     /**
-     * 2. Sync & Baud Lock (9600 bps) from Windows Table View log:
-     *    - Send 0x00 x 16 with 20ms interval
-     *    - Wait 40ms then rxQueue.clear()
-     *    - Send [0xB0] (N=1), expect [0xB0, 0xB0] (or [0xB0] if no echo)
+     * 2 & 3a. Byte-by-Byte Sync (16 x 0x00) + Single 0xB0 Connection Check:
+     *         - Loop 16 times: write [0x00], wait up to 50ms (or until 0x00 echo arrives in rxQueue)
+     *         - Wait 50ms after 16th byte -> rxQueue.clear()
+     *         - Send [0xB0] ONCE ONLY (N=1), wait strictly for 2 bytes [0xB0, 0xB0] (echo + MCU ACK)
      */
     suspend fun establishConnection(
         transport: SerialTransport,
         onLog: (String) -> Unit
     ): Boolean {
-        onLog("TX: 00 x16 (فاصل 20ms بين كل بايت ثم انتظار 40ms وتفريغ rxQueue)")
+        onLog("TX: 00 x16 (بايت-ببايت: انتظار الصدى 0x00 أو 50ms لكل بايت)")
+        transport.flushInputBuffer()
         val zero = byteArrayOf(0x00)
+        var echoesSeen = 0
         for (i in 0 until 16) {
             val err = transport.writeRaw(zero)
             if (err != null) {
-                onLog("TX ERROR (connection 0x00 #${i + 1}): $err")
+                onLog("TX ERROR (0x00 #${i + 1}): $err")
                 return false
             }
-            delay(20)
+            if (transport.waitForByteInRxQueue(0x00, 50)) {
+                echoesSeen++
+            }
         }
-
-        delay(40)
+        onLog("اكتمل إرسال 16×0x00 (استُلم $echoesSeen/16 صدى) — انتظار 50ms ثم rxQueue.clear()...")
+        delay(50)
         transport.flushInputBuffer()
-        onLog("rxQueue.clear() بعد 40ms — إرسال 0xB0 الأولى (1000ms)...")
 
-        onLog("TX: B0")
-        val res = transport.sendAndCollectRawWindow(
+        onLog("TX: B0 (أمر 0xB0 مرة واحدة: انتظار 1 + 1 = 2 بايت [B0, B0])")
+        val res = sendAndReceiveR8C(
+            transport = transport,
             txBytes = byteArrayOf(0xB0.toByte()),
-            minExpectedToShortCircuit = 2,
+            expectedRxLength = 1,
             timeoutMs = 1000,
             onLog = onLog
         )
@@ -237,35 +271,36 @@ object R8cProtocolEngine {
         }
 
         val raw = res.rawBytes
-        onLog("RX Raw: [${toHexComma(raw)}]")
+        onLog("RX Raw (0xB0): [${toHexComma(raw)}]")
         if (raw.isEmpty()) {
-            onLog("connection() Failed: لا توجد أي بايتات مستلمة (RX Raw: []) خلال 1000ms.")
+            onLog("0xB0 Failed: لا يوجد أي بايت مستلم (0/2 بايت) خلال 1000ms.")
+            return false
+        }
+        if (raw.size < 2 || res.replyBytes.isEmpty()) {
+            onLog("0xB0 Failed: استُلم بايت واحد فقط [${toHexComma(raw)}] (صدى بدون رد المعالج — المعالج لم يدخل وضع البوتلودر).")
             return false
         }
 
-        val hasB0 = raw.any { (it.toInt() and 0xFF) == 0xB0 }
-        if (!hasB0) {
-            onLog("connection() Error: البايتات الخام [${toHexComma(raw)}] لا تحتوي على 0xB0.")
+        val ack = res.replyBytes[0].toInt() and 0xFF
+        if (ack != 0xB0) {
+            onLog("0xB0 Error: البايت الثاني هو 0x%02X بدلاً من 0xB0.".format(ack))
             return false
         }
-
-        val finalAck = raw.last().toInt() and 0xFF
-        onLog("Connection OK (0x%02X — استُلم ${raw.size} بايت خام). إرسال 0xB0 الثانية (change_speed)...".format(finalAck))
+        onLog("0xB0 OK: [B0, B0] (الأول صدى + الثاني تأكيد المعالج الحقيقي).")
         return true
     }
 
     /**
-     * 3b. change_speed():
-     *     - Send [0xB0] a second time for 9600 bps (or 0xB1..0xB4 for higher rates)
-     *     - Collect Raw RX during 1000ms, log RX Raw: [...], accept if contains target cmd byte
+     * change_speed(): Only called when targetBaudRate > 9600 (since 9600 uses single 0xB0 above).
      */
     suspend fun changeSpeed(
         transport: SerialTransport,
         targetBaudRate: Int,
+        dtrIdleHigh: Boolean,
         onLog: (String) -> Unit
     ): Boolean {
         val cmd: Int = when (targetBaudRate) {
-            9600 -> 0xB0
+            9600 -> return true
             19200 -> 0xB1
             38400 -> 0xB2
             57600 -> 0xB3
@@ -278,9 +313,10 @@ object R8cProtocolEngine {
 
         val tx = byteArrayOf(cmd.toByte())
         onLog("TX: \u2066${toHex(tx)}\u2069 (change_speed $targetBaudRate bps)")
-        val res = transport.sendAndCollectRawWindow(
+        val res = sendAndReceiveR8C(
+            transport = transport,
             txBytes = tx,
-            minExpectedToShortCircuit = 2,
+            expectedRxLength = 1,
             timeoutMs = 1000,
             onLog = onLog
         )
@@ -288,22 +324,19 @@ object R8cProtocolEngine {
             onLog("TX ERROR (change_speed): ${res.txError}")
             return false
         }
-
-        val raw = res.rawBytes
-        onLog("RX Raw: [${toHexComma(raw)}]")
-        if (!raw.any { (it.toInt() and 0xFF) == cmd }) {
-            onLog("change_speed Error: لم يحتوي RX Raw على 0x%02X خلال 1000ms.".format(cmd))
+        onLog("RX Raw (change_speed): [${toHexComma(res.rawBytes)}]")
+        val reply = res.replyBytes
+        if (reply.isEmpty() || (reply[0].toInt() and 0xFF) != cmd) {
+            onLog("change_speed Error: لم يستلم التأكيد الحقيقي 0x%02X.".format(cmd))
             return false
         }
 
-        if (targetBaudRate != 9600) {
-            if (!transport.configureUart(targetBaudRate, onLog)) {
-                return false
-            }
-            transport.setControlLines(dtr = false, rts = false, onLog = onLog)
-            delay(15)
-            transport.flushInputBuffer()
+        if (!transport.configureUart(targetBaudRate, onLog)) {
+            return false
         }
+        transport.setControlLines(dtr = dtrIdleHigh, rts = false, onLog = onLog)
+        delay(15)
+        transport.flushInputBuffer()
         onLog("change_speed() OK: $targetBaudRate bps.")
         return true
     }
@@ -382,24 +415,28 @@ object R8cProtocolEngine {
     }
 
     /**
-     * clear_status(): Send [0x50] and auto-strip echo if present
+     * clear_status(): Mandatory 0x50 step before ID inspection (and after erase/write).
+     * Sends [0x50] (N=1), waits for the 1 echo byte [0x50] and discards it.
      */
     suspend fun clearStatus(
         transport: SerialTransport,
         onLog: (String) -> Unit,
         quiet: Boolean = true
     ): Boolean {
-        if (!quiet) onLog("TX: 50 (clear_status)")
+        if (!quiet) onLog("TX: 50 (clear_status: N=1 صدى [0x50])")
         val res = sendAndReceiveR8C(
             transport = transport,
             txBytes = byteArrayOf(0x50),
             expectedRxLength = 0,
-            timeoutMs = 400,
+            timeoutMs = 500,
             onLog = onLog
         )
         if (res.txError != null) {
             onLog("TX ERROR (0x50): ${res.txError}")
             return false
+        }
+        if (!quiet && res.rawBytes.isNotEmpty()) {
+            onLog("RX Raw (0x50): [${toHexComma(res.rawBytes)}] (تم حذف الصدى)")
         }
         return true
     }
@@ -615,17 +652,22 @@ object R8cProtocolEngine {
         val startAddr = layout.romArea.org
 
         onProgress(0, totalSize, "تهيئة البوت التلقائي (RTS/DTR) والمزامنة...")
-        if (!startAndConnect(transport, onLog)) {
-            return FlashOperationResult.Failure("فشلت المزامنة التسلسلية R8C (16×0x00 + 0xB0). راجع سجل TX/RX.")
+        val session = startAndConnect(transport, onLog)
+        if (!session.connected) {
+            return FlashOperationResult.Failure("فشلت المزامنة التسلسلية R8C (16×0x00 + 0xB0 [B0, B0]). راجع سجل TX/RX.")
         }
-        if (!changeSpeed(transport, baudRate, onLog)) {
-            return FlashOperationResult.Failure("فشل تثبيت/تغيير سرعة الباود (change_speed $baudRate bps).")
+        if (!changeSpeed(transport, baudRate, session.dtrIdleHigh, onLog)) {
+            return FlashOperationResult.Failure("فشل تغيير سرعة الباود ($baudRate bps).")
         }
         val ver = getVersion(transport, onLog)
         if (ver == null) {
-            return FlashOperationResult.Failure("لم يستجب المعالج لأمر قراءة الإصدار 0xFB.")
+            return FlashOperationResult.Failure("لم يستجب المعالج لأمر قراءة الإصدار 0xFB (1+8=9 بايت).")
         }
         onLog("R8C Version: \"$ver\" | نطاق القراءة: 0x%05X..0x%05X".format(layout.romArea.org, layout.romArea.end))
+
+        if (!clearStatus(transport, onLog, quiet = false)) {
+            return FlashOperationResult.Failure("فشل أمر مسح سجل الحالة 0x50 قبل فحص المفتاح.")
+        }
 
         onProgress(0, totalSize, "التحقق من مفتاح الحماية 7-Byte ID (0xF5)...")
         val (idOk, _) = idInspection(transport, idBytes, onLog)
@@ -684,15 +726,19 @@ object R8cProtocolEngine {
         val totalSpan = layout.romArea.sizeBytes.coerceAtLeast(1024)
 
         onProgress(0, totalSpan, "تهيئة البوت التلقائي (RTS/DTR) قبل المسح...")
-        if (!startAndConnect(transport, onLog)) {
+        val session = startAndConnect(transport, onLog)
+        if (!session.connected) {
             return FlashOperationResult.Failure("فشلت المزامنة التسلسلية R8C قبل المسح.")
         }
-        if (!changeSpeed(transport, baudRate, onLog)) {
-            return FlashOperationResult.Failure("فشل تثبيت/تغيير سرعة الباود (change_speed $baudRate bps).")
+        if (!changeSpeed(transport, baudRate, session.dtrIdleHigh, onLog)) {
+            return FlashOperationResult.Failure("فشل تغيير سرعة الباود ($baudRate bps).")
         }
         val ver = getVersion(transport, onLog)
         if (ver != null) {
             onLog("R8C Version: \"$ver\"")
+        }
+        if (!clearStatus(transport, onLog, quiet = false)) {
+            return FlashOperationResult.Failure("فشل أمر مسح سجل الحالة 0x50 قبل فحص المفتاح.")
         }
         val (idOk, _) = idInspection(transport, idBytes, onLog)
         if (!idOk) {
@@ -734,17 +780,22 @@ object R8cProtocolEngine {
         val totalSize = firmwareBytes.size
 
         onProgress(0, totalSize, "تهيئة البوت التلقائي (RTS/DTR) والمزامنة...")
-        if (!startAndConnect(transport, onLog)) {
+        val session = startAndConnect(transport, onLog)
+        if (!session.connected) {
             return FlashOperationResult.Failure("فشلت المزامنة التسلسلية R8C قبل العملية.")
         }
-        if (!changeSpeed(transport, baudRate, onLog)) {
-            return FlashOperationResult.Failure("فشل تثبيت/تغيير سرعة الباود (change_speed $baudRate bps).")
+        if (!changeSpeed(transport, baudRate, session.dtrIdleHigh, onLog)) {
+            return FlashOperationResult.Failure("فشل تغيير سرعة الباود ($baudRate bps).")
         }
         val ver = getVersion(transport, onLog)
         if (ver == null) {
-            return FlashOperationResult.Failure("لم يستجب المعالج لأمر قراءة الإصدار 0xFB.")
+            return FlashOperationResult.Failure("لم يستجب المعالج لأمر قراءة الإصدار 0xFB (1+8=9 بايت).")
         }
         onLog("R8C Version: \"$ver\" | قاعدة العنوان: 0x%05X".format(baseAddr))
+
+        if (!clearStatus(transport, onLog, quiet = false)) {
+            return FlashOperationResult.Failure("فشل أمر مسح سجل الحالة 0x50 قبل فحص المفتاح.")
+        }
 
         val (idOk, _) = idInspection(transport, idBytes, onLog)
         if (!idOk) {
