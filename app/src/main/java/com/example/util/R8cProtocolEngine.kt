@@ -679,9 +679,11 @@ object R8cProtocolEngine {
         val totalPages = (totalSize + 255) / 256
         var bytesRead = 0
 
+        transport.setRawRxMonitor(false)
+        onProgress(0, totalSize, "قراءة ${processor.partNumber}: 0% (0x%05X)...".format(startAddr))
+
         try {
             for (pageIdx in 0 until totalPages) {
-                transport.setRawRxMonitor(pageIdx == 0)
                 val physicalAddr = (startAddr + pageIdx * 256) and 0xFFFFFF00.toInt()
                 val chunk = readPage(
                     transport = transport,
@@ -805,9 +807,9 @@ object R8cProtocolEngine {
         val totalPages = (totalSize + 255) / 256
         val erasedBlocks = HashSet<Int>()
 
+        transport.setRawRxMonitor(false)
         try {
             for (pageIdx in 0 until totalPages) {
-                transport.setRawRxMonitor(pageIdx == 0)
                 val relOffset = pageIdx * 256
                 val len = min(256, totalSize - relOffset)
                 val bytesDone = min(relOffset + len, totalSize)

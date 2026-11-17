@@ -580,14 +580,15 @@ fun ProgrammerStep3Flasher(
                         color = Color(0xFF94A3B8)
                     )
                 } else {
-                    Column(
+                    val reversedLogs = remember(state.logs) { state.logs.asReversed() }
+                    LazyColumn(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .heightIn(max = 190.dp)
-                            .verticalScroll(rememberScrollState()),
+                            .heightIn(min = 60.dp, max = 190.dp),
                         verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        state.logs.reversed().forEach { entry ->
+                        items(count = reversedLogs.size) { idx ->
+                            val entry = reversedLogs[idx]
                             val isTx = entry.message.startsWith("TX:")
                             val isRxData = entry.message.startsWith("RX:") && !entry.message.contains("لا يوجد")
                             val logColor = when {
@@ -893,7 +894,7 @@ private fun PcStyleHexViewerCard(
                             ) {
                                 items(totalRows) { rowIdx ->
                                     val rowAddr = rowIdx * 16
-                                    val rowLen = min(16, buffer.size - rowAddr)
+                                    val rowLen = min(16, (buffer.size - rowAddr).coerceAtLeast(0))
                                     val lineStr = remember(buffer, rowAddr, rowLen, baseAddress) {
                                         buildPcHexLine(buffer, rowAddr, rowLen, baseAddress)
                                     }

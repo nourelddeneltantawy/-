@@ -79,6 +79,7 @@ object UsbOtgProgrammerService {
     private var activeDevice: UsbDevice? = null
     @Volatile
     private var activeConnection: UsbDeviceConnection? = null
+    private val usbStateLock = Any()
     private val claimedInterfaces = mutableListOf<UsbInterface>()
     @Volatile
     private var controlInterfaceIndex: Int = 0
@@ -110,8 +111,18 @@ object UsbOtgProgrammerService {
     // Continuous RX input buffer filled by background readerJob
     private val rxLock = Any()
     private val rxBuffer = ArrayDeque<Byte>(4096)
+    @Volatile
     private var readerJob: Job? = null
+    @Volatile
     private var externalLogSink: ((String) -> Unit)? = null
+
+    private fun safeLog(message: String) {
+        try {
+            externalLogSink?.invoke(message)
+        } catch (e: Throwable) {
+            Log.w(TAG, "safeLog suppressed exception: ${e.message}")
+        }
+    }
 
     private val _isConnectedFlow = MutableStateFlow(false)
     val isConnectedFlow: StateFlow<Boolean> = _isConnectedFlow.asStateFlow()
@@ -142,7 +153,7 @@ object UsbOtgProgrammerService {
                                 intent.getParcelableExtra(UsbManager.EXTRA_DEVICE)
                             }
                             if (detached != null && detached.deviceId == activeDevice?.deviceId) {
-                                externalLogSink?.invoke("USB Event: تم فصل المبرمجة (${detached.productName ?: detached.deviceName}) من منفذ OTG.")
+                                safeLog("USB Event: تم فصل المبرمجة (${detached.productName ?: detached.deviceName}) من منفذ OTG.")
                                 disconnect()
                             }
                         }
@@ -180,30 +191,34 @@ object UsbOtgProgrammerService {
     fun isConnected(): Boolean = activeConnection != null && inEndpoint != null && outEndpoint != null
 
     fun disconnect() {
-        readerJob?.cancel()
+        val jobToCancel = readerJob
         readerJob = null
+        jobToCancel?.cancel()
         synchronized(rxLock) {
             rxBuffer.clear()
         }
-        claimedInterfaces.forEach { iface ->
+        synchronized(usbStateLock) {
+            val conn = activeConnection
+            claimedInterfaces.toList().forEach { iface ->
+                try {
+                    conn?.releaseInterface(iface)
+                } catch (_: Throwable) {}
+            }
+            claimedInterfaces.clear()
             try {
-                activeConnection?.releaseInterface(iface)
+                conn?.close()
             } catch (_: Throwable) {}
+            inEndpoint = null
+            outEndpoint = null
+            activeConnection = null
+            activeDevice = null
+            activeChipType = null
+            controlInterfaceIndex = 0
+            isUartLineConfigured = false
+            rawRxMonitorEnabled = false
+            currentDtrState = false
+            currentRtsState = false
         }
-        claimedInterfaces.clear()
-        try {
-            activeConnection?.close()
-        } catch (_: Throwable) {}
-        inEndpoint = null
-        outEndpoint = null
-        activeConnection = null
-        activeDevice = null
-        activeChipType = null
-        controlInterfaceIndex = 0
-        isUartLineConfigured = false
-        rawRxMonitorEnabled = false
-        currentDtrState = false
-        currentRtsState = false
         _isConnectedFlow.value = false
         _connectedLabelFlow.value = ""
     }
@@ -319,11 +334,14 @@ object UsbOtgProgrammerService {
                             val chunk = buf.copyOfRange(startIdx, n)
                             synchronized(rxLock) {
                                 for (b in chunk) {
+                                    if (rxBuffer.size >= 65536) {
+                                        rxBuffer.removeFirst()
+                                    }
                                     rxBuffer.addLast(b)
                                 }
                             }
                             if (rawRxMonitorEnabled) {
-                                externalLogSink?.invoke("RX Raw Live (+${chunk.size}B): [${chunk.joinToString(", ") { "%02X".format(it) }}]")
+                                safeLog("RX Raw Live (+${chunk.size}B): [${chunk.joinToString(", ") { "%02X".format(it) }}]")
                             }
                         }
                     } else if (n < 0) {
@@ -331,7 +349,7 @@ object UsbOtgProgrammerService {
                         // verify if device is still present in UsbManager
                         val devName = activeDevice?.deviceName
                         if (devName != null && usbManager?.deviceList?.containsKey(devName) == false) {
-                            externalLogSink?.invoke("RX Listener Error: انقطع اتصال الجهاز ($devName) من منفذ OTG.")
+                            safeLog("RX Listener Error: انقطع اتصال الجهاز ($devName) من منفذ OTG.")
                             disconnect()
                             break
                         }
@@ -339,7 +357,7 @@ object UsbOtgProgrammerService {
                 }
             } catch (e: Throwable) {
                 if (activeConnection === conn) {
-                    externalLogSink?.invoke("RX Listener Exception: ${e.toString()}")
+                    safeLog("RX Listener Exception: ${e.message ?: e::class.java.simpleName}")
                     disconnect()
                 }
             }
@@ -1001,7 +1019,9 @@ object UsbOtgProgrammerService {
                 controlInterfaceIndex = iface.id
             }
             if (connection.claimInterface(iface, true)) {
-                claimedInterfaces.add(iface)
+                synchronized(usbStateLock) {
+                    claimedInterfaces.add(iface)
+                }
             }
             for (epIdx in 0 until iface.endpointCount) {
                 val ep = iface.getEndpoint(epIdx)

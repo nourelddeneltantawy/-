@@ -18,6 +18,7 @@ import com.example.util.FlashOperationResult
 import com.example.util.R8cProtocolEngine
 import com.example.util.UsbConnectResult
 import com.example.util.UsbOtgProgrammerService
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -83,6 +84,7 @@ data class McuProgrammerUiState(
 class McuProgrammerViewModel(application: Application) : AndroidViewModel(application) {
     private val appContext = application.applicationContext
     private var allProcessors: List<McuProcessor> = emptyList()
+    private val timeFormatLock = Any()
     private val timeFormat = SimpleDateFormat("HH:mm:ss", Locale.US)
 
     private val _uiState = MutableStateFlow(McuProgrammerUiState())
@@ -395,42 +397,57 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
             addLog("بدء التعرف التلقائي للعائلة ($familyHint)...", LogLevel.INFO)
 
             val idBytes = parseIdCodeBytes() ?: R8cProtocolEngine.DEFAULT_ID_CODE.copyOf()
-            when (val res = UsbOtgProgrammerService.probeChipId(
-                context = appContext,
-                preferredChip = _uiState.value.selectedProgrammer,
-                enableDtrRtsReset = _uiState.value.enableDtrRtsReset,
-                targetMainFamily = familyHint,
-                preferredPartNumber = _uiState.value.selectedProcessor?.partNumber,
-                idCodeBytes = idBytes,
-                catalog = allProcessors
-            ) { msg ->
-                addLog(msg, LogLevel.INFO)
-            }) {
-                is ChipAutoDetectResult.Matched -> {
-                    res.matchedProcessor?.let { matched ->
-                        applySelectedMcuHierarchy(matched, clearSearch = true, markUserSelected = true)
+            try {
+                when (val res = UsbOtgProgrammerService.probeChipId(
+                    context = appContext,
+                    preferredChip = _uiState.value.selectedProgrammer,
+                    enableDtrRtsReset = _uiState.value.enableDtrRtsReset,
+                    targetMainFamily = familyHint,
+                    preferredPartNumber = _uiState.value.selectedProcessor?.partNumber,
+                    idCodeBytes = idBytes,
+                    catalog = allProcessors
+                ) { msg ->
+                    addLog(msg, LogLevel.INFO)
+                }) {
+                    is ChipAutoDetectResult.Matched -> {
+                        res.matchedProcessor?.let { matched ->
+                            applySelectedMcuHierarchy(matched, clearSearch = true, markUserSelected = true)
+                        }
+                        _uiState.update {
+                            it.copy(
+                                isAutoDetecting = false,
+                                isConnected = UsbOtgProgrammerService.isConnected(),
+                                autoDetectStatus = res.diagnosticMessage,
+                                autoDetectIsSuccess = true
+                            )
+                        }
+                        addLog(res.diagnosticMessage, LogLevel.SUCCESS)
                     }
-                    _uiState.update {
-                        it.copy(
-                            isAutoDetecting = false,
-                            isConnected = UsbOtgProgrammerService.isConnected(),
-                            autoDetectStatus = res.diagnosticMessage,
-                            autoDetectIsSuccess = true
-                        )
+                    is ChipAutoDetectResult.Failure -> {
+                        _uiState.update {
+                            it.copy(
+                                isAutoDetecting = false,
+                                isConnected = UsbOtgProgrammerService.isConnected(),
+                                autoDetectStatus = res.reason,
+                                autoDetectIsSuccess = false
+                            )
+                        }
+                        addLog(res.reason, LogLevel.WARNING)
                     }
-                    addLog(res.diagnosticMessage, LogLevel.SUCCESS)
                 }
-                is ChipAutoDetectResult.Failure -> {
-                    _uiState.update {
-                        it.copy(
-                            isAutoDetecting = false,
-                            isConnected = UsbOtgProgrammerService.isConnected(),
-                            autoDetectStatus = res.reason,
-                            autoDetectIsSuccess = false
-                        )
-                    }
-                    addLog(res.reason, LogLevel.WARNING)
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (t: Throwable) {
+                val errMsg = "خطأ غير متوقع أثناء الفحص التلقائي: ${t.message ?: t::class.java.simpleName}"
+                _uiState.update {
+                    it.copy(
+                        isAutoDetecting = false,
+                        isConnected = UsbOtgProgrammerService.isConnected(),
+                        autoDetectStatus = errMsg,
+                        autoDetectIsSuccess = false
+                    )
                 }
+                addLog(errMsg, LogLevel.ERROR)
             }
             refreshUsbDevices()
         }
@@ -508,38 +525,52 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                 )
             }
             val baud = _uiState.value.baudRate
-            when (val res = UsbOtgProgrammerService.connect(
-                context = appContext,
-                preferredChip = _uiState.value.selectedProgrammer,
-                baudRate = baud,
-                enableDtrRtsReset = _uiState.value.enableDtrRtsReset,
-                onLog = { msg -> addLog(msg, LogLevel.INFO) }
-            )) {
-                is UsbConnectResult.Success -> {
-                    val label = "${res.deviceInfo.productName} (${res.deviceInfo.hexVidPid}) @ $baud"
-                    _uiState.update {
-                        it.copy(
-                            isBusy = false,
-                            isConnected = true,
-                            connectedDeviceLabel = label,
-                            progress = 0f,
-                            progressLabel = ""
-                        )
+            try {
+                when (val res = UsbOtgProgrammerService.connect(
+                    context = appContext,
+                    preferredChip = _uiState.value.selectedProgrammer,
+                    baudRate = baud,
+                    enableDtrRtsReset = _uiState.value.enableDtrRtsReset,
+                    onLog = { msg -> addLog(msg, LogLevel.INFO) }
+                )) {
+                    is UsbConnectResult.Success -> {
+                        val label = "${res.deviceInfo.productName} (${res.deviceInfo.hexVidPid}) @ $baud"
+                        _uiState.update {
+                            it.copy(
+                                isBusy = false,
+                                isConnected = true,
+                                connectedDeviceLabel = label,
+                                progress = 0f,
+                                progressLabel = ""
+                            )
+                        }
+                        addLog("متصل بالمنفذ: $label", LogLevel.SUCCESS)
                     }
-                    addLog("متصل بالمنفذ: $label", LogLevel.SUCCESS)
-                }
-                is UsbConnectResult.Failure -> {
-                    _uiState.update {
-                        it.copy(
-                            isBusy = false,
-                            isConnected = false,
-                            connectedDeviceLabel = "",
-                            progress = 0f,
-                            progressLabel = ""
-                        )
+                    is UsbConnectResult.Failure -> {
+                        _uiState.update {
+                            it.copy(
+                                isBusy = false,
+                                isConnected = false,
+                                connectedDeviceLabel = "",
+                                progress = 0f,
+                                progressLabel = ""
+                            )
+                        }
+                        addLog(res.reason, LogLevel.ERROR)
                     }
-                    addLog(res.reason, LogLevel.ERROR)
                 }
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (t: Throwable) {
+                _uiState.update {
+                    it.copy(
+                        isBusy = false,
+                        isConnected = UsbOtgProgrammerService.isConnected(),
+                        progress = 0f,
+                        progressLabel = ""
+                    )
+                }
+                addLog("خطأ أثناء فتح منفذ USB: ${t.message ?: t::class.java.simpleName}", LogLevel.ERROR)
             }
             refreshUsbDevices()
         }
@@ -650,59 +681,75 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
             }
             addLog("بدء قراءة ذاكرة ${mcu.partNumber} (${mcu.flashKb}KB)...", LogLevel.INFO)
 
-            when (val res = UsbOtgProgrammerService.executeReadFlash(
-                context = appContext,
-                preferredChip = _uiState.value.selectedProgrammer,
-                baudRate = _uiState.value.baudRate,
-                enableDtrRtsReset = _uiState.value.enableDtrRtsReset,
-                processor = mcu,
-                idCodeBytes = idBytes,
-                onLog = { msg -> addLog(msg, LogLevel.INFO) },
-                onProgress = { done, total, msg ->
-                    val frac = if (total > 0) done.toFloat() / total.toFloat() else 0f
-                    _uiState.update {
-                        it.copy(
-                            progress = frac,
-                            progressBytesDone = done,
-                            progressTotalBytes = total,
-                            progressLabel = msg
-                        )
+            try {
+                when (val res = UsbOtgProgrammerService.executeReadFlash(
+                    context = appContext,
+                    preferredChip = _uiState.value.selectedProgrammer,
+                    baudRate = _uiState.value.baudRate,
+                    enableDtrRtsReset = _uiState.value.enableDtrRtsReset,
+                    processor = mcu,
+                    idCodeBytes = idBytes,
+                    onLog = { msg -> addLog(msg, LogLevel.INFO) },
+                    onProgress = { done, total, msg ->
+                        val frac = if (total > 0) (done.toFloat() / total.toFloat()).coerceIn(0f, 1f) else 0f
+                        _uiState.update {
+                            it.copy(
+                                progress = frac,
+                                progressBytesDone = done,
+                                progressTotalBytes = total,
+                                progressLabel = msg
+                            )
+                        }
+                    }
+                )) {
+                    is FlashOperationResult.Success -> {
+                        val data = res.bytesTransferred ?: _uiState.value.flashBuffer
+                        val firstDataRow = computeFirstDataRow(data)
+                        _uiState.update {
+                            it.copy(
+                                isBusy = false,
+                                progress = 1f,
+                                progressBytesDone = data.size,
+                                progressTotalBytes = data.size,
+                                progressLabel = "اكتملت القراءة",
+                                flashBuffer = data,
+                                flashBaseAddress = res.baseAddress,
+                                loadedFileName = "Dump_${mcu.partNumber}.bin",
+                                loadedFormat = "Chip Read",
+                                loadedNonEmptyCount = data.count { b -> b != 0xFF.toByte() },
+                                firstNonEmptyRowIndex = firstDataRow,
+                                hexJumpSequence = it.hexJumpSequence + 1
+                            )
+                        }
+                        addLog(res.message, LogLevel.SUCCESS)
+                    }
+                    is FlashOperationResult.Failure -> {
+                        _uiState.update {
+                            it.copy(
+                                isBusy = false,
+                                progress = 0f,
+                                progressBytesDone = 0,
+                                progressTotalBytes = 0,
+                                progressLabel = ""
+                            )
+                        }
+                        addLog(res.reason, LogLevel.ERROR)
                     }
                 }
-            )) {
-                is FlashOperationResult.Success -> {
-                    val data = res.bytesTransferred ?: _uiState.value.flashBuffer
-                    val firstDataRow = computeFirstDataRow(data)
-                    _uiState.update {
-                        it.copy(
-                            isBusy = false,
-                            progress = 1f,
-                            progressBytesDone = data.size,
-                            progressTotalBytes = data.size,
-                            progressLabel = "اكتملت القراءة",
-                            flashBuffer = data,
-                            flashBaseAddress = res.baseAddress,
-                            loadedFileName = "Dump_${mcu.partNumber}.bin",
-                            loadedFormat = "Chip Read",
-                            loadedNonEmptyCount = data.count { b -> b != 0xFF.toByte() },
-                            firstNonEmptyRowIndex = firstDataRow,
-                            hexJumpSequence = it.hexJumpSequence + 1
-                        )
-                    }
-                    addLog(res.message, LogLevel.SUCCESS)
+            } catch (ce: CancellationException) {
+                _uiState.update { it.copy(isBusy = false, progress = 0f, progressLabel = "") }
+                throw ce
+            } catch (t: Throwable) {
+                _uiState.update {
+                    it.copy(
+                        isBusy = false,
+                        progress = 0f,
+                        progressBytesDone = 0,
+                        progressTotalBytes = 0,
+                        progressLabel = ""
+                    )
                 }
-                is FlashOperationResult.Failure -> {
-                    _uiState.update {
-                        it.copy(
-                            isBusy = false,
-                            progress = 0f,
-                            progressBytesDone = 0,
-                            progressTotalBytes = 0,
-                            progressLabel = ""
-                        )
-                    }
-                    addLog(res.reason, LogLevel.ERROR)
-                }
+                addLog("خطأ غير متوقع أثناء القراءة: ${t.message ?: t::class.java.simpleName}", LogLevel.ERROR)
             }
         }
     }
@@ -728,53 +775,63 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                 )
             }
             addLog("بدء مسح ذاكرة ${mcu.partNumber} (${_uiState.value.eraseMode})...", LogLevel.INFO)
-            when (val res = UsbOtgProgrammerService.executeErase(
-                context = appContext,
-                preferredChip = _uiState.value.selectedProgrammer,
-                baudRate = _uiState.value.baudRate,
-                enableDtrRtsReset = _uiState.value.enableDtrRtsReset,
-                processor = mcu,
-                eraseMode = _uiState.value.eraseMode,
-                idCodeBytes = idBytes,
-                onLog = { msg -> addLog(msg, LogLevel.INFO) },
-                onProgress = { done, total, msg ->
-                    val frac = if (total > 0) done.toFloat() / total.toFloat() else 0f
-                    _uiState.update {
-                        it.copy(
-                            progress = frac,
-                            progressBytesDone = done,
-                            progressTotalBytes = total,
-                            progressLabel = msg
-                        )
+            try {
+                when (val res = UsbOtgProgrammerService.executeErase(
+                    context = appContext,
+                    preferredChip = _uiState.value.selectedProgrammer,
+                    baudRate = _uiState.value.baudRate,
+                    enableDtrRtsReset = _uiState.value.enableDtrRtsReset,
+                    processor = mcu,
+                    eraseMode = _uiState.value.eraseMode,
+                    idCodeBytes = idBytes,
+                    onLog = { msg -> addLog(msg, LogLevel.INFO) },
+                    onProgress = { done, total, msg ->
+                        val frac = if (total > 0) (done.toFloat() / total.toFloat()).coerceIn(0f, 1f) else 0f
+                        _uiState.update {
+                            it.copy(
+                                progress = frac,
+                                progressBytesDone = done,
+                                progressTotalBytes = total,
+                                progressLabel = msg
+                            )
+                        }
+                    }
+                )) {
+                    is FlashOperationResult.Success -> {
+                        _uiState.update {
+                            it.copy(
+                                isBusy = false,
+                                progress = 1f,
+                                progressBytesDone = mcu.flashSizeBytes,
+                                progressTotalBytes = mcu.flashSizeBytes,
+                                progressLabel = "اكتمل المسح",
+                                flashBuffer = FirmwareParser.createEmptyBuffer(mcu.flashSizeBytes),
+                                idCodeBytesHex = if (mcu.protocolType == ProtocolFamilyType.R8C_M16C) {
+                                    List(7) { "FF" }
+                                } else {
+                                    it.idCodeBytesHex
+                                },
+                                loadedNonEmptyCount = 0,
+                                firstNonEmptyRowIndex = 0
+                            )
+                        }
+                        addLog(res.message, LogLevel.SUCCESS)
+                    }
+                    is FlashOperationResult.Failure -> {
+                        _uiState.update {
+                            it.copy(isBusy = false, progress = 0f, progressBytesDone = 0, progressTotalBytes = 0, progressLabel = "")
+                        }
+                        addLog(res.reason, LogLevel.ERROR)
                     }
                 }
-            )) {
-                is FlashOperationResult.Success -> {
-                    _uiState.update {
-                        it.copy(
-                            isBusy = false,
-                            progress = 1f,
-                            progressBytesDone = mcu.flashSizeBytes,
-                            progressTotalBytes = mcu.flashSizeBytes,
-                            progressLabel = "اكتمل المسح",
-                            flashBuffer = FirmwareParser.createEmptyBuffer(mcu.flashSizeBytes),
-                            idCodeBytesHex = if (mcu.protocolType == ProtocolFamilyType.R8C_M16C) {
-                                List(7) { "FF" }
-                            } else {
-                                it.idCodeBytesHex
-                            },
-                            loadedNonEmptyCount = 0,
-                            firstNonEmptyRowIndex = 0
-                        )
-                    }
-                    addLog(res.message, LogLevel.SUCCESS)
+            } catch (ce: CancellationException) {
+                _uiState.update { it.copy(isBusy = false, progress = 0f, progressLabel = "") }
+                throw ce
+            } catch (t: Throwable) {
+                _uiState.update {
+                    it.copy(isBusy = false, progress = 0f, progressBytesDone = 0, progressTotalBytes = 0, progressLabel = "")
                 }
-                is FlashOperationResult.Failure -> {
-                    _uiState.update {
-                        it.copy(isBusy = false, progress = 0f, progressBytesDone = 0, progressTotalBytes = 0, progressLabel = "")
-                    }
-                    addLog(res.reason, LogLevel.ERROR)
-                }
+                addLog("خطأ غير متوقع أثناء المسح: ${t.message ?: t::class.java.simpleName}", LogLevel.ERROR)
             }
         }
     }
@@ -804,47 +861,57 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
             }
             addLog("بدء عملية $actionName على ${mcu.partNumber}...", LogLevel.INFO)
 
-            when (val res = UsbOtgProgrammerService.executeWriteAndVerify(
-                context = appContext,
-                preferredChip = _uiState.value.selectedProgrammer,
-                baudRate = _uiState.value.baudRate,
-                enableDtrRtsReset = _uiState.value.enableDtrRtsReset,
-                processor = mcu,
-                firmwareBytes = _uiState.value.flashBuffer,
-                firmwareStartAddress = _uiState.value.flashBaseAddress,
-                idCodeBytes = idBytes,
-                verifyOnly = verifyOnly,
-                onLog = { msg -> addLog(msg, LogLevel.INFO) },
-                onProgress = { done, total, msg ->
-                    val frac = if (total > 0) done.toFloat() / total.toFloat() else 0f
-                    _uiState.update {
-                        it.copy(
-                            progress = frac,
-                            progressBytesDone = done,
-                            progressTotalBytes = total,
-                            progressLabel = msg
-                        )
+            try {
+                when (val res = UsbOtgProgrammerService.executeWriteAndVerify(
+                    context = appContext,
+                    preferredChip = _uiState.value.selectedProgrammer,
+                    baudRate = _uiState.value.baudRate,
+                    enableDtrRtsReset = _uiState.value.enableDtrRtsReset,
+                    processor = mcu,
+                    firmwareBytes = _uiState.value.flashBuffer,
+                    firmwareStartAddress = _uiState.value.flashBaseAddress,
+                    idCodeBytes = idBytes,
+                    verifyOnly = verifyOnly,
+                    onLog = { msg -> addLog(msg, LogLevel.INFO) },
+                    onProgress = { done, total, msg ->
+                        val frac = if (total > 0) (done.toFloat() / total.toFloat()).coerceIn(0f, 1f) else 0f
+                        _uiState.update {
+                            it.copy(
+                                progress = frac,
+                                progressBytesDone = done,
+                                progressTotalBytes = total,
+                                progressLabel = msg
+                            )
+                        }
+                    }
+                )) {
+                    is FlashOperationResult.Success -> {
+                        _uiState.update {
+                            it.copy(
+                                isBusy = false,
+                                progress = 1f,
+                                progressBytesDone = totalSize,
+                                progressTotalBytes = totalSize,
+                                progressLabel = "اكتملت العملية 100%"
+                            )
+                        }
+                        addLog(res.message, LogLevel.SUCCESS)
+                    }
+                    is FlashOperationResult.Failure -> {
+                        _uiState.update {
+                            it.copy(isBusy = false, progress = 0f, progressBytesDone = 0, progressTotalBytes = 0, progressLabel = "")
+                        }
+                        addLog(res.reason, LogLevel.ERROR)
                     }
                 }
-            )) {
-                is FlashOperationResult.Success -> {
-                    _uiState.update {
-                        it.copy(
-                            isBusy = false,
-                            progress = 1f,
-                            progressBytesDone = totalSize,
-                            progressTotalBytes = totalSize,
-                            progressLabel = "اكتملت العملية 100%"
-                        )
-                    }
-                    addLog(res.message, LogLevel.SUCCESS)
+            } catch (ce: CancellationException) {
+                _uiState.update { it.copy(isBusy = false, progress = 0f, progressLabel = "") }
+                throw ce
+            } catch (t: Throwable) {
+                _uiState.update {
+                    it.copy(isBusy = false, progress = 0f, progressBytesDone = 0, progressTotalBytes = 0, progressLabel = "")
                 }
-                is FlashOperationResult.Failure -> {
-                    _uiState.update {
-                        it.copy(isBusy = false, progress = 0f, progressBytesDone = 0, progressTotalBytes = 0, progressLabel = "")
-                    }
-                    addLog(res.reason, LogLevel.ERROR)
-                }
+                addLog("خطأ غير متوقع أثناء $actionName: ${t.message ?: t::class.java.simpleName}", LogLevel.ERROR)
             }
         }
     }
@@ -889,7 +956,9 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
     }
 
     private fun addLog(message: String, level: LogLevel) {
-        val ts = timeFormat.format(Date())
+        val ts = synchronized(timeFormatLock) {
+            timeFormat.format(Date())
+        }
         _uiState.update { state ->
             val updated = (state.logs + ProgrammerLogEntry(ts, message, level)).takeLast(120)
             state.copy(logs = updated)
