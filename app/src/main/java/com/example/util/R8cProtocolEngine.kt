@@ -2,6 +2,7 @@ package com.example.util
 
 import com.example.data.model.McuProcessor
 import kotlinx.coroutines.delay
+import java.util.Locale
 import kotlin.math.min
 
 /**
@@ -506,7 +507,7 @@ object R8cProtocolEngine {
             ((address ushr 16) and 0xFF).toByte()
         )
         if (verboseFrameLog) {
-            onLog("TX: \u2066${toHex(cmd)}\u2069 (read_page 0x%05X)".format(address))
+            onLog("TX: \u2066${toHex(cmd)}\u2069 (read_page ${fmtAddr(address)})")
         }
         val res = sendAndReceiveR8C(
             transport = transport,
@@ -516,20 +517,20 @@ object R8cProtocolEngine {
             onLog = onLog
         )
         if (res.txError != null) {
-            onLog("TX ERROR (read_page 0x%05X): ${res.txError}".format(address))
+            onLog("TX ERROR (read_page ${fmtAddr(address)}): ${res.txError}")
             return null
         }
         if (verboseFrameLog && res.rawBytes.isNotEmpty()) {
             val preview = res.rawBytes.take(16).toByteArray()
-            onLog("RX Raw (0xFF @ 0x%05X, ${res.rawBytes.size}B, صدى=${res.echoedCount}B): [${toHexComma(preview)} ...]".format(address))
+            onLog("RX Raw (0xFF @ ${fmtAddr(address)}, ${res.rawBytes.size}B, صدى=${res.echoedCount}B): [${toHexComma(preview)} ...]")
         }
         val page = res.replyBytes
         if (page.size < 256) {
-            onLog("RX Error (read_page 0x%05X): استُلم ${page.size}/256 بايت حقيقي (الخام=${res.totalRawReceived}).".format(address))
+            onLog("RX Error (read_page ${fmtAddr(address)}): استُلم ${page.size}/256 بايت حقيقي (الخام=${res.totalRawReceived}).")
             return null
         }
         if (verboseFrameLog) {
-            onLog("RX Flash (256B @ 0x%05X): \u2066${toHex(page.take(16).toByteArray())}\u2069 ...".format(address))
+            onLog("RX Flash (256B @ ${fmtAddr(address)}): \u2066${toHex(page.take(16).toByteArray())}\u2069 ...")
         }
         return page
     }
@@ -550,7 +551,7 @@ object R8cProtocolEngine {
             ((address ushr 16) and 0xFF).toByte(),
             0xD0.toByte()
         )
-        onLog("TX: \u2066${toHex(cmd)}\u2069 (erase_page 0x%05X: حذف 4 بايت صدى)".format(address))
+        onLog("TX: \u2066${toHex(cmd)}\u2069 (erase_page ${fmtAddr(address)}: حذف 4 بايت صدى)")
         val res = sendAndReceiveR8C(
             transport = transport,
             txBytes = cmd,
@@ -559,7 +560,7 @@ object R8cProtocolEngine {
             onLog = onLog
         )
         if (res.txError != null) {
-            onLog("TX ERROR (erase_page 0x%05X): ${res.txError}".format(address))
+            onLog("TX ERROR (erase_page ${fmtAddr(address)}): ${res.txError}")
             return false
         }
 
@@ -575,7 +576,7 @@ object R8cProtocolEngine {
         }
         val finalSt = st ?: return false
         if (finalSt.sr5EraseError) {
-            onLog("erase_page Error @ 0x%05X: ((SRD >> 5) & 1) != 0 [SRD=0x%02X]".format(address, finalSt.srd))
+            onLog("erase_page Error @ ${fmtAddr(address)}: ((SRD >> 5) & 1) != 0 [SRD=${fmtByte(finalSt.srd)}]")
             return false
         }
         return clearStatus(transport, onLog, quiet = true)
@@ -602,12 +603,13 @@ object R8cProtocolEngine {
             }
         }
         if (verboseFrameLog) {
-            onLog("TX: \u2066%02X %02X %02X\u2069 + 256B (write_page 0x%05X: حذف 259 بايت صدى)".format(
+            val headerHex = "%02X %02X %02X".format(
+                Locale.US,
                 frame[0].toInt() and 0xFF,
                 frame[1].toInt() and 0xFF,
-                frame[2].toInt() and 0xFF,
-                address
-            ))
+                frame[2].toInt() and 0xFF
+            )
+            onLog("TX: \u2066$headerHex\u2069 + 256B (write_page ${fmtAddr(address)}: حذف 259 بايت صدى)")
         }
         val res = sendAndReceiveR8C(
             transport = transport,
@@ -617,7 +619,7 @@ object R8cProtocolEngine {
             onLog = onLog
         )
         if (res.txError != null) {
-            onLog("TX ERROR (write_page 0x%05X): ${res.txError}".format(address))
+            onLog("TX ERROR (write_page ${fmtAddr(address)}): ${res.txError}")
             return false
         }
 
@@ -633,7 +635,7 @@ object R8cProtocolEngine {
         }
         val finalSt = st ?: return false
         if (finalSt.sr4ProgramError) {
-            onLog("write_page Error @ 0x%05X: ((SRD >> 4) & 1) != 0 [SRD=0x%02X]".format(address, finalSt.srd))
+            onLog("write_page Error @ ${fmtAddr(address)}: ((SRD >> 4) & 1) != 0 [SRD=${fmtByte(finalSt.srd)}]")
             return false
         }
         return clearStatus(transport, onLog, quiet = true)
@@ -648,8 +650,10 @@ object R8cProtocolEngine {
         onProgress: (bytesDone: Int, totalBytes: Int, label: String) -> Unit
     ): FlashOperationResult {
         val layout = resolveDeviceLayout(processor)
-        val totalSize = layout.romArea.sizeBytes
-        val startAddr = layout.romArea.org
+        val startAddr: Int = layout.romArea.org
+        val endAddr: Int = layout.romArea.end
+        val pageSize: Int = 256
+        val totalSize: Int = (endAddr - startAddr + 1).coerceAtLeast(pageSize)
 
         onProgress(0, totalSize, "تهيئة البوت التلقائي (RTS/DTR) والمزامنة...")
         val session = startAndConnect(transport, onLog)
@@ -663,7 +667,7 @@ object R8cProtocolEngine {
         if (ver == null) {
             return FlashOperationResult.Failure("لم يستجب المعالج لأمر قراءة الإصدار 0xFB (1+8=9 بايت).")
         }
-        onLog("R8C Version: \"$ver\" | نطاق القراءة: 0x%05X..0x%05X".format(layout.romArea.org, layout.romArea.end))
+        onLog("R8C Version: \"$ver\" | نطاق القراءة: ${fmtAddr(startAddr)}..${fmtAddr(endAddr)}")
 
         if (!clearStatus(transport, onLog, quiet = false)) {
             return FlashOperationResult.Failure("فشل أمر مسح سجل الحالة 0x50 قبل فحص المفتاح.")
@@ -676,24 +680,24 @@ object R8cProtocolEngine {
         }
 
         val resultBuffer = FirmwareParser.createEmptyBuffer(totalSize)
-        val totalPages = (totalSize + 255) / 256
+        val totalPages = (totalSize + pageSize - 1) / pageSize
         var bytesRead = 0
 
         transport.setRawRxMonitor(false)
-        onProgress(0, totalSize, "قراءة ${processor.partNumber}: 0% (0x%05X)...".format(startAddr))
+        onProgress(0, totalSize, "قراءة ${processor.partNumber}: 0% (${fmtAddr(startAddr)})...")
 
         try {
             for (pageIdx in 0 until totalPages) {
-                val physicalAddr = (startAddr + pageIdx * 256) and 0xFFFFFF00.toInt()
+                val physicalAddr: Int = (startAddr + pageIdx * pageSize) and 0xFFFFFF00.toInt()
                 val chunk = readPage(
                     transport = transport,
                     address = physicalAddr,
                     onLog = onLog,
                     verboseFrameLog = (pageIdx == 0 || pageIdx == totalPages - 1)
-                ) ?: return FlashOperationResult.Failure("فشلت قراءة الصفحة عند العنوان 0x%06X.".format(physicalAddr))
+                ) ?: return FlashOperationResult.Failure("فشلت قراءة الصفحة عند العنوان ${fmtAddr(physicalAddr, 6)}.")
 
-                val dstOffset = pageIdx * 256
-                val copyLen = min(256, totalSize - dstOffset)
+                val dstOffset = pageIdx * pageSize
+                val copyLen = min(pageSize, totalSize - dstOffset)
                 System.arraycopy(chunk, 0, resultBuffer, dstOffset, copyLen)
                 bytesRead += copyLen
 
@@ -701,16 +705,18 @@ object R8cProtocolEngine {
                 onProgress(
                     bytesRead,
                     totalSize,
-                    "قراءة ${processor.partNumber}: $pct% (0x%05X)".format(physicalAddr)
+                    "قراءة ${processor.partNumber}: $pct% (${fmtAddr(physicalAddr)})"
                 )
             }
+        } catch (t: Throwable) {
+            onLog("Read Flash Exception: ${t.toString()}")
+            return FlashOperationResult.Failure("استثناء أثناء قراءة الفلاش: ${t.toString()}")
         } finally {
             transport.setRawRxMonitor(false)
         }
 
         return FlashOperationResult.Success(
-            message = "تمت قراءة ${bytesRead / 1024} KB من ${processor.partNumber} (0x%05X..0x%05X) بنجاح."
-                .format(layout.romArea.org, layout.romArea.end),
+            message = "تمت قراءة ${bytesRead / 1024} KB من ${processor.partNumber} (${fmtAddr(startAddr)}..${fmtAddr(endAddr)}) بنجاح.",
             bytesTransferred = resultBuffer,
             baseAddress = startAddr
         )
@@ -793,7 +799,7 @@ object R8cProtocolEngine {
         if (ver == null) {
             return FlashOperationResult.Failure("لم يستجب المعالج لأمر قراءة الإصدار 0xFB (1+8=9 بايت).")
         }
-        onLog("R8C Version: \"$ver\" | قاعدة العنوان: 0x%05X".format(baseAddr))
+        onLog("R8C Version: \"$ver\" | قاعدة العنوان: ${fmtAddr(baseAddr)}")
 
         if (!clearStatus(transport, onLog, quiet = false)) {
             return FlashOperationResult.Failure("فشل أمر مسح سجل الحالة 0x50 قبل فحص المفتاح.")
@@ -817,7 +823,7 @@ object R8cProtocolEngine {
                 val physicalAddr = (baseAddr + relOffset) and 0xFFFFFF00.toInt()
 
                 if (slice.all { it == 0xFF.toByte() }) {
-                    onProgress(bytesDone, totalSize, "تخطي صفحة فارغة 0x%05X".format(physicalAddr))
+                    onProgress(bytesDone, totalSize, "تخطي صفحة فارغة ${fmtAddr(physicalAddr)}")
                     continue
                 }
 
@@ -827,12 +833,11 @@ object R8cProtocolEngine {
                         address = physicalAddr,
                         onLog = onLog,
                         verboseFrameLog = (pageIdx == 0)
-                    ) ?: return FlashOperationResult.Failure("تعذر قراءة الصفحة 0x%05X للمطابقة.".format(physicalAddr))
+                    ) ?: return FlashOperationResult.Failure("تعذر قراءة الصفحة ${fmtAddr(physicalAddr)} للمطابقة.")
 
                     for (i in 0 until len) {
                         if (chipPage[i] != slice[i]) {
-                            val mismatchMsg = "اختلاف المطابقة عند 0x%05X: المتوقع 0x%02X والمقروء 0x%02X."
-                                .format(physicalAddr + i, slice[i].toInt() and 0xFF, chipPage[i].toInt() and 0xFF)
+                            val mismatchMsg = "اختلاف المطابقة عند ${fmtAddr(physicalAddr + i)}: المتوقع ${fmtByte(slice[i].toInt() and 0xFF)} والمقروء ${fmtByte(chipPage[i].toInt() and 0xFF)}."
                             onLog("Verify Mismatch: $mismatchMsg")
                             return FlashOperationResult.Failure(mismatchMsg)
                         }
@@ -840,7 +845,7 @@ object R8cProtocolEngine {
                     onProgress(
                         bytesDone,
                         totalSize,
-                        "مطابقة صفحة ${pageIdx + 1}/$totalPages (0x%05X)".format(physicalAddr)
+                        "مطابقة صفحة ${pageIdx + 1}/$totalPages (${fmtAddr(physicalAddr)})"
                     )
                 } else {
                     val blockSize = if (physicalAddr < 0x8000) 1024 else 4096
@@ -849,10 +854,10 @@ object R8cProtocolEngine {
                         onProgress(
                             bytesDone.coerceAtLeast(1) - 1,
                             totalSize,
-                            "مسح بلوك 0x%05X قبل الكتابة...".format(blockBase)
+                            "مسح بلوك ${fmtAddr(blockBase)} قبل الكتابة..."
                         )
                         if (!erasePage(transport, blockBase, onLog)) {
-                            return FlashOperationResult.Failure("فشل مسح البلوك 0x%05X قبل البرمجة.".format(blockBase))
+                            return FlashOperationResult.Failure("فشل مسح البلوك ${fmtAddr(blockBase)} قبل البرمجة.")
                         }
                     }
 
@@ -864,16 +869,19 @@ object R8cProtocolEngine {
                         verboseFrameLog = (pageIdx == 0 || pageIdx == totalPages - 1)
                     )
                     if (!ok) {
-                        return FlashOperationResult.Failure("فشلت كتابة الصفحة عند 0x%05X.".format(physicalAddr))
+                        return FlashOperationResult.Failure("فشلت كتابة الصفحة عند ${fmtAddr(physicalAddr)}.")
                     }
                     val pct = ((bytesDone * 100L) / totalSize.coerceAtLeast(1)).toInt()
                     onProgress(
                         bytesDone,
                         totalSize,
-                        "كتابة ${processor.partNumber}: $pct% (0x%05X)".format(physicalAddr)
+                        "كتابة ${processor.partNumber}: $pct% (${fmtAddr(physicalAddr)})"
                     )
                 }
             }
+        } catch (t: Throwable) {
+            onLog("Program/Verify Exception: ${t.toString()}")
+            return FlashOperationResult.Failure("استثناء أثناء العملية: ${t.toString()}")
         } finally {
             transport.setRawRxMonitor(false)
         }
@@ -881,7 +889,7 @@ object R8cProtocolEngine {
         val doneMsg = if (verifyOnly) {
             "تمت مطابقة (Verify) جميع البيانات في ${processor.partNumber} بنسبة 100%."
         } else {
-            "تمت برمجة (Program) الفلاش بنجاح على ${processor.partNumber} بدءاً من 0x%04X.".format(baseAddr)
+            "تمت برمجة (Program) الفلاش بنجاح على ${processor.partNumber} بدءاً من ${fmtAddr(baseAddr, 4)}."
         }
         return FlashOperationResult.Success(doneMsg, baseAddress = baseAddr)
     }
@@ -897,7 +905,15 @@ object R8cProtocolEngine {
         return list
     }
 
-    private fun toHex(bytes: ByteArray): String = bytes.joinToString(" ") { "%02X".format(it) }
+    private fun fmtAddr(value: Int, width: Int = 5): String =
+        String.format(Locale.US, "0x%0${width}X", value)
 
-    private fun toHexComma(bytes: ByteArray): String = bytes.joinToString(", ") { "%02X".format(it) }
+    private fun fmtByte(value: Int): String =
+        String.format(Locale.US, "0x%02X", value and 0xFF)
+
+    private fun toHex(bytes: ByteArray): String =
+        bytes.joinToString(" ") { String.format(Locale.US, "%02X", it.toInt() and 0xFF) }
+
+    private fun toHexComma(bytes: ByteArray): String =
+        bytes.joinToString(", ") { String.format(Locale.US, "%02X", it.toInt() and 0xFF) }
 }

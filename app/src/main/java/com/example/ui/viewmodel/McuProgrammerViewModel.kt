@@ -438,7 +438,7 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
             } catch (ce: CancellationException) {
                 throw ce
             } catch (t: Throwable) {
-                val errMsg = "خطأ غير متوقع أثناء الفحص التلقائي: ${t.message ?: t::class.java.simpleName}"
+                val errMsg = "خطأ غير متوقع أثناء الفحص التلقائي: ${t.toString()}"
                 _uiState.update {
                     it.copy(
                         isAutoDetecting = false,
@@ -570,7 +570,7 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                         progressLabel = ""
                     )
                 }
-                addLog("خطأ أثناء فتح منفذ USB: ${t.message ?: t::class.java.simpleName}", LogLevel.ERROR)
+                addLog("خطأ أثناء فتح منفذ USB: ${t.toString()}", LogLevel.ERROR)
             }
             refreshUsbDevices()
         }
@@ -749,7 +749,7 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                         progressLabel = ""
                     )
                 }
-                addLog("خطأ غير متوقع أثناء القراءة: ${t.message ?: t::class.java.simpleName}", LogLevel.ERROR)
+                addLog("خطأ غير متوقع أثناء القراءة: ${t.toString()}", LogLevel.ERROR)
             }
         }
     }
@@ -831,7 +831,7 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                 _uiState.update {
                     it.copy(isBusy = false, progress = 0f, progressBytesDone = 0, progressTotalBytes = 0, progressLabel = "")
                 }
-                addLog("خطأ غير متوقع أثناء المسح: ${t.message ?: t::class.java.simpleName}", LogLevel.ERROR)
+                addLog("خطأ غير متوقع أثناء المسح: ${t.toString()}", LogLevel.ERROR)
             }
         }
     }
@@ -911,7 +911,7 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                 _uiState.update {
                     it.copy(isBusy = false, progress = 0f, progressBytesDone = 0, progressTotalBytes = 0, progressLabel = "")
                 }
-                addLog("خطأ غير متوقع أثناء $actionName: ${t.message ?: t::class.java.simpleName}", LogLevel.ERROR)
+                addLog("خطأ غير متوقع أثناء $actionName: ${t.toString()}", LogLevel.ERROR)
             }
         }
     }
