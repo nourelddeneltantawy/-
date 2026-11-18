@@ -10,7 +10,7 @@ enum class ProtocolFamilyType {
 enum class DataFlashExportMode(val titleAr: String, val subtitleAr: String) {
     EXCLUDE("استبعاد", "قراءة Program Flash فقط بالحجم القياسي"),
     SEPARATE_FILE("ملف منفصل", "قراءة Data Flash وحفظه في ملف مستقل"),
-    MERGED("مدمج", "دمج Data Flash مع Program Flash عند التصدير")
+    MERGED("مدمج", "بناء خريطة الذاكرة الكاملة من 0x00000 حتى نهاية المعالج (مطابق لـ R8CTool.EXE)")
 }
 
 data class ChipConfig(

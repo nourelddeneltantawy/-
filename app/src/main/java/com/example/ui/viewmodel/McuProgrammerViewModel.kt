@@ -74,7 +74,7 @@ data class McuProgrammerUiState(
     val progressLabel: String = "",
     val flashBuffer: ByteArray = ByteArray(1024) { 0xFF.toByte() },
     val flashBaseAddress: Int = 0,
-    val dataFlashMode: DataFlashExportMode = DataFlashExportMode.EXCLUDE,
+    val dataFlashMode: DataFlashExportMode = DataFlashExportMode.MERGED,
     val dataFlashBuffer: ByteArray? = null,
     val dataFlashBaseAddress: Int = 0,
     val viewingDataFlashTab: Boolean = false,
@@ -690,14 +690,16 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
         val baseAddr = state.flashBaseAddress
         val dfBuffer = state.dataFlashBuffer
         val dfBase = state.dataFlashBaseAddress
-        val isMerged = state.dataFlashMode == DataFlashExportMode.MERGED && dfBuffer != null
+        val chipConfig = state.selectedProcessor?.chipConfig
+        val isMergedMode = state.dataFlashMode == DataFlashExportMode.MERGED
 
         viewModelScope.launch {
             try {
+                var savedByteCount = buffer.size
                 withContext(Dispatchers.IO) {
                     appContext.contentResolver.openOutputStream(uri)?.use { out ->
                         if (asIntelHex) {
-                            val hexContent = if (isMerged && dfBuffer != null) {
+                            val hexContent = if (isMergedMode && dfBuffer != null) {
                                 FirmwareParser.toIntelHexMultiSegment(
                                     listOf(
                                         dfBase to dfBuffer,
@@ -709,17 +711,35 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                             }
                             out.write(hexContent.toByteArray(Charsets.US_ASCII))
                         } else {
-                            out.write(buffer)
-                            if (isMerged && dfBuffer != null) {
-                                out.write(dfBuffer)
+                            val payload = if (isMergedMode && chipConfig != null) {
+                                FirmwareParser.buildMergedMemoryMap(
+                                    chipConfig = chipConfig,
+                                    programFlashBytes = buffer,
+                                    dataFlashBytes = dfBuffer
+                                )
+                            } else {
+                                buffer
                             }
+                            savedByteCount = payload.size
+                            out.write(payload)
                         }
                     } ?: throw IllegalStateException("تعذر الكتابة إلى المسار المختار.")
                 }
-                val mergeInfo = if (isMerged && dfBuffer != null) {
-                    " [مدمج: Program ${buffer.size / 1024}KB + Data Flash ${dfBuffer.size}B]"
+
+                val mergeInfo = if (!asIntelHex && isMergedMode && chipConfig != null) {
+                    val endHex = String.format(Locale.US, "0x%05X", chipConfig.programEndAddress)
+                    val formattedBytes = String.format(Locale.US, "%,d", savedByteCount)
+                    val dfLabel = if (dfBuffer != null && chipConfig.dataFlashStartAddress != null) {
+                        "شامل Data Flash @ ${String.format(Locale.US, "0x%05X", chipConfig.dataFlashStartAddress)}"
+                    } else {
+                        "Program @ ${String.format(Locale.US, "0x%05X", chipConfig.programStartAddress)}"
+                    }
+                    " [مدمج خريطة كاملة 0x00000..$endHex • $formattedBytes بايت / ${savedByteCount / 1024} KiB • $dfLabel]"
+                } else if (asIntelHex && isMergedMode && dfBuffer != null) {
+                    val mapSize = (chipConfig?.programEndAddress ?: 0) + 1
+                    " [مدمج Intel HEX: Program + Data Flash @ ${String.format(Locale.US, "0x%05X", dfBase)} (نطاق ${String.format(Locale.US, "%,d", mapSize)} بايت / ${mapSize / 1024} KiB)]"
                 } else {
-                    " [Program Flash ${buffer.size / 1024}KB]"
+                    " [Program Flash ${String.format(Locale.US, "%,d", buffer.size)} بايت / ${buffer.size / 1024} KiB]"
                 }
                 addLog(
                     "تم حفظ السوفت المسحوب بنجاح (${if (asIntelHex) "Intel HEX" else "BIN"})$mergeInfo",

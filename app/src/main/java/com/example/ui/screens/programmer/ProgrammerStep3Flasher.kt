@@ -352,6 +352,7 @@ fun ProgrammerStep3Flasher(
                 )
                 if (chipConfig.hasDataFlash && chipConfig.dataFlashStartAddress != null && chipConfig.dataFlashEndAddress != null) {
                     DataFlashModeCard(
+                        programEndAddress = chipConfig.programEndAddress,
                         dataFlashStart = chipConfig.dataFlashStartAddress,
                         dataFlashEnd = chipConfig.dataFlashEndAddress,
                         dataFlashSizeBytes = chipConfig.dataFlashSizeBytes,
@@ -409,7 +410,9 @@ fun ProgrammerStep3Flasher(
                     )
                 }
 
-                val isMergedReady = state.dataFlashMode == DataFlashExportMode.MERGED && state.dataFlashBuffer != null
+                val isMergedMode = state.dataFlashMode == DataFlashExportMode.MERGED &&
+                    mcu.protocolType == ProtocolFamilyType.R8C_M16C
+                val fullMergedSizeBytes = chipConfig.programEndAddress + 1
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -426,7 +429,7 @@ fun ProgrammerStep3Flasher(
                         Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
-                            text = if (isMergedReady) "حفظ BIN (مدمج)" else "حفظ BIN",
+                            text = if (isMergedMode) "حفظ BIN (${fullMergedSizeBytes / 1024} KiB)" else "حفظ BIN",
                             fontSize = 12.sp,
                             fontWeight = FontWeight.Bold,
                             maxLines = 1
@@ -445,7 +448,7 @@ fun ProgrammerStep3Flasher(
                         Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
-                            text = if (isMergedReady) "تصدير HEX (مدمج)" else "تصدير HEX",
+                            text = if (isMergedMode && state.dataFlashBuffer != null) "تصدير HEX (مدمج)" else "تصدير HEX",
                             fontSize = 12.sp,
                             fontWeight = FontWeight.Bold,
                             maxLines = 1
@@ -491,11 +494,20 @@ fun ProgrammerStep3Flasher(
                 val dfLoadedSummary = state.dataFlashBuffer?.let { df ->
                     " + Data Flash (${df.size} B)"
                 } ?: ""
+                val mergedSummary = if (isMergedMode) {
+                    String.format(
+                        Locale.US,
+                        " • حفظ BIN الكامل: 0x00000..0x%05X (%,d بايت / %d KiB)",
+                        chipConfig.programEndAddress,
+                        fullMergedSizeBytes,
+                        fullMergedSizeBytes / 1024
+                    )
+                } else ""
                 Text(
                     text = if (state.loadedFileName != null) {
-                        "الملف النشط: ${state.loadedFileName} (${state.loadedFormat}) • ${state.loadedNonEmptyCount} بايت بيانات$dfLoadedSummary"
+                        "الملف النشط: ${state.loadedFileName} (${state.loadedFormat}) • ${state.loadedNonEmptyCount} بايت بيانات$dfLoadedSummary$mergedSummary"
                     } else {
-                        "الذاكرة مهيأة على 0xFF بحجم ${chipConfig.flashSizeBytes / 1024} KB (${chipConfig.flashSizeBytes} بايت)"
+                        "الذاكرة مهيأة على 0xFF بحجم ${chipConfig.flashSizeBytes / 1024} KB (${chipConfig.flashSizeBytes} بايت)$mergedSummary"
                     },
                     fontSize = 11.sp,
                     color = MaterialTheme.colorScheme.secondary
@@ -917,6 +929,7 @@ private fun IdByteInputBox(
 
 @Composable
 private fun DataFlashModeCard(
+    programEndAddress: Int,
     dataFlashStart: Int,
     dataFlashEnd: Int,
     dataFlashSizeBytes: Int,
@@ -930,6 +943,7 @@ private fun DataFlashModeCard(
         "$dataFlashSizeBytes B"
     }
     val rangeText = String.format(Locale.US, "0x%05X..0x%05X • %s", dataFlashStart, dataFlashEnd, sizeLabel)
+    val fullMapBytes = programEndAddress + 1
 
     Card(
         shape = RoundedCornerShape(18.dp),
@@ -981,8 +995,20 @@ private fun DataFlashModeCard(
                 }
             }
 
+            val detailLine = if (selectedMode == DataFlashExportMode.MERGED) {
+                String.format(
+                    Locale.US,
+                    "%s — الحجم الناتج: 0x00000..0x%05X (%,d بايت / %d KiB)",
+                    selectedMode.subtitleAr,
+                    programEndAddress,
+                    fullMapBytes,
+                    fullMapBytes / 1024
+                )
+            } else {
+                selectedMode.subtitleAr
+            }
             Text(
-                text = selectedMode.subtitleAr,
+                text = detailLine,
                 fontSize = 11.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )

@@ -1,5 +1,6 @@
 package com.example.util
 
+import com.example.data.model.ChipConfig
 import com.example.data.model.FirmwareFileData
 import java.util.Locale
 import kotlin.math.min
@@ -70,17 +71,35 @@ object FirmwareParser {
         dataFlashSizeBytes: Int = 0
     ): FirmwareFileData {
         val buffer = createEmptyBuffer(targetFlashSizeBytes)
-        val count = min(rawBytes.size, buffer.size)
-        System.arraycopy(rawBytes, 0, buffer, 0, count)
-
         var dfBuffer: ByteArray? = null
         var dfStart = 0
-        if (dataFlashStartAddress != null && dataFlashSizeBytes > 0 && rawBytes.size > targetFlashSizeBytes) {
-            val extraAvailable = min(dataFlashSizeBytes, rawBytes.size - targetFlashSizeBytes)
-            if (extraAvailable > 0) {
-                dfBuffer = ByteArray(dataFlashSizeBytes) { 0xFF.toByte() }
-                System.arraycopy(rawBytes, targetFlashSizeBytes, dfBuffer, 0, extraAvailable)
-                dfStart = dataFlashStartAddress
+        val count: Int
+
+        // Detect Full Physical Memory Map .bin (0x00000..programEndAddress, e.g. 81,920 bytes from R8CTool.EXE)
+        if (preferredBaseAddress > 0 && rawBytes.size >= preferredBaseAddress + targetFlashSizeBytes) {
+            val progAvailable = min(buffer.size, rawBytes.size - preferredBaseAddress)
+            System.arraycopy(rawBytes, preferredBaseAddress, buffer, 0, progAvailable)
+            count = buffer.count { it != 0xFF.toByte() }
+
+            if (dataFlashStartAddress != null && dataFlashSizeBytes > 0 && rawBytes.size > dataFlashStartAddress) {
+                val dfAvailable = min(dataFlashSizeBytes, rawBytes.size - dataFlashStartAddress)
+                if (dfAvailable > 0) {
+                    dfBuffer = ByteArray(dataFlashSizeBytes) { 0xFF.toByte() }
+                    System.arraycopy(rawBytes, dataFlashStartAddress, dfBuffer, 0, dfAvailable)
+                    dfStart = dataFlashStartAddress
+                }
+            }
+        } else {
+            count = min(rawBytes.size, buffer.size)
+            System.arraycopy(rawBytes, 0, buffer, 0, count)
+
+            if (dataFlashStartAddress != null && dataFlashSizeBytes > 0 && rawBytes.size > targetFlashSizeBytes) {
+                val extraAvailable = min(dataFlashSizeBytes, rawBytes.size - targetFlashSizeBytes)
+                if (extraAvailable > 0) {
+                    dfBuffer = ByteArray(dataFlashSizeBytes) { 0xFF.toByte() }
+                    System.arraycopy(rawBytes, targetFlashSizeBytes, dfBuffer, 0, extraAvailable)
+                    dfStart = dataFlashStartAddress
+                }
             }
         }
 
@@ -281,6 +300,37 @@ object FirmwareParser {
             dataFlashBytes = if (writtenDfBytes > 0) dfBuffer else null,
             dataFlashStartAddress = if (writtenDfBytes > 0 && dfStart >= 0L) dfStart.toInt() else 0
         )
+    }
+
+    /**
+     * Builds the complete physical memory map from 0x00000 to chipConfig.programEndAddress
+     * (e.g., 0x13FFF + 1 = 0x14000 = 81,920 bytes = 80 KiB for R5F21258),
+     * placing Data Flash and Program Flash at their exact physical chip offsets.
+     */
+    fun buildMergedMemoryMap(
+        chipConfig: ChipConfig,
+        programFlashBytes: ByteArray,
+        dataFlashBytes: ByteArray?
+    ): ByteArray {
+        val fullSize = (chipConfig.programEndAddress + 1)
+            .coerceAtLeast(chipConfig.programStartAddress + programFlashBytes.size)
+        val merged = ByteArray(fullSize) { 0xFF.toByte() }
+
+        val dfStart = chipConfig.dataFlashStartAddress
+        if (dfStart != null && dfStart >= 0 && dataFlashBytes != null && dataFlashBytes.isNotEmpty()) {
+            val dfMaxCopy = min(dataFlashBytes.size, (fullSize - dfStart).coerceAtLeast(0))
+            if (dfMaxCopy > 0) {
+                System.arraycopy(dataFlashBytes, 0, merged, dfStart, dfMaxCopy)
+            }
+        }
+
+        val progStart = chipConfig.programStartAddress.coerceAtLeast(0)
+        val progMaxCopy = min(programFlashBytes.size, (fullSize - progStart).coerceAtLeast(0))
+        if (progMaxCopy > 0) {
+            System.arraycopy(programFlashBytes, 0, merged, progStart, progMaxCopy)
+        }
+
+        return merged
     }
 
     fun toIntelHex(bytes: ByteArray, baseAddress: Int = 0): String {
