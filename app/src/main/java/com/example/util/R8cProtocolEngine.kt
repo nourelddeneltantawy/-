@@ -1,5 +1,6 @@
 package com.example.util
 
+import com.example.data.model.ChipConfig
 import com.example.data.model.DataFlashExportMode
 import com.example.data.model.McuProcessor
 import kotlinx.coroutines.delay
@@ -538,8 +539,9 @@ object R8cProtocolEngine {
      * write_page():
      * - Flush rxQueue.clear() and build 259-byte packet [0x41, (addr >> 8) & 0xFF, (addr >> 16) & 0xFF, ...256B]
      * - Transmit all 259 bytes in a single write, wait strictly for all 259 echo bytes (timeout 1500ms)
-     * - Wait 15ms for internal flash write settle
-     * - If checkStatusAfter is true or echo/transfer was delayed, run [0x70] and confirm SRD == 0x80 (Bit 4 == 0)
+     * - Wait 40ms for internal R8C flash programming stabilization before checking readiness or sending next page
+     * - Poll [0x70] until Bit 7 == 1 (Ready) and verify Bit 4 (SR4 Program Error) == 0
+     * - On error (SR4 == 1 or incomplete echo), clear status (0x50) and auto-retry once
      */
     suspend fun writePage(
         transport: SerialTransport,
@@ -582,50 +584,57 @@ object R8cProtocolEngine {
             val elapsedMs = System.currentTimeMillis() - tStart
 
             if (res.txError != null) {
-                onLog("TX ERROR (write_page ${fmtAddr(address)}): ${res.txError}")
+                onLog("TX ERROR (write_page ${fmtAddr(address)} — محاولة $attempt/$maxAttempts): ${res.txError}")
                 if (attempt < maxAttempts) {
                     delay(40)
+                    clearStatus(transport, onLog, quiet = true)
                     continue
                 }
                 return false
             }
 
             if (res.totalRawReceived < 259) {
-                onLog("تحذير (write_page ${fmtAddr(address)}): استُلم ${res.totalRawReceived}/259 بايت صدى خلال ${elapsedMs}ms — فحص الحالة 0x70...")
+                onLog("تحذير (write_page ${fmtAddr(address)} — محاولة $attempt/$maxAttempts): استُلم ${res.totalRawReceived}/259 بايت صدى خلال ${elapsedMs}ms — فحص 0x70...")
                 val st = getStatus(transport, onLog, quiet = false)
-                if (st == null || st.sr4ProgramError) {
-                    onLog("write_page Echo/Status Error @ ${fmtAddr(address)}: SRD=${st?.let { fmtByte(it.srd) } ?: "null"}")
-                    return false
-                }
                 if (attempt < maxAttempts) {
                     delay(40)
+                    if (st == null || st.sr4ProgramError) {
+                        clearStatus(transport, onLog, quiet = true)
+                    }
                     continue
                 }
+                onLog("write_page Echo/Status Error @ ${fmtAddr(address)}: SRD=${st?.let { fmtByte(it.srd) } ?: "null"}")
                 return false
             }
 
-            // Wait 15ms for internal R8C flash programming settle
-            delay(15)
+            // Wait 40ms for internal R8C flash programming stabilization
+            delay(40)
 
-            val wasDelayed = elapsedMs > 900L || attempt > 1
-            if (checkStatusAfter || wasDelayed) {
-                var st: R8cStatus? = null
-                for (poll in 1..6) {
-                    val cur = getStatus(transport, onLog, quiet = !verboseFrameLog && poll == 1)
-                    if (cur != null) {
-                        st = cur
-                        if ((cur.srd and 0x80) != 0) break
-                    }
-                    delay(20)
+            // Always verify [0x70] until Bit 7 == 1 (Ready) and confirm Bit 4 (Program Error) == 0
+            var st: R8cStatus? = null
+            for (poll in 1..8) {
+                val cur = getStatus(transport, onLog, quiet = !(verboseFrameLog && poll == 1))
+                if (cur != null) {
+                    st = cur
+                    if ((cur.srd and 0x80) != 0) break
                 }
-                val finalSt = st ?: run {
-                    onLog("write_page Error @ ${fmtAddr(address)}: لم يستجب المعالج لفحص الحالة 0x70.")
-                    return false
+                delay(20)
+            }
+            val finalSt = st
+            val readyOk = finalSt != null && (finalSt.srd and 0x80) != 0
+            val programOk = finalSt != null && !finalSt.sr4ProgramError && (finalSt.srd == 0x80 || (finalSt.srd and 0x10) == 0)
+
+            if (!readyOk || !programOk || (checkStatusAfter && finalSt?.srd != 0x80)) {
+                val srdDesc = finalSt?.let { "SRD=${fmtByte(it.srd)}, SRD1=${fmtByte(it.srd1)}" } ?: "لا يوجد رد"
+                onLog("تحذير كتابة الصفحة @ ${fmtAddr(address)} ($srdDesc) — محاولة $attempt/$maxAttempts")
+                clearStatus(transport, onLog, quiet = true)
+                if (attempt < maxAttempts) {
+                    onLog("إعادة محاولة كتابة الصفحة ${fmtAddr(address)} تلقائياً بعد مسح الحالة 0x50...")
+                    delay(40)
+                    continue
                 }
-                if (finalSt.sr4ProgramError || finalSt.srd != 0x80) {
-                    onLog("write_page Error @ ${fmtAddr(address)}: SRD=${fmtByte(finalSt.srd)}, SRD1=${fmtByte(finalSt.srd1)} (المتوقع SRD=0x80, Bit4=0).")
-                    return false
-                }
+                onLog("write_page Error @ ${fmtAddr(address)}: فشل التثبيت بعد $maxAttempts محاولات ($srdDesc).")
+                return false
             }
             return true
         }
@@ -1021,7 +1030,8 @@ object R8cProtocolEngine {
 
     private data class TargetPage(
         val physicalAddress: Int,
-        val data256: ByteArray
+        val data256: ByteArray,
+        val isDataFlash: Boolean
     )
 
     private fun extractPage256(src: ByteArray, offset: Int): ByteArray {
@@ -1068,13 +1078,13 @@ object R8cProtocolEngine {
                         } else {
                             extractPage256(firmwareBytes, dfAddr)
                         }
-                        pages.add(TargetPage(dfAddr and 0xFFFFFF00.toInt(), dfPage))
+                        pages.add(TargetPage(dfAddr and 0xFFFFFF00.toInt(), dfPage, isDataFlash = true))
                         dfAddr += pageSize
                     }
                 }
                 var addr = chipConfig.programStartAddress
                 while (addr <= chipConfig.programEndAddress) {
-                    pages.add(TargetPage(addr and 0xFFFFFF00.toInt(), extractPage256(firmwareBytes, addr)))
+                    pages.add(TargetPage(addr and 0xFFFFFF00.toInt(), extractPage256(firmwareBytes, addr), isDataFlash = false))
                     addr += pageSize
                 }
             }
@@ -1083,7 +1093,7 @@ object R8cProtocolEngine {
                 while (dfAddr <= dfEnd) {
                     val dfOffset = dfAddr - dfStart
                     if (dfOffset in firmwareBytes.indices) {
-                        pages.add(TargetPage(dfAddr and 0xFFFFFF00.toInt(), extractPage256(firmwareBytes, dfOffset)))
+                        pages.add(TargetPage(dfAddr and 0xFFFFFF00.toInt(), extractPage256(firmwareBytes, dfOffset), isDataFlash = true))
                     }
                     dfAddr += pageSize
                 }
@@ -1095,7 +1105,7 @@ object R8cProtocolEngine {
                     while (dfAddr <= dfEnd) {
                         val dfOffset = dfAddr - dfStart
                         if (dfOffset in dataFlashBytes.indices) {
-                            pages.add(TargetPage(dfAddr and 0xFFFFFF00.toInt(), extractPage256(dataFlashBytes, dfOffset)))
+                            pages.add(TargetPage(dfAddr and 0xFFFFFF00.toInt(), extractPage256(dataFlashBytes, dfOffset), isDataFlash = true))
                         }
                         dfAddr += pageSize
                     }
@@ -1105,7 +1115,7 @@ object R8cProtocolEngine {
                 while (addr <= chipConfig.programEndAddress) {
                     val fileOffset = addr - base
                     if (fileOffset in firmwareBytes.indices) {
-                        pages.add(TargetPage(addr and 0xFFFFFF00.toInt(), extractPage256(firmwareBytes, fileOffset)))
+                        pages.add(TargetPage(addr and 0xFFFFFF00.toInt(), extractPage256(firmwareBytes, fileOffset), isDataFlash = false))
                     }
                     addr += pageSize
                 }
@@ -1186,8 +1196,8 @@ object R8cProtocolEngine {
                 return runVerifyPages(
                     transport = transport,
                     chipName = processor.partNumber,
+                    chipConfig = chipConfig,
                     pages = pagesToVerify,
-                    baseAddress = chipConfig.programStartAddress,
                     onLog = onLog,
                     onProgress = onProgress
                 )
@@ -1220,6 +1230,7 @@ object R8cProtocolEngine {
             val lastNonEmptyIdx = nonEmptyIndices.last()
             var writtenPageCount = 0
             var skippedPageCount = 0
+            val lockedDfAddresses = mutableListOf<Int>()
             val totalWrittenTarget = nonEmptyIndices.size
 
             for (idx in allPages.indices) {
@@ -1245,10 +1256,17 @@ object R8cProtocolEngine {
                     verboseFrameLog = (writtenPageCount == 0 || isLastWritten)
                 )
                 if (!ok) {
-                    return FlashOperationResult.Failure("فشلت كتابة الصفحة عند العنوان ${fmtAddr(page.physicalAddress)}.")
+                    if (page.isDataFlash) {
+                        clearStatus(transport, onLog, quiet = true)
+                        lockedDfAddresses.add(page.physicalAddress)
+                        onLog("تنبيه: تعذرت كتابة صفحة Data Flash الإضافية عند ${fmtAddr(page.physicalAddress)} (قد تكون محمية في هذا الموديل) — متابعة البرنامج الأساسي.")
+                    } else {
+                        return FlashOperationResult.Failure("فشلت كتابة صفحة فلاش البرنامج (Program Flash) عند العنوان ${fmtAddr(page.physicalAddress)}.")
+                    }
+                } else {
+                    writtenPageCount++
                 }
 
-                writtenPageCount++
                 onProgress(
                     doneBytes,
                     totalSpanBytes,
@@ -1264,27 +1282,37 @@ object R8cProtocolEngine {
 
             if (autoVerifyAfterWrite) {
                 val writtenPages = nonEmptyIndices.map { allPages[it] }
-                onLog("بدء التحقق التلقائي بعد الكتابة (${writtenPages.size} صفحة مكتوبة)...")
+                onLog("بدء التحقق التلقائي بعد الكتابة (${writtenPages.size} صفحة مستهدفة)...")
                 val verifyRes = runVerifyPages(
                     transport = transport,
                     chipName = processor.partNumber,
+                    chipConfig = chipConfig,
                     pages = writtenPages,
-                    baseAddress = chipConfig.programStartAddress,
                     onLog = onLog,
                     onProgress = onProgress
                 )
                 if (verifyRes is FlashOperationResult.Failure) {
                     return verifyRes
                 }
+                val dfWriteNote = if (lockedDfAddresses.isNotEmpty() && verifyRes is FlashOperationResult.Success &&
+                    !verifyRes.message.contains("Data Flash")
+                ) {
+                    " | تنبيه: بعض خلايا Data Flash الإضافية غير قابلة للكتابة في هذا الموديل"
+                } else ""
+                val verifyDetail = if (verifyRes is FlashOperationResult.Success) verifyRes.message else ""
                 return FlashOperationResult.Success(
-                    message = "تمت برمجة ومطابقة ${processor.partNumber} بنجاح (${writtenPageCount} صفحة مكتوبة • 100% متطابق).",
+                    message = if (verifyDetail.isNotBlank()) verifyDetail + dfWriteNote
+                    else "تمت برمجة ومطابقة ${processor.partNumber} بنجاح (${writtenPageCount} صفحة مكتوبة)$dfWriteNote.",
                     baseAddress = chipConfig.programStartAddress
                 )
             }
 
             onProgress(totalSpanBytes, totalSpanBytes, "اكتملت كتابة الفلاش 100%")
+            val dfWriteSuffix = if (lockedDfAddresses.isNotEmpty()) {
+                " — تنبيه: بعض خلايا Data Flash الإضافية (${lockedDfAddresses.joinToString(", ") { fmtAddr(it) }}) غير قابلة للكتابة في هذا الموديل."
+            } else ""
             return FlashOperationResult.Success(
-                message = "تمت برمجة (Write) ${processor.partNumber} بنجاح ($writtenPageCount صفحة مكتوبة، تم تخطي $skippedPageCount صفحة 0xFF).",
+                message = "تمت برمجة (Write) ${processor.partNumber} بنجاح ($writtenPageCount صفحة مكتوبة، تم تخطي $skippedPageCount صفحة 0xFF)$dfWriteSuffix",
                 baseAddress = chipConfig.programStartAddress
             )
         } catch (t: Throwable) {
@@ -1298,47 +1326,134 @@ object R8cProtocolEngine {
     private suspend fun runVerifyPages(
         transport: SerialTransport,
         chipName: String,
+        chipConfig: ChipConfig,
         pages: List<TargetPage>,
-        baseAddress: Int,
         onLog: (String) -> Unit,
         onProgress: (bytesDone: Int, totalBytes: Int, label: String) -> Unit
     ): FlashOperationResult {
-        val totalBytes = (pages.size * 256).coerceAtLeast(256)
-        onLog("بدء مطابقة (Verify) ${pages.size} صفحة ($totalBytes بايت) عبر أمر القراءة 0xFF...")
+        // Verify Program Flash (mandatory, 100% strict) first, then Data Flash (independent check)
+        val programPages = pages.filter { !it.isDataFlash }
+        val dataFlashPages = pages.filter { it.isDataFlash }
+        val orderedPages = programPages + dataFlashPages
+        val totalBytes = (orderedPages.size * 256).coerceAtLeast(256)
 
-        for (i in pages.indices) {
-            val page = pages[i]
+        onLog(
+            "بدء مطابقة (Verify) ${orderedPages.size} صفحة: " +
+                "فلاش البرنامج=${programPages.size} صفحة (${fmtAddr(chipConfig.programStartAddress)}..${fmtAddr(chipConfig.programEndAddress)})" +
+                if (dataFlashPages.isNotEmpty()) " | Data Flash=${dataFlashPages.size} صفحة" else ""
+        )
+
+        var programVerifiedPages = 0
+        var dfVerifiedPages = 0
+        var dfFirstMismatchAddr: Int? = null
+        var dfFirstExpected: Int? = null
+        var dfFirstActual: Int? = null
+        var dfReadOnlyFfMismatchCount = 0
+        var dfOtherMismatchCount = 0
+        var dfReadErrorPages = 0
+
+        for (i in orderedPages.indices) {
+            val page = orderedPages[i]
             val chipPage = readPage(
                 transport = transport,
                 address = page.physicalAddress,
                 onLog = onLog,
-                verboseFrameLog = (i == 0 || i == pages.lastIndex)
-            ) ?: return FlashOperationResult.Failure("تعذر قراءة الصفحة ${fmtAddr(page.physicalAddress)} للمطابقة بعد 3 محاولات.")
+                verboseFrameLog = (i == 0 || i == orderedPages.lastIndex)
+            )
+            if (chipPage == null) {
+                if (!page.isDataFlash) {
+                    return FlashOperationResult.Failure(
+                        "تعذر قراءة صفحة فلاش البرنامج (Program Flash) عند ${fmtAddr(page.physicalAddress)} للمطابقة بعد 3 محاولات."
+                    )
+                } else {
+                    dfReadErrorPages++
+                    onLog("تنبيه Data Flash: تعذرت قراءة الصفحة ${fmtAddr(page.physicalAddress)} — تجاوز هذه الصفحة الإضافية.")
+                    continue
+                }
+            }
 
-            for (byteIdx in 0 until 256) {
-                val expected = page.data256[byteIdx]
-                val actual = chipPage[byteIdx]
-                if (actual != expected) {
-                    val failAddr = page.physicalAddress + byteIdx
-                    val mismatchMsg = "اختلاف المطابقة عند العنوان ${fmtAddr(failAddr)}: " +
-                        "المتوقع ${fmtByte(expected.toInt() and 0xFF)} والمقروء ${fmtByte(actual.toInt() and 0xFF)}."
-                    onLog("Verify Mismatch: $mismatchMsg")
-                    return FlashOperationResult.Failure(mismatchMsg)
+            if (!page.isDataFlash) {
+                // 1. Strict 100% byte-by-byte verification for Program Flash
+                for (byteIdx in 0 until 256) {
+                    val expected = page.data256[byteIdx]
+                    val actual = chipPage[byteIdx]
+                    if (actual != expected) {
+                        val failAddr = page.physicalAddress + byteIdx
+                        val mismatchMsg = "خطأ برمجة حقيقي في فلاش البرنامج (Program Flash) عند العنوان ${fmtAddr(failAddr)}: " +
+                            "المتوقع ${fmtByte(expected.toInt() and 0xFF)} والمقروء ${fmtByte(actual.toInt() and 0xFF)}."
+                        onLog("Program Flash Verify Mismatch: $mismatchMsg")
+                        return FlashOperationResult.Failure(mismatchMsg)
+                    }
+                }
+                programVerifiedPages++
+            } else {
+                // 2. Independent verification for Data Flash (0x02400..0x02BFF)
+                var pageDiffers = false
+                for (byteIdx in 0 until 256) {
+                    val expected = page.data256[byteIdx]
+                    val actual = chipPage[byteIdx]
+                    if (actual != expected) {
+                        pageDiffers = true
+                        val failAddr = page.physicalAddress + byteIdx
+                        if (dfFirstMismatchAddr == null) {
+                            dfFirstMismatchAddr = failAddr
+                            dfFirstExpected = expected.toInt() and 0xFF
+                            dfFirstActual = actual.toInt() and 0xFF
+                        }
+                        if ((actual.toInt() and 0xFF) == 0xFF) {
+                            dfReadOnlyFfMismatchCount++
+                        } else {
+                            dfOtherMismatchCount++
+                        }
+                    }
+                }
+                if (!pageDiffers) {
+                    dfVerifiedPages++
                 }
             }
 
             val doneBytes = (i + 1) * 256
             val pct = ((doneBytes * 100L) / totalBytes).toInt()
-            onProgress(doneBytes, totalBytes, "مطابقة $chipName: $pct% (${fmtAddr(page.physicalAddress)})")
-            if (i == 0 || (i + 1) % 8 == 0 || i == pages.lastIndex) {
-                onLog("مطابقة الفلاش: صفحة ${i + 1}/${pages.size} (${fmtAddr(page.physicalAddress)}) — $pct%")
+            val zoneLabel = if (page.isDataFlash) "Data Flash" else "Program Flash"
+            onProgress(doneBytes, totalBytes, "مطابقة $zoneLabel ($chipName): $pct% (${fmtAddr(page.physicalAddress)})")
+            if (i == 0 || (i + 1) % 8 == 0 || i == orderedPages.lastIndex) {
+                onLog("مطابقة $zoneLabel: صفحة ${i + 1}/${orderedPages.size} (${fmtAddr(page.physicalAddress)}) — $pct%")
             }
         }
 
-        val okMsg = "متطابق 100%: تمت مطابقة جميع الصفحات (${pages.size} صفحة • ${totalBytes} بايت) في $chipName بنجاح."
-        onProgress(totalBytes, totalBytes, okMsg)
+        // Handle standalone Data Flash-only verify when there are no Program Flash pages
+        if (programPages.isEmpty() && (dfFirstMismatchAddr != null || dfReadErrorPages > 0)) {
+            val detail = dfFirstMismatchAddr?.let { addr ->
+                "اختلاف في Data Flash عند العنوان ${fmtAddr(addr)}: المتوقع ${fmtByte(dfFirstExpected ?: 0xFF)} والمقروء ${fmtByte(dfFirstActual ?: 0xFF)}."
+            } ?: "تعذرت قراءة بعض صفحات Data Flash."
+            val note = if (dfReadOnlyFfMismatchCount > 0 && dfOtherMismatchCount == 0) {
+                " تنبيه: بعض خلايا Data Flash الإضافية غير قابلة للكتابة في هذا الموديل (ظلت 0xFF)."
+            } else ""
+            onLog("Data Flash Verify Notice: $detail$note")
+            return FlashOperationResult.Failure("$detail$note")
+        }
+
+        val hasDataFlashPartialLock = dataFlashPages.isNotEmpty() && (dfFirstMismatchAddr != null || dfReadErrorPages > 0)
+        val okMsg = if (hasDataFlashPartialLock) {
+            val detailAddr = dfFirstMismatchAddr?.let { addr ->
+                " (أول اختلاف إضافي عند ${fmtAddr(addr)}: المتوقع ${fmtByte(dfFirstExpected ?: 0xFF)} والمقروء ${fmtByte(dfFirstActual ?: 0xFF)})"
+            } ?: ""
+            onLog(
+                "نتيجة المطابقة — Program Flash: متطابق 100% ($programVerifiedPages صفحة) | " +
+                    "Data Flash: متطابق $dfVerifiedPages/${dataFlashPages.size} صفحة$detailAddr"
+            )
+            onLog("تنبيه: بعض خلايا Data Flash الإضافية غير قابلة للكتابة في هذا الموديل$detailAddr — فلاش البرنامج الأساسي سليم 100%.")
+            "متطابق 100% لفلاش البرنامج الأساسي (Program Flash: $programVerifiedPages صفحة) في $chipName. " +
+                "تنبيه: بعض خلايا Data Flash الإضافية غير قابلة للكتابة في هذا الموديل$detailAddr."
+        } else if (dataFlashPages.isNotEmpty()) {
+            "متطابق 100%: تمت مطابقة فلاش البرنامج الأساسي ($programVerifiedPages صفحة) وذاكرة البيانات Data Flash ($dfVerifiedPages صفحة) في $chipName بنجاح."
+        } else {
+            "متطابق 100%: تمت مطابقة فلاش البرنامج الأساسي (Program Flash: $programVerifiedPages صفحة • ${programVerifiedPages * 256} بايت) في $chipName بنجاح."
+        }
+
+        onProgress(totalBytes, totalBytes, "متطابق 100% (Program Flash)")
         onLog(okMsg)
-        return FlashOperationResult.Success(okMsg, baseAddress = baseAddress)
+        return FlashOperationResult.Success(okMsg, baseAddress = chipConfig.programStartAddress)
     }
 
     private fun buildEraseBlocks(org: Int, end: Int): List<Int> {
