@@ -5,6 +5,7 @@ import android.net.Uri
 import android.provider.OpenableColumns
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.data.model.DataFlashExportMode
 import com.example.data.model.LogLevel
 import com.example.data.model.McuProcessor
 import com.example.data.model.ProgrammerChipType
@@ -73,6 +74,10 @@ data class McuProgrammerUiState(
     val progressLabel: String = "",
     val flashBuffer: ByteArray = ByteArray(1024) { 0xFF.toByte() },
     val flashBaseAddress: Int = 0,
+    val dataFlashMode: DataFlashExportMode = DataFlashExportMode.EXCLUDE,
+    val dataFlashBuffer: ByteArray? = null,
+    val dataFlashBaseAddress: Int = 0,
+    val viewingDataFlashTab: Boolean = false,
     val loadedFileName: String? = null,
     val loadedFormat: String? = null,
     val loadedNonEmptyCount: Int = 0,
@@ -160,6 +165,9 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                     enableEchoCancellation = defaultEcho,
                     flashBuffer = buffer,
                     flashBaseAddress = defaultBaseAddressFor(firstPart),
+                    dataFlashBuffer = null,
+                    dataFlashBaseAddress = firstPart?.chipConfig?.dataFlashStartAddress ?: 0,
+                    viewingDataFlashTab = false,
                     firstNonEmptyRowIndex = 0
                 )
             }
@@ -223,6 +231,9 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                 enableEchoCancellation = defaultEcho,
                 flashBuffer = newBuffer,
                 flashBaseAddress = if (resetNeeded) defaultBaseAddressFor(mcu) else state.flashBaseAddress,
+                dataFlashBuffer = if (resetNeeded) null else state.dataFlashBuffer,
+                dataFlashBaseAddress = if (resetNeeded) (mcu.chipConfig.dataFlashStartAddress ?: 0) else state.dataFlashBaseAddress,
+                viewingDataFlashTab = if (resetNeeded) false else state.viewingDataFlashTab,
                 firstNonEmptyRowIndex = computeFirstDataRow(newBuffer)
             )
         }
@@ -275,6 +286,9 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                 enableEchoCancellation = defaultEcho,
                 flashBuffer = resetBuf,
                 flashBaseAddress = if (state.loadedFileName == null) defaultBaseAddressFor(processor) else state.flashBaseAddress,
+                dataFlashBuffer = if (state.loadedFileName == null) null else state.dataFlashBuffer,
+                dataFlashBaseAddress = if (state.loadedFileName == null) (processor.chipConfig.dataFlashStartAddress ?: 0) else state.dataFlashBaseAddress,
+                viewingDataFlashTab = if (state.loadedFileName == null) false else state.viewingDataFlashTab,
                 firstNonEmptyRowIndex = computeFirstDataRow(resetBuf)
             )
         }
@@ -312,6 +326,9 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                 enableEchoCancellation = defaultEcho,
                 flashBuffer = buf,
                 flashBaseAddress = if (state.loadedFileName == null) defaultBaseAddressFor(selectedPart) else state.flashBaseAddress,
+                dataFlashBuffer = if (state.loadedFileName == null) null else state.dataFlashBuffer,
+                dataFlashBaseAddress = if (state.loadedFileName == null) (selectedPart?.chipConfig?.dataFlashStartAddress ?: 0) else state.dataFlashBaseAddress,
+                viewingDataFlashTab = if (state.loadedFileName == null) false else state.viewingDataFlashTab,
                 firstNonEmptyRowIndex = computeFirstDataRow(buf)
             )
         }
@@ -328,6 +345,10 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                     it.copy(
                         currentStep = target,
                         flashBuffer = buf,
+                        flashBaseAddress = defaultBaseAddressFor(mcu),
+                        dataFlashBuffer = null,
+                        dataFlashBaseAddress = mcu.chipConfig.dataFlashStartAddress ?: 0,
+                        viewingDataFlashTab = false,
                         firstNonEmptyRowIndex = 0
                     )
                 }
@@ -500,6 +521,23 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
         _uiState.update { it.copy(eraseMode = mode) }
     }
 
+    fun setDataFlashMode(mode: DataFlashExportMode) {
+        _uiState.update { state ->
+            state.copy(
+                dataFlashMode = mode,
+                viewingDataFlashTab = if (mode == DataFlashExportMode.EXCLUDE) false else state.viewingDataFlashTab
+            )
+        }
+        addLog("تم ضبط وضع Data Flash: ${mode.titleAr} — ${mode.subtitleAr}", LogLevel.INFO)
+    }
+
+    fun setViewingDataFlashTab(viewingDataFlash: Boolean) {
+        _uiState.update { state ->
+            val canView = viewingDataFlash && state.dataFlashBuffer != null
+            state.copy(viewingDataFlashTab = canView)
+        }
+    }
+
     fun triggerJumpToFirstData() {
         _uiState.update { it.copy(hexJumpSequence = it.hexJumpSequence + 1) }
     }
@@ -578,13 +616,14 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
 
     fun loadFirmwareFromUri(uri: Uri) {
         val mcu = _uiState.value.selectedProcessor ?: return
+        val cfg = mcu.chipConfig
         viewModelScope.launch {
             _uiState.update {
                 it.copy(
                     isBusy = true,
                     progress = 0.4f,
                     progressBytesDone = 0,
-                    progressTotalBytes = mcu.flashSizeBytes,
+                    progressTotalBytes = cfg.flashSizeBytes,
                     progressLabel = "جاري قراءة وتحليل ملف السوفت..."
                 )
             }
@@ -602,8 +641,10 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                     FirmwareParser.parseFirmware(
                         rawBytes = bytes,
                         fileName = fileName,
-                        targetFlashSizeBytes = mcu.flashSizeBytes,
-                        preferredBaseAddress = defaultBaseAddressFor(mcu)
+                        targetFlashSizeBytes = cfg.flashSizeBytes,
+                        preferredBaseAddress = defaultBaseAddressFor(mcu),
+                        dataFlashStartAddress = cfg.dataFlashStartAddress,
+                        dataFlashSizeBytes = cfg.dataFlashSizeBytes
                     )
                 }
 
@@ -613,11 +654,14 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                     it.copy(
                         isBusy = false,
                         progress = 1f,
-                        progressBytesDone = mcu.flashSizeBytes,
-                        progressTotalBytes = mcu.flashSizeBytes,
+                        progressBytesDone = cfg.flashSizeBytes,
+                        progressTotalBytes = cfg.flashSizeBytes,
                         progressLabel = "تم تحميل الملف بنجاح",
                         flashBuffer = parsed.bytes,
                         flashBaseAddress = resolvedBase,
+                        dataFlashBuffer = parsed.dataFlashBytes,
+                        dataFlashBaseAddress = parsed.dataFlashStartAddress,
+                        viewingDataFlashTab = false,
                         loadedFileName = parsed.fileName,
                         loadedFormat = parsed.format,
                         loadedNonEmptyCount = parsed.nonEmptyBytesCount,
@@ -625,9 +669,12 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                         hexJumpSequence = it.hexJumpSequence + 1
                     )
                 }
-                val startHex = "0x%08X".format(resolvedBase + firstDataRow * 16)
+                val startHex = String.format(Locale.US, "0x%08X", resolvedBase + firstDataRow * 16)
+                val dfNote = if (parsed.dataFlashBytes != null) {
+                    " + Data Flash (${String.format(Locale.US, "0x%05X", parsed.dataFlashStartAddress)})"
+                } else ""
                 addLog(
-                    "تم عرض الملف ${parsed.fileName} (${parsed.format}) - بداية البيانات عند $startHex",
+                    "تم عرض الملف ${parsed.fileName} (${parsed.format})$dfNote - بداية البيانات عند $startHex",
                     LogLevel.SUCCESS
                 )
             } catch (e: Throwable) {
@@ -638,25 +685,76 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
     }
 
     fun saveDumpToUri(uri: Uri, asIntelHex: Boolean) {
-        val buffer = _uiState.value.flashBuffer
-        val baseAddr = _uiState.value.flashBaseAddress
+        val state = _uiState.value
+        val buffer = state.flashBuffer
+        val baseAddr = state.flashBaseAddress
+        val dfBuffer = state.dataFlashBuffer
+        val dfBase = state.dataFlashBaseAddress
+        val isMerged = state.dataFlashMode == DataFlashExportMode.MERGED && dfBuffer != null
+
         viewModelScope.launch {
             try {
                 withContext(Dispatchers.IO) {
                     appContext.contentResolver.openOutputStream(uri)?.use { out ->
                         if (asIntelHex) {
-                            out.write(FirmwareParser.toIntelHex(buffer, baseAddr).toByteArray(Charsets.US_ASCII))
+                            val hexContent = if (isMerged && dfBuffer != null) {
+                                FirmwareParser.toIntelHexMultiSegment(
+                                    listOf(
+                                        dfBase to dfBuffer,
+                                        baseAddr to buffer
+                                    )
+                                )
+                            } else {
+                                FirmwareParser.toIntelHex(buffer, baseAddr)
+                            }
+                            out.write(hexContent.toByteArray(Charsets.US_ASCII))
                         } else {
                             out.write(buffer)
+                            if (isMerged && dfBuffer != null) {
+                                out.write(dfBuffer)
+                            }
                         }
                     } ?: throw IllegalStateException("تعذر الكتابة إلى المسار المختار.")
                 }
+                val mergeInfo = if (isMerged && dfBuffer != null) {
+                    " [مدمج: Program ${buffer.size / 1024}KB + Data Flash ${dfBuffer.size}B]"
+                } else {
+                    " [Program Flash ${buffer.size / 1024}KB]"
+                }
                 addLog(
-                    "تم حفظ السوفت المسحوب بنجاح (${if (asIntelHex) "Intel HEX" else "BIN"})",
+                    "تم حفظ السوفت المسحوب بنجاح (${if (asIntelHex) "Intel HEX" else "BIN"})$mergeInfo",
                     LogLevel.SUCCESS
                 )
             } catch (e: Throwable) {
                 addLog("خطأ أثناء حفظ الملف: ${e.message}", LogLevel.ERROR)
+            }
+        }
+    }
+
+    fun saveDataFlashToUri(uri: Uri, asIntelHex: Boolean) {
+        val state = _uiState.value
+        val dfBuffer = state.dataFlashBuffer ?: run {
+            addLog("لا توجد بيانات Data Flash مقروءة للحفظ بعد.", LogLevel.WARNING)
+            return
+        }
+        val dfBase = state.dataFlashBaseAddress
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    appContext.contentResolver.openOutputStream(uri)?.use { out ->
+                        if (asIntelHex) {
+                            out.write(FirmwareParser.toIntelHex(dfBuffer, dfBase).toByteArray(Charsets.US_ASCII))
+                        } else {
+                            out.write(dfBuffer)
+                        }
+                    } ?: throw IllegalStateException("تعذر الكتابة إلى المسار المختار.")
+                }
+                addLog(
+                    "تم حفظ Data Flash (${dfBuffer.size} بايت @ ${String.format(Locale.US, "0x%05X", dfBase)}) بصيغة ${if (asIntelHex) "Intel HEX" else "BIN"}.",
+                    LogLevel.SUCCESS
+                )
+            } catch (e: Throwable) {
+                addLog("خطأ أثناء حفظ Data Flash: ${e.message}", LogLevel.ERROR)
             }
         }
     }
@@ -668,6 +766,7 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
             addLog("كود ID Code غير مكتمل: أدخل 14 حرف Hex بالضبط (7 بايت).", LogLevel.ERROR)
             return
         }
+        val dfMode = _uiState.value.dataFlashMode
 
         viewModelScope.launch {
             _uiState.update {
@@ -689,6 +788,7 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                     enableDtrRtsReset = _uiState.value.enableDtrRtsReset,
                     processor = mcu,
                     idCodeBytes = idBytes,
+                    dataFlashMode = dfMode,
                     onLog = { msg -> addLog(msg, LogLevel.INFO) },
                     onProgress = { done, total, msg ->
                         val frac = if (total > 0) (done.toFloat() / total.toFloat()).coerceIn(0f, 1f) else 0f
@@ -714,6 +814,9 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                                 progressLabel = "اكتملت القراءة",
                                 flashBuffer = data,
                                 flashBaseAddress = res.baseAddress,
+                                dataFlashBuffer = res.dataFlashBytes,
+                                dataFlashBaseAddress = res.dataFlashBaseAddress,
+                                viewingDataFlashTab = false,
                                 loadedFileName = "Dump_${mcu.partNumber}.bin",
                                 loadedFormat = "Chip Read",
                                 loadedNonEmptyCount = data.count { b -> b != 0xFF.toByte() },
@@ -763,6 +866,7 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
             addLog("كود ID Code غير مكتمل: أدخل حرفين Hex في كل خانة.", LogLevel.ERROR)
             return
         }
+        val dfMode = _uiState.value.dataFlashMode
 
         viewModelScope.launch {
             _uiState.update {
@@ -784,6 +888,7 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                     processor = mcu,
                     eraseMode = _uiState.value.eraseMode,
                     idCodeBytes = idBytes,
+                    dataFlashMode = dfMode,
                     onLog = { msg -> addLog(msg, LogLevel.INFO) },
                     onProgress = { done, total, msg ->
                         val frac = if (total > 0) (done.toFloat() / total.toFloat()).coerceIn(0f, 1f) else 0f
@@ -806,6 +911,9 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                                 progressTotalBytes = mcu.flashSizeBytes,
                                 progressLabel = "اكتمل المسح",
                                 flashBuffer = FirmwareParser.createEmptyBuffer(mcu.flashSizeBytes),
+                                flashBaseAddress = defaultBaseAddressFor(mcu),
+                                dataFlashBuffer = if (dfMode != DataFlashExportMode.EXCLUDE) null else it.dataFlashBuffer,
+                                viewingDataFlashTab = false,
                                 idCodeBytesHex = if (mcu.protocolType == ProtocolFamilyType.R8C_M16C) {
                                     List(7) { "FF" }
                                 } else {
@@ -846,6 +954,8 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
             addLog("كود ID Code غير مكتمل: أدخل حرفين Hex في كل خانة.", LogLevel.ERROR)
             return
         }
+        val dfMode = _uiState.value.dataFlashMode
+        val dfBytes = _uiState.value.dataFlashBuffer
 
         viewModelScope.launch {
             val actionName = if (verifyOnly) "مطابقة (Verify)" else "كتابة (Write)"
@@ -872,6 +982,8 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                     firmwareStartAddress = _uiState.value.flashBaseAddress,
                     idCodeBytes = idBytes,
                     verifyOnly = verifyOnly,
+                    dataFlashMode = dfMode,
+                    dataFlashBytes = dfBytes,
                     onLog = { msg -> addLog(msg, LogLevel.INFO) },
                     onProgress = { done, total, msg ->
                         val frac = if (total > 0) (done.toFloat() / total.toFloat()).coerceIn(0f, 1f) else 0f
@@ -940,7 +1052,7 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
     private fun defaultBaseAddressFor(mcu: McuProcessor?): Int {
         if (mcu == null) return 0
         return if (mcu.protocolType == ProtocolFamilyType.R8C_M16C) {
-            R8cProtocolEngine.resolveDeviceLayout(mcu).romArea.org
+            mcu.programStartAddress
         } else {
             0
         }

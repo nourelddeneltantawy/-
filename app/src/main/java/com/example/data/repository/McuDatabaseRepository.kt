@@ -141,6 +141,10 @@ object McuDatabaseRepository {
         var voltage: String? = null
         var protocol: String? = null
         var customPinout: List<McuPinMapping>? = null
+        var programStartOverride: Int? = null
+        var programEndOverride: Int? = null
+        var dataFlashStartOverride: Int? = null
+        var dataFlashEndOverride: Int? = null
 
         reader.beginObject()
         while (reader.hasNext()) {
@@ -155,6 +159,10 @@ object McuDatabaseRepository {
                 "display_label" -> displayLabel = reader.nextStringOrEmpty()
                 "voltage" -> voltage = reader.nextStringOrEmpty().ifBlank { null }
                 "protocol" -> protocol = reader.nextStringOrEmpty().ifBlank { null }
+                "program_start", "programStartAddress" -> programStartOverride = reader.nextHexOrIntSafe()
+                "program_end", "programEndAddress" -> programEndOverride = reader.nextHexOrIntSafe()
+                "data_flash_start", "dataFlashStartAddress" -> dataFlashStartOverride = reader.nextHexOrIntSafe()
+                "data_flash_end", "dataFlashEndAddress" -> dataFlashEndOverride = reader.nextHexOrIntSafe()
                 "pinout" -> customPinout = readPinoutArray(reader)
                 else -> reader.skipValue()
             }
@@ -182,7 +190,11 @@ object McuDatabaseRepository {
             protocolName = protocol ?: McuProtocolDefaults.defaultProtocolName(mainFamily, resolvedSub),
             protocolType = McuProtocolDefaults.resolveProtocolType(mainFamily),
             sourceFile = sourceFile,
-            customPinout = customPinout
+            customPinout = customPinout,
+            programStartOverride = programStartOverride,
+            programEndOverride = programEndOverride,
+            dataFlashStartOverride = dataFlashStartOverride,
+            dataFlashEndOverride = dataFlashEndOverride
         )
     }
 
@@ -261,6 +273,32 @@ object McuDatabaseRepository {
             else -> {
                 skipValue()
                 0
+            }
+        }
+    }
+
+    private fun JsonReader.nextHexOrIntSafe(): Int? {
+        return when (peek()) {
+            JsonToken.NUMBER -> try {
+                nextInt()
+            } catch (_: Throwable) {
+                nextDouble().toInt()
+            }
+            JsonToken.STRING -> {
+                val raw = nextString().trim()
+                if (raw.startsWith("0x", ignoreCase = true)) {
+                    raw.substring(2).toIntOrNull(16)
+                } else {
+                    raw.toIntOrNull()
+                }
+            }
+            JsonToken.NULL -> {
+                nextNull()
+                null
+            }
+            else -> {
+                skipValue()
+                null
             }
         }
     }

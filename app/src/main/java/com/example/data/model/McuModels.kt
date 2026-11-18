@@ -7,6 +7,31 @@ enum class ProtocolFamilyType {
     GENERIC
 }
 
+enum class DataFlashExportMode(val titleAr: String, val subtitleAr: String) {
+    EXCLUDE("استبعاد", "قراءة Program Flash فقط بالحجم القياسي"),
+    SEPARATE_FILE("ملف منفصل", "قراءة Data Flash وحفظه في ملف مستقل"),
+    MERGED("مدمج", "دمج Data Flash مع Program Flash عند التصدير")
+}
+
+data class ChipConfig(
+    val programStartAddress: Int,
+    val programEndAddress: Int,
+    val flashSizeBytes: Int,
+    val dataFlashStartAddress: Int? = null,
+    val dataFlashEndAddress: Int? = null,
+    val pageSizeBytes: Int = 256
+) {
+    val dataFlashSizeBytes: Int
+        get() = if (dataFlashStartAddress != null && dataFlashEndAddress != null && dataFlashEndAddress >= dataFlashStartAddress) {
+            dataFlashEndAddress - dataFlashStartAddress + 1
+        } else {
+            0
+        }
+
+    val hasDataFlash: Boolean
+        get() = dataFlashSizeBytes > 0
+}
+
 data class McuPinMapping(
     val programmerPin: String,
     val mcuPinName: String,
@@ -28,7 +53,11 @@ data class McuProcessor(
     val protocolName: String,
     val protocolType: ProtocolFamilyType,
     val sourceFile: String = "",
-    val customPinout: List<McuPinMapping>? = null
+    val customPinout: List<McuPinMapping>? = null,
+    val programStartOverride: Int? = null,
+    val programEndOverride: Int? = null,
+    val dataFlashStartOverride: Int? = null,
+    val dataFlashEndOverride: Int? = null
 ) {
     fun effectivePinout(): List<McuPinMapping> {
         if (!customPinout.isNullOrEmpty()) return customPinout
@@ -49,6 +78,15 @@ data class McuProcessor(
 
     val flashSizeBytes: Int
         get() = (flashKb.coerceAtLeast(1)) * 1024
+
+    val chipConfig: ChipConfig
+        get() = McuProtocolDefaults.resolveChipConfig(this)
+
+    val programStartAddress: Int
+        get() = chipConfig.programStartAddress
+
+    val programEndAddress: Int
+        get() = chipConfig.programEndAddress
 }
 
 enum class ProgrammerChipType(
@@ -118,7 +156,9 @@ data class FirmwareFileData(
     val format: String,
     val bytes: ByteArray,
     val nonEmptyBytesCount: Int,
-    val startAddress: Int
+    val startAddress: Int,
+    val dataFlashBytes: ByteArray? = null,
+    val dataFlashStartAddress: Int = 0
 )
 
 enum class LogLevel {
@@ -143,6 +183,53 @@ object McuProtocolDefaults {
             fam.contains("78K") -> ProtocolFamilyType.SEVEN_EIGHT_K
             else -> ProtocolFamilyType.GENERIC
         }
+    }
+
+    fun resolveChipConfig(mcu: McuProcessor): ChipConfig {
+        val fam = mcu.mainFamily.trim().uppercase()
+        val sub = mcu.subFamily.trim().uppercase()
+        val part = mcu.partNumber.trim().uppercase()
+        val sizeBytes = mcu.flashSizeBytes
+
+        if (fam.contains("R8C") || fam.contains("M16C")) {
+            val defaultProgStart = if (sizeBytes <= 48 * 1024) {
+                (0x10000 - sizeBytes).coerceAtLeast(0x04000)
+            } else {
+                0x04000
+            }
+            val progStart = mcu.programStartOverride ?: defaultProgStart
+            val progEnd = mcu.programEndOverride ?: (progStart + sizeBytes - 1)
+
+            val is3xOrLxOrM1x = sub.contains("R8C/3") ||
+                sub.contains("R8C/L") ||
+                sub.contains("R8C/M") ||
+                part.startsWith("R5F213") ||
+                part.startsWith("R5F2L") ||
+                part.startsWith("R5F2M")
+
+            val defaultDfStart = if (is3xOrLxOrM1x) 0x03000 else 0x02400
+            val defaultDfEnd = if (is3xOrLxOrM1x) 0x033FF else 0x02BFF
+
+            return ChipConfig(
+                programStartAddress = progStart,
+                programEndAddress = progEnd,
+                flashSizeBytes = sizeBytes,
+                dataFlashStartAddress = mcu.dataFlashStartOverride ?: defaultDfStart,
+                dataFlashEndAddress = mcu.dataFlashEndOverride ?: defaultDfEnd,
+                pageSizeBytes = 256
+            )
+        }
+
+        val start = mcu.programStartOverride ?: 0
+        val end = mcu.programEndOverride ?: (start + sizeBytes - 1)
+        return ChipConfig(
+            programStartAddress = start,
+            programEndAddress = end,
+            flashSizeBytes = sizeBytes,
+            dataFlashStartAddress = mcu.dataFlashStartOverride,
+            dataFlashEndAddress = mcu.dataFlashEndOverride,
+            pageSizeBytes = 256
+        )
     }
 
     fun defaultVoltage(mainFamily: String): String {

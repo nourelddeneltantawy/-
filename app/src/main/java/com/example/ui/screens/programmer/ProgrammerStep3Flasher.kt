@@ -54,6 +54,7 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -91,10 +92,12 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.data.model.DataFlashExportMode
 import com.example.data.model.LogLevel
 import com.example.data.model.ProtocolFamilyType
 import com.example.ui.viewmodel.McuProgrammerUiState
 import kotlinx.coroutines.launch
+import java.util.Locale
 import kotlin.math.min
 import kotlin.math.roundToInt
 
@@ -110,9 +113,12 @@ fun ProgrammerStep3Flasher(
     onResetIdCode: () -> Unit,
     onClockChange: (String) -> Unit,
     onEraseModeChange: (String) -> Unit,
+    onDataFlashModeChange: (DataFlashExportMode) -> Unit,
+    onToggleViewingDataFlash: (Boolean) -> Unit,
     onJumpToFirstData: () -> Unit,
     onLoadFirmwareUri: (android.net.Uri) -> Unit,
     onSaveDumpUri: (android.net.Uri, Boolean) -> Unit,
+    onSaveDataFlashUri: (android.net.Uri, Boolean) -> Unit,
     onReadFlash: () -> Unit,
     onWriteFlash: () -> Unit,
     onEraseFlash: () -> Unit,
@@ -121,6 +127,7 @@ fun ProgrammerStep3Flasher(
     modifier: Modifier = Modifier
 ) {
     val mcu = state.selectedProcessor ?: return
+    val chipConfig = mcu.chipConfig
     val scrollState = rememberScrollState()
 
     val openFirmwareLauncher = rememberLauncherForActivityResult(
@@ -137,6 +144,16 @@ fun ProgrammerStep3Flasher(
         contract = ActivityResultContracts.CreateDocument("text/plain")
     ) { uri ->
         if (uri != null) onSaveDumpUri(uri, true)
+    }
+    val saveDataFlashBinLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/octet-stream")
+    ) { uri ->
+        if (uri != null) onSaveDataFlashUri(uri, false)
+    }
+    val saveDataFlashHexLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("text/plain")
+    ) { uri ->
+        if (uri != null) onSaveDataFlashUri(uri, true)
     }
 
     Column(
@@ -170,6 +187,29 @@ fun ProgrammerStep3Flasher(
                             fontSize = 11.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
+                        if (mcu.protocolType == ProtocolFamilyType.R8C_M16C) {
+                            val progRange = String.format(
+                                Locale.US,
+                                "Program: 0x%05X..0x%05X (%d KB)",
+                                chipConfig.programStartAddress,
+                                chipConfig.programEndAddress,
+                                chipConfig.flashSizeBytes / 1024
+                            )
+                            val dfRange = if (chipConfig.hasDataFlash && chipConfig.dataFlashStartAddress != null && chipConfig.dataFlashEndAddress != null) {
+                                String.format(
+                                    Locale.US,
+                                    " • Data: 0x%05X..0x%05X",
+                                    chipConfig.dataFlashStartAddress,
+                                    chipConfig.dataFlashEndAddress
+                                )
+                            } else ""
+                            Text(
+                                text = progRange + dfRange,
+                                fontSize = 10.5.sp,
+                                fontFamily = FontFamily.Monospace,
+                                color = MaterialTheme.colorScheme.secondary
+                            )
+                        }
                     }
                     Surface(
                         shape = RoundedCornerShape(10.dp),
@@ -302,7 +342,7 @@ fun ProgrammerStep3Flasher(
             }
         }
 
-        // 2. Dynamic Protocol Section (7 Separate Hex Byte Boxes with Auto-Focus for R8C/M16C)
+        // 2. Dynamic Protocol Section (7 Separate Hex Byte Boxes + Data Flash option for R8C/M16C)
         when (mcu.protocolType) {
             ProtocolFamilyType.R8C_M16C -> {
                 IdCodeSevenBoxesCard(
@@ -310,6 +350,16 @@ fun ProgrammerStep3Flasher(
                     onByteChange = onIdCodeByteChange,
                     onResetFf = onResetIdCode
                 )
+                if (chipConfig.hasDataFlash && chipConfig.dataFlashStartAddress != null && chipConfig.dataFlashEndAddress != null) {
+                    DataFlashModeCard(
+                        dataFlashStart = chipConfig.dataFlashStartAddress,
+                        dataFlashEnd = chipConfig.dataFlashEndAddress,
+                        dataFlashSizeBytes = chipConfig.dataFlashSizeBytes,
+                        selectedMode = state.dataFlashMode,
+                        enabled = !state.isBusy,
+                        onSelectMode = onDataFlashModeChange
+                    )
+                }
             }
             ProtocolFamilyType.RL78_RX -> {
                 ClockAndEraseSettingsCard(
@@ -359,6 +409,7 @@ fun ProgrammerStep3Flasher(
                     )
                 }
 
+                val isMergedReady = state.dataFlashMode == DataFlashExportMode.MERGED && state.dataFlashBuffer != null
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -369,12 +420,17 @@ fun ProgrammerStep3Flasher(
                         shape = RoundedCornerShape(12.dp),
                         modifier = Modifier
                             .weight(1f)
-                            .heightIn(min = 46.dp)
+                            .heightIn(min = 48.dp)
                             .testTag("save_bin_button")
                     ) {
                         Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text("حفظ BIN", fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+                        Text(
+                            text = if (isMergedReady) "حفظ BIN (مدمج)" else "حفظ BIN",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1
+                        )
                     }
 
                     OutlinedButton(
@@ -383,20 +439,63 @@ fun ProgrammerStep3Flasher(
                         shape = RoundedCornerShape(12.dp),
                         modifier = Modifier
                             .weight(1f)
-                            .heightIn(min = 46.dp)
+                            .heightIn(min = 48.dp)
                             .testTag("save_hex_button")
                     ) {
                         Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text("تصدير HEX", fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+                        Text(
+                            text = if (isMergedReady) "تصدير HEX (مدمج)" else "تصدير HEX",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1
+                        )
                     }
                 }
 
+                if (state.dataFlashMode == DataFlashExportMode.SEPARATE_FILE && state.dataFlashBuffer != null) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedButton(
+                            onClick = { saveDataFlashBinLauncher.launch("${mcu.partNumber}_dataflash.bin") },
+                            enabled = !state.isBusy,
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier
+                                .weight(1f)
+                                .heightIn(min = 48.dp)
+                                .testTag("save_dataflash_bin_button")
+                        ) {
+                            Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("حفظ Data BIN", fontSize = 11.5.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+                        }
+
+                        OutlinedButton(
+                            onClick = { saveDataFlashHexLauncher.launch("${mcu.partNumber}_dataflash.hex") },
+                            enabled = !state.isBusy,
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier
+                                .weight(1f)
+                                .heightIn(min = 48.dp)
+                                .testTag("save_dataflash_hex_button")
+                        ) {
+                            Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("تصدير Data HEX", fontSize = 11.5.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+                        }
+                    }
+                }
+
+                val dfLoadedSummary = state.dataFlashBuffer?.let { df ->
+                    " + Data Flash (${df.size} B)"
+                } ?: ""
                 Text(
                     text = if (state.loadedFileName != null) {
-                        "الملف النشط: ${state.loadedFileName} (${state.loadedFormat}) • ${state.loadedNonEmptyCount} بايت بيانات"
+                        "الملف النشط: ${state.loadedFileName} (${state.loadedFormat}) • ${state.loadedNonEmptyCount} بايت بيانات$dfLoadedSummary"
                     } else {
-                        "الذاكرة مهيأة على 0xFF بحجم ${mcu.flashKb} KB (${mcu.flashSizeBytes} بايت)"
+                        "الذاكرة مهيأة على 0xFF بحجم ${chipConfig.flashSizeBytes / 1024} KB (${chipConfig.flashSizeBytes} بايت)"
                     },
                     fontSize = 11.sp,
                     color = MaterialTheme.colorScheme.secondary
@@ -404,12 +503,39 @@ fun ProgrammerStep3Flasher(
             }
         }
 
-        // 4. Professional PC-Style Hex View (Address : 16 Hex Bytes | ASCII + Fast Scrollbar)
+        // 4. Professional PC-Style Hex View (Program Flash / Data Flash tabs + Fast Scrollbar)
+        val activeHexBuffer = if (state.viewingDataFlashTab && state.dataFlashBuffer != null) {
+            state.dataFlashBuffer
+        } else {
+            state.flashBuffer
+        }
+        val activeHexBase = if (state.viewingDataFlashTab && state.dataFlashBuffer != null) {
+            state.dataFlashBaseAddress
+        } else {
+            state.flashBaseAddress
+        }
+        val activeFirstRow = remember(activeHexBuffer, state.viewingDataFlashTab, state.firstNonEmptyRowIndex) {
+            if (!state.viewingDataFlashTab) {
+                state.firstNonEmptyRowIndex
+            } else {
+                var row = 0
+                for (i in activeHexBuffer.indices) {
+                    if (activeHexBuffer[i] != 0xFF.toByte()) {
+                        row = i / 16
+                        break
+                    }
+                }
+                row
+            }
+        }
         PcStyleHexViewerCard(
-            buffer = state.flashBuffer,
-            baseAddress = state.flashBaseAddress,
-            firstNonEmptyRowIndex = state.firstNonEmptyRowIndex,
+            buffer = activeHexBuffer,
+            baseAddress = activeHexBase,
+            firstNonEmptyRowIndex = activeFirstRow,
             jumpSequence = state.hexJumpSequence,
+            hasDataFlashBuffer = state.dataFlashBuffer != null,
+            viewingDataFlashTab = state.viewingDataFlashTab,
+            onToggleViewingDataFlash = onToggleViewingDataFlash,
             onJumpToDataClick = onJumpToFirstData
         )
 
@@ -790,11 +916,89 @@ private fun IdByteInputBox(
 }
 
 @Composable
+private fun DataFlashModeCard(
+    dataFlashStart: Int,
+    dataFlashEnd: Int,
+    dataFlashSizeBytes: Int,
+    selectedMode: DataFlashExportMode,
+    enabled: Boolean,
+    onSelectMode: (DataFlashExportMode) -> Unit
+) {
+    val sizeLabel = if (dataFlashSizeBytes >= 1024 && dataFlashSizeBytes % 1024 == 0) {
+        "${dataFlashSizeBytes / 1024} KB"
+    } else {
+        "$dataFlashSizeBytes B"
+    }
+    val rangeText = String.format(Locale.US, "0x%05X..0x%05X • %s", dataFlashStart, dataFlashEnd, sizeLabel)
+
+    Card(
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f))
+    ) {
+        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "ذاكرة Data Flash (اختياري)",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 13.sp,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Text(
+                    text = rangeText,
+                    fontSize = 11.sp,
+                    fontFamily = FontFamily.Monospace,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                DataFlashExportMode.entries.forEach { mode ->
+                    FilterChip(
+                        selected = selectedMode == mode,
+                        enabled = enabled,
+                        onClick = { onSelectMode(mode) },
+                        label = {
+                            Text(
+                                text = mode.titleAr,
+                                fontSize = 11.5.sp,
+                                fontWeight = if (selectedMode == mode) FontWeight.Bold else FontWeight.Medium,
+                                maxLines = 1
+                            )
+                        },
+                        modifier = Modifier
+                            .weight(1f)
+                            .heightIn(min = 48.dp)
+                            .testTag("data_flash_mode_${mode.name.lowercase()}")
+                    )
+                }
+            }
+
+            Text(
+                text = selectedMode.subtitleAr,
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+@Composable
 private fun PcStyleHexViewerCard(
     buffer: ByteArray,
     baseAddress: Int,
     firstNonEmptyRowIndex: Int,
     jumpSequence: Int,
+    hasDataFlashBuffer: Boolean,
+    viewingDataFlashTab: Boolean,
+    onToggleViewingDataFlash: (Boolean) -> Unit,
     onJumpToDataClick: () -> Unit
 ) {
     val totalRows = ((buffer.size + 15) / 16).coerceAtLeast(1)
@@ -803,15 +1007,20 @@ private fun PcStyleHexViewerCard(
     val coroutineScope = rememberCoroutineScope()
     val density = LocalDensity.current
 
-    LaunchedEffect(jumpSequence) {
-        if (jumpSequence > 0 && firstNonEmptyRowIndex in 0 until totalRows) {
+    LaunchedEffect(jumpSequence, viewingDataFlashTab) {
+        if (firstNonEmptyRowIndex in 0 until totalRows && (jumpSequence > 0 || viewingDataFlashTab)) {
             listState.scrollToItem(firstNonEmptyRowIndex)
         }
     }
 
     val firstVisibleRow by remember { derivedStateOf { listState.firstVisibleItemIndex } }
     val currentAddrHex = remember(firstVisibleRow, baseAddress) {
-        "0x%08X".format(baseAddress + firstVisibleRow * 16)
+        String.format(Locale.US, "0x%08X", baseAddress + firstVisibleRow * 16)
+    }
+    val sizeText = if (buffer.size >= 1024 && buffer.size % 1024 == 0) {
+        "${buffer.size / 1024} KB"
+    } else {
+        "${buffer.size} B"
     }
 
     Card(
@@ -825,7 +1034,7 @@ private fun PcStyleHexViewerCard(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Column {
+                Column(modifier = Modifier.weight(1f)) {
                     Text(
                         text = "عارض السوفت وير الاحترافي (PC Hex View)",
                         fontWeight = FontWeight.Bold,
@@ -833,7 +1042,7 @@ private fun PcStyleHexViewerCard(
                         color = MaterialTheme.colorScheme.onSurface
                     )
                     Text(
-                        text = "الموقع الحالي: $currentAddrHex • الحجم الكلي: ${buffer.size / 1024} KB",
+                        text = "الموقع الحالي: $currentAddrHex • الحجم: $sizeText",
                         fontSize = 11.sp,
                         fontFamily = FontFamily.Monospace,
                         color = MaterialTheme.colorScheme.primary
@@ -846,11 +1055,37 @@ private fun PcStyleHexViewerCard(
                         contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
                     ) {
                         Text(
-                            text = "أول بيانات (0x%06X)".format(baseAddress + firstNonEmptyRowIndex * 16),
+                            text = String.format(Locale.US, "أول بيانات (0x%06X)", baseAddress + firstNonEmptyRowIndex * 16),
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Bold
                         )
                     }
+                }
+            }
+
+            if (hasDataFlashBuffer) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    FilterChip(
+                        selected = !viewingDataFlashTab,
+                        onClick = { onToggleViewingDataFlash(false) },
+                        label = { Text("Program Flash", fontSize = 11.sp, fontWeight = FontWeight.Bold) },
+                        modifier = Modifier
+                            .weight(1f)
+                            .heightIn(min = 48.dp)
+                            .testTag("hex_tab_program_flash")
+                    )
+                    FilterChip(
+                        selected = viewingDataFlashTab,
+                        onClick = { onToggleViewingDataFlash(true) },
+                        label = { Text("Data Flash", fontSize = 11.sp, fontWeight = FontWeight.Bold) },
+                        modifier = Modifier
+                            .weight(1f)
+                            .heightIn(min = 48.dp)
+                            .testTag("hex_tab_data_flash")
+                    )
                 }
             }
 

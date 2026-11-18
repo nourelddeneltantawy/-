@@ -14,6 +14,7 @@ import android.hardware.usb.UsbManager
 import android.os.Build
 import android.util.Log
 import androidx.core.content.ContextCompat
+import com.example.data.model.DataFlashExportMode
 import com.example.data.model.McuProcessor
 import com.example.data.model.ProgrammerChipType
 import com.example.data.model.ProtocolFamilyType
@@ -52,7 +53,9 @@ sealed class FlashOperationResult {
     data class Success(
         val message: String,
         val bytesTransferred: ByteArray? = null,
-        val baseAddress: Int = 0
+        val baseAddress: Int = 0,
+        val dataFlashBytes: ByteArray? = null,
+        val dataFlashBaseAddress: Int = 0
     ) : FlashOperationResult()
     data class Failure(val reason: String) : FlashOperationResult()
 }
@@ -662,6 +665,7 @@ object UsbOtgProgrammerService {
         enableDtrRtsReset: Boolean,
         processor: McuProcessor,
         idCodeBytes: ByteArray,
+        dataFlashMode: DataFlashExportMode = DataFlashExportMode.EXCLUDE,
         onLog: (String) -> Unit,
         onProgress: (bytesDone: Int, totalBytes: Int, label: String) -> Unit
     ): FlashOperationResult = withContext(Dispatchers.IO) {
@@ -673,11 +677,12 @@ object UsbOtgProgrammerService {
 
         if (processor.protocolType == ProtocolFamilyType.R8C_M16C) {
             setEchoCancellation(true)
-            return@withContext R8cProtocolEngine.readMemory(
+            return@withContext R8cProtocolEngine.readFlash(
                 transport = createR8cTransport(),
-                processor = processor,
+                selectedChip = processor,
                 baudRate = baudRate,
                 idBytes = idCodeBytes,
+                dataFlashMode = dataFlashMode,
                 onLog = onLog,
                 onProgress = onProgress
             )
@@ -738,6 +743,7 @@ object UsbOtgProgrammerService {
         processor: McuProcessor,
         eraseMode: String,
         idCodeBytes: ByteArray,
+        dataFlashMode: DataFlashExportMode = DataFlashExportMode.EXCLUDE,
         onLog: (String) -> Unit,
         onProgress: (bytesDone: Int, totalBytes: Int, label: String) -> Unit
     ): FlashOperationResult = withContext(Dispatchers.IO) {
@@ -754,6 +760,7 @@ object UsbOtgProgrammerService {
                 processor = processor,
                 baudRate = baudRate,
                 idBytes = idCodeBytes,
+                dataFlashMode = dataFlashMode,
                 onLog = onLog,
                 onProgress = onProgress
             )
@@ -788,6 +795,8 @@ object UsbOtgProgrammerService {
         firmwareStartAddress: Int = 0,
         idCodeBytes: ByteArray,
         verifyOnly: Boolean,
+        dataFlashMode: DataFlashExportMode = DataFlashExportMode.EXCLUDE,
+        dataFlashBytes: ByteArray? = null,
         onLog: (String) -> Unit,
         onProgress: (bytesDone: Int, totalBytes: Int, label: String) -> Unit
     ): FlashOperationResult = withContext(Dispatchers.IO) {
@@ -799,17 +808,33 @@ object UsbOtgProgrammerService {
 
         if (processor.protocolType == ProtocolFamilyType.R8C_M16C) {
             setEchoCancellation(true)
-            return@withContext R8cProtocolEngine.programOrVerifyFlash(
-                transport = createR8cTransport(),
-                processor = processor,
-                baudRate = baudRate,
-                firmwareBytes = firmwareBytes,
-                firmwareStartAddress = firmwareStartAddress,
-                idBytes = idCodeBytes,
-                verifyOnly = verifyOnly,
-                onLog = onLog,
-                onProgress = onProgress
-            )
+            return@withContext if (verifyOnly) {
+                R8cProtocolEngine.verifyFlash(
+                    transport = createR8cTransport(),
+                    selectedChip = processor,
+                    baudRate = baudRate,
+                    firmwareBytes = firmwareBytes,
+                    firmwareStartAddress = firmwareStartAddress,
+                    idBytes = idCodeBytes,
+                    dataFlashMode = dataFlashMode,
+                    dataFlashBytes = dataFlashBytes,
+                    onLog = onLog,
+                    onProgress = onProgress
+                )
+            } else {
+                R8cProtocolEngine.writeFlash(
+                    transport = createR8cTransport(),
+                    selectedChip = processor,
+                    baudRate = baudRate,
+                    firmwareBytes = firmwareBytes,
+                    firmwareStartAddress = firmwareStartAddress,
+                    idBytes = idCodeBytes,
+                    dataFlashMode = dataFlashMode,
+                    dataFlashBytes = dataFlashBytes,
+                    onLog = onLog,
+                    onProgress = onProgress
+                )
+            }
         }
 
         val totalSize = firmwareBytes.size
