@@ -536,12 +536,60 @@ object R8cProtocolEngine {
     }
 
     /**
+     * resyncBootloaderOnHang():
+     * Recovers an R8C bootloader that stopped responding to [0x70] (0/2 bytes) due to an incomplete/slipped packet:
+     * 1. Send 0x00 up to 16 times at 15ms intervals while flushing rxQueue.clear() to drain any pending packet & return to Idle.
+     * 2. Send Clear Status [0x50], then Get Status [0x70] and confirm [0x80, 0x0C] (SRD == 0x80 & id_state == 3).
+     */
+    private suspend fun resyncBootloaderOnHang(
+        transport: SerialTransport,
+        onLog: (String) -> Unit
+    ): Boolean {
+        onLog("بدء التعافي الفوري للبوتلودر (resyncBootloaderOnHang): إرسال 16×0x00 بفاصل 15ms لإعادة المعالج لوضع الاستعداد...")
+        for (round in 1..2) {
+            for (i in 1..16) {
+                transport.flushInputBuffer()
+                val nopRes = sendAndReceiveR8C(
+                    transport = transport,
+                    txBytes = byteArrayOf(0x00),
+                    expectedRxLength = 0,
+                    timeoutMs = 120,
+                    onLog = onLog
+                )
+                if (nopRes.txError != null) {
+                    onLog("TX ERROR أثناء التعافي (0x00 #$i): ${nopRes.txError}")
+                    return false
+                }
+                delay(15)
+            }
+            delay(25)
+            transport.flushInputBuffer()
+
+            if (!clearStatus(transport, onLog, quiet = false)) {
+                onLog("تنبيه التعافي (محاولة $round/2): فشل إرسال 0x50.")
+                continue
+            }
+            val st = getStatus(transport, onLog, quiet = false)
+            if (st != null && st.srd == 0x80 && st.isIdVerified()) {
+                onLog("resyncBootloaderOnHang OK: تمت استعادة البوتلودر بنجاح [SRD=0x80, SRD1=${fmtByte(st.srd1)}].")
+                return true
+            }
+            onLog(
+                "نتيجة فحص التعافي (محاولة $round/2): " +
+                    (st?.let { "SRD=${fmtByte(it.srd)}, SRD1=${fmtByte(it.srd1)}" } ?: "لا يوجد رد من 0x70")
+            )
+        }
+        return false
+    }
+
+    /**
      * write_page():
      * - Flush rxQueue.clear() and build 259-byte packet [0x41, (addr >> 8) & 0xFF, (addr >> 16) & 0xFF, ...256B]
      * - Transmit all 259 bytes in a single write, wait strictly for all 259 echo bytes (timeout 1500ms)
-     * - Wait 25ms, then send [0x70] (strip 1 echo byte) and read [SRD, SRD1]
+     * - Wait 35ms and confirm rxQueue is completely empty before sending [0x70]
+     * - If [0x70] returns 0/2 bytes (bootloader hung on slipped byte), invoke resyncBootloaderOnHang and retry 0x41
      * - If (SRD & 0x80) == 0, poll [0x70] every 20ms until Bit 7 == 1 (Ready)
-     * - If (SRD & 0x10) != 0 (Program Error) or echo/status error, clear status (0x50) and retry up to 3 attempts
+     * - If (SRD & 0x10) != 0 (Program Error), clear status (0x50) and retry up to 3 attempts
      */
     suspend fun writePage(
         transport: SerialTransport,
@@ -586,8 +634,7 @@ object R8cProtocolEngine {
             if (res.txError != null) {
                 onLog("TX ERROR (write_page ${fmtAddr(address)} — محاولة $attempt/$maxAttempts): ${res.txError}")
                 if (attempt < maxAttempts) {
-                    delay(25)
-                    clearStatus(transport, onLog, quiet = true)
+                    resyncBootloaderOnHang(transport, onLog)
                     continue
                 }
                 return false
@@ -595,31 +642,54 @@ object R8cProtocolEngine {
 
             if (res.totalRawReceived < 259) {
                 onLog("تحذير (write_page ${fmtAddr(address)} — محاولة $attempt/$maxAttempts): استُلم ${res.totalRawReceived}/259 بايت صدى خلال ${elapsedMs}ms — فحص 0x70...")
+                delay(35)
+                transport.flushInputBuffer()
                 val st = getStatus(transport, onLog, quiet = false)
                 if (attempt < maxAttempts) {
-                    delay(25)
-                    if (st == null || (st.srd and 0x10) != 0) {
+                    if (st == null) {
+                        if (!resyncBootloaderOnHang(transport, onLog)) {
+                            onLog("فشل تعافي البوتلودر بعد نقص صدى الصفحة ${fmtAddr(address)}.")
+                            return false
+                        }
+                    } else if ((st.srd and 0x10) != 0 || st.srd != 0x80) {
                         clearStatus(transport, onLog, quiet = true)
                     }
+                    delay(20)
                     continue
                 }
                 onLog("write_page Echo/Status Error @ ${fmtAddr(address)}: SRD=${st?.let { fmtByte(it.srd) } ?: "null"}")
                 return false
             }
 
-            // Wait 25ms before checking [0x70] status
-            delay(25)
+            // Safety delay 35ms + verify rxQueue is completely empty before sending [0x70]
+            delay(35)
+            transport.flushInputBuffer()
 
-            // Poll [0x70] every 20ms until (SRD & 0x80) != 0 (Bit 7 == 1 Ready)
+            // Poll [0x70] every 20ms until (SRD & 0x80) != 0 (Bit 7 == 1 Ready); trigger immediate recovery on 0/2 bytes
             var st: R8cStatus? = null
+            var bootloaderHungNoReply = false
             for (poll in 1..15) {
                 val cur = getStatus(transport, onLog, quiet = !(verboseFrameLog && poll == 1))
-                if (cur != null) {
-                    st = cur
-                    if ((cur.srd and 0x80) != 0) break
+                if (cur == null) {
+                    bootloaderHungNoReply = true
+                    break
                 }
+                st = cur
+                if ((cur.srd and 0x80) != 0) break
                 delay(20)
             }
+
+            if (bootloaderHungNoReply) {
+                onLog("انزلاق بايت أو توقف رد 0x70 عند الصفحة ${fmtAddr(address)} (محاولة $attempt/$maxAttempts) — تفعيل التعافي الفوري...")
+                val recovered = resyncBootloaderOnHang(transport, onLog)
+                if (recovered && attempt < maxAttempts) {
+                    onLog("إعادة إرسال الصفحة ${fmtAddr(address)} (0x41) بعد استعادة البوتلودر (${attempt + 1}/$maxAttempts)...")
+                    continue
+                }
+                onLog("write_page Hang Error @ ${fmtAddr(address)}: تعذر استعادة رد 0x70.")
+                return false
+            }
+
             val finalSt = st
             val isReady = finalSt != null && (finalSt.srd and 0x80) != 0
             val hasProgramError = finalSt != null && (finalSt.srd and 0x10) != 0
