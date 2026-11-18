@@ -221,6 +221,8 @@ fun McuProgrammerScreen(
                     onEraseModeChange = programmerViewModel::setEraseMode,
                     onDataFlashModeChange = programmerViewModel::setDataFlashMode,
                     onToggleViewingDataFlash = programmerViewModel::setViewingDataFlashTab,
+                    onToggleAutoEraseBeforeWrite = programmerViewModel::setAutoEraseBeforeWrite,
+                    onToggleAutoVerifyAfterWrite = programmerViewModel::setAutoVerifyAfterWrite,
                     onJumpToFirstData = programmerViewModel::triggerJumpToFirstData,
                     onLoadFirmwareUri = programmerViewModel::loadFirmwareFromUri,
                     onSaveDumpUri = programmerViewModel::saveDumpToUri,

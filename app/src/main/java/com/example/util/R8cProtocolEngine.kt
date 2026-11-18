@@ -490,9 +490,7 @@ object R8cProtocolEngine {
     }
 
     /**
-     * erase_page():
-     * - Send [0x20, (address >> 8) & 0xFF, (address >> 16) & 0xFF, 0xD0] (N=4, M=0)
-     * - Poll get_status() (0x70, N=1, M=2), verify ((SRD >> 5) & 1) == 0, then send 0x50 (clear_status)
+     * erase_page(): Legacy single-block erase helper [0x20, A_M, A_H, 0xD0]
      */
     suspend fun erasePage(
         transport: SerialTransport,
@@ -538,14 +536,17 @@ object R8cProtocolEngine {
 
     /**
      * write_page():
-     * - Send [0x41, (address >> 8) & 0xFF, (address >> 16) & 0xFF, ...256 bytes] (N=259, M=0)
-     * - Poll get_status() (0x70, N=1, M=2), verify ((SRD >> 4) & 1) == 0, then send 0x50 (clear_status)
+     * - Flush rxQueue.clear() and build 259-byte packet [0x41, (addr >> 8) & 0xFF, (addr >> 16) & 0xFF, ...256B]
+     * - Transmit all 259 bytes in a single write, wait strictly for all 259 echo bytes (timeout 1500ms)
+     * - Wait 15ms for internal flash write settle
+     * - If checkStatusAfter is true or echo/transfer was delayed, run [0x70] and confirm SRD == 0x80 (Bit 4 == 0)
      */
     suspend fun writePage(
         transport: SerialTransport,
         address: Int,
         data256: ByteArray,
         onLog: (String) -> Unit,
+        checkStatusAfter: Boolean = true,
         verboseFrameLog: Boolean = false
     ): Boolean {
         val frame = ByteArray(259).apply {
@@ -557,42 +558,78 @@ object R8cProtocolEngine {
             }
         }
         if (verboseFrameLog) {
-            val headerHex = "%02X %02X %02X".format(
+            val headerHex = String.format(
                 Locale.US,
+                "%02X %02X %02X",
                 frame[0].toInt() and 0xFF,
                 frame[1].toInt() and 0xFF,
                 frame[2].toInt() and 0xFF
             )
-            onLog("TX: \u2066$headerHex\u2069 + 256B (write_page ${fmtAddr(address)}: حذف 259 بايت صدى)")
-        }
-        val res = sendAndReceiveR8C(
-            transport = transport,
-            txBytes = frame,
-            expectedRxLength = 0,
-            timeoutMs = 500,
-            onLog = onLog
-        )
-        if (res.txError != null) {
-            onLog("TX ERROR (write_page ${fmtAddr(address)}): ${res.txError}")
-            return false
+            onLog("TX: \u2066$headerHex\u2069 + 256B (write_page ${fmtAddr(address)}: انتظار 259 بايت صدى)")
         }
 
-        delay(18)
-        var st: R8cStatus? = null
-        for (attempt in 1..10) {
-            val cur = getStatus(transport, onLog, quiet = !verboseFrameLog || attempt > 1)
-            if (cur != null) {
-                st = cur
-                if ((cur.srd and 0x80) != 0) break
+        val maxAttempts = 2
+        for (attempt in 1..maxAttempts) {
+            transport.flushInputBuffer()
+            val tStart = System.currentTimeMillis()
+            val res = sendAndReceiveR8C(
+                transport = transport,
+                txBytes = frame,
+                expectedRxLength = 0,
+                timeoutMs = 1500,
+                onLog = onLog
+            )
+            val elapsedMs = System.currentTimeMillis() - tStart
+
+            if (res.txError != null) {
+                onLog("TX ERROR (write_page ${fmtAddr(address)}): ${res.txError}")
+                if (attempt < maxAttempts) {
+                    delay(40)
+                    continue
+                }
+                return false
             }
-            delay(20)
+
+            if (res.totalRawReceived < 259) {
+                onLog("تحذير (write_page ${fmtAddr(address)}): استُلم ${res.totalRawReceived}/259 بايت صدى خلال ${elapsedMs}ms — فحص الحالة 0x70...")
+                val st = getStatus(transport, onLog, quiet = false)
+                if (st == null || st.sr4ProgramError) {
+                    onLog("write_page Echo/Status Error @ ${fmtAddr(address)}: SRD=${st?.let { fmtByte(it.srd) } ?: "null"}")
+                    return false
+                }
+                if (attempt < maxAttempts) {
+                    delay(40)
+                    continue
+                }
+                return false
+            }
+
+            // Wait 15ms for internal R8C flash programming settle
+            delay(15)
+
+            val wasDelayed = elapsedMs > 900L || attempt > 1
+            if (checkStatusAfter || wasDelayed) {
+                var st: R8cStatus? = null
+                for (poll in 1..6) {
+                    val cur = getStatus(transport, onLog, quiet = !verboseFrameLog && poll == 1)
+                    if (cur != null) {
+                        st = cur
+                        if ((cur.srd and 0x80) != 0) break
+                    }
+                    delay(20)
+                }
+                val finalSt = st ?: run {
+                    onLog("write_page Error @ ${fmtAddr(address)}: لم يستجب المعالج لفحص الحالة 0x70.")
+                    return false
+                }
+                if (finalSt.sr4ProgramError || finalSt.srd != 0x80) {
+                    onLog("write_page Error @ ${fmtAddr(address)}: SRD=${fmtByte(finalSt.srd)}, SRD1=${fmtByte(finalSt.srd1)} (المتوقع SRD=0x80, Bit4=0).")
+                    return false
+                }
+            }
+            return true
         }
-        val finalSt = st ?: return false
-        if (finalSt.sr4ProgramError) {
-            onLog("write_page Error @ ${fmtAddr(address)}: ((SRD >> 4) & 1) != 0 [SRD=${fmtByte(finalSt.srd)}]")
-            return false
-        }
-        return clearStatus(transport, onLog, quiet = true)
+        return false
     }
 
     suspend fun readMemory(
@@ -784,6 +821,131 @@ object R8cProtocolEngine {
         )
     }
 
+    /**
+     * All-Block Erase Command (R8CTool.EXE exact sequence):
+     * 1. rxQueue.clear()
+     * 2. TX [0xA7, 0xD0] -> read & strip 2 echo bytes
+     * 3. Wait 4000ms for internal erase completion
+     * 4. TX [0x70] -> strip 1 echo byte -> read [SRD, SRD1] (2 bytes) -> verify SRD == 0x80
+     */
+    private suspend fun performFullChipErase(
+        transport: SerialTransport,
+        chipName: String,
+        totalSpan: Int,
+        onLog: (String) -> Unit,
+        onProgress: (bytesDone: Int, totalBytes: Int, label: String) -> Unit
+    ): String? {
+        transport.flushInputBuffer()
+        val cmd = byteArrayOf(0xA7.toByte(), 0xD0.toByte())
+        onLog("TX: \u2066A7 D0\u2069 (أمر المسح الشامل — حذف 2 بايت صدى)")
+        val res = sendAndReceiveR8C(
+            transport = transport,
+            txBytes = cmd,
+            expectedRxLength = 0,
+            timeoutMs = 1000,
+            onLog = onLog
+        )
+        if (res.txError != null) {
+            return "TX ERROR (0xA7 0xD0): ${res.txError}"
+        }
+        onLog("RX Raw (0xA7 0xD0 Echo): [${toHexComma(res.rawBytes)}] (تم حذف ${res.echoedCount}/2 بايت صدى)")
+        if (res.totalRawReceived < 2) {
+            onLog("تنبيه: استُلم ${res.totalRawReceived}/2 بايت صدى بعد 0xA7 0xD0 — متابعة الانتظار وفحص الحالة...")
+        }
+
+        // Wait full 4000ms for R8C all-block erase while updating progress every 500ms
+        val totalWaitMs = 4000L
+        val steps = 8
+        val stepDelayMs = totalWaitMs / steps
+        for (i in 1..steps) {
+            val done = ((i.toFloat() / steps) * totalSpan * 0.9f).toInt()
+            val secLeft = ((totalWaitMs - i * stepDelayMs) / 1000.0)
+            onProgress(
+                done,
+                totalSpan,
+                String.format(Locale.US, "جاري المسح الشامل لـ %s (0xA7 D0) — متبقي %.1fs...", chipName, secLeft)
+            )
+            delay(stepDelayMs)
+        }
+
+        var st = getStatus(transport, onLog, quiet = false)
+        var extraPolls = 0
+        while (st != null && (st.srd and 0x80) == 0 && extraPolls < 4) {
+            delay(300)
+            st = getStatus(transport, onLog, quiet = false)
+            extraPolls++
+        }
+        if (st == null) {
+            return "لم يستجب المعالج لأمر فحص الحالة 0x70 بعد المسح الشامل 0xA7 0xD0."
+        }
+        if (st.srd != 0x80 || st.sr5EraseError) {
+            return "فشل المسح الشامل (0xA7 0xD0): SRD=${fmtByte(st.srd)}, SRD1=${fmtByte(st.srd1)} (المتوقع SRD=0x80)."
+        }
+
+        onLog("eraseChip OK: SRD=0x80, SRD1=${fmtByte(st.srd1)} — اكتمل المسح الشامل لـ $chipName بنجاح.")
+        return null
+    }
+
+    suspend fun eraseChip(
+        transport: SerialTransport,
+        selectedChip: McuProcessor,
+        baudRate: Int,
+        idBytes: ByteArray,
+        onLog: (String) -> Unit,
+        onProgress: (bytesDone: Int, totalBytes: Int, label: String) -> Unit
+    ): FlashOperationResult {
+        val chipConfig = selectedChip.chipConfig
+        val totalSpan = (chipConfig.flashSizeBytes + chipConfig.dataFlashSizeBytes).coerceAtLeast(1024)
+
+        onProgress(0, totalSpan, "تهيئة البوت التلقائي (RTS/DTR) قبل المسح الشامل...")
+        val session = startAndConnect(transport, onLog)
+        if (!session.connected) {
+            return FlashOperationResult.Failure("فشلت المزامنة التسلسلية R8C قبل المسح.")
+        }
+        if (!changeSpeed(transport, baudRate, session.dtrIdleHigh, onLog)) {
+            return FlashOperationResult.Failure("فشل تغيير سرعة الباود ($baudRate bps).")
+        }
+        val ver = getVersion(transport, onLog) ?: return FlashOperationResult.Failure(
+            "لم يستجب المعالج لأمر قراءة الإصدار 0xFB (1+8=9 بايت)."
+        )
+        onLog("R8C Version: \"$ver\" | تحضير المسح الشامل 0xA7 0xD0 لـ ${selectedChip.partNumber}")
+
+        if (!clearStatus(transport, onLog, quiet = false)) {
+            return FlashOperationResult.Failure("فشل أمر مسح سجل الحالة 0x50 قبل فحص المفتاح.")
+        }
+        val (idOk, idStatus) = idInspection(transport, idBytes, onLog)
+        if (!idOk) {
+            return FlashOperationResult.Failure(LOCKED_CHIP_MESSAGE)
+        }
+        if (idStatus != null && idStatus.srd != 0x80) {
+            onLog("تنبيه حالة قبل المسح: SRD=${fmtByte(idStatus.srd)} (تم فتح القفل بنجاح)")
+        }
+
+        transport.setRawRxMonitor(false)
+        try {
+            val eraseErr = performFullChipErase(
+                transport = transport,
+                chipName = selectedChip.partNumber,
+                totalSpan = totalSpan,
+                onLog = onLog,
+                onProgress = onProgress
+            )
+            if (eraseErr != null) {
+                return FlashOperationResult.Failure(eraseErr)
+            }
+        } catch (t: Throwable) {
+            onLog("Erase Chip Exception: ${t.toString()}")
+            return FlashOperationResult.Failure("استثناء أثناء المسح الشامل: ${t.toString()}")
+        } finally {
+            transport.setRawRxMonitor(false)
+        }
+
+        onProgress(totalSpan, totalSpan, "اكتمل المسح الشامل (SRD=0x80)")
+        return FlashOperationResult.Success(
+            "تم المسح الشامل (0xA7 0xD0) لذاكرة ${selectedChip.partNumber} بنجاح (SRD=0x80)."
+        )
+    }
+
     suspend fun eraseFlash(
         transport: SerialTransport,
         processor: McuProcessor,
@@ -792,54 +954,14 @@ object R8cProtocolEngine {
         dataFlashMode: DataFlashExportMode = DataFlashExportMode.EXCLUDE,
         onLog: (String) -> Unit,
         onProgress: (bytesDone: Int, totalBytes: Int, label: String) -> Unit
-    ): FlashOperationResult {
-        val chipConfig = processor.chipConfig
-        val includeDataFlash = dataFlashMode != DataFlashExportMode.EXCLUDE && chipConfig.hasDataFlash
-        val totalSpan = (chipConfig.flashSizeBytes + if (includeDataFlash) chipConfig.dataFlashSizeBytes else 0)
-            .coerceAtLeast(1024)
-
-        onProgress(0, totalSpan, "تهيئة البوت التلقائي (RTS/DTR) قبل المسح...")
-        val session = startAndConnect(transport, onLog)
-        if (!session.connected) {
-            return FlashOperationResult.Failure("فشلت المزامنة التسلسلية R8C قبل المسح.")
-        }
-        if (!changeSpeed(transport, baudRate, session.dtrIdleHigh, onLog)) {
-            return FlashOperationResult.Failure("فشل تغيير سرعة الباود ($baudRate bps).")
-        }
-        val ver = getVersion(transport, onLog)
-        if (ver != null) {
-            onLog("R8C Version: \"$ver\"")
-        }
-        if (!clearStatus(transport, onLog, quiet = false)) {
-            return FlashOperationResult.Failure("فشل أمر مسح سجل الحالة 0x50 قبل فحص المفتاح.")
-        }
-        val (idOk, _) = idInspection(transport, idBytes, onLog)
-        if (!idOk) {
-            return FlashOperationResult.Failure(LOCKED_CHIP_MESSAGE)
-        }
-
-        transport.setRawRxMonitor(false)
-        val blocks = buildEraseBlocks(chipConfig.programStartAddress, chipConfig.programEndAddress).toMutableList()
-        if (includeDataFlash && chipConfig.dataFlashStartAddress != null && chipConfig.dataFlashEndAddress != null) {
-            blocks.addAll(buildEraseBlocks(chipConfig.dataFlashStartAddress, chipConfig.dataFlashEndAddress))
-        }
-
-        for ((idx, blockAddr) in blocks.withIndex()) {
-            onProgress(
-                ((idx.toFloat() / blocks.size.coerceAtLeast(1)) * totalSpan).toInt(),
-                totalSpan,
-                "مسح بلوك ${idx + 1}/${blocks.size} (${fmtAddr(blockAddr)})..."
-            )
-            if (!erasePage(transport, blockAddr, onLog)) {
-                return FlashOperationResult.Failure("فشل مسح البلوك عند العنوان ${fmtAddr(blockAddr)}.")
-            }
-        }
-
-        onProgress(totalSpan, totalSpan, "اكتمل مسح جميع البلوكات")
-        return FlashOperationResult.Success(
-            "تم مسح ذاكرة ${processor.partNumber} (${blocks.size} بلوك بدءاً من ${fmtAddr(chipConfig.programStartAddress)}) بنجاح."
-        )
-    }
+    ): FlashOperationResult = eraseChip(
+        transport = transport,
+        selectedChip = processor,
+        baudRate = baudRate,
+        idBytes = idBytes,
+        onLog = onLog,
+        onProgress = onProgress
+    )
 
     suspend fun writeFlash(
         transport: SerialTransport,
@@ -850,6 +972,8 @@ object R8cProtocolEngine {
         idBytes: ByteArray,
         dataFlashMode: DataFlashExportMode = DataFlashExportMode.EXCLUDE,
         dataFlashBytes: ByteArray? = null,
+        autoEraseBeforeWrite: Boolean = true,
+        autoVerifyAfterWrite: Boolean = false,
         onLog: (String) -> Unit,
         onProgress: (bytesDone: Int, totalBytes: Int, label: String) -> Unit
     ): FlashOperationResult = programOrVerifyFlash(
@@ -862,6 +986,8 @@ object R8cProtocolEngine {
         verifyOnly = false,
         dataFlashMode = dataFlashMode,
         dataFlashBytes = dataFlashBytes,
+        autoEraseBeforeWrite = autoEraseBeforeWrite,
+        autoVerifyAfterWrite = autoVerifyAfterWrite,
         onLog = onLog,
         onProgress = onProgress
     )
@@ -887,9 +1013,106 @@ object R8cProtocolEngine {
         verifyOnly = true,
         dataFlashMode = dataFlashMode,
         dataFlashBytes = dataFlashBytes,
+        autoEraseBeforeWrite = false,
+        autoVerifyAfterWrite = false,
         onLog = onLog,
         onProgress = onProgress
     )
+
+    private data class TargetPage(
+        val physicalAddress: Int,
+        val data256: ByteArray
+    )
+
+    private fun extractPage256(src: ByteArray, offset: Int): ByteArray {
+        val page = ByteArray(256) { 0xFF.toByte() }
+        if (offset in src.indices) {
+            val copyLen = min(256, src.size - offset)
+            System.arraycopy(src, offset, page, 0, copyLen)
+        }
+        return page
+    }
+
+    private fun buildTargetPages(
+        processor: McuProcessor,
+        firmwareBytes: ByteArray,
+        firmwareStartAddress: Int,
+        dataFlashMode: DataFlashExportMode,
+        dataFlashBytes: ByteArray?
+    ): List<TargetPage> {
+        val chipConfig = processor.chipConfig
+        val pageSize = chipConfig.pageSizeBytes.coerceAtLeast(256)
+        val pages = mutableListOf<TargetPage>()
+
+        val dfStart = chipConfig.dataFlashStartAddress
+        val dfEnd = chipConfig.dataFlashEndAddress
+        val hasDfRegion = chipConfig.hasDataFlash && dfStart != null && dfEnd != null
+        val includeDf = dataFlashMode != DataFlashExportMode.EXCLUDE && hasDfRegion
+
+        // Case A: Merged Full Memory Map starting at 0x00000 (e.g. 81,920 bytes for R5F21258)
+        val isMergedFullMap = firmwareStartAddress == 0 &&
+            firmwareBytes.size >= chipConfig.programStartAddress + chipConfig.flashSizeBytes
+
+        // Case B: Standalone Data Flash buffer loaded at dataFlashStartAddress
+        val isStandaloneDf = hasDfRegion &&
+            firmwareStartAddress == dfStart &&
+            firmwareBytes.size <= chipConfig.dataFlashSizeBytes
+
+        when {
+            isMergedFullMap -> {
+                if (includeDf && dfStart != null && dfEnd != null) {
+                    var dfAddr = dfStart
+                    while (dfAddr <= dfEnd) {
+                        val dfPage = if (dataFlashBytes != null && (dfAddr - dfStart) in dataFlashBytes.indices) {
+                            extractPage256(dataFlashBytes, dfAddr - dfStart)
+                        } else {
+                            extractPage256(firmwareBytes, dfAddr)
+                        }
+                        pages.add(TargetPage(dfAddr and 0xFFFFFF00.toInt(), dfPage))
+                        dfAddr += pageSize
+                    }
+                }
+                var addr = chipConfig.programStartAddress
+                while (addr <= chipConfig.programEndAddress) {
+                    pages.add(TargetPage(addr and 0xFFFFFF00.toInt(), extractPage256(firmwareBytes, addr)))
+                    addr += pageSize
+                }
+            }
+            isStandaloneDf && dfStart != null && dfEnd != null -> {
+                var dfAddr = dfStart
+                while (dfAddr <= dfEnd) {
+                    val dfOffset = dfAddr - dfStart
+                    if (dfOffset in firmwareBytes.indices) {
+                        pages.add(TargetPage(dfAddr and 0xFFFFFF00.toInt(), extractPage256(firmwareBytes, dfOffset)))
+                    }
+                    dfAddr += pageSize
+                }
+            }
+            else -> {
+                // Case C: Program Flash mapped by fileOffset = addr - programStartAddress (+ optional Data Flash)
+                if (includeDf && dfStart != null && dfEnd != null && dataFlashBytes != null && dataFlashBytes.isNotEmpty()) {
+                    var dfAddr = dfStart
+                    while (dfAddr <= dfEnd) {
+                        val dfOffset = dfAddr - dfStart
+                        if (dfOffset in dataFlashBytes.indices) {
+                            pages.add(TargetPage(dfAddr and 0xFFFFFF00.toInt(), extractPage256(dataFlashBytes, dfOffset)))
+                        }
+                        dfAddr += pageSize
+                    }
+                }
+                val base = if (firmwareStartAddress > 0) firmwareStartAddress else chipConfig.programStartAddress
+                var addr = chipConfig.programStartAddress
+                while (addr <= chipConfig.programEndAddress) {
+                    val fileOffset = addr - base
+                    if (fileOffset in firmwareBytes.indices) {
+                        pages.add(TargetPage(addr and 0xFFFFFF00.toInt(), extractPage256(firmwareBytes, fileOffset)))
+                    }
+                    addr += pageSize
+                }
+            }
+        }
+        return pages
+    }
 
     suspend fun programOrVerifyFlash(
         transport: SerialTransport,
@@ -901,25 +1124,29 @@ object R8cProtocolEngine {
         verifyOnly: Boolean,
         dataFlashMode: DataFlashExportMode = DataFlashExportMode.EXCLUDE,
         dataFlashBytes: ByteArray? = null,
+        autoEraseBeforeWrite: Boolean = true,
+        autoVerifyAfterWrite: Boolean = false,
         onLog: (String) -> Unit,
         onProgress: (bytesDone: Int, totalBytes: Int, label: String) -> Unit
     ): FlashOperationResult {
         val chipConfig = processor.chipConfig
-        val programStartAddress = if (firmwareStartAddress > 0) firmwareStartAddress else chipConfig.programStartAddress
-        val pageSize = chipConfig.pageSizeBytes.coerceAtLeast(256)
-        val effectiveProgSize = min(firmwareBytes.size, chipConfig.flashSizeBytes)
-        val programEndAddress = min(chipConfig.programEndAddress, programStartAddress + effectiveProgSize - 1)
+        val allPages = buildTargetPages(
+            processor = processor,
+            firmwareBytes = firmwareBytes,
+            firmwareStartAddress = firmwareStartAddress,
+            dataFlashMode = dataFlashMode,
+            dataFlashBytes = dataFlashBytes
+        )
+        if (allPages.isEmpty()) {
+            return FlashOperationResult.Failure("لا توجد صفحات صالحة للعملية ضمن نطاق ذاكرة ${processor.partNumber}.")
+        }
 
-        val includeDataFlash = dataFlashMode != DataFlashExportMode.EXCLUDE &&
-            chipConfig.hasDataFlash &&
-            dataFlashBytes != null &&
-            dataFlashBytes.isNotEmpty()
-        val dfStart = chipConfig.dataFlashStartAddress ?: 0
-        val dfEnd = chipConfig.dataFlashEndAddress ?: -1
-        val dfSize = if (includeDataFlash) min(chipConfig.dataFlashSizeBytes, dataFlashBytes?.size ?: 0) else 0
-        val totalSize = (effectiveProgSize + dfSize).coerceAtLeast(pageSize)
+        val totalSpanBytes = (allPages.size * 256).coerceAtLeast(256)
+        val nonEmptyIndices = allPages.indices.filter { idx ->
+            allPages[idx].data256.any { it != 0xFF.toByte() }
+        }
 
-        onProgress(0, totalSize, "تهيئة البوت التلقائي (RTS/DTR) والمزامنة...")
+        onProgress(0, totalSpanBytes, "تهيئة البوت التلقائي (RTS/DTR) والمزامنة...")
         val session = startAndConnect(transport, onLog)
         if (!session.connected) {
             return FlashOperationResult.Failure("فشلت المزامنة التسلسلية R8C قبل العملية.")
@@ -931,168 +1158,187 @@ object R8cProtocolEngine {
         if (ver == null) {
             return FlashOperationResult.Failure("لم يستجب المعالج لأمر قراءة الإصدار 0xFB (1+8=9 بايت).")
         }
-        onLog("R8C Version: \"$ver\" | النطاق: ${fmtAddr(programStartAddress)}..${fmtAddr(programEndAddress)} (${effectiveProgSize / 1024} KB)")
+        onLog(
+            "R8C Version: \"$ver\" | نطاق ${processor.partNumber}: ${fmtAddr(chipConfig.programStartAddress)}..${fmtAddr(chipConfig.programEndAddress)} " +
+                "| الصفحات الفعلية: ${nonEmptyIndices.size}/${allPages.size}"
+        )
 
         if (!clearStatus(transport, onLog, quiet = false)) {
             return FlashOperationResult.Failure("فشل أمر مسح سجل الحالة 0x50 قبل فحص المفتاح.")
         }
 
-        val (idOk, _) = idInspection(transport, idBytes, onLog)
+        val (idOk, idStatus) = idInspection(transport, idBytes, onLog)
         if (!idOk) {
             return FlashOperationResult.Failure(LOCKED_CHIP_MESSAGE)
         }
-
-        val totalProgPages = ((programEndAddress - programStartAddress + pageSize) / pageSize).coerceAtLeast(1)
-        val erasedBlocks = HashSet<Int>()
-        var cumulativeDone = 0
+        if (idStatus != null && idStatus.srd != 0x80) {
+            onLog("تنبيه حالة بعد فتح القفل: SRD=${fmtByte(idStatus.srd)}")
+        }
 
         transport.setRawRxMonitor(false)
         try {
-            var addr = programStartAddress
-            var pageIdx = 0
-            while (addr <= programEndAddress) {
-                val fileOffset = addr - programStartAddress
-                if (fileOffset !in firmwareBytes.indices) break
-                val len = min(pageSize, firmwareBytes.size - fileOffset)
-                val slice = firmwareBytes.copyOfRange(fileOffset, fileOffset + len)
-                val physicalAddr = addr and 0xFFFFFF00.toInt()
-                cumulativeDone = min(fileOffset + len, effectiveProgSize)
+            if (verifyOnly) {
+                val pagesToVerify = if (nonEmptyIndices.isNotEmpty()) {
+                    nonEmptyIndices.map { allPages[it] }
+                } else {
+                    allPages
+                }
+                return runVerifyPages(
+                    transport = transport,
+                    chipName = processor.partNumber,
+                    pages = pagesToVerify,
+                    baseAddress = chipConfig.programStartAddress,
+                    onLog = onLog,
+                    onProgress = onProgress
+                )
+            }
 
-                if (slice.all { it == 0xFF.toByte() }) {
-                    onProgress(cumulativeDone, totalSize, "تخطي صفحة فارغة ${fmtAddr(physicalAddr)}")
-                    addr += pageSize
-                    pageIdx++
+            // Optional full chip erase [0xA7, 0xD0] + 4000ms wait + [0x70] -> SRD == 0x80 before writing
+            if (autoEraseBeforeWrite) {
+                onLog("بدء المسح الشامل التلقائي (0xA7 0xD0) قبل الكتابة...")
+                val eraseErr = performFullChipErase(
+                    transport = transport,
+                    chipName = processor.partNumber,
+                    totalSpan = totalSpanBytes,
+                    onLog = onLog,
+                    onProgress = onProgress
+                )
+                if (eraseErr != null) {
+                    return FlashOperationResult.Failure(eraseErr)
+                }
+            }
+
+            if (nonEmptyIndices.isEmpty()) {
+                onProgress(totalSpanBytes, totalSpanBytes, "جميع الصفحات فارغة (0xFF) — اكتمل التنفيذ")
+                onLog("تنبيه: جميع الصفحات المستهدفة فارغة (0xFF)، لم يلزم إرسال صفحات 0x41.")
+                return FlashOperationResult.Success(
+                    "اكتملت العملية على ${processor.partNumber} (جميع الصفحات 0xFF).",
+                    baseAddress = chipConfig.programStartAddress
+                )
+            }
+
+            val lastNonEmptyIdx = nonEmptyIndices.last()
+            var writtenPageCount = 0
+            var skippedPageCount = 0
+            val totalWrittenTarget = nonEmptyIndices.size
+
+            for (idx in allPages.indices) {
+                val page = allPages[idx]
+                val doneBytes = (idx + 1) * 256
+                val pct = ((doneBytes * 100L) / totalSpanBytes.coerceAtLeast(1)).toInt()
+
+                if (page.data256.all { it == 0xFF.toByte() }) {
+                    skippedPageCount++
+                    if (idx == 0 || (idx + 1) % 16 == 0 || idx == allPages.lastIndex) {
+                        onProgress(doneBytes, totalSpanBytes, "تخطي صفحات 0xFF: $pct% (${fmtAddr(page.physicalAddress)})")
+                    }
                     continue
                 }
 
-                if (verifyOnly) {
-                    val chipPage = readPage(
-                        transport = transport,
-                        address = physicalAddr,
-                        onLog = onLog,
-                        verboseFrameLog = (pageIdx == 0)
-                    ) ?: return FlashOperationResult.Failure("تعذر قراءة الصفحة ${fmtAddr(physicalAddr)} للمطابقة.")
-
-                    for (i in 0 until len) {
-                        if (chipPage[i] != slice[i]) {
-                            val mismatchMsg = "اختلاف المطابقة عند ${fmtAddr(physicalAddr + i)}: المتوقع ${fmtByte(slice[i].toInt() and 0xFF)} والمقروء ${fmtByte(chipPage[i].toInt() and 0xFF)}."
-                            onLog("Verify Mismatch: $mismatchMsg")
-                            return FlashOperationResult.Failure(mismatchMsg)
-                        }
-                    }
-                    onProgress(
-                        cumulativeDone,
-                        totalSize,
-                        "مطابقة صفحة ${pageIdx + 1}/$totalProgPages (${fmtAddr(physicalAddr)})"
-                    )
-                } else {
-                    val blockSize = if (physicalAddr < 0x8000) 1024 else 4096
-                    val blockBase = physicalAddr and (blockSize - 1).inv()
-                    if (erasedBlocks.add(blockBase)) {
-                        onProgress(
-                            cumulativeDone.coerceAtLeast(1) - 1,
-                            totalSize,
-                            "مسح بلوك ${fmtAddr(blockBase)} قبل الكتابة..."
-                        )
-                        if (!erasePage(transport, blockBase, onLog)) {
-                            return FlashOperationResult.Failure("فشل مسح البلوك ${fmtAddr(blockBase)} قبل البرمجة.")
-                        }
-                    }
-
-                    val ok = writePage(
-                        transport = transport,
-                        address = physicalAddr,
-                        data256 = slice,
-                        onLog = onLog,
-                        verboseFrameLog = (pageIdx == 0 || pageIdx == totalProgPages - 1)
-                    )
-                    if (!ok) {
-                        return FlashOperationResult.Failure("فشلت كتابة الصفحة عند ${fmtAddr(physicalAddr)}.")
-                    }
-                    val pct = ((cumulativeDone * 100L) / totalSize.coerceAtLeast(1)).toInt()
-                    onProgress(
-                        cumulativeDone,
-                        totalSize,
-                        "كتابة ${processor.partNumber}: $pct% (${fmtAddr(physicalAddr)})"
-                    )
+                val isLastWritten = (idx == lastNonEmptyIdx)
+                val ok = writePage(
+                    transport = transport,
+                    address = page.physicalAddress,
+                    data256 = page.data256,
+                    onLog = onLog,
+                    checkStatusAfter = isLastWritten,
+                    verboseFrameLog = (writtenPageCount == 0 || isLastWritten)
+                )
+                if (!ok) {
+                    return FlashOperationResult.Failure("فشلت كتابة الصفحة عند العنوان ${fmtAddr(page.physicalAddress)}.")
                 }
 
-                addr += pageSize
-                pageIdx++
-            }
-
-            if (includeDataFlash && dataFlashBytes != null) {
-                var dfAddr = dfStart
-                var dfIdx = 0
-                val totalDfPages = ((dfEnd - dfStart + pageSize) / pageSize).coerceAtLeast(1)
-                while (dfAddr <= dfEnd) {
-                    val dfOffset = dfAddr - dfStart
-                    if (dfOffset !in dataFlashBytes.indices) break
-                    val len = min(pageSize, dataFlashBytes.size - dfOffset)
-                    val slice = dataFlashBytes.copyOfRange(dfOffset, dfOffset + len)
-                    val physicalAddr = dfAddr and 0xFFFFFF00.toInt()
-                    val overallDone = min(effectiveProgSize + dfOffset + len, totalSize)
-
-                    if (slice.all { it == 0xFF.toByte() }) {
-                        onProgress(overallDone, totalSize, "تخطي Data Flash فارغ ${fmtAddr(physicalAddr)}")
-                        dfAddr += pageSize
-                        dfIdx++
-                        continue
-                    }
-
-                    if (verifyOnly) {
-                        val chipPage = readPage(
-                            transport = transport,
-                            address = physicalAddr,
-                            onLog = onLog,
-                            verboseFrameLog = (dfIdx == 0)
-                        ) ?: return FlashOperationResult.Failure("تعذر قراءة Data Flash عند ${fmtAddr(physicalAddr)} للمطابقة.")
-
-                        for (i in 0 until len) {
-                            if (chipPage[i] != slice[i]) {
-                                val mismatchMsg = "اختلاف Data Flash عند ${fmtAddr(physicalAddr + i)}: المتوقع ${fmtByte(slice[i].toInt() and 0xFF)} والمقروء ${fmtByte(chipPage[i].toInt() and 0xFF)}."
-                                onLog("Verify Data Flash Mismatch: $mismatchMsg")
-                                return FlashOperationResult.Failure(mismatchMsg)
-                            }
-                        }
-                        onProgress(overallDone, totalSize, "مطابقة Data Flash ${dfIdx + 1}/$totalDfPages (${fmtAddr(physicalAddr)})")
-                    } else {
-                        val blockBase = physicalAddr and 0xFFFFFC00.toInt()
-                        if (erasedBlocks.add(blockBase)) {
-                            if (!erasePage(transport, blockBase, onLog)) {
-                                return FlashOperationResult.Failure("فشل مسح بلوك Data Flash عند ${fmtAddr(blockBase)}.")
-                            }
-                        }
-                        val ok = writePage(
-                            transport = transport,
-                            address = physicalAddr,
-                            data256 = slice,
-                            onLog = onLog,
-                            verboseFrameLog = (dfIdx == 0)
-                        )
-                        if (!ok) {
-                            return FlashOperationResult.Failure("فشلت كتابة Data Flash عند ${fmtAddr(physicalAddr)}.")
-                        }
-                        onProgress(overallDone, totalSize, "كتابة Data Flash ${dfIdx + 1}/$totalDfPages (${fmtAddr(physicalAddr)})")
-                    }
-
-                    dfAddr += pageSize
-                    dfIdx++
+                writtenPageCount++
+                onProgress(
+                    doneBytes,
+                    totalSpanBytes,
+                    "كتابة ${processor.partNumber}: $pct% (${fmtAddr(page.physicalAddress)})"
+                )
+                if (writtenPageCount == 1 || writtenPageCount % 8 == 0 || isLastWritten) {
+                    onLog(
+                        "كتابة الفلاش: صفحة مكتوبة $writtenPageCount/$totalWrittenTarget " +
+                            "(${fmtAddr(page.physicalAddress)}) — $pct% (تخطي فارغة: $skippedPageCount)"
+                    )
                 }
             }
+
+            if (autoVerifyAfterWrite) {
+                val writtenPages = nonEmptyIndices.map { allPages[it] }
+                onLog("بدء التحقق التلقائي بعد الكتابة (${writtenPages.size} صفحة مكتوبة)...")
+                val verifyRes = runVerifyPages(
+                    transport = transport,
+                    chipName = processor.partNumber,
+                    pages = writtenPages,
+                    baseAddress = chipConfig.programStartAddress,
+                    onLog = onLog,
+                    onProgress = onProgress
+                )
+                if (verifyRes is FlashOperationResult.Failure) {
+                    return verifyRes
+                }
+                return FlashOperationResult.Success(
+                    message = "تمت برمجة ومطابقة ${processor.partNumber} بنجاح (${writtenPageCount} صفحة مكتوبة • 100% متطابق).",
+                    baseAddress = chipConfig.programStartAddress
+                )
+            }
+
+            onProgress(totalSpanBytes, totalSpanBytes, "اكتملت كتابة الفلاش 100%")
+            return FlashOperationResult.Success(
+                message = "تمت برمجة (Write) ${processor.partNumber} بنجاح ($writtenPageCount صفحة مكتوبة، تم تخطي $skippedPageCount صفحة 0xFF).",
+                baseAddress = chipConfig.programStartAddress
+            )
         } catch (t: Throwable) {
             onLog("Program/Verify Exception: ${t.toString()}")
             return FlashOperationResult.Failure("استثناء أثناء العملية: ${t.toString()}")
         } finally {
             transport.setRawRxMonitor(false)
         }
+    }
 
-        val doneMsg = if (verifyOnly) {
-            "تمت مطابقة (Verify) جميع البيانات في ${processor.partNumber} بنسبة 100%."
-        } else {
-            "تمت برمجة (Program) الفلاش بنجاح على ${processor.partNumber} بدءاً من ${fmtAddr(programStartAddress, 4)}."
+    private suspend fun runVerifyPages(
+        transport: SerialTransport,
+        chipName: String,
+        pages: List<TargetPage>,
+        baseAddress: Int,
+        onLog: (String) -> Unit,
+        onProgress: (bytesDone: Int, totalBytes: Int, label: String) -> Unit
+    ): FlashOperationResult {
+        val totalBytes = (pages.size * 256).coerceAtLeast(256)
+        onLog("بدء مطابقة (Verify) ${pages.size} صفحة ($totalBytes بايت) عبر أمر القراءة 0xFF...")
+
+        for (i in pages.indices) {
+            val page = pages[i]
+            val chipPage = readPage(
+                transport = transport,
+                address = page.physicalAddress,
+                onLog = onLog,
+                verboseFrameLog = (i == 0 || i == pages.lastIndex)
+            ) ?: return FlashOperationResult.Failure("تعذر قراءة الصفحة ${fmtAddr(page.physicalAddress)} للمطابقة بعد 3 محاولات.")
+
+            for (byteIdx in 0 until 256) {
+                val expected = page.data256[byteIdx]
+                val actual = chipPage[byteIdx]
+                if (actual != expected) {
+                    val failAddr = page.physicalAddress + byteIdx
+                    val mismatchMsg = "اختلاف المطابقة عند العنوان ${fmtAddr(failAddr)}: " +
+                        "المتوقع ${fmtByte(expected.toInt() and 0xFF)} والمقروء ${fmtByte(actual.toInt() and 0xFF)}."
+                    onLog("Verify Mismatch: $mismatchMsg")
+                    return FlashOperationResult.Failure(mismatchMsg)
+                }
+            }
+
+            val doneBytes = (i + 1) * 256
+            val pct = ((doneBytes * 100L) / totalBytes).toInt()
+            onProgress(doneBytes, totalBytes, "مطابقة $chipName: $pct% (${fmtAddr(page.physicalAddress)})")
+            if (i == 0 || (i + 1) % 8 == 0 || i == pages.lastIndex) {
+                onLog("مطابقة الفلاش: صفحة ${i + 1}/${pages.size} (${fmtAddr(page.physicalAddress)}) — $pct%")
+            }
         }
-        return FlashOperationResult.Success(doneMsg, baseAddress = programStartAddress)
+
+        val okMsg = "متطابق 100%: تمت مطابقة جميع الصفحات (${pages.size} صفحة • ${totalBytes} بايت) في $chipName بنجاح."
+        onProgress(totalBytes, totalBytes, okMsg)
+        onLog(okMsg)
+        return FlashOperationResult.Success(okMsg, baseAddress = baseAddress)
     }
 
     private fun buildEraseBlocks(org: Int, end: Int): List<Int> {

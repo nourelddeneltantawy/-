@@ -115,6 +115,8 @@ fun ProgrammerStep3Flasher(
     onEraseModeChange: (String) -> Unit,
     onDataFlashModeChange: (DataFlashExportMode) -> Unit,
     onToggleViewingDataFlash: (Boolean) -> Unit,
+    onToggleAutoEraseBeforeWrite: (Boolean) -> Unit,
+    onToggleAutoVerifyAfterWrite: (Boolean) -> Unit,
     onJumpToFirstData: () -> Unit,
     onLoadFirmwareUri: (android.net.Uri) -> Unit,
     onSaveDumpUri: (android.net.Uri, Boolean) -> Unit,
@@ -611,6 +613,77 @@ fun ProgrammerStep3Flasher(
                         testTag = "flash_verify_button",
                         modifier = Modifier.weight(1f)
                     )
+                }
+
+                if (mcu.protocolType == ProtocolFamilyType.R8C_M16C) {
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                            verticalArrangement = Arrangement.spacedBy(2.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(min = 48.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = "مسح تلقائي قبل الكتابة (0xA7 D0)",
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                    Text(
+                                        text = "مسح المعالج بالكامل وتخطي صفحات 0xFF تلقائياً",
+                                        fontSize = 10.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                Switch(
+                                    checked = state.autoEraseBeforeWrite,
+                                    onCheckedChange = onToggleAutoEraseBeforeWrite,
+                                    enabled = !state.isBusy,
+                                    modifier = Modifier.testTag("auto_erase_before_write_switch")
+                                )
+                            }
+
+                            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(min = 48.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = "التحقق التلقائي بعد الكتابة (Auto Verify)",
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                    Text(
+                                        text = "مطابقة الصفحات المكتوبة بايت ببايت عبر 0xFF",
+                                        fontSize = 10.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                Switch(
+                                    checked = state.autoVerifyAfterWrite,
+                                    onCheckedChange = onToggleAutoVerifyAfterWrite,
+                                    enabled = !state.isBusy,
+                                    modifier = Modifier.testTag("auto_verify_after_write_switch")
+                                )
+                            }
+                        }
+                    }
                 }
 
                 // Linear Progress Bar + Percentage + Done KB / Total KB

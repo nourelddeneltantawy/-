@@ -755,12 +755,11 @@ object UsbOtgProgrammerService {
 
         if (processor.protocolType == ProtocolFamilyType.R8C_M16C) {
             setEchoCancellation(true)
-            return@withContext R8cProtocolEngine.eraseFlash(
+            return@withContext R8cProtocolEngine.eraseChip(
                 transport = createR8cTransport(),
-                processor = processor,
+                selectedChip = processor,
                 baudRate = baudRate,
                 idBytes = idCodeBytes,
-                dataFlashMode = dataFlashMode,
                 onLog = onLog,
                 onProgress = onProgress
             )
@@ -797,6 +796,8 @@ object UsbOtgProgrammerService {
         verifyOnly: Boolean,
         dataFlashMode: DataFlashExportMode = DataFlashExportMode.EXCLUDE,
         dataFlashBytes: ByteArray? = null,
+        autoEraseBeforeWrite: Boolean = true,
+        autoVerifyAfterWrite: Boolean = false,
         onLog: (String) -> Unit,
         onProgress: (bytesDone: Int, totalBytes: Int, label: String) -> Unit
     ): FlashOperationResult = withContext(Dispatchers.IO) {
@@ -831,6 +832,8 @@ object UsbOtgProgrammerService {
                     idBytes = idCodeBytes,
                     dataFlashMode = dataFlashMode,
                     dataFlashBytes = dataFlashBytes,
+                    autoEraseBeforeWrite = autoEraseBeforeWrite,
+                    autoVerifyAfterWrite = autoVerifyAfterWrite,
                     onLog = onLog,
                     onProgress = onProgress
                 )
@@ -1404,7 +1407,7 @@ object UsbOtgProgrammerService {
                 val chunkLen = min(data.size - offset, out.maxPacketSize.coerceAtLeast(64))
                 val slice = if (offset == 0 && chunkLen == data.size) data
                 else data.copyOfRange(offset, offset + chunkLen)
-                val written = conn.bulkTransfer(out, slice, slice.size, 800)
+                val written = conn.bulkTransfer(out, slice, slice.size, 1200)
                 if (written <= 0) {
                     val attached = activeDevice?.deviceName?.let { usbManager?.deviceList?.containsKey(it) } ?: false
                     return "bulkTransfer(OUT) returned $written (len=${slice.size}, ep=0x%02X, attached=$attached, chip=$activeChipType)"

@@ -78,6 +78,8 @@ data class McuProgrammerUiState(
     val dataFlashBuffer: ByteArray? = null,
     val dataFlashBaseAddress: Int = 0,
     val viewingDataFlashTab: Boolean = false,
+    val autoEraseBeforeWrite: Boolean = true,
+    val autoVerifyAfterWrite: Boolean = false,
     val loadedFileName: String? = null,
     val loadedFormat: String? = null,
     val loadedNonEmptyCount: Int = 0,
@@ -538,6 +540,24 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
         }
     }
 
+    fun setAutoEraseBeforeWrite(enabled: Boolean) {
+        _uiState.update { it.copy(autoEraseBeforeWrite = enabled) }
+        addLog(
+            if (enabled) "تم تفعيل المسح الشامل التلقائي (0xA7 0xD0) قبل الكتابة."
+            else "تم إيقاف المسح التلقائي قبل الكتابة (تأكد أن المعالج ممسوح مسبقاً).",
+            LogLevel.INFO
+        )
+    }
+
+    fun setAutoVerifyAfterWrite(enabled: Boolean) {
+        _uiState.update { it.copy(autoVerifyAfterWrite = enabled) }
+        addLog(
+            if (enabled) "تم تفعيل المطابقة التلقائية (Auto Verify) بعد الكتابة مباشرة."
+            else "تم إيقاف المطابقة التلقائية بعد الكتابة.",
+            LogLevel.INFO
+        )
+    }
+
     fun triggerJumpToFirstData() {
         _uiState.update { it.copy(hexJumpSequence = it.hexJumpSequence + 1) }
     }
@@ -932,7 +952,7 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                                 progressLabel = "اكتمل المسح",
                                 flashBuffer = FirmwareParser.createEmptyBuffer(mcu.flashSizeBytes),
                                 flashBaseAddress = defaultBaseAddressFor(mcu),
-                                dataFlashBuffer = if (dfMode != DataFlashExportMode.EXCLUDE) null else it.dataFlashBuffer,
+                                dataFlashBuffer = if (mcu.protocolType == ProtocolFamilyType.R8C_M16C || dfMode != DataFlashExportMode.EXCLUDE) null else it.dataFlashBuffer,
                                 viewingDataFlashTab = false,
                                 idCodeBytesHex = if (mcu.protocolType == ProtocolFamilyType.R8C_M16C) {
                                     List(7) { "FF" }
@@ -976,6 +996,8 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
         }
         val dfMode = _uiState.value.dataFlashMode
         val dfBytes = _uiState.value.dataFlashBuffer
+        val autoErase = _uiState.value.autoEraseBeforeWrite
+        val autoVerify = _uiState.value.autoVerifyAfterWrite
 
         viewModelScope.launch {
             val actionName = if (verifyOnly) "مطابقة (Verify)" else "كتابة (Write)"
@@ -1004,6 +1026,8 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                     verifyOnly = verifyOnly,
                     dataFlashMode = dfMode,
                     dataFlashBytes = dfBytes,
+                    autoEraseBeforeWrite = autoErase,
+                    autoVerifyAfterWrite = autoVerify,
                     onLog = { msg -> addLog(msg, LogLevel.INFO) },
                     onProgress = { done, total, msg ->
                         val frac = if (total > 0) (done.toFloat() / total.toFloat()).coerceIn(0f, 1f) else 0f
