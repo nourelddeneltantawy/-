@@ -42,6 +42,8 @@ object Nec78k0ProtocolEngine {
 
     const val WATCHDOG_PREFIX = "WATCHDOG_PAUSED:"
     const val RESET_TIMEOUT_MS = 1500
+    const val HEADER_ACK_TIMEOUT_MS = 1500
+    const val PAGE_ACK_TIMEOUT_MS = 2000
 
     interface Serial78k0Transport {
         fun configureUart96008N1(onLog: (String) -> Unit): Boolean
@@ -324,6 +326,42 @@ object Nec78k0ProtocolEngine {
             catalog = catalog
         )
 
+        // Preserve any existing uncompleted rescue session checksums so an already-erased Block 0 never overwrites FullCS / Block0CS
+        val existingRescue = Nec78k0RecoveryManager.findSessionForChip(context, parsed.deviceName)
+            ?: preferredChip?.let { Nec78k0RecoveryManager.findSessionForChip(context, it.partNumber) }
+        if (existingRescue != null &&
+            existingRescue.stage != Nec78k0RecoveryManager.RecoveryStage.COMPLETED &&
+            (existingRescue.fullFlashChecksum != 0 || existingRescue.block0Checksum != 0)
+        ) {
+            onLog(
+                "تم العثور على بصمة أصلية محفوظة مسبقاً (${existingRescue.chipName}: FullCS=${existingRescue.fullChecksumHex} • Block0CS=${existingRescue.block0ChecksumHex}) — تخطي إعادة قراءة 0xB0 لحماية بيانات Block 0."
+            )
+            // Probe Block 0 blank state non-destructively (0x32) if not yet flagged touched
+            if (!existingRescue.block0Touched) {
+                val b0BlankRes = transceiveSingleFrame(
+                    transport,
+                    buildAddressRangeFrame(CMD_BLANK_CHECK, 0x000000, BLOCK_SIZE - 1),
+                    HEADER_ACK_TIMEOUT_MS,
+                    onLog
+                )
+                if (b0BlankRes is Nec78k0TransceiveResult.Success) {
+                    Nec78k0RecoveryManager.saveSessionCheckpoint(
+                        context,
+                        existingRescue.copy(block0Touched = true, updatedAtMs = System.currentTimeMillis())
+                    )
+                }
+            }
+            val preservedInfo = parsed.copy(
+                lastAddress = existingRescue.lastAddress,
+                flashSizeBytes = existingRescue.flashSizeBytes,
+                blockCount = existingRescue.blockCount,
+                fullFlashChecksum16 = existingRescue.fullFlashChecksum,
+                block0Checksum16 = existingRescue.block0Checksum,
+                rawSignatureHex = rawSigHex
+            )
+            return preservedInfo to null
+        }
+
         // Checksum Command 0xB0 TWICE before any write/erase!
         val fullEnd = parsed.lastAddress
         val fullCsCmd = buildAddressRangeFrame(CMD_CHECKSUM, 0x000000, fullEnd)
@@ -361,7 +399,8 @@ object Nec78k0ProtocolEngine {
                 stage = Nec78k0RecoveryManager.RecoveryStage.DETECTED,
                 lastCompletedBlock = -1,
                 updatedAtMs = System.currentTimeMillis(),
-                partialBlocksPath = Nec78k0RecoveryManager.partialBlocksFile(context, finalInfo.deviceName).absolutePath
+                partialBlocksPath = Nec78k0RecoveryManager.partialBlocksFile(context, finalInfo.deviceName).absolutePath,
+                block0Touched = false
             )
         )
         return finalInfo to null
@@ -384,9 +423,10 @@ object Nec78k0ProtocolEngine {
     ): FlashOperationResult {
         val detectedInfo: Nec78k0DetectedInfo
         var session = existingResumeSession
+            ?: Nec78k0RecoveryManager.findSessionForChip(context, selectedChip.partNumber)
 
         if (session != null && session.lastCompletedBlock >= 0) {
-            onLog("تفعيل وضع الاستكمال / الإنقاذ التلقائي للجلسة المحفوظة (${session.chipName}) من المرحلة: ${session.stage.labelAr}...")
+            onLog("تفعيل وضع الاستكمال / الإنقاذ التلقائي للجلسة المحفوظة (${session.chipName} • FullCS=${session.fullChecksumHex} • B0CS=${session.block0ChecksumHex}) من المرحلة: ${session.stage.labelAr}...")
             val resetRes = handshakeAndSendResetCommand(transport, onLog)
             if (resetRes is Nec78k0TransceiveResult.DisconnectedOrTimeout) {
                 return FlashOperationResult.Failure("${WATCHDOG_PREFIX}${session.lastCompletedBlock}:${resetRes.reason}")
@@ -419,8 +459,41 @@ object Nec78k0ProtocolEngine {
                 return FlashOperationResult.Failure("رفض المعالج أمر Reset 0x00: ${resetRes.statusLabel}")
             }
             transceiveSingleFrame(transport, buildCommandFrame(CMD_OSC_FREQ, buildOscFreqPayload(clockFreqMhzText)), RESET_TIMEOUT_MS, onLog)
-            detectedInfo = preDetectedInfo
-            session = Nec78k0RecoveryManager.findSessionForChip(context, preDetectedInfo.deviceName)
+            val savedSession = Nec78k0RecoveryManager.findSessionForChip(context, preDetectedInfo.deviceName)
+            session = savedSession ?: session
+            detectedInfo = if (savedSession != null && (savedSession.fullFlashChecksum != 0 || savedSession.block0Checksum != 0)) {
+                preDetectedInfo.copy(
+                    fullFlashChecksum16 = savedSession.fullFlashChecksum,
+                    block0Checksum16 = savedSession.block0Checksum
+                )
+            } else {
+                preDetectedInfo
+            }
+            onDetectedInfo(detectedInfo)
+        } else if (session != null && (session.fullFlashChecksum != 0 || session.block0Checksum != 0)) {
+            onLog(
+                "استرجاع البصمة الأصلية المحفوظة (${session.chipName} • FullCS=${session.fullChecksumHex} • B0CS=${session.block0ChecksumHex}) بدون إعادة قراءة Block 0..."
+            )
+            val resetRes = handshakeAndSendResetCommand(transport, onLog)
+            if (resetRes is Nec78k0TransceiveResult.DisconnectedOrTimeout) {
+                return FlashOperationResult.Failure("${WATCHDOG_PREFIX}0:${resetRes.reason}")
+            } else if (resetRes is Nec78k0TransceiveResult.ProtocolError) {
+                return FlashOperationResult.Failure("رفض المعالج أمر Reset 0x00: ${resetRes.statusLabel}")
+            }
+            transceiveSingleFrame(transport, buildCommandFrame(CMD_OSC_FREQ, buildOscFreqPayload(clockFreqMhzText)), RESET_TIMEOUT_MS, onLog)
+            detectedInfo = Nec78k0DetectedInfo(
+                deviceName = session.chipName,
+                familyGroup = session.subFamily,
+                lastAddress = session.lastAddress,
+                flashSizeBytes = session.flashSizeBytes,
+                blockCount = session.blockCount,
+                hasDataFlash = session.hasDataFlash,
+                fullFlashChecksum16 = session.fullFlashChecksum,
+                block0Checksum16 = session.block0Checksum,
+                rawSignatureHex = session.signatureHex,
+                matchedProcessor = selectedChip
+            )
+            onDetectedInfo(detectedInfo)
         } else {
             onProgress(0, selectedChip.flashSizeBytes, "التعرف التلقائي وحفظ Checksum الأصلي...")
             val (info, err) = autoDetectAndInspect(
@@ -447,32 +520,75 @@ object Nec78k0ProtocolEngine {
         // Step 2 (Zeroing Block 0 Only) — skipped cleanly if resuming after Block 0 was already zeroed
         if (session == null || session.lastCompletedBlock < 0) {
             onProgress(0, totalSize, "فحص الحماية وتصفير Block 0 فقط...")
-            onLog("المرحلة 2: مسح Block 0 (0x000000..0x0003FF) بأمر 0x22...")
-            val eraseB0Cmd = buildAddressRangeFrame(CMD_BLOCK_ERASE, 0x000000, BLOCK_SIZE - 1)
-            when (val eraseRes = transceiveSingleFrame(transport, eraseB0Cmd, 1500, onLog)) {
-                is Nec78k0TransceiveResult.Success -> {
-                    onLog("RX (Block 0 Erase ACK): ${toHex(eraseRes.frame.rawFrame)}")
-                }
-                is Nec78k0TransceiveResult.ProtocolError -> {
-                    if (eraseRes.statusCode == STS_PROTECT_ERROR) {
-                        Nec78k0RecoveryManager.markCompletedAndCleanup(context, detectedInfo.deviceName)
-                        return FlashOperationResult.Failure(
-                            "المعالج محمي برمجياً ضد القراءة/المسح (ERR_PROTECT 0x10). تم إيقاف العملية فوراً قبل أي تعديل لحماية بياناتك."
-                        )
+            // Check whether Block 0 was already erased (e.g., resuming after an interrupted 0x40 write)
+            val b0CheckCmd = buildAddressRangeFrame(CMD_BLANK_CHECK, 0x000000, BLOCK_SIZE - 1)
+            val b0BlankRes = transceiveSingleFrame(transport, b0CheckCmd, HEADER_ACK_TIMEOUT_MS, onLog)
+            if (b0BlankRes is Nec78k0TransceiveResult.Success) {
+                onLog("المرحلة 2: Block 0 ممسوح مسبقاً (0x32 Blank ACK) — الاحتفاظ بالبصمة الأصلية (FullCS=${detectedInfo.fullFlashChecksumHex} • Block0CS=${detectedInfo.block0ChecksumHex}) والمتابعة لكتابة الأصفار...")
+                val touchedSession = (session ?: Nec78k0RecoveryManager.Nec78k0RecoverySession(
+                    chipName = detectedInfo.deviceName,
+                    subFamily = detectedInfo.familyGroup,
+                    lastAddress = detectedInfo.lastAddress,
+                    blockCount = blockCount,
+                    hasDataFlash = detectedInfo.hasDataFlash,
+                    fullFlashChecksum = detectedInfo.fullFlashChecksum16,
+                    block0Checksum = detectedInfo.block0Checksum16,
+                    signatureHex = detectedInfo.rawSignatureHex,
+                    stage = Nec78k0RecoveryManager.RecoveryStage.DETECTED,
+                    lastCompletedBlock = -1,
+                    updatedAtMs = System.currentTimeMillis(),
+                    partialBlocksPath = Nec78k0RecoveryManager.partialBlocksFile(context, detectedInfo.deviceName).absolutePath,
+                    block0Touched = true
+                )).copy(block0Touched = true, updatedAtMs = System.currentTimeMillis())
+                session = touchedSession
+                Nec78k0RecoveryManager.saveSessionCheckpoint(context, touchedSession)
+            } else {
+                onLog("المرحلة 2: مسح Block 0 (0x000000..0x0003FF) بأمر 0x22...")
+                val eraseB0Cmd = buildAddressRangeFrame(CMD_BLOCK_ERASE, 0x000000, BLOCK_SIZE - 1)
+                when (val eraseRes = transceiveSingleFrame(transport, eraseB0Cmd, HEADER_ACK_TIMEOUT_MS, onLog)) {
+                    is Nec78k0TransceiveResult.Success -> {
+                        onLog("RX (Block 0 Erase ACK): ${toHex(eraseRes.frame.rawFrame)}")
+                        val touchedSession = (session ?: Nec78k0RecoveryManager.Nec78k0RecoverySession(
+                            chipName = detectedInfo.deviceName,
+                            subFamily = detectedInfo.familyGroup,
+                            lastAddress = detectedInfo.lastAddress,
+                            blockCount = blockCount,
+                            hasDataFlash = detectedInfo.hasDataFlash,
+                            fullFlashChecksum = detectedInfo.fullFlashChecksum16,
+                            block0Checksum = detectedInfo.block0Checksum16,
+                            signatureHex = detectedInfo.rawSignatureHex,
+                            stage = Nec78k0RecoveryManager.RecoveryStage.DETECTED,
+                            lastCompletedBlock = -1,
+                            updatedAtMs = System.currentTimeMillis(),
+                            partialBlocksPath = Nec78k0RecoveryManager.partialBlocksFile(context, detectedInfo.deviceName).absolutePath,
+                            block0Touched = true
+                        )).copy(block0Touched = true, updatedAtMs = System.currentTimeMillis())
+                        session = touchedSession
+                        Nec78k0RecoveryManager.saveSessionCheckpoint(context, touchedSession)
                     }
-                    return FlashOperationResult.Failure("فشل مسح Block 0 (0x22): ${eraseRes.statusLabel}")
+                    is Nec78k0TransceiveResult.ProtocolError -> {
+                        if (eraseRes.statusCode == STS_PROTECT_ERROR) {
+                            Nec78k0RecoveryManager.markCompletedAndCleanup(context, detectedInfo.deviceName)
+                            return FlashOperationResult.Failure(
+                                "المعالج محمي برمجياً ضد القراءة/المسح (ERR_PROTECT 0x10). تم إيقاف العملية فوراً قبل أي تعديل لحماية بياناتك."
+                            )
+                        }
+                        return FlashOperationResult.Failure("فشل مسح Block 0 (0x22): ${eraseRes.statusLabel}")
+                    }
+                    is Nec78k0TransceiveResult.DisconnectedOrTimeout -> {
+                        return FlashOperationResult.Failure("${WATCHDOG_PREFIX}0:${eraseRes.reason}")
+                    }
                 }
-                is Nec78k0TransceiveResult.DisconnectedOrTimeout -> {
-                    return FlashOperationResult.Failure("${WATCHDOG_PREFIX}0:${eraseRes.reason}")
-                }
+                delay(20)
             }
 
-            onLog("المرحلة 2: كتابة أصفار في Block 0 (4×256B بأمر 0x40) لفتح السحب...")
+            onLog("المرحلة 2: كتابة أصفار في Block 0 (مرحلتان: Header 0x40 ثم 4×260B) لفتح السحب...")
             val zeroResult = programBlockFromBuffer(
                 transport = transport,
                 startAddr = 0x000000,
                 endAddr = BLOCK_SIZE - 1,
                 blockData = ByteArray(BLOCK_SIZE) { 0x00 },
+                watchdogPausedBlock = 0,
                 onLog = onLog
             )
             if (zeroResult != null) {
@@ -495,7 +611,8 @@ object Nec78k0ProtocolEngine {
                 stage = Nec78k0RecoveryManager.RecoveryStage.BLOCK0_ZEROED,
                 lastCompletedBlock = 0,
                 updatedAtMs = System.currentTimeMillis(),
-                partialBlocksPath = Nec78k0RecoveryManager.partialBlocksFile(context, detectedInfo.deviceName).absolutePath
+                partialBlocksPath = Nec78k0RecoveryManager.partialBlocksFile(context, detectedInfo.deviceName).absolutePath,
+                block0Touched = true
             )
             Nec78k0RecoveryManager.saveSessionCheckpoint(context, session)
             onLog("تم تصفير Block 0 وتثبيت نقطة الاسترجاع الذرية بنجاح.")
@@ -702,75 +819,121 @@ object Nec78k0ProtocolEngine {
         )
     }
 
-    private sealed class VerifyOutcome {
+    internal sealed class VerifyOutcome {
         data object Match : VerifyOutcome()
-        data class Mismatch(val detail: String) : VerifyOutcome()
-        data class TransportLost(val reason: String) : VerifyOutcome()
+        data class Mismatch(val detail: String, val errorCode: Int = STS_VERIFY_ERROR, val failedPage: Int = 0) : VerifyOutcome()
+        data class TransportLost(val reason: String, val failedPage: Int = 0) : VerifyOutcome()
     }
 
-    private suspend fun verifyBlockVia0x13(
+    /**
+     * Two-Stage 0x13 Verify Handshake:
+     * Stage A: Send 11-byte 0x13 Address Frame ONLY -> wait strictly for 5-byte ACK [02 01 06 F9 03] (1500ms).
+     * Stage B: Send 4 x 260-byte frames (first 3 end with 0x17 ETB, 4th ends with 0x03 ETX) -> wait for 6-byte [02 02 06 06 F2 03] (2000ms) after EACH page.
+     */
+    internal suspend fun verifyBlockVia0x13(
         transport: Serial78k0Transport,
         startAddr: Int,
         endAddr: Int,
         blockBytes: ByteArray,
         onLog: (String) -> Unit
     ): VerifyOutcome {
+        require(blockBytes.size == BLOCK_SIZE) { "78K0 verify block must be 1024 bytes" }
         val verifyCmd = buildAddressRangeFrame(CMD_VERIFY, startAddr, endAddr)
-        when (val cmdRes = transceiveSingleFrame(transport, verifyCmd, 700, onLog)) {
+        when (val cmdRes = transceiveSingleFrame(transport, verifyCmd, HEADER_ACK_TIMEOUT_MS, onLog)) {
             is Nec78k0TransceiveResult.Success -> Unit
-            is Nec78k0TransceiveResult.ProtocolError -> return VerifyOutcome.Mismatch(cmdRes.statusLabel)
-            is Nec78k0TransceiveResult.DisconnectedOrTimeout -> return VerifyOutcome.TransportLost(cmdRes.reason)
+            is Nec78k0TransceiveResult.ProtocolError -> return VerifyOutcome.Mismatch(cmdRes.statusLabel, cmdRes.statusCode, 0)
+            is Nec78k0TransceiveResult.DisconnectedOrTimeout -> return VerifyOutcome.TransportLost(cmdRes.reason, 0)
         }
+
+        delay(5)
 
         // Send 4 x 260B SOH frames (first 3 end with ETB 0x17, final ends with ETX 0x03)
         for (page in 0 until 4) {
+            if (!transport.isDeviceAttached()) {
+                return VerifyOutcome.TransportLost("انقطع اتصال USB OTG أثناء Verify عند صفحة ${page + 1}/4", page + 1)
+            }
             val offset = page * PAGE_SIZE
             val slice = blockBytes.copyOfRange(offset, offset + PAGE_SIZE)
             val dataFrame = buildDataFrame(slice, isLast = (page == 3))
             transport.flushInputBuffer()
             val txErr = transport.writeRaw(dataFrame)
             if (txErr != null) {
-                return VerifyOutcome.TransportLost("انقطع الإرسال أثناء Verify عند صفحة ${page + 1}/4: $txErr")
+                return VerifyOutcome.TransportLost("انقطع الإرسال أثناء Verify عند صفحة ${page + 1}/4: $txErr", page + 1)
             }
             transport.discardEcho(dataFrame.size, 9600)
-            val frameAck = readOneRxFrame(transport, 1500)
-                ?: return VerifyOutcome.TransportLost("انتهت مهلة انتظار ACK أثناء Verify (الصفحة ${page + 1}/4)")
+            val frameAck = readOneRxFrame(transport, PAGE_ACK_TIMEOUT_MS) { stray ->
+                onLog("RX Raw (0x13 صفحة ${page + 1}/4): $stray")
+            } ?: return VerifyOutcome.TransportLost(
+                "انتهت مهلة انتظار ACK أثناء Verify (الصفحة ${page + 1}/4 خلال ${PAGE_ACK_TIMEOUT_MS}ms)",
+                page + 1
+            )
             if (!frameAck.isAckSuccess) {
-                return VerifyOutcome.Mismatch(statusDescription(frameAck.effectiveErrorCode))
+                val errCode = frameAck.effectiveErrorCode
+                return VerifyOutcome.Mismatch(statusDescription(errCode), errCode, page + 1)
             }
         }
         return VerifyOutcome.Match
     }
 
-    private suspend fun programBlockFromBuffer(
+    /**
+     * Two-Stage 0x40 Program Handshake:
+     * Stage A: Send ONLY 11-byte 0x40 Address Frame -> wait strictly for 5-byte ACK [02 01 06 F9 03] (1500ms) BEFORE sending any data.
+     * Stage B: Send 4 x 260-byte frames (pages 1..3 end with 0x17 ETB, page 4 ends with 0x03 ETX) -> wait for 6-byte [02 02 06 06 F2 03] (2000ms) after EACH page.
+     */
+    internal suspend fun programBlockFromBuffer(
         transport: Serial78k0Transport,
         startAddr: Int,
         endAddr: Int,
         blockData: ByteArray,
+        watchdogPausedBlock: Int = 0,
         onLog: (String) -> Unit
     ): String? {
+        require(blockData.size == BLOCK_SIZE) { "78K0 program block must be 1024 bytes" }
         val progCmd = buildAddressRangeFrame(CMD_PROGRAM, startAddr, endAddr)
-        when (val res = transceiveSingleFrame(transport, progCmd, 1500, onLog)) {
-            is Nec78k0TransceiveResult.Success -> Unit
-            is Nec78k0TransceiveResult.ProtocolError -> return "رفض المعالج أمر الكتابة 0x40: ${res.statusLabel}"
-            is Nec78k0TransceiveResult.DisconnectedOrTimeout -> return "${WATCHDOG_PREFIX}0:${res.reason}"
+        onLog("TX (0x40 Header 11B): ${toHex(progCmd)}")
+        when (val res = transceiveSingleFrame(transport, progCmd, HEADER_ACK_TIMEOUT_MS, onLog)) {
+            is Nec78k0TransceiveResult.Success -> {
+                onLog("RX (0x40 Header ACK): ${toHex(res.frame.rawFrame)}")
+            }
+            is Nec78k0TransceiveResult.ProtocolError -> {
+                if (res.statusCode == STS_PROTECT_ERROR) {
+                    return "الشريحة محمية (ERR_PROTECT 0x10): أمر البرمجة 0x40 مرفوض."
+                }
+                return "رفض المعالج أمر الكتابة 0x40: ${res.statusLabel}"
+            }
+            is Nec78k0TransceiveResult.DisconnectedOrTimeout -> return "${WATCHDOG_PREFIX}${watchdogPausedBlock}:${res.reason}"
         }
 
+        // Allow 78K0 bootloader to switch cleanly from command header mode to 260-byte data reception mode
+        delay(10)
+
         for (page in 0 until 4) {
+            if (!transport.isDeviceAttached()) {
+                return "${WATCHDOG_PREFIX}${watchdogPausedBlock}:انقطع كابل USB OTG أثناء إرسال حزمة 0x40 (صفحة ${page + 1}/4)"
+            }
             val offset = page * PAGE_SIZE
             val slice = blockData.copyOfRange(offset, offset + PAGE_SIZE)
-            val dataFrame = buildDataFrame(slice, isLast = (page == 3))
+            val isLast = (page == 3)
+            val dataFrame = buildDataFrame(slice, isLast = isLast)
             transport.flushInputBuffer()
+            onLog("TX (0x40 صفحة ${page + 1}/4 • 260B • END=${if (isLast) "0x03 ETX" else "0x17 ETB"})")
             val txErr = transport.writeRaw(dataFrame)
             if (txErr != null) {
-                return "${WATCHDOG_PREFIX}0:فشل إرسال بيانات 0x40: $txErr"
+                return "${WATCHDOG_PREFIX}${watchdogPausedBlock}:فشل إرسال بيانات 0x40 (صفحة ${page + 1}/4): $txErr"
             }
             transport.discardEcho(dataFrame.size, 9600)
 
-            val ack = readOneRxFrame(transport, 1500)
-                ?: return "${WATCHDOG_PREFIX}0:لم يرد المعالج على حزمة 0x40 (صفحة ${page + 1}/4)"
+            val ack = readOneRxFrame(transport, PAGE_ACK_TIMEOUT_MS) { stray ->
+                onLog("RX Raw (0x40 صفحة ${page + 1}/4): $stray")
+            } ?: return "${WATCHDOG_PREFIX}${watchdogPausedBlock}:لم يرد المعالج على حزمة 0x40 (صفحة ${page + 1}/4 خلال ${PAGE_ACK_TIMEOUT_MS}ms)"
+
+            onLog("RX (0x40 صفحة ${page + 1}/4 ACK): ${toHex(ack.rawFrame)}")
             if (!ack.isAckSuccess) {
-                return "فشل حرق الصفحة ${page + 1}/4 (0x40): ${statusDescription(ack.effectiveErrorCode)}"
+                val errCode = ack.effectiveErrorCode
+                if (errCode == STS_PROTECT_ERROR) {
+                    return "الشريحة محمية (ERR_PROTECT 0x10): تم إيقاف الكتابة عند صفحة ${page + 1}/4."
+                }
+                return "فشل حرق الصفحة ${page + 1}/4 (0x40): ${statusDescription(errCode)}"
             }
         }
         return null
@@ -937,27 +1100,43 @@ object Nec78k0ProtocolEngine {
 
     internal suspend fun readOneRxFrame(
         transport: Serial78k0Transport,
-        timeoutMs: Int
+        timeoutMs: Int,
+        onUnexpectedRx: ((String) -> Unit)? = null
     ): Nec78k0RxFrame? {
         val deadline = System.currentTimeMillis() + timeoutMs.toLong()
         var foundStx = false
+        val preStx = ByteArrayOutputStream()
         while (System.currentTimeMillis() < deadline) {
             val b = transport.readBytesWithTimeout(1, (deadline - System.currentTimeMillis()).toInt().coerceIn(20, 150))
             if (b.isEmpty()) continue
-            if ((b[0].toInt() and 0xFF) == STX) {
+            val valByte = b[0].toInt() and 0xFF
+            if (valByte == STX) {
                 foundStx = true
                 break
+            } else {
+                preStx.write(valByte)
             }
         }
-        if (!foundStx) return null
+        if (!foundStx) {
+            if (preStx.size() > 0) {
+                onUnexpectedRx?.invoke(toHex(preStx.toByteArray()))
+            }
+            return null
+        }
 
-        val lenArr = transport.readBytesWithTimeout(1, (deadline - System.currentTimeMillis()).toInt().coerceIn(60, 400))
-        if (lenArr.isEmpty()) return null
+        val lenArr = transport.readBytesWithTimeout(1, (deadline - System.currentTimeMillis()).toInt().coerceIn(80, 500))
+        if (lenArr.isEmpty()) {
+            onUnexpectedRx?.invoke("02 (انقطع بعد STX)")
+            return null
+        }
         val lenByte = lenArr[0].toInt() and 0xFF
         val dataLen = if (lenByte == 0) PAGE_SIZE else lenByte
         val tailNeeded = dataLen + 2 // DATA + CS + ETX
-        val tail = readExactCount(transport, tailNeeded, (deadline - System.currentTimeMillis()).toInt().coerceIn(150, 1200))
-            ?: return null
+        val tail = readExactCount(transport, tailNeeded, (deadline - System.currentTimeMillis()).toInt().coerceIn(200, 1200))
+        if (tail == null) {
+            onUnexpectedRx?.invoke(String.format(Locale.US, "02 %02X (نقص باقي الإطار)", lenByte))
+            return null
+        }
 
         val payload = tail.copyOfRange(0, dataLen)
         val csByte = tail[dataLen].toInt() and 0xFF

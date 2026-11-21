@@ -12,8 +12,7 @@ import java.util.Locale
  */
 object Nec78k0FlashWriterEngine {
     private const val BLOCK_SIZE = Nec78k0ProtocolEngine.BLOCK_SIZE // 1024 B (0x0400)
-    private const val PAGE_SIZE = Nec78k0ProtocolEngine.PAGE_SIZE   // 256 B
-    private const val COMMAND_TIMEOUT_MS = 2000
+    private const val COMMAND_TIMEOUT_MS = Nec78k0ProtocolEngine.PAGE_ACK_TIMEOUT_MS
 
     suspend fun eraseFlash(
         context: Context,
@@ -153,70 +152,27 @@ object Nec78k0FlashWriterEngine {
                 continue
             }
 
-            // 1. Send Programming Command 0x40 (11 bytes): [01 07 40 S_H S_M S_L E_H E_M E_L CS 03]
-            val progCmd = Nec78k0ProtocolEngine.buildAddressRangeFrame(
-                Nec78k0ProtocolEngine.CMD_PROGRAM,
-                startAddr,
-                endAddr
+            // Two-Stage 0x40 Programming:
+            // Stage A: 11-byte 0x40 Address Frame -> await 5-byte ACK [02 01 06 F9 03] (1500ms)
+            // Stage B: 4 x 260-byte data frames (0x17 x3, 0x03 x1) -> await 6-byte [02 02 06 06 F2 03] (2000ms) each
+            val progErr = Nec78k0ProtocolEngine.programBlockFromBuffer(
+                transport = transport,
+                startAddr = startAddr,
+                endAddr = endAddr,
+                blockData = blockSlice,
+                watchdogPausedBlock = blockIdx,
+                onLog = onLog
             )
-            when (val cmdRes = Nec78k0ProtocolEngine.transceiveSingleFrame(transport, progCmd, COMMAND_TIMEOUT_MS, onLog)) {
-                is Nec78k0ProtocolEngine.Nec78k0TransceiveResult.Success -> Unit
-                is Nec78k0ProtocolEngine.Nec78k0TransceiveResult.ProtocolError -> {
-                    if (cmdRes.statusCode == Nec78k0ProtocolEngine.STS_PROTECT_ERROR) {
-                        return FlashOperationResult.Failure(
-                            "الشريحة محمية (ERR_PROTECT 0x10): الكتابة مقفولة برمجياً عند البلوك ${blockIdx + 1}/$blockCount (0x%06X)."
-                                .format(Locale.US, startAddr)
-                        )
-                    }
-                    return FlashOperationResult.Failure(
-                        "رفض المعالج أمر البرمجة 0x40 عند البلوك ${blockIdx + 1}/$blockCount (0x%06X): ${cmdRes.statusLabel}"
-                            .format(Locale.US, startAddr)
-                    )
+            if (progErr != null) {
+                val cleanErr = if (progErr.startsWith(Nec78k0ProtocolEngine.WATCHDOG_PREFIX)) {
+                    val colon = progErr.indexOf(':', Nec78k0ProtocolEngine.WATCHDOG_PREFIX.length)
+                    if (colon >= 0) progErr.substring(colon + 1) else progErr
+                } else {
+                    progErr
                 }
-                is Nec78k0ProtocolEngine.Nec78k0TransceiveResult.DisconnectedOrTimeout -> {
-                    return FlashOperationResult.Failure(
-                        disconnectMessage("الكتابة", blockIdx, blockCount, cmdRes.reason)
-                    )
-                }
-            }
-
-            // 2. Send 4 x 260-byte SOH frames ([01 00 ...256B CS 17/03]) awaiting 6-byte ACK after EACH frame
-            for (page in 0 until 4) {
-                if (!transport.isDeviceAttached()) {
-                    return FlashOperationResult.Failure(
-                        disconnectMessage("الكتابة", blockIdx, blockCount, "انقطع كابل USB OTG أثناء إرسال الإطار ${page + 1}/4")
-                    )
-                }
-                val pageOffset = page * PAGE_SIZE
-                val pageData = blockSlice.copyOfRange(pageOffset, pageOffset + PAGE_SIZE)
-                val frame260 = Nec78k0ProtocolEngine.buildDataFrame(pageData, isLast = (page == 3))
-
-                transport.flushInputBuffer()
-                val txErr = transport.writeRaw(frame260)
-                if (txErr != null) {
-                    return FlashOperationResult.Failure(
-                        disconnectMessage("الكتابة", blockIdx, blockCount, "فشل الإرسال عند الإطار ${page + 1}/4: $txErr")
-                    )
-                }
-                transport.discardEcho(frame260.size, 9600)
-
-                val rxAck = Nec78k0ProtocolEngine.readOneRxFrame(transport, COMMAND_TIMEOUT_MS)
-                    ?: return FlashOperationResult.Failure(
-                        disconnectMessage("الكتابة", blockIdx, blockCount, "انتهت مهلة ACK عند الإطار ${page + 1}/4")
-                    )
-                if (!rxAck.isAckSuccess) {
-                    val code = rxAck.effectiveErrorCode
-                    if (code == Nec78k0ProtocolEngine.STS_PROTECT_ERROR) {
-                        return FlashOperationResult.Failure(
-                            "الشريحة محمية (ERR_PROTECT 0x10): تم إيقاف الكتابة عند البلوك ${blockIdx + 1}/$blockCount (0x%06X)."
-                                .format(Locale.US, startAddr)
-                        )
-                    }
-                    return FlashOperationResult.Failure(
-                        "فشل حرق الإطار ${page + 1}/4 في البلوك ${blockIdx + 1}/$blockCount (0x%06X): ${Nec78k0ProtocolEngine.statusDescription(code)}"
-                            .format(Locale.US, startAddr)
-                    )
-                }
+                return FlashOperationResult.Failure(
+                    disconnectMessage("الكتابة", blockIdx, blockCount, cleanErr)
+                )
             }
 
             writtenBlocks++
@@ -458,45 +414,17 @@ object Nec78k0FlashWriterEngine {
                 continue
             }
 
-            // 1. Verify Command (0x13)
-            val verifyCmd = Nec78k0ProtocolEngine.buildAddressRangeFrame(
-                Nec78k0ProtocolEngine.CMD_VERIFY,
-                startAddr,
-                endAddr
-            )
-            when (val cmdRes = Nec78k0ProtocolEngine.transceiveSingleFrame(transport, verifyCmd, COMMAND_TIMEOUT_MS, onLog)) {
-                is Nec78k0ProtocolEngine.Nec78k0TransceiveResult.Success -> Unit
-                is Nec78k0ProtocolEngine.Nec78k0TransceiveResult.ProtocolError -> {
-                    return "فشل بدء أمر Verify 0x13 عند البلوك ${blockIdx + 1}/$blockCount (0x%06X): ${cmdRes.statusLabel}"
-                        .format(Locale.US, startAddr)
+            // Two-Stage 0x13 Verify:
+            // Stage A: 11-byte 0x13 Address Frame -> await 5-byte ACK [02 01 06 F9 03] (1500ms)
+            // Stage B: 4 x 260-byte data frames (0x17 x3, 0x03 x1) -> await 6-byte [02 02 06 06 F2 03] (2000ms) each
+            when (val verifyOutcome = Nec78k0ProtocolEngine.verifyBlockVia0x13(transport, startAddr, endAddr, blockSlice, onLog)) {
+                is Nec78k0ProtocolEngine.VerifyOutcome.Match -> Unit
+                is Nec78k0ProtocolEngine.VerifyOutcome.TransportLost -> {
+                    return disconnectMessage("المطابقة", blockIdx, blockCount, verifyOutcome.reason)
                 }
-                is Nec78k0ProtocolEngine.Nec78k0TransceiveResult.DisconnectedOrTimeout -> {
-                    return disconnectMessage("المطابقة", blockIdx, blockCount, cmdRes.reason)
-                }
-            }
-
-            // 2. Send 4 x 260-byte frames (SOH 0x01, LEN 0x00, 256B, CS, ETB/ETX) and check 6-byte ACK after EACH frame
-            for (page in 0 until 4) {
-                if (!transport.isDeviceAttached()) {
-                    return disconnectMessage("المطابقة", blockIdx, blockCount, "انقطع الاتصال أثناء التحقق من الإطار ${page + 1}/4")
-                }
-                val pageOffset = page * PAGE_SIZE
-                val pageData = blockSlice.copyOfRange(pageOffset, pageOffset + PAGE_SIZE)
-                val frame260 = Nec78k0ProtocolEngine.buildDataFrame(pageData, isLast = (page == 3))
-
-                transport.flushInputBuffer()
-                val txErr = transport.writeRaw(frame260)
-                if (txErr != null) {
-                    return disconnectMessage("المطابقة", blockIdx, blockCount, "خطأ إرسال عند الإطار ${page + 1}/4: $txErr")
-                }
-                transport.discardEcho(frame260.size, 9600)
-
-                val rxAck = Nec78k0ProtocolEngine.readOneRxFrame(transport, COMMAND_TIMEOUT_MS)
-                    ?: return disconnectMessage("المطابقة", blockIdx, blockCount, "انتهت مهلة الرد عند الإطار ${page + 1}/4")
-
-                if (!rxAck.isAckSuccess) {
-                    val code = rxAck.effectiveErrorCode
-                    val errText = if (code == Nec78k0ProtocolEngine.STS_VERIFY_ERROR) {
+                is Nec78k0ProtocolEngine.VerifyOutcome.Mismatch -> {
+                    val errText = if (verifyOutcome.errorCode == Nec78k0ProtocolEngine.STS_VERIFY_ERROR && verifyOutcome.failedPage > 0) {
+                        val pageAddr = startAddr + ((verifyOutcome.failedPage - 1) * Nec78k0ProtocolEngine.PAGE_SIZE)
                         String.format(
                             Locale.US,
                             "فشل المطابقة (ERR_VERIFY 0x0F): اختلاف في البيانات عند البلوك %d/%d (العنوان 0x%06X..0x%06X • الإطار %d/4 @ 0x%06X).",
@@ -504,18 +432,17 @@ object Nec78k0FlashWriterEngine {
                             blockCount,
                             startAddr,
                             endAddr,
-                            page + 1,
-                            startAddr + pageOffset
+                            verifyOutcome.failedPage,
+                            pageAddr
                         )
                     } else {
                         String.format(
                             Locale.US,
-                            "خطأ أثناء Verify في البلوك %d/%d (0x%06X • الإطار %d/4): %s",
+                            "خطأ أثناء Verify في البلوك %d/%d (0x%06X): %s",
                             blockIdx + 1,
                             blockCount,
                             startAddr,
-                            page + 1,
-                            Nec78k0ProtocolEngine.statusDescription(code)
+                            verifyOutcome.detail
                         )
                     }
                     onLog(errText)

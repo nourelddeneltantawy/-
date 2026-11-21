@@ -1679,7 +1679,7 @@ object UsbOtgProgrammerService {
                 val chunkLen = min(data.size - offset, out.maxPacketSize.coerceAtLeast(64))
                 val slice = if (offset == 0 && chunkLen == data.size) data
                 else data.copyOfRange(offset, offset + chunkLen)
-                val written = conn.bulkTransfer(out, slice, slice.size, 1200)
+                val written = conn.bulkTransfer(out, slice, slice.size, 2000)
                 if (written <= 0) {
                     val attached = activeDevice?.deviceName?.let { usbManager?.deviceList?.containsKey(it) } ?: false
                     return "bulkTransfer(OUT) returned $written (len=${slice.size}, ep=0x%02X, attached=$attached, chip=$activeChipType)"

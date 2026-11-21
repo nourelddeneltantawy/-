@@ -967,9 +967,11 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
     fun readChipFlash() = execute78k0OrStandardRead(resumeSession = null)
 
     fun rescueOrResume78k0Flash(session: Nec78k0RecoveryManager.Nec78k0RecoverySession? = null) {
+        val selectedPart = _uiState.value.selectedProcessor?.partNumber
         val target = session
-            ?: _uiState.value.selectedProcessor?.let { Nec78k0RecoveryManager.findSessionForChip(appContext, it.partNumber) }
+            ?: selectedPart?.let { Nec78k0RecoveryManager.findSessionForChip(appContext, it) }
             ?: _uiState.value.pendingRescueSessions.firstOrNull()
+            ?: Nec78k0RecoveryManager.findAnyPendingSession(appContext, selectedPart)
         if (target == null) {
             addLog("لا توجد جلسة إنقاذ 78K0 غير مكتملة حالياً.", LogLevel.INFO)
             return
@@ -994,12 +996,10 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
             return
         }
         val dfMode = _uiState.value.dataFlashMode
-        val activeResume = if (resumeSession != null) {
-            resumeSession
-        } else if (mcu.is78k0Flmd0Mode() && _uiState.value.watchdogPausedBlock != null) {
-            Nec78k0RecoveryManager.findSessionForChip(appContext, mcu.partNumber)
-        } else {
-            null
+        val activeResume = when {
+            resumeSession != null -> resumeSession
+            mcu.is78k0Flmd0Mode() -> Nec78k0RecoveryManager.findSessionForChip(appContext, mcu.partNumber)
+            else -> null
         }
 
         viewModelScope.launch {
@@ -1014,8 +1014,13 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                 )
             }
             addLog(
-                if (activeResume != null) "بدء إنقاذ واستكمال سحب ${activeResume.chipName} من الكتلة ${activeResume.lastCompletedBlock + 1}..."
-                else "بدء قراءة ذاكرة ${mcu.partNumber} (${mcu.flashKb}KB)...",
+                when {
+                    activeResume != null && activeResume.lastCompletedBlock >= 0 ->
+                        "بدء إنقاذ واستكمال سحب ${activeResume.chipName} من الكتلة ${activeResume.lastCompletedBlock + 1} (FullCS=${activeResume.fullChecksumHex} • Block0CS=${activeResume.block0ChecksumHex})..."
+                    activeResume != null ->
+                        "استرجاع البصمة المحفوظة لـ ${activeResume.chipName} (FullCS=${activeResume.fullChecksumHex} • Block0CS=${activeResume.block0ChecksumHex}) ومتابعة السحب..."
+                    else -> "بدء قراءة ذاكرة ${mcu.partNumber} (${mcu.flashKb}KB)..."
+                },
                 LogLevel.INFO
             )
 

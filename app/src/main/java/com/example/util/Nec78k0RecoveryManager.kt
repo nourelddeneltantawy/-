@@ -42,7 +42,8 @@ object Nec78k0RecoveryManager {
         val stage: RecoveryStage,
         val lastCompletedBlock: Int,
         val updatedAtMs: Long,
-        val partialBlocksPath: String
+        val partialBlocksPath: String,
+        val block0Touched: Boolean = false
     ) {
         val flashSizeBytes: Int
             get() = lastAddress + 1
@@ -99,6 +100,7 @@ object Nec78k0RecoveryManager {
             put("lastCompletedBlock", session.lastCompletedBlock)
             put("updatedAtMs", session.updatedAtMs)
             put("partialBlocksPath", canonicalPartial)
+            put("block0Touched", session.block0Touched || session.stage != RecoveryStage.DETECTED || session.lastCompletedBlock >= 0)
         }
         writeBytesAtomically(target, json.toString(2).toByteArray(Charsets.UTF_8))
         return target
@@ -132,29 +134,42 @@ object Nec78k0RecoveryManager {
     }
 
     fun findActiveRescueSessions(context: Context): List<Nec78k0RecoverySession> {
+        return loadAllUncompletedSessions(context)
+            .filter { it.lastCompletedBlock >= 0 || it.block0Touched || it.stage != RecoveryStage.DETECTED }
+            .distinctBy { normalizeChipKey(it.chipName) }
+            .sortedByDescending { it.updatedAtMs }
+    }
+
+    fun findAnyPendingSession(context: Context, preferredChipName: String? = null): Nec78k0RecoverySession? {
+        val all = loadAllUncompletedSessions(context).sortedByDescending { it.updatedAtMs }
+        if (!preferredChipName.isNullOrBlank()) {
+            all.firstOrNull { chipsMatch(it.chipName, preferredChipName) }?.let { return it }
+        }
+        return all.firstOrNull { it.lastCompletedBlock >= 0 || it.block0Touched || it.stage != RecoveryStage.DETECTED }
+            ?: all.firstOrNull()
+    }
+
+    private fun loadAllUncompletedSessions(context: Context): List<Nec78k0RecoverySession> {
         val dir = getRecoveryDir(context)
         val files = dir.listFiles { _, name ->
             name == CANONICAL_RESCUE_JSON || (name.startsWith("recovery_78k0_") && name.endsWith(".json"))
         } ?: return emptyList()
 
         return files.mapNotNull { parseSessionFile(it) }
-            .filter { it.stage != RecoveryStage.COMPLETED && it.lastCompletedBlock >= 0 }
-            .distinctBy { normalizeChipKey(it.chipName) }
-            .sortedByDescending { it.updatedAtMs }
+            .filter { it.stage != RecoveryStage.COMPLETED }
     }
 
     fun findSessionForChip(context: Context, chipName: String): Nec78k0RecoverySession? {
         val canonical = parseSessionFile(sessionFile(context, chipName))
         if (canonical != null && canonical.stage != RecoveryStage.COMPLETED &&
-            normalizeChipKey(canonical.chipName) == normalizeChipKey(chipName)
+            chipsMatch(canonical.chipName, chipName)
         ) {
             return canonical
         }
 
-        val normTarget = normalizeChipKey(chipName)
-        return findActiveRescueSessions(context).firstOrNull {
-            normalizeChipKey(it.chipName) == normTarget
-        }
+        return loadAllUncompletedSessions(context)
+            .sortedByDescending { it.updatedAtMs }
+            .firstOrNull { chipsMatch(it.chipName, chipName) }
     }
 
     fun markCompletedAndCleanup(context: Context, chipName: String) {
@@ -174,6 +189,8 @@ object Nec78k0RecoveryManager {
         if (!file.exists()) return null
         return try {
             val obj = JSONObject(file.readText(Charsets.UTF_8))
+            val stage = RecoveryStage.fromWireName(obj.optString("stage", "DETECTED"))
+            val lastDone = obj.optInt("lastCompletedBlock", -1)
             Nec78k0RecoverySession(
                 chipName = obj.getString("chipName"),
                 subFamily = obj.optString("subFamily", "78K0"),
@@ -183,10 +200,11 @@ object Nec78k0RecoveryManager {
                 fullFlashChecksum = obj.getInt("fullFlashChecksum"),
                 block0Checksum = obj.getInt("block0Checksum"),
                 signatureHex = obj.optString("signatureHex", ""),
-                stage = RecoveryStage.fromWireName(obj.optString("stage", "DETECTED")),
-                lastCompletedBlock = obj.optInt("lastCompletedBlock", -1),
+                stage = stage,
+                lastCompletedBlock = lastDone,
                 updatedAtMs = obj.optLong("updatedAtMs", file.lastModified()),
-                partialBlocksPath = obj.optString("partialBlocksPath", "")
+                partialBlocksPath = obj.optString("partialBlocksPath", ""),
+                block0Touched = obj.optBoolean("block0Touched", stage != RecoveryStage.DETECTED || lastDone >= 0)
             )
         } catch (_: Throwable) {
             null
@@ -213,6 +231,15 @@ object Nec78k0RecoveryManager {
                 tmpFile.delete()
             }
         }
+    }
+
+    private fun chipsMatch(a: String, b: String): Boolean {
+        val na = normalizeChipKey(a)
+        val nb = normalizeChipKey(b)
+        if (na == nb) return true
+        val ta = na.trimEnd('A', 'B', 'C', 'D')
+        val tb = nb.trimEnd('A', 'B', 'C', 'D')
+        return ta.isNotEmpty() && ta == tb
     }
 
     private fun normalizeChipKey(name: String): String {
