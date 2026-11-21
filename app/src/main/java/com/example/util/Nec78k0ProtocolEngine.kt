@@ -28,12 +28,10 @@ object Nec78k0ProtocolEngine {
     const val CMD_BLOCK_ERASE: Int = 0x22
     const val CMD_BLANK_CHECK: Int = 0x32
     const val CMD_PROGRAM: Int = 0x40
-    const val CMD_BAUD_RATE_SET: Int = 0x9A
     const val CMD_SECURITY: Int = 0xA0
     const val CMD_CHECKSUM: Int = 0xB0
     const val CMD_SILICON_SIGNATURE: Int = 0xC0
 
-    const val STS_UNSUPPORTED_OR_ACK_04: Int = 0x04
     const val STS_PARAMETER_ERROR: Int = 0x05
     const val STS_ACK: Int = 0x06
     const val STS_CHECKSUM_ERROR: Int = 0x07
@@ -45,7 +43,7 @@ object Nec78k0ProtocolEngine {
     const val RESET_TIMEOUT_MS = 1500
     const val HEADER_ACK_TIMEOUT_MS = 1500
     const val PAGE_ACK_TIMEOUT_MS = 3000
-    const val SINGLE_BULK_WRITE_TIMEOUT_MS = 2000
+    const val FRAME_PACKET_WRITE_TIMEOUT_MS = 1000
     const val MAX_TIMEOUT_RETRIES = 3
 
     interface Serial78k0Transport {
@@ -60,7 +58,11 @@ object Nec78k0ProtocolEngine {
         fun flushInputBuffer()
         fun isDeviceAttached(): Boolean
         suspend fun writeRaw(bytes: ByteArray): String?
-        suspend fun writeSingleBulk(bytes: ByteArray, timeoutMs: Int = SINGLE_BULK_WRITE_TIMEOUT_MS): String?
+        suspend fun writeFrameBytes(
+            bytes: ByteArray,
+            timeoutMs: Int = FRAME_PACKET_WRITE_TIMEOUT_MS,
+            onLog: (String) -> Unit = {}
+        ): String?
         suspend fun discardEcho(expectedCount: Int, baudRate: Int): Int
         suspend fun readBytesWithTimeout(maxBytes: Int, timeoutMs: Int): ByteArray
     }
@@ -287,18 +289,7 @@ object Nec78k0ProtocolEngine {
             }
         }
 
-        // Step 2b: USBPcap Baud Rate & Programming Time Set (0x9A): [01 03 9A 00 0A 59 03]
-        when (val baudRes = sendBaudRateTimingSetCommand(transport, onLog)) {
-            is Nec78k0TransceiveResult.Success -> Unit
-            is Nec78k0TransceiveResult.ProtocolError -> {
-                return null to "رفض المعالج أمر ضبط الباود والتوقيت (0x9A): ${baudRes.statusLabel}"
-            }
-            is Nec78k0TransceiveResult.DisconnectedOrTimeout -> {
-                return null to baudRes.reason
-            }
-        }
-
-        // Step 3: Silicon Signature Command (0xC0) -> [01 01 C0 3F 03]
+        // Step 3: Silicon Signature Command (0xC0) directly after Reset (0x00 -> 02 01 06 F9 03)
         val sigCmd = buildCommandFrame(CMD_SILICON_SIGNATURE)
         onLog("TX (Silicon Signature 0xC0): ${toHex(sigCmd)}")
         transport.flushInputBuffer()
@@ -991,55 +982,12 @@ object Nec78k0ProtocolEngine {
         return false
     }
 
-    internal suspend fun sendBaudRateTimingSetCommand(
-        transport: Serial78k0Transport,
-        onLog: (String) -> Unit
-    ): Nec78k0TransceiveResult {
-        val baudSetFrame = byteArrayOf(
-            0x01,
-            0x03,
-            CMD_BAUD_RATE_SET.toByte(),
-            0x00,
-            0x0A,
-            0x59,
-            0x03
-        )
-        onLog("TX (Baud/Timing Set 0x9A): ${toHex(baudSetFrame)}")
-        transport.setRawRxMonitor(true)
-        return try {
-            when (val res = transceiveSingleFrame(transport, baudSetFrame, RESET_TIMEOUT_MS, onLog)) {
-                is Nec78k0TransceiveResult.Success -> {
-                    onLog("RX (Baud Set 0x9A ACK): ${toHex(res.frame.rawFrame)}")
-                    res
-                }
-                is Nec78k0TransceiveResult.ProtocolError -> {
-                    if (res.statusCode == STS_UNSUPPORTED_OR_ACK_04) {
-                        onLog("RX (Baud Set 0x9A -> 0x04): تجاهل 0x04 والمتابعة للتنفيذ.")
-                        Nec78k0TransceiveResult.Success(
-                            res.frame ?: Nec78k0RxFrame(STS_UNSUPPORTED_OR_ACK_04, byteArrayOf(0x04), baudSetFrame, true)
-                        )
-                    } else {
-                        onLog("RX Error (Baud Set 0x9A): ${res.statusLabel}")
-                        res
-                    }
-                }
-                is Nec78k0TransceiveResult.DisconnectedOrTimeout -> res
-            }
-        } finally {
-            transport.setRawRxMonitor(false)
-        }
-    }
-
     internal suspend fun resync78k0Bootloader(
         transport: Serial78k0Transport,
         @Suppress("UNUSED_PARAMETER") clockFreqMhzText: String,
         onLog: (String) -> Unit
     ): Nec78k0TransceiveResult {
-        val resetRes = handshakeAndSendResetCommand(transport, onLog)
-        if (resetRes !is Nec78k0TransceiveResult.Success) {
-            return resetRes
-        }
-        return sendBaudRateTimingSetCommand(transport, onLog)
+        return handshakeAndSendResetCommand(transport, onLog)
     }
 
     internal suspend fun transceiveWithTimeoutRetry(
@@ -1082,10 +1030,10 @@ object Nec78k0ProtocolEngine {
     }
 
     /**
-     * Sends a 260-byte SOH data frame ([0x01, 0x00, ...256B, CS, END]) in ONE contiguous
-     * single bulkTransfer(timeout = 1000ms) call via FT232R hardware TX FIFO (no 32B chunking
-     * and no 5ms gaps that break 78K0 bootloader inter-byte timeout), then reads RX bytes
-     * continuously until STX..ETX (LEN + 4 bytes) completes while printing RX Raw Live.
+     * Sends a 260-byte SOH data frame ([0x01, 0x00, ...256B, CS, END]) in a contiguous
+     * zero-delay loop of 64-byte USB bulk packets (timeout = 1000ms per packet) so FT232R
+     * transmits every byte of the 260B frame without truncating at the 64B endpoint packet limit,
+     * then reads RX bytes until STX..ETX (LEN + 4 bytes) completes while printing RX Raw Live.
      */
     private suspend fun sendDataFrameAndAwaitAck(
         transport: Serial78k0Transport,
@@ -1100,12 +1048,12 @@ object Nec78k0ProtocolEngine {
         val csByte = dataFrame[dataFrame.size - 2].toInt() and 0xFF
         val endByte = dataFrame[dataFrame.size - 1].toInt() and 0xFF
         val headPreview = toHex(dataFrame.copyOfRange(0, minOf(6, dataFrame.size)))
-        onLog(String.format(Locale.US, "TX Single-Bulk 260B ($label): [%s ... CS=%02X END=%02X] • مهلة %dms", headPreview, csByte, endByte, timeoutMs))
+        onLog(String.format(Locale.US, "TX 260B ($label • 64B USB Loop): [%s ... CS=%02X END=%02X] • مهلة %dms", headPreview, csByte, endByte, timeoutMs))
 
         transport.flushInputBuffer()
         transport.setRawRxMonitor(true)
         try {
-            val txErr = transport.writeSingleBulk(dataFrame, SINGLE_BULK_WRITE_TIMEOUT_MS)
+            val txErr = transport.writeFrameBytes(dataFrame, FRAME_PACKET_WRITE_TIMEOUT_MS, onLog)
             if (txErr != null) {
                 return if (isPhysicalDisconnect(transport, txErr)) {
                     FrameAckOutcome.UsbDetached("انقطاع USB/IO أثناء إرسال $label: $txErr")
@@ -1300,7 +1248,7 @@ object Nec78k0ProtocolEngine {
                 val slice = blockData.copyOfRange(offset, offset + PAGE_SIZE)
                 val isLast = (page == 3)
                 val dataFrame = buildDataFrame(slice, isLast = isLast)
-                onLog("TX (0x40 صفحة ${page + 1}/4 • 260B دفعة واحدة • END=${if (isLast) "0x03 ETX" else "0x17 ETB"})")
+                onLog("TX (0x40 صفحة ${page + 1}/4 • 260B في حزم 64B بدون تأخير • END=${if (isLast) "0x03 ETX" else "0x17 ETB"})")
                 when (val ackRes = sendDataFrameAndAwaitAck(transport, dataFrame, PAGE_ACK_TIMEOUT_MS, "0x40 صفحة ${page + 1}/4", onLog)) {
                     is FrameAckOutcome.AckSuccess -> {
                         onLog("RX (0x40 صفحة ${page + 1}/4 ACK): ${toHex(ackRes.frame.rawFrame)}")

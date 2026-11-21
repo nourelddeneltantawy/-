@@ -691,8 +691,11 @@ object UsbOtgProgrammerService {
 
             override suspend fun writeRaw(bytes: ByteArray): String? = writeRawBytes(bytes)
 
-            override suspend fun writeSingleBulk(bytes: ByteArray, timeoutMs: Int): String? =
-                writeSingleBulkBytes(bytes, timeoutMs)
+            override suspend fun writeFrameBytes(
+                bytes: ByteArray,
+                timeoutMs: Int,
+                onLog: (String) -> Unit
+            ): String? = writeFrame64BytePackets(bytes, timeoutMs, onLog)
 
             override suspend fun discardEcho(expectedCount: Int, baudRate: Int): Int {
                 return if (echoCancellationEnabled) discardEchoBytes(expectedCount) else 0
@@ -1704,25 +1707,33 @@ object UsbOtgProgrammerService {
         }
     }
 
-    private fun writeSingleBulkBytes(data: ByteArray, timeoutMs: Int): String? {
+    private fun writeFrame64BytePackets(
+        data: ByteArray,
+        timeoutMs: Int = 1000,
+        onLog: (String) -> Unit
+    ): String? {
         return try {
             val conn = activeConnection ?: return "USB_DETACHED:UsbDeviceConnection is null (المنفذ مغلق)"
             val out = outEndpoint ?: return "USB_DETACHED:Bulk OUT endpoint is null"
             var offset = 0
+            var totalSent = 0
             while (offset < data.size) {
-                val slice = if (offset == 0) data else data.copyOfRange(offset, data.size)
-                val written = conn.bulkTransfer(out, slice, slice.size, timeoutMs)
+                val chunkLen = minOf(64, data.size - offset)
+                val chunk = data.copyOfRange(offset, offset + chunkLen)
+                val written = conn.bulkTransfer(out, chunk, chunk.size, timeoutMs)
                 if (written <= 0) {
                     val attached = activeDevice?.deviceName?.let { usbManager?.deviceList?.containsKey(it) } ?: false
                     if (!attached) {
                         disconnect()
-                        return "USB_DETACHED:انفصل كابل USB OTG عن الهاتف أثناء الإرسال"
+                        return "USB_DETACHED:انفصل كابل USB OTG عن الهاتف أثناء الإرسال ($totalSent/${data.size})"
                     }
-                    return "bulkTransfer(OUT single) returned $written (len=${slice.size}, ep=0x%02X, attached=$attached, chip=$activeChipType)"
+                    return "bulkTransfer(OUT 64B packet) returned $written at offset=$offset ($totalSent/${data.size}, len=${chunk.size}, ep=0x%02X, attached=$attached, chip=$activeChipType)"
                         .format(out.address)
                 }
+                totalSent += written
                 offset += written
             }
+            onLog("تم إرسال $totalSent/${data.size} بايت بنجاح")
             null
         } catch (e: Throwable) {
             val attached = activeDevice?.deviceName?.let { usbManager?.deviceList?.containsKey(it) } ?: false
