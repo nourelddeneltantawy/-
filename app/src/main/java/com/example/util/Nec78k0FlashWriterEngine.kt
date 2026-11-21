@@ -507,13 +507,13 @@ object Nec78k0FlashWriterEngine {
             Nec78k0ProtocolEngine.normalize78k0Part(preDetectedInfo.deviceName) ==
             Nec78k0ProtocolEngine.normalize78k0Part(selectedChip.partNumber)
         ) {
-            onProgress(0, preDetectedInfo.flashSizeBytes, "مزامنة ${preDetectedInfo.deviceName} وضبط تردد المذبذب (0x90)...")
+            onProgress(0, preDetectedInfo.flashSizeBytes, "مزامنة ${preDetectedInfo.deviceName} وضبط الباود والتوقيت (0x9A)...")
             val resetRes = Nec78k0ProtocolEngine.resync78k0Bootloader(transport, clockFreqMhzText, onLog)
             if (resetRes !is Nec78k0ProtocolEngine.Nec78k0TransceiveResult.Success) {
                 return null to when (resetRes) {
-                    is Nec78k0ProtocolEngine.Nec78k0TransceiveResult.ProtocolError -> "رفض المعالج المزامنة/تردد المذبذب (0x90): ${resetRes.statusLabel}"
+                    is Nec78k0ProtocolEngine.Nec78k0TransceiveResult.ProtocolError -> "رفض المعالج المزامنة/ضبط الباود (0x9A): ${resetRes.statusLabel}"
                     is Nec78k0ProtocolEngine.Nec78k0TransceiveResult.DisconnectedOrTimeout -> resetRes.reason
-                    else -> "فشل Reset 0x00 / Osc Freq 0x90"
+                    else -> "فشل Reset 0x00 / Baud Set 0x9A"
                 }
             }
             return preDetectedInfo to null

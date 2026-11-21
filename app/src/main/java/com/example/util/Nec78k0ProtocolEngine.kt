@@ -28,11 +28,12 @@ object Nec78k0ProtocolEngine {
     const val CMD_BLOCK_ERASE: Int = 0x22
     const val CMD_BLANK_CHECK: Int = 0x32
     const val CMD_PROGRAM: Int = 0x40
-    const val CMD_OSC_FREQ: Int = 0x90
+    const val CMD_BAUD_RATE_SET: Int = 0x9A
     const val CMD_SECURITY: Int = 0xA0
     const val CMD_CHECKSUM: Int = 0xB0
     const val CMD_SILICON_SIGNATURE: Int = 0xC0
 
+    const val STS_UNSUPPORTED_OR_ACK_04: Int = 0x04
     const val STS_PARAMETER_ERROR: Int = 0x05
     const val STS_ACK: Int = 0x06
     const val STS_CHECKSUM_ERROR: Int = 0x07
@@ -44,7 +45,7 @@ object Nec78k0ProtocolEngine {
     const val RESET_TIMEOUT_MS = 1500
     const val HEADER_ACK_TIMEOUT_MS = 1500
     const val PAGE_ACK_TIMEOUT_MS = 3000
-    const val SINGLE_BULK_WRITE_TIMEOUT_MS = 1000
+    const val SINGLE_BULK_WRITE_TIMEOUT_MS = 2000
     const val MAX_TIMEOUT_RETRIES = 3
 
     interface Serial78k0Transport {
@@ -286,14 +287,14 @@ object Nec78k0ProtocolEngine {
             }
         }
 
-        // Step 2b: Mandatory Oscillation Frequency Set (0x90) -> e.g. 8 MHz: [01 05 90 08 00 00 06 59 03]
-        when (val oscRes = sendMandatoryOscFreqCommand(transport, clockFreqMhzText, onLog)) {
+        // Step 2b: USBPcap Baud Rate & Programming Time Set (0x9A): [01 03 9A 00 0A 59 03]
+        when (val baudRes = sendBaudRateTimingSetCommand(transport, onLog)) {
             is Nec78k0TransceiveResult.Success -> Unit
             is Nec78k0TransceiveResult.ProtocolError -> {
-                return null to "رفض المعالج ضبط تردد المذبذب (Osc Freq 0x90): ${oscRes.statusLabel}"
+                return null to "رفض المعالج أمر ضبط الباود والتوقيت (0x9A): ${baudRes.statusLabel}"
             }
             is Nec78k0TransceiveResult.DisconnectedOrTimeout -> {
-                return null to oscRes.reason
+                return null to baudRes.reason
             }
         }
 
@@ -990,23 +991,40 @@ object Nec78k0ProtocolEngine {
         return false
     }
 
-    internal suspend fun sendMandatoryOscFreqCommand(
+    internal suspend fun sendBaudRateTimingSetCommand(
         transport: Serial78k0Transport,
-        clockFreqMhzText: String,
         onLog: (String) -> Unit
     ): Nec78k0TransceiveResult {
-        val oscPayload = buildOscFreqPayload(clockFreqMhzText)
-        val oscFrame = buildCommandFrame(CMD_OSC_FREQ, oscPayload)
-        onLog("TX (Osc Freq 0x90 • إلزامي): ${toHex(oscFrame)}")
+        val baudSetFrame = byteArrayOf(
+            0x01,
+            0x03,
+            CMD_BAUD_RATE_SET.toByte(),
+            0x00,
+            0x0A,
+            0x59,
+            0x03
+        )
+        onLog("TX (Baud/Timing Set 0x9A): ${toHex(baudSetFrame)}")
         transport.setRawRxMonitor(true)
         return try {
-            val oscRes = transceiveSingleFrame(transport, oscFrame, RESET_TIMEOUT_MS, onLog)
-            if (oscRes is Nec78k0TransceiveResult.Success) {
-                onLog("RX (Osc Freq 0x90 ACK): ${toHex(oscRes.frame.rawFrame)}")
-            } else if (oscRes is Nec78k0TransceiveResult.ProtocolError) {
-                onLog("RX Error (Osc Freq 0x90): ${oscRes.statusLabel}")
+            when (val res = transceiveSingleFrame(transport, baudSetFrame, RESET_TIMEOUT_MS, onLog)) {
+                is Nec78k0TransceiveResult.Success -> {
+                    onLog("RX (Baud Set 0x9A ACK): ${toHex(res.frame.rawFrame)}")
+                    res
+                }
+                is Nec78k0TransceiveResult.ProtocolError -> {
+                    if (res.statusCode == STS_UNSUPPORTED_OR_ACK_04) {
+                        onLog("RX (Baud Set 0x9A -> 0x04): تجاهل 0x04 والمتابعة للتنفيذ.")
+                        Nec78k0TransceiveResult.Success(
+                            res.frame ?: Nec78k0RxFrame(STS_UNSUPPORTED_OR_ACK_04, byteArrayOf(0x04), baudSetFrame, true)
+                        )
+                    } else {
+                        onLog("RX Error (Baud Set 0x9A): ${res.statusLabel}")
+                        res
+                    }
+                }
+                is Nec78k0TransceiveResult.DisconnectedOrTimeout -> res
             }
-            oscRes
         } finally {
             transport.setRawRxMonitor(false)
         }
@@ -1014,14 +1032,14 @@ object Nec78k0ProtocolEngine {
 
     internal suspend fun resync78k0Bootloader(
         transport: Serial78k0Transport,
-        clockFreqMhzText: String,
+        @Suppress("UNUSED_PARAMETER") clockFreqMhzText: String,
         onLog: (String) -> Unit
     ): Nec78k0TransceiveResult {
         val resetRes = handshakeAndSendResetCommand(transport, onLog)
         if (resetRes !is Nec78k0TransceiveResult.Success) {
             return resetRes
         }
-        return sendMandatoryOscFreqCommand(transport, clockFreqMhzText, onLog)
+        return sendBaudRateTimingSetCommand(transport, onLog)
     }
 
     internal suspend fun transceiveWithTimeoutRetry(
@@ -1348,19 +1366,6 @@ object Nec78k0ProtocolEngine {
             (endAddr and 0xFF).toByte()
         )
         return buildCommandFrame(cmd, data)
-    }
-
-    internal fun buildOscFreqPayload(clockText: String): ByteArray {
-        val cleaned = clockText.replace(Regex("[^0-9.]"), "")
-        val mhz = cleaned.toDoubleOrNull()?.coerceIn(1.0, 20.0) ?: 8.0
-        val integerPart = mhz.toInt().coerceIn(1, 20)
-        val fracDigit = (((mhz - integerPart) * 10.0).toInt()).coerceIn(0, 9)
-        return byteArrayOf(
-            integerPart.toByte(),
-            fracDigit.toByte(),
-            0x00,
-            0x06 // 10^6 MHz scale exponent: [01 05 90 08 00 00 06 59 03] for 8.00 MHz
-        )
     }
 
     private fun parseSiliconSignature(
