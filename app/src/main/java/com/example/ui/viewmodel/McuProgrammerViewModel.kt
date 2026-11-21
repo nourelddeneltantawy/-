@@ -1363,7 +1363,7 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
             timeFormat.format(Date())
         }
         _uiState.update { state ->
-            val updated = (state.logs + ProgrammerLogEntry(ts, message, level)).takeLast(120)
+            val updated = (state.logs + ProgrammerLogEntry(ts, message, level)).takeLast(300)
             state.copy(logs = updated)
         }
     }

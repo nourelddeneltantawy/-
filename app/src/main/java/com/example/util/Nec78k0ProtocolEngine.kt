@@ -43,7 +43,7 @@ object Nec78k0ProtocolEngine {
     const val WATCHDOG_PREFIX = "WATCHDOG_PAUSED:"
     const val RESET_TIMEOUT_MS = 1500
     const val HEADER_ACK_TIMEOUT_MS = 1500
-    const val PAGE_ACK_TIMEOUT_MS = 2000
+    const val PAGE_ACK_TIMEOUT_MS = 3000
     const val UART_DATA_CHUNK_SIZE = 32
     const val UART_CHUNK_DELAY_MS = 5L
     const val MAX_TIMEOUT_RETRIES = 3
@@ -1056,7 +1056,8 @@ object Nec78k0ProtocolEngine {
     /**
      * Sends a 260-byte SOH data frame ([0x01, 0x00, ...256B, CS, END]) in 32-byte UART chunks
      * separated by 5ms pauses to prevent 78K0 UART RX buffer overrun at 9600 bps, then enables
-     * RX Raw Live monitoring while awaiting the 6-byte [02 02 06 06 F2 03] response (2000ms).
+     * RX Raw Live monitoring while awaiting the 6-byte [02 02 06 06 F2 03] or 5-byte [02 01 06 F9 03]
+     * response (3000ms).
      */
     private suspend fun sendDataFrameChunkedAndAwaitAck(
         transport: Serial78k0Transport,
@@ -1068,6 +1069,11 @@ object Nec78k0ProtocolEngine {
         if (!transport.isDeviceAttached()) {
             return FrameAckOutcome.UsbDetached("انقطع كابل USB OTG قبل إرسال $label")
         }
+        val csByte = dataFrame[dataFrame.size - 2].toInt() and 0xFF
+        val endByte = dataFrame[dataFrame.size - 1].toInt() and 0xFF
+        val headPreview = toHex(dataFrame.copyOfRange(0, minOf(6, dataFrame.size)))
+        onLog(String.format(Locale.US, "TX Data 260B ($label): [%s ... CS=%02X END=%02X] • مهلة %dms", headPreview, csByte, endByte, timeoutMs))
+
         transport.flushInputBuffer()
         transport.setRawRxMonitor(true)
         try {
@@ -1094,11 +1100,11 @@ object Nec78k0ProtocolEngine {
 
             transport.discardEcho(dataFrame.size, 9600)
             val ack = readOneRxFrame(transport, timeoutMs) { stray ->
-                onLog("RX Raw Live ($label غير مكتمل/غير متوقع): $stray")
+                onLog("RX Raw Live ($label): $stray")
             } ?: return if (!transport.isDeviceAttached()) {
                 FrameAckOutcome.UsbDetached("انقطع كابل USB OTG أثناء انتظار رد $label")
             } else {
-                FrameAckOutcome.Timeout("انتهت مهلة انتظار رد المعالج 6 بايت ($label خلال ${timeoutMs}ms)")
+                FrameAckOutcome.Timeout("انتهت مهلة انتظار رد المعالج ($label خلال ${timeoutMs}ms)")
             }
 
             return if (ack.isAckSuccess) {
@@ -1497,6 +1503,8 @@ object Nec78k0ProtocolEngine {
                 onUnexpectedRx?.invoke(toHex(preStx.toByteArray()))
             }
             return null
+        } else if (preStx.size() > 0) {
+            onUnexpectedRx?.invoke("قبل STX: ${toHex(preStx.toByteArray())}")
         }
 
         val lenArr = transport.readBytesWithTimeout(1, (deadline - System.currentTimeMillis()).toInt().coerceIn(80, 500))

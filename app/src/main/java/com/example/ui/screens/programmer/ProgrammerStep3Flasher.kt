@@ -1,5 +1,9 @@
 package com.example.ui.screens.programmer
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
@@ -37,6 +41,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CleaningServices
 import androidx.compose.material.icons.filled.CloudDownload
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.FolderOpen
@@ -82,6 +87,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.testTag
@@ -841,13 +847,43 @@ fun ProgrammerStep3Flasher(
                             color = Color.White
                         )
                     }
-                    IconButton(onClick = onClearLogs, modifier = Modifier.size(32.dp)) {
-                        Icon(
-                            imageVector = Icons.Default.DeleteSweep,
-                            contentDescription = "مسح السجل",
-                            tint = Color(0xFF94A3B8),
-                            modifier = Modifier.size(18.dp)
-                        )
+                    val logContext = LocalContext.current
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        IconButton(
+                            onClick = {
+                                val fullLogText = if (state.logs.isEmpty()) {
+                                    "جاهز للعمل — قم بتوصيل المبرمجة USB OTG للبدء."
+                                } else {
+                                    state.logs.joinToString("\n") { "[${it.timestamp}] ${it.message}" }
+                                }
+                                val clipboard = logContext.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                                clipboard?.setPrimaryClip(ClipData.newPlainText("Event Log", fullLogText))
+                                Toast.makeText(logContext, "تم نسخ سجل الأحداث بالكامل", Toast.LENGTH_SHORT).show()
+                            },
+                            modifier = Modifier
+                                .size(48.dp)
+                                .testTag("copy_log_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.ContentCopy,
+                                contentDescription = "نسخ السجل",
+                                tint = Color(0xFF94A3B8),
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                        IconButton(
+                            onClick = onClearLogs,
+                            modifier = Modifier
+                                .size(48.dp)
+                                .testTag("clear_log_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.DeleteSweep,
+                                contentDescription = "مسح السجل",
+                                tint = Color(0xFF94A3B8),
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
                     }
                 }
 
