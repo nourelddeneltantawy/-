@@ -90,6 +90,7 @@ data class McuProgrammerUiState(
     val logs: List<ProgrammerLogEntry> = emptyList(),
 
     // NEC / Renesas 78K0 Engine State
+    val invert78k0DtrRtsPolarity: Boolean = false,
     val nec78k0DetectedInfo: Nec78k0ProtocolEngine.Nec78k0DetectedInfo? = null,
     val pendingRescueSessions: List<Nec78k0RecoveryManager.Nec78k0RecoverySession> = emptyList(),
     val watchdogAlertMessage: String? = null,
@@ -708,10 +709,10 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                             _uiState.update {
                                 it.copy(
                                     progress = 0.65f,
-                                    progressLabel = "تهيئة تلقائية 78K0: DTR/RTS 50ms -> 0x00,0x00 -> 0xC0 / 0xB0..."
+                                    progressLabel = "تهيئة تلقائية 78K0: FT232 DTR/RTS (100ms/150ms) -> 0x00,0x00 -> 0xC0 / 0xB0..."
                                 )
                             }
-                            addLog("Zero-Touch Auto-Init (78K0): رفع DTR + نبضة RTS (50ms) -> [0x00, 0x00] @ 9600 8N1 -> 0xC0 + 0xB0...", LogLevel.INFO)
+                            addLog("Zero-Touch Auto-Init (78K0): setDTR(false) [FLMD0=+5V] + setRTS(true) [RESET=0V] (100ms) -> setRTS(false) (150ms) -> [0x00, 10ms, 0x00] -> 0xC0 + 0xB0...", LogLevel.INFO)
                             val idBytes = parseIdCodeBytes() ?: R8cProtocolEngine.DEFAULT_ID_CODE.copyOf()
                             when (val probeRes = UsbOtgProgrammerService.probeChipId(
                                 context = appContext,
@@ -737,6 +738,7 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                                             progressLabel = "",
                                             autoDetectStatus = probeRes.diagnosticMessage,
                                             autoDetectIsSuccess = true,
+                                            invert78k0DtrRtsPolarity = UsbOtgProgrammerService.is78k0InvertDtrRtsPolarity(),
                                             nec78k0DetectedInfo = probeRes.nec78k0Info ?: it.nec78k0DetectedInfo
                                         )
                                     }

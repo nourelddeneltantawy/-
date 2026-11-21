@@ -41,12 +41,17 @@ object Nec78k0ProtocolEngine {
     const val STS_NACK: Int = 0x15
 
     const val WATCHDOG_PREFIX = "WATCHDOG_PAUSED:"
+    const val RESET_TIMEOUT_MS = 1500
 
     interface Serial78k0Transport {
         fun configureUart96008N1(onLog: (String) -> Unit): Boolean
         fun ensureReaderListening(onLog: (String) -> Unit): Boolean
         fun setRawRxMonitor(enabled: Boolean)
         fun setControlLines(dtr: Boolean, rts: Boolean, onLog: (String) -> Unit)
+        fun setDtr(enabled: Boolean, onLog: (String) -> Unit)
+        fun setRts(enabled: Boolean, onLog: (String) -> Unit)
+        fun getInvertDtrRtsPolarity(): Boolean
+        fun setInvertDtrRtsPolarity(inverted: Boolean)
         fun flushInputBuffer()
         fun isDeviceAttached(): Boolean
         suspend fun writeRaw(bytes: ByteArray): String?
@@ -153,21 +158,31 @@ object Nec78k0ProtocolEngine {
 
     suspend fun performHardwareHandshake(
         transport: Serial78k0Transport,
+        invertControlPolarity: Boolean = transport.getInvertDtrRtsPolarity(),
         onLog: (String) -> Unit
     ): Boolean {
         if (!transport.ensureReaderListening(onLog)) return false
-        transport.setRawRxMonitor(false)
         onLog("1) تهيئة UART على 9600 bps, 8N1 (بدون تحكم تدفق وبدون إلغاء صدى) وتفريغ المخزن...")
         if (!transport.configureUart96008N1(onLog)) return false
         transport.flushInputBuffer()
 
-        onLog("2) تهيئة FT232 التلقائية 78K0: رفع DTR (FLMD0=HIGH) + خفض RTS (RESET=LOW) لمدة 50ms...")
-        transport.setControlLines(dtr = false, rts = true, onLog = onLog)
-        delay(50)
+        // FT232RL Active-Low hardware mapping:
+        // setDTR(false) -> +5V (HIGH) on pin | setDTR(true) -> 0V (LOW) on pin
+        // setRTS(false) -> +5V (HIGH) on pin | setRTS(true) -> 0V (LOW) on pin
+        val dtrFlmd0High = invertControlPolarity
+        val rtsResetLow = !invertControlPolarity
+        val rtsResetHigh = invertControlPolarity
+        val polarityTag = if (invertControlPolarity) "قطبية معكوسة في الخلفية" else "قطبية FT232 Active-Low"
 
-        onLog("3) تحرير RTS (RESET=HIGH) مع إبقاء DTR (FLMD0=HIGH) -> انتظار 20ms...")
-        transport.setControlLines(dtr = false, rts = false, onLog = onLog)
-        delay(20)
+        onLog("2) ضبط خطوط التحكم ($polarityTag): setDTR($dtrFlmd0High) [FLMD0=+5V] + setRTS($rtsResetLow) [RESET=0V] -> انتظار 100ms...")
+        transport.setDtr(dtrFlmd0High, onLog)
+        transport.setRts(rtsResetLow, onLog)
+        delay(100)
+
+        onLog("3) تحرير الريسيت: setRTS($rtsResetHigh) [RESET=+5V] مع إبقاء setDTR($dtrFlmd0High) [FLMD0=+5V] -> انتظار 150ms لاستقرار المذبذب...")
+        transport.setDtr(dtrFlmd0High, onLog)
+        transport.setRts(rtsResetHigh, onLog)
+        delay(150)
         transport.flushInputBuffer()
 
         if (!transport.isDeviceAttached()) {
@@ -175,22 +190,77 @@ object Nec78k0ProtocolEngine {
             return false
         }
 
-        onLog("4) إرسال نبضة المزامنة [0x00, 0x00] بفاصل 5ms على 9600 bps (8N1)...")
+        onLog("4) إرسال نبضة المزامنة [0x00, 0x00] بفاصل 10ms على 9600 bps (8N1) ثم انتظار 50ms...")
         val err1 = transport.writeRaw(byteArrayOf(0x00))
         if (err1 != null) {
             onLog("TX Error (Sync #1): $err1")
             return false
         }
-        delay(5)
+        delay(10)
 
         val err2 = transport.writeRaw(byteArrayOf(0x00))
         if (err2 != null) {
             onLog("TX Error (Sync #2): $err2")
             return false
         }
-        delay(20)
+        delay(50)
         transport.flushInputBuffer()
         return true
+    }
+
+    suspend fun handshakeAndSendResetCommand(
+        transport: Serial78k0Transport,
+        onLog: (String) -> Unit
+    ): Nec78k0TransceiveResult {
+        val primaryInvert = transport.getInvertDtrRtsPolarity()
+        val resetFrame = buildCommandFrame(CMD_RESET)
+        transport.setRawRxMonitor(true)
+        try {
+            if (!performHardwareHandshake(transport, invertControlPolarity = primaryInvert, onLog = onLog)) {
+                return Nec78k0TransceiveResult.DisconnectedOrTimeout(
+                    "فشلت المزامنة التلقائية (FT232 DTR/RTS + Baud Sync 9600) مع معالج 78K0.",
+                    isUsbDetached = !transport.isDeviceAttached()
+                )
+            }
+
+            onLog("TX (Reset 0x00 • مهلة ${RESET_TIMEOUT_MS}ms): ${toHex(resetFrame)}")
+            val firstTry = transceiveSingleFrame(transport, resetFrame, RESET_TIMEOUT_MS, onLog)
+            if (firstTry is Nec78k0TransceiveResult.Success) {
+                transport.setInvertDtrRtsPolarity(primaryInvert)
+                onLog("RX (Reset ACK): ${toHex(firstTry.frame.rawFrame)}")
+                return firstTry
+            }
+            if (firstTry is Nec78k0TransceiveResult.ProtocolError) {
+                transport.setInvertDtrRtsPolarity(primaryInvert)
+                return firstTry
+            }
+            if ((firstTry as Nec78k0TransceiveResult.DisconnectedOrTimeout).isUsbDetached) {
+                return firstTry
+            }
+
+            // Automatic background DTR/RTS polarity inversion fallback
+            val altInvert = !primaryInvert
+            onLog("لم يستجب المعالج بالقطبية الأولى (${firstTry.reason}) — إعادة المحاولة في الخلفية بعكس قطبية DTR/RTS...")
+            if (!performHardwareHandshake(transport, invertControlPolarity = altInvert, onLog = onLog)) {
+                return firstTry
+            }
+            onLog("TX (Reset 0x00 - عكس القطبية • مهلة ${RESET_TIMEOUT_MS}ms): ${toHex(resetFrame)}")
+            val secondTry = transceiveSingleFrame(transport, resetFrame, RESET_TIMEOUT_MS, onLog)
+            return when (secondTry) {
+                is Nec78k0TransceiveResult.Success -> {
+                    transport.setInvertDtrRtsPolarity(altInvert)
+                    onLog("نجح الاتصال بعد عكس قطبية DTR/RTS في الخلفية! RX (Reset ACK): ${toHex(secondTry.frame.rawFrame)}")
+                    secondTry
+                }
+                is Nec78k0TransceiveResult.ProtocolError -> {
+                    transport.setInvertDtrRtsPolarity(altInvert)
+                    secondTry
+                }
+                is Nec78k0TransceiveResult.DisconnectedOrTimeout -> secondTry
+            }
+        } finally {
+            transport.setRawRxMonitor(false)
+        }
     }
 
     suspend fun autoDetectAndInspect(
@@ -201,17 +271,8 @@ object Nec78k0ProtocolEngine {
         catalog: List<McuProcessor>,
         onLog: (String) -> Unit
     ): Pair<Nec78k0DetectedInfo?, String?> {
-        if (!performHardwareHandshake(transport, onLog)) {
-            return null to "فشلت المزامنة التلقائية (FT232 DTR/RTS + Baud Sync 9600) مع معالج 78K0."
-        }
-
-        // Step 2: Reset Command (0x00) -> [01 01 00 FF 03]
-        val resetFrame = buildCommandFrame(CMD_RESET)
-        onLog("TX (Reset 0x00): ${toHex(resetFrame)}")
-        when (val resetRes = transceiveSingleFrame(transport, resetFrame, 500, onLog)) {
-            is Nec78k0TransceiveResult.Success -> {
-                onLog("RX (Reset ACK): ${toHex(resetRes.frame.rawFrame)}")
-            }
+        when (val resetRes = handshakeAndSendResetCommand(transport, onLog)) {
+            is Nec78k0TransceiveResult.Success -> Unit
             is Nec78k0TransceiveResult.ProtocolError -> {
                 return null to "رفض المعالج أمر Reset 0x00: ${resetRes.statusLabel}"
             }
@@ -224,7 +285,7 @@ object Nec78k0ProtocolEngine {
         val oscPayload = buildOscFreqPayload(clockFreqMhzText)
         val oscFrame = buildCommandFrame(CMD_OSC_FREQ, oscPayload)
         onLog("TX (Osc Freq 0x90): ${toHex(oscFrame)}")
-        when (val oscRes = transceiveSingleFrame(transport, oscFrame, 500, onLog)) {
+        when (val oscRes = transceiveSingleFrame(transport, oscFrame, RESET_TIMEOUT_MS, onLog)) {
             is Nec78k0TransceiveResult.Success -> {
                 onLog("RX (Osc Freq ACK): ${toHex(oscRes.frame.rawFrame)}")
             }
@@ -246,7 +307,7 @@ object Nec78k0ProtocolEngine {
         }
         transport.discardEcho(sigCmd.size, 9600)
 
-        val ackFrame = readOneRxFrame(transport, 700)
+        val ackFrame = readOneRxFrame(transport, RESET_TIMEOUT_MS)
             ?: return null to "لم يرد المعالج بإطار ACK لتوقيع السليكون 0xC0 (تأكد من 9600 baud وتوصيل TX/RX/FLMD0)."
         if (!ackFrame.checksumValid || ackFrame.sts1 != STS_ACK) {
             return null to "خطأ في تأكيد أمر 0xC0: ${statusDescription(ackFrame.sts1)}"
@@ -326,15 +387,11 @@ object Nec78k0ProtocolEngine {
 
         if (session != null && session.lastCompletedBlock >= 0) {
             onLog("تفعيل وضع الاستكمال / الإنقاذ التلقائي للجلسة المحفوظة (${session.chipName}) من المرحلة: ${session.stage.labelAr}...")
-            if (!performHardwareHandshake(transport, onLog)) {
-                return FlashOperationResult.Failure("${WATCHDOG_PREFIX}${session.lastCompletedBlock}:تعذر إعادة المزامنة مع ${session.chipName} — ثبّت الأسلاك ثم أعد المحاولة.")
-            }
-            // Fast 0x00 Reset + 0x90 Osc Setup to wake UART command interpreter cleanly
-            val resetRes = transceiveSingleFrame(transport, buildCommandFrame(CMD_RESET), 500, onLog)
+            val resetRes = handshakeAndSendResetCommand(transport, onLog)
             if (resetRes is Nec78k0TransceiveResult.DisconnectedOrTimeout) {
                 return FlashOperationResult.Failure("${WATCHDOG_PREFIX}${session.lastCompletedBlock}:${resetRes.reason}")
             }
-            transceiveSingleFrame(transport, buildCommandFrame(CMD_OSC_FREQ, buildOscFreqPayload(clockFreqMhzText)), 500, onLog)
+            transceiveSingleFrame(transport, buildCommandFrame(CMD_OSC_FREQ, buildOscFreqPayload(clockFreqMhzText)), RESET_TIMEOUT_MS, onLog)
 
             detectedInfo = Nec78k0DetectedInfo(
                 deviceName = session.chipName,
@@ -355,14 +412,13 @@ object Nec78k0ProtocolEngine {
             onLog(
                 "البصمة محفوظة مسبقاً عند الاتصال (${preDetectedInfo.deviceName} • FullCS=${preDetectedInfo.fullFlashChecksumHex} • B0CS=${preDetectedInfo.block0ChecksumHex}) — بدء مزامنة السحب..."
             )
-            if (!performHardwareHandshake(transport, onLog)) {
-                return FlashOperationResult.Failure("فشلت المزامنة التلقائية (Handshake) مع ${preDetectedInfo.deviceName}.")
-            }
-            val resetRes = transceiveSingleFrame(transport, buildCommandFrame(CMD_RESET), 500, onLog)
+            val resetRes = handshakeAndSendResetCommand(transport, onLog)
             if (resetRes is Nec78k0TransceiveResult.DisconnectedOrTimeout) {
                 return FlashOperationResult.Failure(resetRes.reason)
+            } else if (resetRes is Nec78k0TransceiveResult.ProtocolError) {
+                return FlashOperationResult.Failure("رفض المعالج أمر Reset 0x00: ${resetRes.statusLabel}")
             }
-            transceiveSingleFrame(transport, buildCommandFrame(CMD_OSC_FREQ, buildOscFreqPayload(clockFreqMhzText)), 500, onLog)
+            transceiveSingleFrame(transport, buildCommandFrame(CMD_OSC_FREQ, buildOscFreqPayload(clockFreqMhzText)), RESET_TIMEOUT_MS, onLog)
             detectedInfo = preDetectedInfo
             session = Nec78k0RecoveryManager.findSessionForChip(context, preDetectedInfo.deviceName)
         } else {
@@ -447,11 +503,11 @@ object Nec78k0ProtocolEngine {
             // Fast Re-sync after Block 0 Zeroing to stabilize UART boot state for Block 1..N-1 extraction
             onLog("إعادة مزامنة سريعة قبل سحب الكتل Block 1..${blockCount - 1}...")
             delay(20)
-            if (!performHardwareHandshake(transport, onLog)) {
+            val reSyncRes = handshakeAndSendResetCommand(transport, onLog)
+            if (reSyncRes is Nec78k0TransceiveResult.DisconnectedOrTimeout) {
                 return FlashOperationResult.Failure("${WATCHDOG_PREFIX}0:انقطع الاتصال بعد تصفير Block 0 — ثبّت المبرمجة واضغط إنقاذ المعالج.")
             }
-            transceiveSingleFrame(transport, buildCommandFrame(CMD_RESET), 500, onLog)
-            transceiveSingleFrame(transport, buildCommandFrame(CMD_OSC_FREQ, buildOscFreqPayload(clockFreqMhzText)), 500, onLog)
+            transceiveSingleFrame(transport, buildCommandFrame(CMD_OSC_FREQ, buildOscFreqPayload(clockFreqMhzText)), RESET_TIMEOUT_MS, onLog)
         }
 
         // Step 3: Pull & Verify Block 1 .. Block N-1

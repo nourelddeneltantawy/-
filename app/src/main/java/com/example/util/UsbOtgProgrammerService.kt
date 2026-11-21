@@ -109,6 +109,8 @@ object UsbOtgProgrammerService {
     private var currentDtrState: Boolean = false
     @Volatile
     private var currentRtsState: Boolean = false
+    @Volatile
+    private var nec78k0InvertDtrRtsPolarity: Boolean = false
 
     private enum class BootSyncMode {
         SINGLE_WIRE_RL78,
@@ -146,6 +148,12 @@ object UsbOtgProgrammerService {
 
     fun setEchoCancellation(enabled: Boolean) {
         echoCancellationEnabled = enabled
+    }
+
+    fun is78k0InvertDtrRtsPolarity(): Boolean = nec78k0InvertDtrRtsPolarity
+
+    fun set78k0InvertDtrRtsPolarity(inverted: Boolean) {
+        nec78k0InvertDtrRtsPolarity = inverted
     }
 
     private fun ensureContext(context: Context) {
@@ -468,13 +476,16 @@ object UsbOtgProgrammerService {
             delay(50)
             flushRxBuffer()
         } else if (syncMode == BootSyncMode.FLMD0_78K0) {
-            onLog("2) تتابع 78K0 (FLMD0): DTR=false (FLMD0=HIGH 5V) و RTS=true (RESET=LOW عبر D2) -> انتظار 50ms...")
-            setControlLines(conn, dev, activeChipType, dtr = false, rts = true, onLog = onLog)
-            delay(50)
+            val dtrFlmd0High = nec78k0InvertDtrRtsPolarity
+            val rtsResetLow = !nec78k0InvertDtrRtsPolarity
+            val rtsResetHigh = nec78k0InvertDtrRtsPolarity
+            onLog("2) تتابع 78K0 (FLMD0): setDTR($dtrFlmd0High) [FLMD0=+5V] + setRTS($rtsResetLow) [RESET=0V] -> انتظار 100ms...")
+            setControlLines(conn, dev, activeChipType, dtr = dtrFlmd0High, rts = rtsResetLow, onLog = onLog)
+            delay(100)
 
-            onLog("3) رفع RESET: RTS=false (RESET=HIGH) مع إبقاء DTR=false (FLMD0=HIGH) -> انتظار 20ms...")
-            setControlLines(conn, dev, activeChipType, dtr = false, rts = false, onLog = onLog)
-            delay(20)
+            onLog("3) تحرير RESET: setRTS($rtsResetHigh) [RESET=+5V] مع إبقاء setDTR($dtrFlmd0High) -> انتظار 150ms...")
+            setControlLines(conn, dev, activeChipType, dtr = dtrFlmd0High, rts = rtsResetHigh, onLog = onLog)
+            delay(150)
             flushRxBuffer()
         } else {
             onLog("2) سحب RTS=true (RESET=LOW عبر D2) + تفعيل TX Break LOW (سحب TOOL0/MODE=LOW عبر D1) -> 50ms...")
@@ -510,19 +521,20 @@ object UsbOtgProgrammerService {
                 true
             }
             BootSyncMode.FLMD0_78K0 -> {
-                onLog("4) إرسال نبضة المزامنة 78K0 ([0x00] ← 5ms ← [0x00]) مع إلغاء صدى D1...")
+                onLog("4) إرسال نبضة المزامنة 78K0 ([0x00] ← 10ms ← [0x00]) ثم انتظار 50ms...")
                 val err1 = writeWithEchoCancel(byteArrayOf(0x00), clearStaleRx = true, onLog = onLog)
                 if (err1 != null) {
                     onLog("TX ERROR (78K0 Sync #1): $err1")
                     return false
                 }
-                delay(5)
+                delay(10)
                 val err2 = writeWithEchoCancel(byteArrayOf(0x00), clearStaleRx = true, onLog = onLog)
                 if (err2 != null) {
                     onLog("TX ERROR (78K0 Sync #2): $err2")
                     return false
                 }
-                delay(20)
+                delay(50)
+                flushRxBuffer()
                 true
             }
             BootSyncMode.SINGLE_WIRE_R8C_78K0R -> {
@@ -655,6 +667,20 @@ object UsbOtgProgrammerService {
                 val conn = activeConnection ?: return
                 val dev = activeDevice ?: return
                 this@UsbOtgProgrammerService.setControlLines(conn, dev, activeChipType, dtr = dtr, rts = rts, onLog = onLog)
+            }
+
+            override fun setDtr(enabled: Boolean, onLog: (String) -> Unit) {
+                setSingleDtr(enabled, onLog)
+            }
+
+            override fun setRts(enabled: Boolean, onLog: (String) -> Unit) {
+                setSingleRts(enabled, onLog)
+            }
+
+            override fun getInvertDtrRtsPolarity(): Boolean = nec78k0InvertDtrRtsPolarity
+
+            override fun setInvertDtrRtsPolarity(inverted: Boolean) {
+                nec78k0InvertDtrRtsPolarity = inverted
             }
 
             override fun flushInputBuffer() {

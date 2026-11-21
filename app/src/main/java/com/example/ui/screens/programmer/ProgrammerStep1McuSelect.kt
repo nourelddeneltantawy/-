@@ -284,7 +284,7 @@ fun ProgrammerStep1McuSelect(
                             )
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                text = "وضع FT232 التلقائي (Zero-Touch): DTR=FLMD0 و RTS=RESET (50ms) وخطا TX/RX منفصلان بدون دايود على 9600 8N1 مفعّلة تلقائياً فور التوصيل.",
+                                text = "وضع FT232 التلقائي (Zero-Touch): DTR=FLMD0 و RTS=RESET (100ms/150ms) وخطا TX/RX منفصلان بدون دايود على 9600 8N1 مفعّلة تلقائياً فور التوصيل.",
                                 fontSize = 11.sp,
                                 color = MaterialTheme.colorScheme.onSurface,
                                 lineHeight = 16.sp

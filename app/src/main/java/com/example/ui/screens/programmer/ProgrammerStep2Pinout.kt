@@ -587,7 +587,7 @@ private fun Ft232Direct6Wire78k0Card(
                 bridgeComponent = "توصيل مباشر",
                 mcuTarget = "MCU RESET",
                 accentColor = Color(0xFFF59E0B),
-                subNote = "نبضة Reset تلقائية 50ms LOW ثم HIGH عند الدخول لوضع البرمجة"
+                subNote = "نبضة Reset تلقائية 100ms LOW ثم HIGH + انتظار 150ms لاستقرار المذبذب"
             )
             SchematicTableRow(
                 programmerSignal = "FT232 DTR",

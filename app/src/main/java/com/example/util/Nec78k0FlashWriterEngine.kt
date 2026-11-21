@@ -554,15 +554,7 @@ object Nec78k0FlashWriterEngine {
             Nec78k0ProtocolEngine.normalize78k0Part(selectedChip.partNumber)
         ) {
             onProgress(0, preDetectedInfo.flashSizeBytes, "مزامنة ${preDetectedInfo.deviceName} وتهيئة UART (9600 8N1)...")
-            if (!Nec78k0ProtocolEngine.performHardwareHandshake(transport, onLog)) {
-                return null to "فشلت المزامنة التلقائية (9600 8N1 / FLMD0+RESET) مع ${preDetectedInfo.deviceName}."
-            }
-            val resetRes = Nec78k0ProtocolEngine.transceiveSingleFrame(
-                transport,
-                Nec78k0ProtocolEngine.buildCommandFrame(Nec78k0ProtocolEngine.CMD_RESET),
-                600,
-                onLog
-            )
+            val resetRes = Nec78k0ProtocolEngine.handshakeAndSendResetCommand(transport, onLog)
             if (resetRes !is Nec78k0ProtocolEngine.Nec78k0TransceiveResult.Success) {
                 return null to when (resetRes) {
                     is Nec78k0ProtocolEngine.Nec78k0TransceiveResult.ProtocolError -> "رفض المعالج أمر Reset 0x00: ${resetRes.statusLabel}"
@@ -576,7 +568,7 @@ object Nec78k0FlashWriterEngine {
                     Nec78k0ProtocolEngine.CMD_OSC_FREQ,
                     Nec78k0ProtocolEngine.buildOscFreqPayload(clockFreqMhzText)
                 ),
-                600,
+                Nec78k0ProtocolEngine.RESET_TIMEOUT_MS,
                 onLog
             )
             return preDetectedInfo to null

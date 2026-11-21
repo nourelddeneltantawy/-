@@ -328,7 +328,7 @@ fun Nec78k0ZeroTouchStatusCard(
             ) {
                 InfoBadgePill(
                     label = "التهيئة الفورية",
-                    value = "50ms RST ← 0xC0 / 0xB0",
+                    value = "100ms RST + 150ms • 0xC0",
                     accent = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.weight(1f)
                 )
