@@ -239,7 +239,11 @@ object Nec78k0RecoveryManager {
         if (na == nb) return true
         val ta = na.trimEnd('A', 'B', 'C', 'D')
         val tb = nb.trimEnd('A', 'B', 'C', 'D')
-        return ta.isNotEmpty() && ta == tb
+        if (ta.isNotEmpty() && ta == tb) return true
+        val coreRegex = Regex("""78F[0-9]{4}""")
+        val ca = coreRegex.find(na)?.value
+        val cb = coreRegex.find(nb)?.value
+        return ca != null && ca == cb
     }
 
     private fun normalizeChipKey(name: String): String {

@@ -232,7 +232,8 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
     private fun applySelectedMcuHierarchy(
         mcu: McuProcessor,
         clearSearch: Boolean = false,
-        markUserSelected: Boolean = true
+        markUserSelected: Boolean = true,
+        preserveLoadedFirmware: Boolean = false
     ) {
         val families = allProcessors.filter { it.manufacturer == mcu.manufacturer }.map { it.mainFamily }.distinct().sorted()
         val subs = allProcessors.filter { it.manufacturer == mcu.manufacturer && it.mainFamily == mcu.mainFamily }
@@ -245,11 +246,15 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
         val forceDtr = mcu.is78k0Flmd0Mode()
         UsbOtgProgrammerService.setEchoCancellation(defaultEcho)
         _uiState.update { state ->
-            val resetNeeded = state.loadedFileName == null || state.flashBuffer.size != mcu.flashSizeBytes
-            val newBuffer = if (resetNeeded) {
-                FirmwareParser.createEmptyBuffer(mcu.flashSizeBytes)
-            } else {
-                state.flashBuffer
+            val hasLoaded = state.loadedFileName != null
+            val shouldResizePreserve = preserveLoadedFirmware && hasLoaded && state.flashBuffer.size != mcu.flashSizeBytes
+            val resetNeeded = !hasLoaded || (!preserveLoadedFirmware && state.flashBuffer.size != mcu.flashSizeBytes)
+            val newBuffer = when {
+                shouldResizePreserve -> ByteArray(mcu.flashSizeBytes) { 0xFF.toByte() }.also { out ->
+                    state.flashBuffer.copyInto(out, 0, 0, minOf(state.flashBuffer.size, out.size))
+                }
+                resetNeeded -> FirmwareParser.createEmptyBuffer(mcu.flashSizeBytes)
+                else -> state.flashBuffer
             }
             state.copy(
                 searchQuery = if (clearSearch) "" else state.searchQuery,
@@ -507,7 +512,7 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                 }) {
                     is ChipAutoDetectResult.Matched -> {
                         res.matchedProcessor?.let { matched ->
-                            applySelectedMcuHierarchy(matched, clearSearch = true, markUserSelected = true)
+                            applySelectedMcuHierarchy(matched, clearSearch = true, markUserSelected = true, preserveLoadedFirmware = true)
                         }
                         _uiState.update {
                             it.copy(
@@ -728,7 +733,12 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                             }) {
                                 is ChipAutoDetectResult.Matched -> {
                                     probeRes.matchedProcessor?.let { matched ->
-                                        applySelectedMcuHierarchy(matched, clearSearch = true, markUserSelected = true)
+                                        applySelectedMcuHierarchy(
+                                            mcu = matched,
+                                            clearSearch = true,
+                                            markUserSelected = true,
+                                            preserveLoadedFirmware = true
+                                        )
                                     }
                                     _uiState.update {
                                         it.copy(
@@ -976,11 +986,7 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
             addLog("لا توجد جلسة إنقاذ 78K0 غير مكتملة حالياً.", LogLevel.INFO)
             return
         }
-        val matchedProc = allProcessors.firstOrNull {
-            val normProc = it.partNumber.uppercase().replace("UPD", "D")
-            val normChip = target.chipName.uppercase().replace("UPD", "D").trimEnd('A', 'B', 'C', 'D')
-            normProc.startsWith(normChip.take(7))
-        }
+        val matchedProc = Nec78k0ProtocolEngine.findMatchingCatalogProcessor(target.chipName, allProcessors)
         if (matchedProc != null) {
             applySelectedMcuHierarchy(matchedProc, clearSearch = true, markUserSelected = true)
         }
@@ -1038,6 +1044,11 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                     resumeSession = activeResume,
                     preDetected78k0Info = _uiState.value.nec78k0DetectedInfo,
                     on78k0DetectedInfo = { info ->
+                        info.matchedProcessor?.let { matched ->
+                            if (_uiState.value.selectedProcessor?.partNumber != matched.partNumber) {
+                                applySelectedMcuHierarchy(matched, clearSearch = true, markUserSelected = true, preserveLoadedFirmware = true)
+                            }
+                        }
                         _uiState.update { it.copy(nec78k0DetectedInfo = info) }
                     },
                     onLog = { msg -> addLog(msg, LogLevel.INFO) },
@@ -1165,6 +1176,11 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                     catalog = allProcessors,
                     preDetected78k0Info = _uiState.value.nec78k0DetectedInfo,
                     on78k0DetectedInfo = { info ->
+                        info.matchedProcessor?.let { matched ->
+                            if (_uiState.value.selectedProcessor?.partNumber != matched.partNumber) {
+                                applySelectedMcuHierarchy(matched, clearSearch = true, markUserSelected = true, preserveLoadedFirmware = true)
+                            }
+                        }
                         _uiState.update { it.copy(nec78k0DetectedInfo = info) }
                     },
                     onLog = { msg -> addLog(msg, LogLevel.INFO) },
@@ -1273,6 +1289,11 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                     catalog = allProcessors,
                     preDetected78k0Info = _uiState.value.nec78k0DetectedInfo,
                     on78k0DetectedInfo = { info ->
+                        info.matchedProcessor?.let { matched ->
+                            if (_uiState.value.selectedProcessor?.partNumber != matched.partNumber) {
+                                applySelectedMcuHierarchy(matched, clearSearch = true, markUserSelected = true, preserveLoadedFirmware = true)
+                            }
+                        }
                         _uiState.update { it.copy(nec78k0DetectedInfo = info) }
                     },
                     onLog = { msg -> addLog(msg, LogLevel.INFO) },
