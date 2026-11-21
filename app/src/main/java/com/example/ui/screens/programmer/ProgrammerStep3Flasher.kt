@@ -126,10 +126,6 @@ fun ProgrammerStep3Flasher(
     onEraseFlash: () -> Unit,
     onVerifyFlash: () -> Unit,
     onClearLogs: () -> Unit,
-    onToggleManualResetMode: (Boolean) -> Unit = {},
-    onConfirmManualReset: () -> Unit = {},
-    onCancelManualReset: () -> Unit = {},
-    onAutoDetect78k0Now: () -> Unit = {},
     onRescue78k0Session: (com.example.util.Nec78k0RecoveryManager.Nec78k0RecoverySession) -> Unit = {},
     onResumeFromWatchdog: () -> Unit = {},
     onDismissWatchdog: () -> Unit = {},
@@ -137,6 +133,7 @@ fun ProgrammerStep3Flasher(
 ) {
     val mcu = state.selectedProcessor ?: return
     val chipConfig = mcu.chipConfig
+    val is78k0 = mcu.is78k0Flmd0Mode()
     val scrollState = rememberScrollState()
 
     val openFirmwareLauncher = rememberLauncherForActivityResult(
@@ -186,13 +183,6 @@ fun ProgrammerStep3Flasher(
                 isBusy = state.isBusy,
                 onResumeClick = onResumeFromWatchdog,
                 onDismiss = onDismissWatchdog
-            )
-        }
-
-        if (state.awaitingManualResetPrompt) {
-            Nec78k0ManualResetPromptCard(
-                onConfirmResetDone = onConfirmManualReset,
-                onCancel = onCancelManualReset
             )
         }
 
@@ -297,79 +287,81 @@ fun ProgrammerStep3Flasher(
 
                     BaudRateSelector(
                         selectedBaud = state.baudRate,
-                        enabled = !state.isConnected && !state.isBusy,
+                        enabled = !state.isConnected && !state.isBusy && !is78k0,
                         onSelect = onBaudRateChange,
                         modifier = Modifier.weight(0.85f)
                     )
                 }
 
-                // DTR / RTS Reset Control Switch
-                Surface(
-                    shape = RoundedCornerShape(12.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 12.dp, vertical = 4.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+                if (!is78k0) {
+                    // DTR / RTS Reset Control Switch
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                        modifier = Modifier.fillMaxWidth()
                     ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "تفعيل نبضة DTR/RTS Reset",
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.onSurface
-                            )
-                            Text(
-                                text = if (state.enableDtrRtsReset) "إرسال نبضة Reset قبل المزامنة" else "تعطيل DTR/RTS (توصيل مباشر 4 أسلاك)",
-                                fontSize = 10.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 4.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "تفعيل نبضة DTR/RTS Reset",
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Text(
+                                    text = if (state.enableDtrRtsReset) "إرسال نبضة Reset قبل المزامنة" else "تعطيل DTR/RTS (توصيل مباشر 4 أسلاك)",
+                                    fontSize = 10.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Switch(
+                                checked = state.enableDtrRtsReset,
+                                onCheckedChange = onToggleDtrRtsReset,
+                                enabled = !state.isBusy,
+                                modifier = Modifier.testTag("step3_dtr_rts_switch")
                             )
                         }
-                        Switch(
-                            checked = state.enableDtrRtsReset,
-                            onCheckedChange = onToggleDtrRtsReset,
-                            enabled = !state.isBusy,
-                            modifier = Modifier.testTag("step3_dtr_rts_switch")
-                        )
                     }
-                }
 
-                // D1 Diode Echo Cancellation Switch
-                Surface(
-                    shape = RoundedCornerShape(12.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 12.dp, vertical = 4.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+                    // D1 Diode Echo Cancellation Switch
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                        modifier = Modifier.fillMaxWidth()
                     ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "إلغاء صدى الدايود D1 (Echo Cancellation)",
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.onSurface
-                            )
-                            Text(
-                                text = if (state.enableEchoCancellation) "حذف بايتات الصدى المارة عبر D1 (TX↔RX) تلقائياً" else "توصيل بسلكين منفصلين بدون دايود D1",
-                                fontSize = 10.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 4.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "إلغاء صدى الدايود D1 (Echo Cancellation)",
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Text(
+                                    text = if (state.enableEchoCancellation) "حذف بايتات الصدى المارة عبر D1 (TX↔RX) تلقائياً" else "توصيل بسلكين منفصلين بدون دايود D1",
+                                    fontSize = 10.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Switch(
+                                checked = state.enableEchoCancellation,
+                                onCheckedChange = onToggleEchoCancel,
+                                enabled = !state.isBusy,
+                                modifier = Modifier.testTag("step3_echo_cancel_switch")
                             )
                         }
-                        Switch(
-                            checked = state.enableEchoCancellation,
-                            onCheckedChange = onToggleEchoCancel,
-                            enabled = !state.isBusy,
-                            modifier = Modifier.testTag("step3_echo_cancel_switch")
-                        )
                     }
                 }
             }
@@ -404,13 +396,8 @@ fun ProgrammerStep3Flasher(
                 )
             }
             ProtocolFamilyType.SEVEN_EIGHT_K -> {
-                if (mcu.is78k0Flmd0Mode()) {
-                    Nec78k0SettingsCard(
-                        manualResetMode = state.manualResetMode,
-                        isBusy = state.isBusy || state.isAutoDetecting,
-                        onToggleManualReset = onToggleManualResetMode,
-                        onAutoDetectNow = onAutoDetect78k0Now
-                    )
+                if (is78k0) {
+                    Nec78k0ZeroTouchStatusCard()
                     state.nec78k0DetectedInfo?.let { info ->
                         Nec78k0AutoDetectInfoCard(info = info)
                     }
@@ -659,7 +646,7 @@ fun ProgrammerStep3Flasher(
                     )
                 }
 
-                if (mcu.protocolType == ProtocolFamilyType.R8C_M16C) {
+                if (mcu.protocolType == ProtocolFamilyType.R8C_M16C || is78k0) {
                     Surface(
                         shape = RoundedCornerShape(12.dp),
                         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
@@ -669,6 +656,44 @@ fun ProgrammerStep3Flasher(
                             modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
                             verticalArrangement = Arrangement.spacedBy(2.dp)
                         ) {
+                            if (is78k0) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 6.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    val chipEraseSelected = !state.eraseMode.contains("بلوك", ignoreCase = true) &&
+                                        !state.eraseMode.contains("Block", ignoreCase = true)
+                                    FilterChip(
+                                        selected = chipEraseSelected,
+                                        onClick = { onEraseModeChange("مسح كلي (Chip Erase)") },
+                                        enabled = !state.isBusy,
+                                        label = {
+                                            Text("مسح كلي 0x20", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                        },
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .heightIn(min = 48.dp)
+                                            .testTag("nec78k0_chip_erase_chip")
+                                    )
+                                    FilterChip(
+                                        selected = !chipEraseSelected,
+                                        onClick = { onEraseModeChange("مسح بالبلوكات (Block Erase)") },
+                                        enabled = !state.isBusy,
+                                        label = {
+                                            Text("مسح بالبلوكات 0x22", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                        },
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .heightIn(min = 48.dp)
+                                            .testTag("nec78k0_block_erase_chip")
+                                    )
+                                }
+                                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+                            }
+
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -678,13 +703,13 @@ fun ProgrammerStep3Flasher(
                             ) {
                                 Column(modifier = Modifier.weight(1f)) {
                                     Text(
-                                        text = "مسح تلقائي قبل الكتابة (0xA7 D0)",
+                                        text = if (is78k0) "مسح تلقائي قبل الكتابة (0x20 / 0x22)" else "مسح تلقائي قبل الكتابة (0xA7 D0)",
                                         fontSize = 12.sp,
                                         fontWeight = FontWeight.Bold,
                                         color = MaterialTheme.colorScheme.onSurface
                                     )
                                     Text(
-                                        text = "مسح المعالج بالكامل وتخطي صفحات 0xFF تلقائياً",
+                                        text = if (is78k0) "مسح الفلاش وتخطي بلوكات 0xFF الفارغة تلقائياً" else "مسح المعالج بالكامل وتخطي صفحات 0xFF تلقائياً",
                                         fontSize = 10.sp,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
@@ -714,7 +739,7 @@ fun ProgrammerStep3Flasher(
                                         color = MaterialTheme.colorScheme.onSurface
                                     )
                                     Text(
-                                        text = "مطابقة الصفحات المكتوبة بايت ببايت عبر 0xFF",
+                                        text = if (is78k0) "مطابقة البلوكات عبر 0x13 وفحص البصمة 0xB0" else "مطابقة الصفحات المكتوبة بايت ببايت عبر 0xFF",
                                         fontSize = 10.sp,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )

@@ -201,9 +201,6 @@ fun McuProgrammerScreen(
                     onAutoDetectChipId = programmerViewModel::autoDetectChipId,
                     onResetUniversalAutoDetect = programmerViewModel::clearFamilySelectionForUniversalAutoDetect,
                     onNextStep = { programmerViewModel.goToStep(2) },
-                    onToggleManualResetMode = programmerViewModel::setManualResetMode,
-                    onConfirmManualReset = programmerViewModel::confirmManualResetDone,
-                    onCancelManualReset = programmerViewModel::cancelManualResetPrompt,
                     onRescue78k0Session = { session -> programmerViewModel.rescueOrResume78k0Flash(session) }
                 )
                 2 -> ProgrammerStep2Pinout(
@@ -236,10 +233,6 @@ fun McuProgrammerScreen(
                     onEraseFlash = programmerViewModel::eraseChipFlash,
                     onVerifyFlash = programmerViewModel::verifyChipFlash,
                     onClearLogs = programmerViewModel::clearLogs,
-                    onToggleManualResetMode = programmerViewModel::setManualResetMode,
-                    onConfirmManualReset = programmerViewModel::confirmManualResetDone,
-                    onCancelManualReset = programmerViewModel::cancelManualResetPrompt,
-                    onAutoDetect78k0Now = programmerViewModel::autoDetectChipId,
                     onRescue78k0Session = { session -> programmerViewModel.rescueOrResume78k0Flash(session) },
                     onResumeFromWatchdog = { programmerViewModel.rescueOrResume78k0Flash(null) },
                     onDismissWatchdog = programmerViewModel::dismissWatchdogAlert

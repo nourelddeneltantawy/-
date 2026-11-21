@@ -82,9 +82,6 @@ fun ProgrammerStep1McuSelect(
     onAutoDetectChipId: () -> Unit,
     onResetUniversalAutoDetect: () -> Unit = {},
     onNextStep: () -> Unit,
-    onToggleManualResetMode: (Boolean) -> Unit = {},
-    onConfirmManualReset: () -> Unit = {},
-    onCancelManualReset: () -> Unit = {},
     onRescue78k0Session: (com.example.util.Nec78k0RecoveryManager.Nec78k0RecoverySession) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
@@ -262,37 +259,71 @@ fun ProgrammerStep1McuSelect(
                     }
                 }
 
-                // DTR/RTS Auto-Reset Pulse Toggle Switch
-                Surface(
-                    shape = RoundedCornerShape(12.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Row(
+                val is78k0Target = state.selectedProcessor?.is78k0Flmd0Mode() == true ||
+                    (state.selectedMainFamily.contains("78K0", ignoreCase = true) &&
+                        !state.selectedMainFamily.contains("78K0R", ignoreCase = true))
+
+                if (is78k0Target) {
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = Color(0xFF0EA5E9).copy(alpha = 0.12f),
+                        border = BorderStroke(1.dp, Color(0xFF0EA5E9).copy(alpha = 0.4f)),
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 12.dp, vertical = 6.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+                            .testTag("step1_78k0_zerotouch_badge")
                     ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "نبضة DTR/RTS Reset التلقائية",
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.onSurface
+                        Row(
+                            modifier = Modifier.padding(10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Usb,
+                                contentDescription = "وضع Zero-Touch لـ 78K0",
+                                tint = Color(0xFF0EA5E9),
+                                modifier = Modifier.size(18.dp)
                             )
+                            Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                text = if (state.enableDtrRtsReset) "مفعّلة: تحكم تلقائي في RESET و MODE" else "معطّلة: اتصال UART مباشر (4 أسلاك)",
-                                fontSize = 10.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                text = "وضع FT232 التلقائي (Zero-Touch): DTR=FLMD0 و RTS=RESET (50ms) وخطا TX/RX منفصلان بدون دايود على 9600 8N1 مفعّلة تلقائياً فور التوصيل.",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                lineHeight = 16.sp
                             )
                         }
-                        Switch(
-                            checked = state.enableDtrRtsReset,
-                            onCheckedChange = onToggleDtrRtsReset,
-                            modifier = Modifier.testTag("step1_dtr_rts_switch")
-                        )
+                    }
+                } else {
+                    // DTR/RTS Auto-Reset Pulse Toggle Switch
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 6.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "نبضة DTR/RTS Reset التلقائية",
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Text(
+                                    text = if (state.enableDtrRtsReset) "مفعّلة: تحكم تلقائي في RESET و MODE" else "معطّلة: اتصال UART مباشر (4 أسلاك)",
+                                    fontSize = 10.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Switch(
+                                checked = state.enableDtrRtsReset,
+                                onCheckedChange = onToggleDtrRtsReset,
+                                modifier = Modifier.testTag("step1_dtr_rts_switch")
+                            )
+                        }
                     }
                 }
 
@@ -389,49 +420,6 @@ fun ProgrammerStep1McuSelect(
                                 )
                             }
                         }
-                    }
-
-                    // Manual Reset Mode toggle for 78K0 (adapters without DTR/RTS)
-                    Surface(
-                        shape = RoundedCornerShape(12.dp),
-                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .heightIn(min = 48.dp)
-                                .padding(horizontal = 12.dp, vertical = 4.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = "وضع الريسيت اليدوي (Manual Reset لـ 78K0)",
-                                    fontSize = 11.5.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = MaterialTheme.colorScheme.onSurface
-                                )
-                                Text(
-                                    text = if (state.manualResetMode) "مفعّل: يعمل مع المبرمجات التي لا تملك أسلاك DTR/RTS" else "معطّل: تحكم تلقائي في FLMD0 و RESET",
-                                    fontSize = 10.sp,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                            Switch(
-                                checked = state.manualResetMode,
-                                onCheckedChange = onToggleManualResetMode,
-                                enabled = !state.isAutoDetecting && !state.isLoadingDb,
-                                modifier = Modifier.testTag("step1_manual_reset_switch")
-                            )
-                        }
-                    }
-
-                    if (state.awaitingManualResetPrompt) {
-                        Nec78k0ManualResetPromptCard(
-                            onConfirmResetDone = onConfirmManualReset,
-                            onCancel = onCancelManualReset
-                        )
                     }
 
                     state.nec78k0DetectedInfo?.let { info ->

@@ -73,7 +73,7 @@ data class McuProcessor(
 
     fun isDiodeSingleWireSchematicFamily(): Boolean {
         val fam = mainFamily.trim().uppercase()
-        return fam.contains("RL78") || fam.contains("78K0") || fam.contains("R8C") || fam.contains("M16C")
+        return fam.contains("RL78") || fam.contains("78K0R") || fam.contains("R8C") || fam.contains("M16C")
     }
 
     val flashSizeBytes: Int
@@ -282,10 +282,11 @@ object McuProtocolDefaults {
                 McuPinMapping("VCC / GND", "VDD / VSS", "تغذية وأرضي", "تغذية مشتركة", "${mcu.recommendedVoltage} + مكثف REGC")
             )
             fam.contains("78K0") -> listOf(
-                McuPinMapping("RTS (عبر دايود 1N4148 D2)", "RESET#", "نبضة Reset 50ms", "خرج Reset", "طرف RTS يتحكم في RESET عبر دايود D2 (50ms LOW ثم HIGH)"),
-                McuPinMapping("DTR (تحكم FLMD0)", "FLMD0", "HIGH بجهد 5V", "تفعيل وضع الفلاش", "طرف DTR مسؤول عن FLMD0 (يُضبط DTR = false لإخراج HIGH 5V)"),
-                McuPinMapping("TX + RX (عبر دايود 1N4148 D1)", "TOOL0 / UART6 (RXD6/TXD6)", "حسب الباكج (${mcu.pins}P)", "ثنائي الاتجاه (D1)", "دمج TX و RX عبر دايود D1 (1N4148) مع تفعيل إلغاء الصدى تلقائياً"),
-                McuPinMapping("VCC / GND", "VDD / VSS", "تغذية 5V وأرضي", "تغذية مشتركة", "${mcu.recommendedVoltage}")
+                McuPinMapping("FT232 RTS", "MCU RESET#", "نبضة Reset 50ms", "خرج Reset مباشر", "توصيل مباشر: RTS=LOW لمدة 50ms ثم HIGH تلقائياً"),
+                McuPinMapping("FT232 DTR", "MCU FLMD0", "HIGH تلقائي (5V/3.3V)", "تفعيل وضع البرمجة", "توصيل مباشر: DTR=HIGH لإبقاء المعالج في وضع الفلاش"),
+                McuPinMapping("FT232 TX", "MCU RX (RXD6)", "حسب الباكج (${mcu.pins}P)", "UART TX مباشر بدون دايود", "خط إرسال مستقل تماماً إلى RXD6 في المعالج بدون دايود"),
+                McuPinMapping("FT232 RX", "MCU TX (TXD6)", "حسب الباكج (${mcu.pins}P)", "UART RX مباشر بدون دايود", "خط استقبال مستقل تماماً من TXD6 بدون دايود (Echo Cancel = OFF)"),
+                McuPinMapping("FT232 VCC / GND", "MCU VCC / GND", "تغذية 5V وأرضي", "تغذية مشتركة", "${mcu.recommendedVoltage}")
             )
             fam.contains("M16C") -> listOf(
                 McuPinMapping("TX + RX (عبر دايود 1N4148 D1)", "TOOL0 / MODE (RXD1/TXD1)", "حسب الباكج (${mcu.pins}P)", "ثنائي الاتجاه (D1)", pkgNote),

@@ -24,6 +24,7 @@ object Nec78k0ProtocolEngine {
 
     const val CMD_RESET: Int = 0x00
     const val CMD_VERIFY: Int = 0x13
+    const val CMD_CHIP_ERASE: Int = 0x20
     const val CMD_BLOCK_ERASE: Int = 0x22
     const val CMD_BLANK_CHECK: Int = 0x32
     const val CMD_PROGRAM: Int = 0x40
@@ -80,7 +81,21 @@ object Nec78k0ProtocolEngine {
         val payload: ByteArray,
         val rawFrame: ByteArray,
         val checksumValid: Boolean
-    )
+    ) {
+        val sts2: Int?
+            get() = if (payload.size >= 2) (payload[1].toInt() and 0xFF) else null
+
+        val isAckSuccess: Boolean
+            get() = checksumValid && sts1 == STS_ACK && (payload.size != 2 || sts2 == STS_ACK)
+
+        val effectiveErrorCode: Int
+            get() = when {
+                !checksumValid -> STS_CHECKSUM_ERROR
+                sts1 != STS_ACK -> sts1
+                payload.size == 2 && sts2 != null && sts2 != STS_ACK -> sts2!!
+                else -> sts1
+            }
+    }
 
     sealed class Nec78k0TransceiveResult {
         data class Success(val frame: Nec78k0RxFrame) : Nec78k0TransceiveResult()
@@ -118,7 +133,7 @@ object Nec78k0ProtocolEngine {
         val lenByte = 0x00 // 256 bytes
         val cs = computeChecksum(lenByte, data256)
         val out = ByteArray(2 + PAGE_SIZE + 2)
-        out[0] = STX.toByte()
+        out[0] = SOH.toByte()
         out[1] = lenByte.toByte()
         System.arraycopy(data256, 0, out, 2, PAGE_SIZE)
         out[2 + PAGE_SIZE] = cs.toByte()
@@ -138,48 +153,34 @@ object Nec78k0ProtocolEngine {
 
     suspend fun performHardwareHandshake(
         transport: Serial78k0Transport,
-        manualResetMode: Boolean,
-        awaitManualReset: suspend () -> Boolean,
         onLog: (String) -> Unit
     ): Boolean {
         if (!transport.ensureReaderListening(onLog)) return false
         transport.setRawRxMonitor(false)
-        onLog("1) تهيئة UART على 9600 bps, 8N1 (Flow Control OFF) وتفريغ المخزن...")
+        onLog("1) تهيئة UART على 9600 bps, 8N1 (بدون تحكم تدفق وبدون إلغاء صدى) وتفريغ المخزن...")
         if (!transport.configureUart96008N1(onLog)) return false
         transport.flushInputBuffer()
 
-        if (manualResetMode) {
-            transport.setControlLines(dtr = false, rts = false, onLog = onLog)
-            onLog("وضع الريسيت اليدوي: قم بفصل/توصيل تغذية المعالج أو الضغط على Reset مع بقاء FLMD0 على 5V ثم اضغط متابعة...")
-            val confirmed = awaitManualReset()
-            if (!confirmed) {
-                onLog("تم إلغاء الانتظار من قبل المستخدم أثناء وضع الريسيت اليدوي.")
-                return false
-            }
-            transport.flushInputBuffer()
-        } else {
-            onLog("2) تفعيل وضع البرمجة التلقائي 78K0: FLMD0=HIGH (DTR=false) + RESET=LOW (RTS=true) -> 50ms...")
-            transport.setControlLines(dtr = false, rts = true, onLog = onLog)
-            delay(50)
+        onLog("2) تهيئة FT232 التلقائية 78K0: رفع DTR (FLMD0=HIGH) + خفض RTS (RESET=LOW) لمدة 50ms...")
+        transport.setControlLines(dtr = false, rts = true, onLog = onLog)
+        delay(50)
 
-            onLog("3) رفع RESET=HIGH (RTS=false) مع إبقاء FLMD0=HIGH -> انتظار 20ms...")
-            transport.setControlLines(dtr = false, rts = false, onLog = onLog)
-            delay(20)
-            transport.flushInputBuffer()
-        }
+        onLog("3) تحرير RTS (RESET=HIGH) مع إبقاء DTR (FLMD0=HIGH) -> انتظار 20ms...")
+        transport.setControlLines(dtr = false, rts = false, onLog = onLog)
+        delay(20)
+        transport.flushInputBuffer()
 
         if (!transport.isDeviceAttached()) {
             onLog("Watchdog Alert: انقطع اتصال USB OTG قبل إرسال نبضة المزامنة!")
             return false
         }
 
-        onLog("4) إرسال نبضة معايرة السرعة 78K0: [0x00] ← 5ms ← [0x00]...")
+        onLog("4) إرسال نبضة المزامنة [0x00, 0x00] بفاصل 5ms على 9600 bps (8N1)...")
         val err1 = transport.writeRaw(byteArrayOf(0x00))
         if (err1 != null) {
             onLog("TX Error (Sync #1): $err1")
             return false
         }
-        transport.discardEcho(1, 9600)
         delay(5)
 
         val err2 = transport.writeRaw(byteArrayOf(0x00))
@@ -187,7 +188,6 @@ object Nec78k0ProtocolEngine {
             onLog("TX Error (Sync #2): $err2")
             return false
         }
-        transport.discardEcho(1, 9600)
         delay(20)
         transport.flushInputBuffer()
         return true
@@ -196,15 +196,13 @@ object Nec78k0ProtocolEngine {
     suspend fun autoDetectAndInspect(
         context: Context,
         transport: Serial78k0Transport,
-        manualResetMode: Boolean,
         clockFreqMhzText: String,
         preferredChip: McuProcessor?,
         catalog: List<McuProcessor>,
-        awaitManualReset: suspend () -> Boolean,
         onLog: (String) -> Unit
     ): Pair<Nec78k0DetectedInfo?, String?> {
-        if (!performHardwareHandshake(transport, manualResetMode, awaitManualReset, onLog)) {
-            return null to "فشلت المزامنة الصلبة (Handshake / Baud Sync) مع معالج 78K0."
+        if (!performHardwareHandshake(transport, onLog)) {
+            return null to "فشلت المزامنة التلقائية (FT232 DTR/RTS + Baud Sync 9600) مع معالج 78K0."
         }
 
         // Step 2: Reset Command (0x00) -> [01 01 00 FF 03]
@@ -315,11 +313,10 @@ object Nec78k0ProtocolEngine {
         context: Context,
         transport: Serial78k0Transport,
         selectedChip: McuProcessor,
-        manualResetMode: Boolean,
         clockFreqMhzText: String,
         catalog: List<McuProcessor>,
         existingResumeSession: Nec78k0RecoveryManager.Nec78k0RecoverySession?,
-        awaitManualReset: suspend () -> Boolean,
+        preDetectedInfo: Nec78k0DetectedInfo? = null,
         onDetectedInfo: (Nec78k0DetectedInfo) -> Unit,
         onLog: (String) -> Unit,
         onProgress: (bytesDone: Int, totalBytes: Int, label: String) -> Unit
@@ -329,7 +326,7 @@ object Nec78k0ProtocolEngine {
 
         if (session != null && session.lastCompletedBlock >= 0) {
             onLog("تفعيل وضع الاستكمال / الإنقاذ التلقائي للجلسة المحفوظة (${session.chipName}) من المرحلة: ${session.stage.labelAr}...")
-            if (!performHardwareHandshake(transport, manualResetMode, awaitManualReset, onLog)) {
+            if (!performHardwareHandshake(transport, onLog)) {
                 return FlashOperationResult.Failure("${WATCHDOG_PREFIX}${session.lastCompletedBlock}:تعذر إعادة المزامنة مع ${session.chipName} — ثبّت الأسلاك ثم أعد المحاولة.")
             }
             // Fast 0x00 Reset + 0x90 Osc Setup to wake UART command interpreter cleanly
@@ -352,16 +349,30 @@ object Nec78k0ProtocolEngine {
                 matchedProcessor = selectedChip
             )
             onDetectedInfo(detectedInfo)
+        } else if (preDetectedInfo != null &&
+            normalize78k0Part(preDetectedInfo.deviceName) == normalize78k0Part(selectedChip.partNumber)
+        ) {
+            onLog(
+                "البصمة محفوظة مسبقاً عند الاتصال (${preDetectedInfo.deviceName} • FullCS=${preDetectedInfo.fullFlashChecksumHex} • B0CS=${preDetectedInfo.block0ChecksumHex}) — بدء مزامنة السحب..."
+            )
+            if (!performHardwareHandshake(transport, onLog)) {
+                return FlashOperationResult.Failure("فشلت المزامنة التلقائية (Handshake) مع ${preDetectedInfo.deviceName}.")
+            }
+            val resetRes = transceiveSingleFrame(transport, buildCommandFrame(CMD_RESET), 500, onLog)
+            if (resetRes is Nec78k0TransceiveResult.DisconnectedOrTimeout) {
+                return FlashOperationResult.Failure(resetRes.reason)
+            }
+            transceiveSingleFrame(transport, buildCommandFrame(CMD_OSC_FREQ, buildOscFreqPayload(clockFreqMhzText)), 500, onLog)
+            detectedInfo = preDetectedInfo
+            session = Nec78k0RecoveryManager.findSessionForChip(context, preDetectedInfo.deviceName)
         } else {
             onProgress(0, selectedChip.flashSizeBytes, "التعرف التلقائي وحفظ Checksum الأصلي...")
             val (info, err) = autoDetectAndInspect(
                 context = context,
                 transport = transport,
-                manualResetMode = manualResetMode,
                 clockFreqMhzText = clockFreqMhzText,
                 preferredChip = selectedChip,
                 catalog = catalog,
-                awaitManualReset = awaitManualReset,
                 onLog = onLog
             )
             if (info == null) {
@@ -436,7 +447,7 @@ object Nec78k0ProtocolEngine {
             // Fast Re-sync after Block 0 Zeroing to stabilize UART boot state for Block 1..N-1 extraction
             onLog("إعادة مزامنة سريعة قبل سحب الكتل Block 1..${blockCount - 1}...")
             delay(20)
-            if (!performHardwareHandshake(transport, manualResetMode, awaitManualReset, onLog)) {
+            if (!performHardwareHandshake(transport, onLog)) {
                 return FlashOperationResult.Failure("${WATCHDOG_PREFIX}0:انقطع الاتصال بعد تصفير Block 0 — ثبّت المبرمجة واضغط إنقاذ المعالج.")
             }
             transceiveSingleFrame(transport, buildCommandFrame(CMD_RESET), 500, onLog)
@@ -655,7 +666,7 @@ object Nec78k0ProtocolEngine {
             is Nec78k0TransceiveResult.DisconnectedOrTimeout -> return VerifyOutcome.TransportLost(cmdRes.reason)
         }
 
-        // Send 4 x 256B STX frames (first 3 end with ETB 0x17, final ends with ETX 0x03)
+        // Send 4 x 260B SOH frames (first 3 end with ETB 0x17, final ends with ETX 0x03)
         for (page in 0 until 4) {
             val offset = page * PAGE_SIZE
             val slice = blockBytes.copyOfRange(offset, offset + PAGE_SIZE)
@@ -663,24 +674,16 @@ object Nec78k0ProtocolEngine {
             transport.flushInputBuffer()
             val txErr = transport.writeRaw(dataFrame)
             if (txErr != null) {
-                return VerifyOutcome.TransportLost("انقطع الإرسال أثناء Verify عند صفحة $page: $txErr")
+                return VerifyOutcome.TransportLost("انقطع الإرسال أثناء Verify عند صفحة ${page + 1}/4: $txErr")
             }
             transport.discardEcho(dataFrame.size, 9600)
-            if (page < 3) {
-                val midAck = readOneRxFrame(transport, 600)
-                    ?: return VerifyOutcome.TransportLost("انتهت مهلة انتظار ACK أثناء Verify (الصفحة $page)")
-                if (midAck.sts1 != STS_ACK) {
-                    return VerifyOutcome.Mismatch(statusDescription(midAck.sts1))
-                }
+            val frameAck = readOneRxFrame(transport, 1500)
+                ?: return VerifyOutcome.TransportLost("انتهت مهلة انتظار ACK أثناء Verify (الصفحة ${page + 1}/4)")
+            if (!frameAck.isAckSuccess) {
+                return VerifyOutcome.Mismatch(statusDescription(frameAck.effectiveErrorCode))
             }
         }
-        val finalAck = readOneRxFrame(transport, 1000)
-            ?: return VerifyOutcome.TransportLost("انتهت مهلة ACK النهائي لأمر Verify 0x13")
-        return if (finalAck.checksumValid && finalAck.sts1 == STS_ACK) {
-            VerifyOutcome.Match
-        } else {
-            VerifyOutcome.Mismatch(statusDescription(finalAck.sts1))
-        }
+        return VerifyOutcome.Match
     }
 
     private suspend fun programBlockFromBuffer(
@@ -691,7 +694,7 @@ object Nec78k0ProtocolEngine {
         onLog: (String) -> Unit
     ): String? {
         val progCmd = buildAddressRangeFrame(CMD_PROGRAM, startAddr, endAddr)
-        when (val res = transceiveSingleFrame(transport, progCmd, 1000, onLog)) {
+        when (val res = transceiveSingleFrame(transport, progCmd, 1500, onLog)) {
             is Nec78k0TransceiveResult.Success -> Unit
             is Nec78k0TransceiveResult.ProtocolError -> return "رفض المعالج أمر الكتابة 0x40: ${res.statusLabel}"
             is Nec78k0TransceiveResult.DisconnectedOrTimeout -> return "${WATCHDOG_PREFIX}0:${res.reason}"
@@ -708,16 +711,16 @@ object Nec78k0ProtocolEngine {
             }
             transport.discardEcho(dataFrame.size, 9600)
 
-            val ack = readOneRxFrame(transport, 1200)
+            val ack = readOneRxFrame(transport, 1500)
                 ?: return "${WATCHDOG_PREFIX}0:لم يرد المعالج على حزمة 0x40 (صفحة ${page + 1}/4)"
-            if (!ack.checksumValid || ack.sts1 != STS_ACK) {
-                return "فشل حرق الصفحة ${page + 1}/4 (0x40): ${statusDescription(ack.sts1)}"
+            if (!ack.isAckSuccess) {
+                return "فشل حرق الصفحة ${page + 1}/4 (0x40): ${statusDescription(ack.effectiveErrorCode)}"
             }
         }
         return null
     }
 
-    private suspend fun queryChecksum16(
+    internal suspend fun queryChecksum16(
         transport: Serial78k0Transport,
         csCmdFrame: ByteArray,
         onLog: (String) -> Unit
@@ -729,7 +732,7 @@ object Nec78k0ProtocolEngine {
             return null
         }
         transport.discardEcho(csCmdFrame.size, 9600)
-        val firstFrame = readOneRxFrame(transport, 1200) ?: return null
+        val firstFrame = readOneRxFrame(transport, 1500) ?: return null
         if (!firstFrame.checksumValid || firstFrame.sts1 != STS_ACK) {
             onLog("Checksum 0xB0 Error: ${statusDescription(firstFrame.sts1)}")
             return null
@@ -742,7 +745,7 @@ object Nec78k0ProtocolEngine {
         return Nec78k0Block0Reconstructor.decodeChecksumBytes(dataFrame.payload)
     }
 
-    private fun buildAddressRangeFrame(cmd: Int, startAddr: Int, endAddr: Int): ByteArray {
+    internal fun buildAddressRangeFrame(cmd: Int, startAddr: Int, endAddr: Int): ByteArray {
         val data = byteArrayOf(
             ((startAddr ushr 16) and 0xFF).toByte(),
             ((startAddr ushr 8) and 0xFF).toByte(),
@@ -754,7 +757,7 @@ object Nec78k0ProtocolEngine {
         return buildCommandFrame(cmd, data)
     }
 
-    private fun buildOscFreqPayload(clockText: String): ByteArray {
+    internal fun buildOscFreqPayload(clockText: String): ByteArray {
         val cleaned = clockText.replace(Regex("[^0-9.]"), "")
         val mhz = cleaned.toDoubleOrNull()?.coerceIn(1.0, 20.0) ?: 8.0
         val integerPart = mhz.toInt().coerceIn(1, 20)
@@ -830,7 +833,7 @@ object Nec78k0ProtocolEngine {
         }
     }
 
-    private fun normalize78k0Part(name: String): String {
+    internal fun normalize78k0Part(name: String): String {
         return name.trim().uppercase()
             .replace("UPD", "D")
             .replace(Regex("[^A-Z0-9]"), "")
@@ -846,7 +849,7 @@ object Nec78k0ProtocolEngine {
         }
     }
 
-    private suspend fun transceiveSingleFrame(
+    internal suspend fun transceiveSingleFrame(
         transport: Serial78k0Transport,
         txFrame: ByteArray,
         timeoutMs: Int,
@@ -869,13 +872,14 @@ object Nec78k0ProtocolEngine {
         if (!rx.checksumValid) {
             return Nec78k0TransceiveResult.ProtocolError(STS_CHECKSUM_ERROR, "خطأ Checksum في إطار الاستلام", rx)
         }
-        if (rx.sts1 != STS_ACK) {
-            return Nec78k0TransceiveResult.ProtocolError(rx.sts1, statusDescription(rx.sts1), rx)
+        if (!rx.isAckSuccess) {
+            val errCode = rx.effectiveErrorCode
+            return Nec78k0TransceiveResult.ProtocolError(errCode, statusDescription(errCode), rx)
         }
         return Nec78k0TransceiveResult.Success(rx)
     }
 
-    private suspend fun readOneRxFrame(
+    internal suspend fun readOneRxFrame(
         transport: Serial78k0Transport,
         timeoutMs: Int
     ): Nec78k0RxFrame? {
@@ -940,5 +944,5 @@ object Nec78k0ProtocolEngine {
         return if (out.size() == needed) out.toByteArray() else null
     }
 
-    private fun toHex(bytes: ByteArray): String = bytes.joinToString(" ") { "%02X".format(it) }
+    internal fun toHex(bytes: ByteArray): String = bytes.joinToString(" ") { "%02X".format(it) }
 }

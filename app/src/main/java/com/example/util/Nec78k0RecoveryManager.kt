@@ -13,6 +13,8 @@ import java.io.FileOutputStream
  */
 object Nec78k0RecoveryManager {
     private const val RECOVERY_DIR_NAME = "78k0_recovery"
+    private const val CANONICAL_RESCUE_JSON = "78k0_rescue.json"
+    private const val CANONICAL_PARTIAL_BIN = "78k0_partial.bin"
 
     enum class RecoveryStage(val wireName: String, val labelAr: String) {
         DETECTED("DETECTED", "تم حفظ بصمة المعالج و Checksum قبل التعديل"),
@@ -65,16 +67,25 @@ object Nec78k0RecoveryManager {
         return cleaned.ifBlank { "UNKNOWN_78K0" }
     }
 
-    fun sessionFile(context: Context, chipName: String): File {
+    fun sessionFile(context: Context, @Suppress("UNUSED_PARAMETER") chipName: String): File {
+        return File(getRecoveryDir(context), CANONICAL_RESCUE_JSON)
+    }
+
+    fun partialBlocksFile(context: Context, @Suppress("UNUSED_PARAMETER") chipName: String): File {
+        return File(getRecoveryDir(context), CANONICAL_PARTIAL_BIN)
+    }
+
+    private fun legacySessionFile(context: Context, chipName: String): File {
         return File(getRecoveryDir(context), "recovery_78k0_${sanitizeName(chipName)}.json")
     }
 
-    fun partialBlocksFile(context: Context, chipName: String): File {
+    private fun legacyPartialBlocksFile(context: Context, chipName: String): File {
         return File(getRecoveryDir(context), "partial_blocks_${sanitizeName(chipName)}.bin")
     }
 
     fun saveSessionCheckpoint(context: Context, session: Nec78k0RecoverySession): File {
         val target = sessionFile(context, session.chipName)
+        val canonicalPartial = partialBlocksFile(context, session.chipName).absolutePath
         val json = JSONObject().apply {
             put("chipName", session.chipName)
             put("subFamily", session.subFamily)
@@ -87,7 +98,7 @@ object Nec78k0RecoveryManager {
             put("stage", session.stage.wireName)
             put("lastCompletedBlock", session.lastCompletedBlock)
             put("updatedAtMs", session.updatedAtMs)
-            put("partialBlocksPath", session.partialBlocksPath)
+            put("partialBlocksPath", canonicalPartial)
         }
         writeBytesAtomically(target, json.toString(2).toByteArray(Charsets.UTF_8))
         return target
@@ -100,8 +111,12 @@ object Nec78k0RecoveryManager {
     }
 
     fun loadPartialBlocks(context: Context, chipName: String, expectedSize: Int): ByteArray? {
-        val file = partialBlocksFile(context, chipName)
-        if (!file.exists()) return null
+        val canonical = partialBlocksFile(context, chipName)
+        val file = when {
+            canonical.exists() -> canonical
+            legacyPartialBlocksFile(context, chipName).exists() -> legacyPartialBlocksFile(context, chipName)
+            else -> return null
+        }
         return try {
             val raw = file.readBytes()
             if (raw.size == expectedSize) {
@@ -119,17 +134,22 @@ object Nec78k0RecoveryManager {
     fun findActiveRescueSessions(context: Context): List<Nec78k0RecoverySession> {
         val dir = getRecoveryDir(context)
         val files = dir.listFiles { _, name ->
-            name.startsWith("recovery_78k0_") && name.endsWith(".json")
+            name == CANONICAL_RESCUE_JSON || (name.startsWith("recovery_78k0_") && name.endsWith(".json"))
         } ?: return emptyList()
 
         return files.mapNotNull { parseSessionFile(it) }
             .filter { it.stage != RecoveryStage.COMPLETED && it.lastCompletedBlock >= 0 }
+            .distinctBy { normalizeChipKey(it.chipName) }
             .sortedByDescending { it.updatedAtMs }
     }
 
     fun findSessionForChip(context: Context, chipName: String): Nec78k0RecoverySession? {
-        val direct = parseSessionFile(sessionFile(context, chipName))
-        if (direct != null && direct.stage != RecoveryStage.COMPLETED) return direct
+        val canonical = parseSessionFile(sessionFile(context, chipName))
+        if (canonical != null && canonical.stage != RecoveryStage.COMPLETED &&
+            normalizeChipKey(canonical.chipName) == normalizeChipKey(chipName)
+        ) {
+            return canonical
+        }
 
         val normTarget = normalizeChipKey(chipName)
         return findActiveRescueSessions(context).firstOrNull {
@@ -138,14 +158,16 @@ object Nec78k0RecoveryManager {
     }
 
     fun markCompletedAndCleanup(context: Context, chipName: String) {
-        val target = sessionFile(context, chipName)
-        val partial = partialBlocksFile(context, chipName)
-        try {
-            if (target.exists()) target.delete()
-        } catch (_: Throwable) {}
-        try {
-            if (partial.exists()) partial.delete()
-        } catch (_: Throwable) {}
+        listOf(
+            sessionFile(context, chipName),
+            partialBlocksFile(context, chipName),
+            legacySessionFile(context, chipName),
+            legacyPartialBlocksFile(context, chipName)
+        ).forEach { f ->
+            try {
+                if (f.exists()) f.delete()
+            } catch (_: Throwable) {}
+        }
     }
 
     private fun parseSessionFile(file: File): Nec78k0RecoverySession? {

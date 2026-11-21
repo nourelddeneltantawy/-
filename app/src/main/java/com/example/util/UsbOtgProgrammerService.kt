@@ -23,9 +23,13 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -134,6 +138,12 @@ object UsbOtgProgrammerService {
     private val _connectedLabelFlow = MutableStateFlow("")
     val connectedLabelFlow: StateFlow<String> = _connectedLabelFlow.asStateFlow()
 
+    private val _usbAttachedFlow = MutableSharedFlow<UsbSerialDeviceInfo>(
+        extraBufferCapacity = 4,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST
+    )
+    val usbAttachedFlow: SharedFlow<UsbSerialDeviceInfo> = _usbAttachedFlow.asSharedFlow()
+
     fun setEchoCancellation(enabled: Boolean) {
         echoCancellationEnabled = enabled
     }
@@ -147,30 +157,51 @@ object UsbOtgProgrammerService {
         if (!detachReceiverRegistered) {
             detachReceiverRegistered = true
             try {
-                val detachReceiver = object : BroadcastReceiver() {
+                val usbReceiver = object : BroadcastReceiver() {
                     override fun onReceive(c: Context?, intent: Intent?) {
-                        if (intent?.action == UsbManager.ACTION_USB_DEVICE_DETACHED) {
-                            val detached = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                                intent.getParcelableExtra(UsbManager.EXTRA_DEVICE, UsbDevice::class.java)
-                            } else {
-                                @Suppress("DEPRECATION")
-                                intent.getParcelableExtra(UsbManager.EXTRA_DEVICE)
+                        val device = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                            intent?.getParcelableExtra(UsbManager.EXTRA_DEVICE, UsbDevice::class.java)
+                        } else {
+                            @Suppress("DEPRECATION")
+                            intent?.getParcelableExtra(UsbManager.EXTRA_DEVICE)
+                        }
+                        when (intent?.action) {
+                            UsbManager.ACTION_USB_DEVICE_ATTACHED -> {
+                                val dev = device ?: return
+                                val mgr = usbManager
+                                val info = UsbSerialDeviceInfo(
+                                    deviceId = dev.deviceId,
+                                    deviceName = dev.deviceName,
+                                    productName = dev.productName ?: "USB Serial Adapter",
+                                    manufacturerName = dev.manufacturerName ?: "USB Host",
+                                    vendorId = dev.vendorId,
+                                    productId = dev.productId,
+                                    chipType = ProgrammerChipType.fromVendorId(dev.vendorId),
+                                    hasPermission = mgr?.hasPermission(dev) == true
+                                )
+                                _usbAttachedFlow.tryEmit(info)
                             }
-                            if (detached != null && detached.deviceId == activeDevice?.deviceId) {
-                                safeLog("USB Event: تم فصل المبرمجة (${detached.productName ?: detached.deviceName}) من منفذ OTG.")
-                                disconnect()
+                            UsbManager.ACTION_USB_DEVICE_DETACHED -> {
+                                if (device != null && device.deviceId == activeDevice?.deviceId) {
+                                    safeLog("USB Event: تم فصل المبرمجة (${device.productName ?: device.deviceName}) من منفذ OTG.")
+                                    disconnect()
+                                }
                             }
                         }
                     }
                 }
+                val filter = IntentFilter().apply {
+                    addAction(UsbManager.ACTION_USB_DEVICE_ATTACHED)
+                    addAction(UsbManager.ACTION_USB_DEVICE_DETACHED)
+                }
                 ContextCompat.registerReceiver(
                     ctx,
-                    detachReceiver,
-                    IntentFilter(UsbManager.ACTION_USB_DEVICE_DETACHED),
-                    ContextCompat.RECEIVER_NOT_EXPORTED
+                    usbReceiver,
+                    filter,
+                    ContextCompat.RECEIVER_EXPORTED
                 )
             } catch (e: Throwable) {
-                Log.w(TAG, "Detach receiver warning: ${e.toString()}")
+                Log.w(TAG, "USB attach/detach receiver warning: ${e.toString()}")
             }
         }
     }
@@ -664,62 +695,67 @@ object UsbOtgProgrammerService {
         preferredPartNumber: String? = null,
         idCodeBytes: ByteArray = R8cProtocolEngine.DEFAULT_ID_CODE.copyOf(),
         catalog: List<McuProcessor>,
-        manualResetMode: Boolean = false,
         clockFrequency: String = "8 MHz",
-        awaitManualReset: suspend () -> Boolean = { true },
         onLog: (String) -> Unit
     ): ChipAutoDetectResult = withContext(Dispatchers.IO) {
         externalLogSink = onLog
-        if (!ensureConnectionHealthy(context, preferredChip, 9600, enableDtrRtsReset, onLog)) {
-            return@withContext ChipAutoDetectResult.Failure("تعذر فتح منفذ USB OTG للفحص التلقائي.")
-        }
-
         val famUpper = targetMainFamily.orEmpty().trim().uppercase()
-        val isR8cFamily = famUpper.isBlank() || famUpper.contains("R8C") || famUpper.contains("M16C")
-        if (isR8cFamily) {
-            return@withContext ChipAutoDetectResult.Failure(
-                "تم إيقاف ميزة التعرف التلقائي وحذف الصدى في عائلة Renesas R8C. اختر المعالج يدوياً ثم انتقل لتنفيذ القراءة والكتابة والمسح مباشرة."
-            )
-        }
+        val is78k0Target = famUpper.contains("78K0") && !famUpper.contains("78K0R")
+        val effDtrRts = if (is78k0Target) true else enableDtrRtsReset
 
-        if (famUpper.contains("78K0") && !famUpper.contains("78K0R")) {
-            setEchoCancellation(true)
-            val fallbackChip = preferredPartNumber?.let { part ->
-                catalog.firstOrNull { it.partNumber.equals(part, ignoreCase = true) }
+        ProgrammerForegroundService.acquireSessionLock(context, "جاري فحص ومزامنة المعالج...")
+        try {
+            if (!ensureConnectionHealthy(context, preferredChip, 9600, effDtrRts, onLog)) {
+                return@withContext ChipAutoDetectResult.Failure("تعذر فتح منفذ USB OTG للفحص التلقائي.")
             }
-            val (info, err) = Nec78k0ProtocolEngine.autoDetectAndInspect(
-                context = context,
-                transport = create78k0Transport(),
-                manualResetMode = manualResetMode || !enableDtrRtsReset,
-                clockFreqMhzText = clockFrequency,
-                preferredChip = fallbackChip,
-                catalog = catalog,
-                awaitManualReset = awaitManualReset,
-                onLog = onLog
-            )
-            return@withContext if (info != null) {
-                ChipAutoDetectResult.Matched(
-                    rawSignatureHex = info.rawSignatureHex,
-                    matchedProcessor = info.matchedProcessor,
-                    diagnosticMessage = "تم التعرف على ${info.deviceName} (${info.familyGroup}) • المساحة ${info.flashSizeBytes / 1024} KB (${info.blockCount} بلوك) • FullCS=${info.fullFlashChecksumHex} • B0CS=${info.block0ChecksumHex}",
-                    nec78k0Info = info
+
+            val isR8cFamily = famUpper.isBlank() || famUpper.contains("R8C") || famUpper.contains("M16C")
+            if (isR8cFamily) {
+                return@withContext ChipAutoDetectResult.Failure(
+                    "تم إيقاف ميزة التعرف التلقائي وحذف الصدى في عائلة Renesas R8C. اختر المعالج يدوياً ثم انتقل لتنفيذ القراءة والكتابة والمسح مباشرة."
                 )
-            } else {
-                ChipAutoDetectResult.Failure(err ?: "فشل التعرف التلقائي على معالج NEC/Renesas 78K0.")
             }
-        }
 
-        val initialMode = resolveBootSyncMode(targetMainFamily)
-        setEchoCancellation(true)
-        if (!performSyncHandshake(enableDtrRtsReset, initialMode, onLog)) {
-            return@withContext ChipAutoDetectResult.Failure("فشل إرسال نبضة المزامنة عبر USB. راجع تفاصيل الخطأ في السجل.")
-        }
-        val rl78Result = probeRl78Or78k0Sequence(catalog, onLog)
-        if (rl78Result != null) return@withContext rl78Result
+            if (is78k0Target) {
+                // Separate TX/RX lines without diode: NEVER drop RX bytes as echo!
+                setEchoCancellation(false)
+                val fallbackChip = preferredPartNumber?.let { part ->
+                    catalog.firstOrNull { it.partNumber.equals(part, ignoreCase = true) }
+                }
+                val (info, err) = Nec78k0ProtocolEngine.autoDetectAndInspect(
+                    context = context,
+                    transport = create78k0Transport(),
+                    clockFreqMhzText = clockFrequency,
+                    preferredChip = fallbackChip,
+                    catalog = catalog,
+                    onLog = onLog
+                )
+                return@withContext if (info != null) {
+                    ChipAutoDetectResult.Matched(
+                        rawSignatureHex = info.rawSignatureHex,
+                        matchedProcessor = info.matchedProcessor,
+                        diagnosticMessage = "تم التعرف على ${info.deviceName} (${info.familyGroup}) • المساحة ${info.flashSizeBytes / 1024} KB (${info.blockCount} بلوك) • FullCS=${info.fullFlashChecksumHex} • B0CS=${info.block0ChecksumHex}",
+                        nec78k0Info = info
+                    )
+                } else {
+                    ChipAutoDetectResult.Failure(err ?: "فشل التعرف التلقائي على معالج NEC/Renesas 78K0.")
+                }
+            }
 
-        ChipAutoDetectResult.Failure(
-            "تم فتح المنفذ وتنفيذ تتابع RTS/TX Break وإلغاء صدى الدايود D1، ولكن المعالج لم يرد بأي بايتات. تأكد من دايود D1/D2 والتغذية والجهد."
-        )
+            val initialMode = resolveBootSyncMode(targetMainFamily)
+            setEchoCancellation(true)
+            if (!performSyncHandshake(effDtrRts, initialMode, onLog)) {
+                return@withContext ChipAutoDetectResult.Failure("فشل إرسال نبضة المزامنة عبر USB. راجع تفاصيل الخطأ في السجل.")
+            }
+            val rl78Result = probeRl78Or78k0Sequence(catalog, onLog)
+            if (rl78Result != null) return@withContext rl78Result
+
+            ChipAutoDetectResult.Failure(
+                "تم فتح المنفذ وتنفيذ تتابع RTS/TX Break وإلغاء صدى الدايود D1، ولكن المعالج لم يرد بأي بايتات. تأكد من دايود D1/D2 والتغذية والجهد."
+            )
+        } finally {
+            ProgrammerForegroundService.releaseSessionLock(context)
+        }
     }
 
     private suspend fun probeRl78Or78k0Sequence(
@@ -768,96 +804,102 @@ object UsbOtgProgrammerService {
         processor: McuProcessor,
         idCodeBytes: ByteArray,
         dataFlashMode: DataFlashExportMode = DataFlashExportMode.EXCLUDE,
-        manualResetMode: Boolean = false,
         clockFrequency: String = "8 MHz",
         catalog: List<McuProcessor> = emptyList(),
         resumeSession: Nec78k0RecoveryManager.Nec78k0RecoverySession? = null,
-        awaitManualReset: suspend () -> Boolean = { true },
+        preDetected78k0Info: Nec78k0ProtocolEngine.Nec78k0DetectedInfo? = null,
         on78k0DetectedInfo: (Nec78k0ProtocolEngine.Nec78k0DetectedInfo) -> Unit = {},
         onLog: (String) -> Unit,
         onProgress: (bytesDone: Int, totalBytes: Int, label: String) -> Unit
     ): FlashOperationResult = withContext(Dispatchers.IO) {
         externalLogSink = onLog
-        val initialBaud = if (processor.protocolType == ProtocolFamilyType.R8C_M16C || processor.is78k0Flmd0Mode()) 9600 else baudRate
-        if (!ensureConnectionHealthy(context, preferredChip, initialBaud, enableDtrRtsReset, onLog)) {
-            return@withContext FlashOperationResult.Failure("يجب الاتصال بمبرمجة USB OTG أولاً.")
-        }
+        val is78k0 = processor.is78k0Flmd0Mode()
+        val effDtrRts = if (is78k0) true else enableDtrRtsReset
+        val initialBaud = if (processor.protocolType == ProtocolFamilyType.R8C_M16C || is78k0) 9600 else baudRate
 
-        if (processor.protocolType == ProtocolFamilyType.R8C_M16C) {
-            setEchoCancellation(true)
-            return@withContext R8cProtocolEngine.readFlash(
-                transport = createR8cTransport(),
-                selectedChip = processor,
-                baudRate = baudRate,
-                idBytes = idCodeBytes,
-                dataFlashMode = dataFlashMode,
-                onLog = onLog,
-                onProgress = onProgress
-            )
-        }
-
-        if (processor.is78k0Flmd0Mode()) {
-            setEchoCancellation(true)
-            return@withContext Nec78k0ProtocolEngine.readOrRescueFlash(
-                context = context,
-                transport = create78k0Transport(),
-                selectedChip = processor,
-                manualResetMode = manualResetMode || !enableDtrRtsReset,
-                clockFreqMhzText = clockFrequency,
-                catalog = catalog,
-                existingResumeSession = resumeSession,
-                awaitManualReset = awaitManualReset,
-                onDetectedInfo = on78k0DetectedInfo,
-                onLog = onLog,
-                onProgress = onProgress
-            )
-        }
-
-        val totalSize = processor.flashSizeBytes
-        onProgress(0, totalSize, "مزامنة المعالج...")
-        val syncMode = resolveBootSyncMode(processor.mainFamily)
-        if (!performSyncHandshake(enableDtrRtsReset, syncMode, onLog)) {
-            return@withContext FlashOperationResult.Failure("فشلت مرحلة الإرسال أثناء المزامنة (راجع سجل الأحداث).")
-        }
-
-        val resultBuffer = FirmwareParser.createEmptyBuffer(totalSize)
-        val blockSize = 256
-        val totalBlocks = (totalSize + blockSize - 1) / blockSize
-        var bytesReadFromChip = 0
-
-        for (blockIdx in 0 until totalBlocks) {
-            val addr = blockIdx * blockSize
-            val cmd = byteArrayOf(
-                0xFF.toByte(),
-                ((addr ushr 8) and 0xFF).toByte(),
-                ((addr ushr 16) and 0xFF).toByte()
-            )
-            val txErr = writeWithEchoCancel(cmd, clearStaleRx = true, onLog = onLog)
-            if (txErr != null) {
-                onLog("TX ERROR (Read 0x%06X): $txErr".format(addr))
-                return@withContext FlashOperationResult.Failure("فشل الإرسال عند 0x%06X: $txErr".format(addr))
+        ProgrammerForegroundService.acquireSessionLock(context, "جاري قراءة ذاكرة ${processor.partNumber}...")
+        try {
+            if (!ensureConnectionHealthy(context, preferredChip, initialBaud, effDtrRts, onLog)) {
+                return@withContext FlashOperationResult.Failure("يجب الاتصال بمبرمجة USB OTG أولاً.")
             }
-            val chunk = readExactFromBuffer(expectedLen = blockSize, timeoutMs = 550, onLog = onLog)
-            if (chunk.isEmpty()) {
-                return@withContext FlashOperationResult.Failure(
-                    "توقف المعالج عن إرسال البيانات عند العنوان 0x%06X (RX فارغ بعد حذف الصدى)."
-                        .format(addr)
+
+            if (processor.protocolType == ProtocolFamilyType.R8C_M16C) {
+                setEchoCancellation(true)
+                return@withContext R8cProtocolEngine.readFlash(
+                    transport = createR8cTransport(),
+                    selectedChip = processor,
+                    baudRate = baudRate,
+                    idBytes = idCodeBytes,
+                    dataFlashMode = dataFlashMode,
+                    onLog = onLog,
+                    onProgress = onProgress
                 )
             }
-            val copyLen = min(chunk.size, totalSize - addr)
-            System.arraycopy(chunk, 0, resultBuffer, addr, copyLen)
-            bytesReadFromChip += copyLen
-            onProgress(
-                bytesReadFromChip,
-                totalSize,
-                "قراءة بلوك ${blockIdx + 1}/$totalBlocks (0x%06X)".format(addr)
-            )
-        }
 
-        FlashOperationResult.Success(
-            message = "تمت قراءة وسحب ${bytesReadFromChip / 1024} KB ($bytesReadFromChip بايت) من ${processor.partNumber} بنجاح.",
-            bytesTransferred = resultBuffer
-        )
+            if (is78k0) {
+                setEchoCancellation(false)
+                return@withContext Nec78k0ProtocolEngine.readOrRescueFlash(
+                    context = context,
+                    transport = create78k0Transport(),
+                    selectedChip = processor,
+                    clockFreqMhzText = clockFrequency,
+                    catalog = catalog,
+                    existingResumeSession = resumeSession,
+                    preDetectedInfo = preDetected78k0Info,
+                    onDetectedInfo = on78k0DetectedInfo,
+                    onLog = onLog,
+                    onProgress = onProgress
+                )
+            }
+
+            val totalSize = processor.flashSizeBytes
+            onProgress(0, totalSize, "مزامنة المعالج...")
+            val syncMode = resolveBootSyncMode(processor.mainFamily)
+            if (!performSyncHandshake(effDtrRts, syncMode, onLog)) {
+                return@withContext FlashOperationResult.Failure("فشلت مرحلة الإرسال أثناء المزامنة (راجع سجل الأحداث).")
+            }
+
+            val resultBuffer = FirmwareParser.createEmptyBuffer(totalSize)
+            val blockSize = 256
+            val totalBlocks = (totalSize + blockSize - 1) / blockSize
+            var bytesReadFromChip = 0
+
+            for (blockIdx in 0 until totalBlocks) {
+                val addr = blockIdx * blockSize
+                val cmd = byteArrayOf(
+                    0xFF.toByte(),
+                    ((addr ushr 8) and 0xFF).toByte(),
+                    ((addr ushr 16) and 0xFF).toByte()
+                )
+                val txErr = writeWithEchoCancel(cmd, clearStaleRx = true, onLog = onLog)
+                if (txErr != null) {
+                    onLog("TX ERROR (Read 0x%06X): $txErr".format(addr))
+                    return@withContext FlashOperationResult.Failure("فشل الإرسال عند 0x%06X: $txErr".format(addr))
+                }
+                val chunk = readExactFromBuffer(expectedLen = blockSize, timeoutMs = 550, onLog = onLog)
+                if (chunk.isEmpty()) {
+                    return@withContext FlashOperationResult.Failure(
+                        "توقف المعالج عن إرسال البيانات عند العنوان 0x%06X (RX فارغ بعد حذف الصدى)."
+                            .format(addr)
+                    )
+                }
+                val copyLen = min(chunk.size, totalSize - addr)
+                System.arraycopy(chunk, 0, resultBuffer, addr, copyLen)
+                bytesReadFromChip += copyLen
+                onProgress(
+                    bytesReadFromChip,
+                    totalSize,
+                    "قراءة بلوك ${blockIdx + 1}/$totalBlocks (0x%06X)".format(addr)
+                )
+            }
+
+            FlashOperationResult.Success(
+                message = "تمت قراءة وسحب ${bytesReadFromChip / 1024} KB ($bytesReadFromChip بايت) من ${processor.partNumber} بنجاح.",
+                bytesTransferred = resultBuffer
+            )
+        } finally {
+            ProgrammerForegroundService.releaseSessionLock(context)
+        }
     }
 
     suspend fun executeErase(
@@ -869,44 +911,72 @@ object UsbOtgProgrammerService {
         eraseMode: String,
         idCodeBytes: ByteArray,
         dataFlashMode: DataFlashExportMode = DataFlashExportMode.EXCLUDE,
+        clockFrequency: String = "8 MHz",
+        catalog: List<McuProcessor> = emptyList(),
+        preDetected78k0Info: Nec78k0ProtocolEngine.Nec78k0DetectedInfo? = null,
+        on78k0DetectedInfo: (Nec78k0ProtocolEngine.Nec78k0DetectedInfo) -> Unit = {},
         onLog: (String) -> Unit,
         onProgress: (bytesDone: Int, totalBytes: Int, label: String) -> Unit
     ): FlashOperationResult = withContext(Dispatchers.IO) {
         externalLogSink = onLog
-        val initialBaud = if (processor.protocolType == ProtocolFamilyType.R8C_M16C) 9600 else baudRate
-        if (!ensureConnectionHealthy(context, preferredChip, initialBaud, enableDtrRtsReset, onLog)) {
-            return@withContext FlashOperationResult.Failure("يجب الاتصال بمبرمجة USB OTG أولاً.")
-        }
+        val is78k0 = processor.is78k0Flmd0Mode()
+        val effDtrRts = if (is78k0) true else enableDtrRtsReset
+        val initialBaud = if (processor.protocolType == ProtocolFamilyType.R8C_M16C || is78k0) 9600 else baudRate
 
-        if (processor.protocolType == ProtocolFamilyType.R8C_M16C) {
-            setEchoCancellation(true)
-            return@withContext R8cProtocolEngine.eraseChip(
-                transport = createR8cTransport(),
-                selectedChip = processor,
-                baudRate = baudRate,
-                idBytes = idCodeBytes,
-                onLog = onLog,
-                onProgress = onProgress
-            )
-        }
+        ProgrammerForegroundService.acquireSessionLock(context, "جاري مسح ذاكرة ${processor.partNumber}...")
+        try {
+            if (!ensureConnectionHealthy(context, preferredChip, initialBaud, effDtrRts, onLog)) {
+                return@withContext FlashOperationResult.Failure("يجب الاتصال بمبرمجة USB OTG أولاً.")
+            }
 
-        val totalSize = processor.flashSizeBytes
-        val syncMode = resolveBootSyncMode(processor.mainFamily)
-        if (!performSyncHandshake(enableDtrRtsReset, syncMode, onLog)) {
-            return@withContext FlashOperationResult.Failure("فشلت مرحلة الإرسال أثناء المزامنة.")
-        }
+            if (processor.protocolType == ProtocolFamilyType.R8C_M16C) {
+                setEchoCancellation(true)
+                return@withContext R8cProtocolEngine.eraseChip(
+                    transport = createR8cTransport(),
+                    selectedChip = processor,
+                    baudRate = baudRate,
+                    idBytes = idCodeBytes,
+                    onLog = onLog,
+                    onProgress = onProgress
+                )
+            }
 
-        onProgress(totalSize / 3, totalSize, "إرسال أمر المسح ($eraseMode)...")
-        val eraseCmd = when (processor.protocolType) {
-            ProtocolFamilyType.RL78_RX -> byteArrayOf(0x01, 0x04, 0x22, 0x00, 0x00, 0x00, 0xD9.toByte(), 0x03)
-            else -> byteArrayOf(0x20, 0xD0.toByte())
+            if (is78k0) {
+                setEchoCancellation(false)
+                return@withContext Nec78k0FlashWriterEngine.eraseFlash(
+                    context = context,
+                    transport = create78k0Transport(),
+                    selectedChip = processor,
+                    eraseMode = eraseMode,
+                    clockFreqMhzText = clockFrequency,
+                    catalog = catalog,
+                    preDetectedInfo = preDetected78k0Info,
+                    onDetectedInfo = on78k0DetectedInfo,
+                    onLog = onLog,
+                    onProgress = onProgress
+                )
+            }
+
+            val totalSize = processor.flashSizeBytes
+            val syncMode = resolveBootSyncMode(processor.mainFamily)
+            if (!performSyncHandshake(effDtrRts, syncMode, onLog)) {
+                return@withContext FlashOperationResult.Failure("فشلت مرحلة الإرسال أثناء المزامنة.")
+            }
+
+            onProgress(totalSize / 3, totalSize, "إرسال أمر المسح ($eraseMode)...")
+            val eraseCmd = when (processor.protocolType) {
+                ProtocolFamilyType.RL78_RX -> byteArrayOf(0x01, 0x04, 0x22, 0x00, 0x00, 0x00, 0xD9.toByte(), 0x03)
+                else -> byteArrayOf(0x20, 0xD0.toByte())
+            }
+            val ack = transmitAndLog(eraseCmd, expectedMax = 8, timeoutMs = 1500, onLog = onLog)
+            if (ack.isEmpty()) {
+                return@withContext FlashOperationResult.Failure("لم يرد المعالج بتأكيد إتمام المسح (Timeout 1500ms).")
+            }
+            onProgress(totalSize, totalSize, "اكتمل المسح")
+            FlashOperationResult.Success("تم مسح ذاكرة الفلاش بنجاح (${toHex(ack)}).")
+        } finally {
+            ProgrammerForegroundService.releaseSessionLock(context)
         }
-        val ack = transmitAndLog(eraseCmd, expectedMax = 8, timeoutMs = 1500, onLog = onLog)
-        if (ack.isEmpty()) {
-            return@withContext FlashOperationResult.Failure("لم يرد المعالج بتأكيد إتمام المسح (Timeout 1500ms).")
-        }
-        onProgress(totalSize, totalSize, "اكتمل المسح")
-        FlashOperationResult.Success("تم مسح ذاكرة الفلاش بنجاح (${toHex(ack)}).")
     }
 
     suspend fun executeWriteAndVerify(
@@ -923,47 +993,95 @@ object UsbOtgProgrammerService {
         dataFlashBytes: ByteArray? = null,
         autoEraseBeforeWrite: Boolean = true,
         autoVerifyAfterWrite: Boolean = false,
+        eraseMode: String = "مسح كلي (Chip Erase)",
+        clockFrequency: String = "8 MHz",
+        catalog: List<McuProcessor> = emptyList(),
+        preDetected78k0Info: Nec78k0ProtocolEngine.Nec78k0DetectedInfo? = null,
+        on78k0DetectedInfo: (Nec78k0ProtocolEngine.Nec78k0DetectedInfo) -> Unit = {},
         onLog: (String) -> Unit,
         onProgress: (bytesDone: Int, totalBytes: Int, label: String) -> Unit
     ): FlashOperationResult = withContext(Dispatchers.IO) {
         externalLogSink = onLog
-        val initialBaud = if (processor.protocolType == ProtocolFamilyType.R8C_M16C) 9600 else baudRate
-        if (!ensureConnectionHealthy(context, preferredChip, initialBaud, enableDtrRtsReset, onLog)) {
-            return@withContext FlashOperationResult.Failure("يجب الاتصال بمبرمجة USB OTG أولاً.")
-        }
+        val is78k0 = processor.is78k0Flmd0Mode()
+        val effDtrRts = if (is78k0) true else enableDtrRtsReset
+        val initialBaud = if (processor.protocolType == ProtocolFamilyType.R8C_M16C || is78k0) 9600 else baudRate
 
-        if (processor.protocolType == ProtocolFamilyType.R8C_M16C) {
-            setEchoCancellation(true)
-            return@withContext if (verifyOnly) {
-                R8cProtocolEngine.verifyFlash(
-                    transport = createR8cTransport(),
-                    selectedChip = processor,
-                    baudRate = baudRate,
-                    firmwareBytes = firmwareBytes,
-                    firmwareStartAddress = firmwareStartAddress,
-                    idBytes = idCodeBytes,
-                    dataFlashMode = dataFlashMode,
-                    dataFlashBytes = dataFlashBytes,
-                    onLog = onLog,
-                    onProgress = onProgress
-                )
-            } else {
-                R8cProtocolEngine.writeFlash(
-                    transport = createR8cTransport(),
-                    selectedChip = processor,
-                    baudRate = baudRate,
-                    firmwareBytes = firmwareBytes,
-                    firmwareStartAddress = firmwareStartAddress,
-                    idBytes = idCodeBytes,
-                    dataFlashMode = dataFlashMode,
-                    dataFlashBytes = dataFlashBytes,
-                    autoEraseBeforeWrite = autoEraseBeforeWrite,
-                    autoVerifyAfterWrite = autoVerifyAfterWrite,
-                    onLog = onLog,
-                    onProgress = onProgress
-                )
+        val fgsMsg = if (verifyOnly) "جاري مطابقة ${processor.partNumber}..." else "جاري شحن وكتابة ${processor.partNumber}..."
+        ProgrammerForegroundService.acquireSessionLock(context, fgsMsg)
+        try {
+            if (!ensureConnectionHealthy(context, preferredChip, initialBaud, effDtrRts, onLog)) {
+                return@withContext FlashOperationResult.Failure("يجب الاتصال بمبرمجة USB OTG أولاً.")
             }
-        }
+
+            if (processor.protocolType == ProtocolFamilyType.R8C_M16C) {
+                setEchoCancellation(true)
+                return@withContext if (verifyOnly) {
+                    R8cProtocolEngine.verifyFlash(
+                        transport = createR8cTransport(),
+                        selectedChip = processor,
+                        baudRate = baudRate,
+                        firmwareBytes = firmwareBytes,
+                        firmwareStartAddress = firmwareStartAddress,
+                        idBytes = idCodeBytes,
+                        dataFlashMode = dataFlashMode,
+                        dataFlashBytes = dataFlashBytes,
+                        onLog = onLog,
+                        onProgress = onProgress
+                    )
+                } else {
+                    R8cProtocolEngine.writeFlash(
+                        transport = createR8cTransport(),
+                        selectedChip = processor,
+                        baudRate = baudRate,
+                        firmwareBytes = firmwareBytes,
+                        firmwareStartAddress = firmwareStartAddress,
+                        idBytes = idCodeBytes,
+                        dataFlashMode = dataFlashMode,
+                        dataFlashBytes = dataFlashBytes,
+                        autoEraseBeforeWrite = autoEraseBeforeWrite,
+                        autoVerifyAfterWrite = autoVerifyAfterWrite,
+                        onLog = onLog,
+                        onProgress = onProgress
+                    )
+                }
+            }
+
+            if (is78k0) {
+                setEchoCancellation(false)
+                val transport78k0 = create78k0Transport()
+                return@withContext if (verifyOnly) {
+                    Nec78k0FlashWriterEngine.verifyFlash(
+                        context = context,
+                        transport = transport78k0,
+                        selectedChip = processor,
+                        firmwareBytes = firmwareBytes,
+                        firmwareStartAddress = firmwareStartAddress,
+                        clockFreqMhzText = clockFrequency,
+                        catalog = catalog,
+                        preDetectedInfo = preDetected78k0Info,
+                        onDetectedInfo = on78k0DetectedInfo,
+                        onLog = onLog,
+                        onProgress = onProgress
+                    )
+                } else {
+                    Nec78k0FlashWriterEngine.writeFlash(
+                        context = context,
+                        transport = transport78k0,
+                        selectedChip = processor,
+                        firmwareBytes = firmwareBytes,
+                        firmwareStartAddress = firmwareStartAddress,
+                        autoEraseBeforeWrite = autoEraseBeforeWrite,
+                        autoVerifyAfterWrite = autoVerifyAfterWrite,
+                        eraseMode = eraseMode,
+                        clockFreqMhzText = clockFrequency,
+                        catalog = catalog,
+                        preDetectedInfo = preDetected78k0Info,
+                        onDetectedInfo = on78k0DetectedInfo,
+                        onLog = onLog,
+                        onProgress = onProgress
+                    )
+                }
+            }
 
         val totalSize = firmwareBytes.size
         val syncMode = resolveBootSyncMode(processor.mainFamily)
@@ -1033,12 +1151,15 @@ object UsbOtgProgrammerService {
             )
         }
 
-        val doneMsg = if (verifyOnly) {
-            "تمت مطابقة (Verify) كامل الملف (${totalSize / 1024} KB) بنسبة 100%."
-        } else {
-            "تم شحن (Write) السوفت وير بنجاح إلى ${processor.partNumber}."
+            val doneMsg = if (verifyOnly) {
+                "تمت مطابقة (Verify) كامل الملف (${totalSize / 1024} KB) بنسبة 100%."
+            } else {
+                "تم شحن (Write) السوفت وير بنجاح إلى ${processor.partNumber}."
+            }
+            FlashOperationResult.Success(doneMsg)
+        } finally {
+            ProgrammerForegroundService.releaseSessionLock(context)
         }
-        FlashOperationResult.Success(doneMsg)
     }
 
     private suspend fun sendR8cUnlockFrame(

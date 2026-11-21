@@ -187,13 +187,20 @@ fun ProgrammerStep2Pinout(
 
         // Pinout Mapping Diagram & Table
         if (mcu != null) {
-            if (mcu.isDiodeSingleWireSchematicFamily()) {
+            if (mcu.is78k0Flmd0Mode()) {
+                Ft232Direct6Wire78k0Card(
+                    familyName = mcu.mainFamily,
+                    partNumber = mcu.partNumber,
+                    chipModel = state.selectedProgrammer.chipModel,
+                    voltage = mcu.recommendedVoltage
+                )
+            } else if (mcu.isDiodeSingleWireSchematicFamily()) {
                 val isR8cFamily = mcu.mainFamily.trim().uppercase().contains("R8C")
                 Diode1N4148SchematicCard(
                     familyName = mcu.mainFamily,
                     partNumber = mcu.partNumber,
                     chipModel = state.selectedProgrammer.chipModel,
-                    is78k0Flmd0 = mcu.is78k0Flmd0Mode(),
+                    is78k0Flmd0 = false,
                     isR8cFamily = isR8cFamily,
                     voltage = mcu.recommendedVoltage
                 )
@@ -524,6 +531,91 @@ private fun Diode1N4148SchematicCard(
                 mcuTarget = "VDD / VSS",
                 accentColor = Color(0xFFEF4444),
                 subNote = "الجهد الموصى به: $voltage مع مكثف REGC عند الحاجة"
+            )
+        }
+    }
+}
+
+@Composable
+private fun Ft232Direct6Wire78k0Card(
+    familyName: String,
+    partNumber: String,
+    chipModel: String,
+    voltage: String
+) {
+    Card(
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.2.dp, Color(0xFF10B981).copy(alpha = 0.55f)),
+        modifier = Modifier.testTag("step2_78k0_ft232_direct_card")
+    ) {
+        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "التوصيلة القياسية المعتمدة لـ 78K0 (6 أسلاك مباشرة)",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 14.sp,
+                        color = Color(0xFF10B981)
+                    )
+                    Text(
+                        text = "$chipModel ➔ $partNumber ($familyName) • بدون دايود",
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = Color(0xFF10B981).copy(alpha = 0.16f)
+                ) {
+                    Text(
+                        text = "Zero-Touch",
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFF10B981),
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                    )
+                }
+            }
+
+            SchematicTableRow(
+                programmerSignal = "FT232 RTS",
+                bridgeComponent = "توصيل مباشر",
+                mcuTarget = "MCU RESET",
+                accentColor = Color(0xFFF59E0B),
+                subNote = "نبضة Reset تلقائية 50ms LOW ثم HIGH عند الدخول لوضع البرمجة"
+            )
+            SchematicTableRow(
+                programmerSignal = "FT232 DTR",
+                bridgeComponent = "توصيل مباشر",
+                mcuTarget = "MCU FLMD0",
+                accentColor = Color(0xFF10B981),
+                subNote = "تُرفع تلقائياً إلى HIGH طوال جلسة البرمجة"
+            )
+            SchematicTableRow(
+                programmerSignal = "FT232 TX",
+                bridgeComponent = "خط مستقل (بدون دايود)",
+                mcuTarget = "MCU RX",
+                accentColor = Color(0xFF38BDF8),
+                subNote = "اتصال مباشر بـ 9600 bps 8N1 دون دايود 1N4148 أو إلغاء صدى"
+            )
+            SchematicTableRow(
+                programmerSignal = "FT232 RX",
+                bridgeComponent = "خط مستقل (بدون دايود)",
+                mcuTarget = "MCU TX",
+                accentColor = Color(0xFF34D399),
+                subNote = "استقبال مباشر لهوية 0xC0 وبيانات الفلاش وبصمة 0xB0"
+            )
+            SchematicTableRow(
+                programmerSignal = "VCC / GND",
+                bridgeComponent = "توصيل مباشر",
+                mcuTarget = "VDD / VSS",
+                accentColor = Color(0xFFEF4444),
+                subNote = "الجهد الموصى به: $voltage مع توصيل GND المشترك"
             )
         }
     }

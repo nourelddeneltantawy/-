@@ -15,9 +15,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.BuildCircle
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Memory
-import androidx.compose.material.icons.filled.RestartAlt
 import androidx.compose.material.icons.filled.Shield
-import androidx.compose.material.icons.filled.Usb
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -26,9 +24,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -194,70 +190,6 @@ fun Nec78k0WatchdogAlertCard(
 }
 
 @Composable
-fun Nec78k0ManualResetPromptCard(
-    onConfirmResetDone: () -> Unit,
-    onCancel: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    val accent = Color(0xFF0284C7)
-
-    Card(
-        shape = RoundedCornerShape(18.dp),
-        colors = CardDefaults.cardColors(containerColor = accent.copy(alpha = 0.14f)),
-        border = BorderStroke(1.5.dp, accent),
-        modifier = modifier.fillMaxWidth()
-    ) {
-        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    imageVector = Icons.Default.RestartAlt,
-                    contentDescription = "ریسيت يدوي",
-                    tint = accent,
-                    modifier = Modifier.size(22.dp)
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(
-                    text = "مطلوب Reset يدوي لمعالج 78K0",
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 13.5.sp,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-            }
-            Text(
-                text = "تأكد من بقاء طرف FLMD0 على 5V، ثم افصل التغذية وأعد توصيلها أو اضغط زر Reset على البوردة، وبعدها اضغط المتابعة لإرسال نبضة [0x00 ← 5ms ← 0x00].",
-                fontSize = 11.5.sp,
-                color = MaterialTheme.colorScheme.onSurface,
-                lineHeight = 16.sp
-            )
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Button(
-                    onClick = onConfirmResetDone,
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier
-                        .weight(1f)
-                        .heightIn(min = 48.dp)
-                        .testTag("nec78k0_manual_reset_confirm_button")
-                ) {
-                    Text("تم عمل Reset — متابعة", fontWeight = FontWeight.Bold, fontSize = 12.5.sp)
-                }
-                OutlinedButton(
-                    onClick = onCancel,
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier
-                        .heightIn(min = 48.dp)
-                        .testTag("nec78k0_manual_reset_cancel_button")
-                ) {
-                    Text("إلغاء", fontSize = 12.sp)
-                }
-            }
-        }
-    }
-}
-
-@Composable
 fun Nec78k0AutoDetectInfoCard(
     info: Nec78k0ProtocolEngine.Nec78k0DetectedInfo,
     modifier: Modifier = Modifier
@@ -336,87 +268,75 @@ fun Nec78k0AutoDetectInfoCard(
 }
 
 @Composable
-fun Nec78k0SettingsCard(
-    manualResetMode: Boolean,
-    isBusy: Boolean,
-    onToggleManualReset: (Boolean) -> Unit,
-    onAutoDetectNow: () -> Unit,
+fun Nec78k0ZeroTouchStatusCard(
     modifier: Modifier = Modifier
 ) {
+    val autoColor = Color(0xFF0EA5E9)
     Card(
         shape = RoundedCornerShape(18.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)),
-        modifier = modifier.fillMaxWidth()
+        border = BorderStroke(1.2.dp, autoColor.copy(alpha = 0.45f)),
+        modifier = modifier
+            .fillMaxWidth()
+            .testTag("nec78k0_zerotouch_status_card")
     ) {
-        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(
                     imageVector = Icons.Default.Memory,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(18.dp)
+                    contentDescription = "وضع Zero-Touch التلقائي",
+                    tint = autoColor,
+                    modifier = Modifier.size(20.dp)
                 )
-                Spacer(modifier = Modifier.width(6.dp))
-                Text(
-                    text = "إعدادات محرك NEC / Renesas 78K0",
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 13.sp,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-            }
-
-            Surface(
-                shape = RoundedCornerShape(12.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(min = 48.dp)
-                        .padding(horizontal = 12.dp, vertical = 4.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "وضع الريسيت اليدوي (Manual Reset Mode)",
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                        Text(
-                            text = if (manualResetMode) "مفعّل: يطلب منك فصل/توصيل البور أو Reset للمبرمجات بدون DTR/RTS"
-                            else "تلقائي: FLMD0 (DTR) + RESET (RTS) قبل نبضة [0x00 ← 5ms ← 0x00]",
-                            fontSize = 10.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    Switch(
-                        checked = manualResetMode,
-                        onCheckedChange = onToggleManualReset,
-                        enabled = !isBusy,
-                        modifier = Modifier.testTag("nec78k0_manual_reset_switch")
+                Spacer(modifier = Modifier.width(8.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "وضع FT232 التلقائي الكامل (Zero-Touch)",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 13.sp,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Text(
+                        text = "تهيئة وتعرّف تلقائي فور توصيل USB بدون مفاتيح يدوية",
+                        fontSize = 10.5.sp,
+                        color = autoColor
                     )
                 }
             }
 
-            OutlinedButton(
-                onClick = onAutoDetectNow,
-                enabled = !isBusy,
-                shape = RoundedCornerShape(12.dp),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(min = 48.dp)
-                    .testTag("nec78k0_step3_autodetect_button")
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Icon(Icons.Default.Usb, contentDescription = null, modifier = Modifier.size(18.dp))
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(
-                    text = "تعرّف تلقائي + التقاط بصمة Checksum (0xC0 / 0xB0)",
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 12.5.sp
+                InfoBadgePill(
+                    label = "التحكم والأطراف",
+                    value = "DTR=FLMD0 • RTS=RST",
+                    accent = Color(0xFF10B981),
+                    modifier = Modifier.weight(1f)
+                )
+                InfoBadgePill(
+                    label = "الاتصال والسرعة",
+                    value = "9600 8N1 • بدون دايود",
+                    accent = autoColor,
+                    modifier = Modifier.weight(1f)
+                )
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                InfoBadgePill(
+                    label = "التهيئة الفورية",
+                    value = "50ms RST ← 0xC0 / 0xB0",
+                    accent = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.weight(1f)
+                )
+                InfoBadgePill(
+                    label = "حماية الانقطاع",
+                    value = "WakeLock + Checkpoint",
+                    accent = Color(0xFFF59E0B),
+                    modifier = Modifier.weight(1f)
                 )
             }
         }
