@@ -1707,7 +1707,7 @@ object UsbOtgProgrammerService {
         }
     }
 
-    private fun writeFrame64BytePackets(
+    private suspend fun writeFrame64BytePackets(
         data: ByteArray,
         timeoutMs: Int = 1000,
         onLog: (String) -> Unit
@@ -1732,6 +1732,9 @@ object UsbOtgProgrammerService {
                 }
                 totalSent += written
                 offset += written
+                if (offset < data.size) {
+                    delay(65L) // 65ms matches the physical drain time of 64 bytes at 9600 bps (66.6ms) to prevent FT232R 128B TX FIFO overflow
+                }
             }
             onLog("تم إرسال $totalSent/${data.size} بايت بنجاح")
             null

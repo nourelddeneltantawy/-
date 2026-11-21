@@ -1030,10 +1030,10 @@ object Nec78k0ProtocolEngine {
     }
 
     /**
-     * Sends a 260-byte SOH data frame ([0x01, 0x00, ...256B, CS, END]) in a contiguous
-     * zero-delay loop of 64-byte USB bulk packets (timeout = 1000ms per packet) so FT232R
-     * transmits every byte of the 260B frame without truncating at the 64B endpoint packet limit,
-     * then reads RX bytes until STX..ETX (LEN + 4 bytes) completes while printing RX Raw Live.
+     * Sends a 260-byte SOH data frame ([0x01, 0x00, ...256B, CS, END]) via a paced 64-byte
+     * USB bulk packet loop (65ms delay between packets to match 9600 bps physical wire rate
+     * of 66.6ms/64B and avoid FT232R 128-byte TX FIFO overflow), waits 50ms after the loop,
+     * then reads the 5-byte or 6-byte STX..ETX ACK frame (timeout = 3000ms).
      */
     private suspend fun sendDataFrameAndAwaitAck(
         transport: Serial78k0Transport,
@@ -1048,7 +1048,7 @@ object Nec78k0ProtocolEngine {
         val csByte = dataFrame[dataFrame.size - 2].toInt() and 0xFF
         val endByte = dataFrame[dataFrame.size - 1].toInt() and 0xFF
         val headPreview = toHex(dataFrame.copyOfRange(0, minOf(6, dataFrame.size)))
-        onLog(String.format(Locale.US, "TX 260B ($label • 64B USB Loop): [%s ... CS=%02X END=%02X] • مهلة %dms", headPreview, csByte, endByte, timeoutMs))
+        onLog(String.format(Locale.US, "TX 260B ($label • Paced 64B/65ms): [%s ... CS=%02X END=%02X] • مهلة %dms", headPreview, csByte, endByte, timeoutMs))
 
         transport.flushInputBuffer()
         transport.setRawRxMonitor(true)
@@ -1062,6 +1062,7 @@ object Nec78k0ProtocolEngine {
                 }
             }
 
+            delay(50L)
             transport.discardEcho(dataFrame.size, 9600)
             val ack = readOneRxFrame(transport, timeoutMs) { stray ->
                 onLog("RX Raw Live ($label): $stray")
@@ -1248,7 +1249,7 @@ object Nec78k0ProtocolEngine {
                 val slice = blockData.copyOfRange(offset, offset + PAGE_SIZE)
                 val isLast = (page == 3)
                 val dataFrame = buildDataFrame(slice, isLast = isLast)
-                onLog("TX (0x40 صفحة ${page + 1}/4 • 260B في حزم 64B بدون تأخير • END=${if (isLast) "0x03 ETX" else "0x17 ETB"})")
+                onLog("TX (0x40 صفحة ${page + 1}/4 • 260B بحزم 64B كل 65ms • END=${if (isLast) "0x03 ETX" else "0x17 ETB"})")
                 when (val ackRes = sendDataFrameAndAwaitAck(transport, dataFrame, PAGE_ACK_TIMEOUT_MS, "0x40 صفحة ${page + 1}/4", onLog)) {
                     is FrameAckOutcome.AckSuccess -> {
                         onLog("RX (0x40 صفحة ${page + 1}/4 ACK): ${toHex(ackRes.frame.rawFrame)}")
