@@ -44,6 +44,9 @@ object Nec78k0ProtocolEngine {
     const val RESET_TIMEOUT_MS = 1500
     const val HEADER_ACK_TIMEOUT_MS = 1500
     const val PAGE_ACK_TIMEOUT_MS = 2000
+    const val UART_DATA_CHUNK_SIZE = 32
+    const val UART_CHUNK_DELAY_MS = 5L
+    const val MAX_TIMEOUT_RETRIES = 3
 
     interface Serial78k0Transport {
         fun configureUart96008N1(onLog: (String) -> Unit): Boolean
@@ -427,11 +430,16 @@ object Nec78k0ProtocolEngine {
 
         if (session != null && session.lastCompletedBlock >= 0) {
             onLog("تفعيل وضع الاستكمال / الإنقاذ التلقائي للجلسة المحفوظة (${session.chipName} • FullCS=${session.fullChecksumHex} • B0CS=${session.block0ChecksumHex}) من المرحلة: ${session.stage.labelAr}...")
-            val resetRes = handshakeAndSendResetCommand(transport, onLog)
+            val resetRes = resync78k0Bootloader(transport, clockFreqMhzText, onLog)
             if (resetRes is Nec78k0TransceiveResult.DisconnectedOrTimeout) {
-                return FlashOperationResult.Failure("${WATCHDOG_PREFIX}${session.lastCompletedBlock}:${resetRes.reason}")
+                return if (resetRes.isUsbDetached) {
+                    FlashOperationResult.Failure("${WATCHDOG_PREFIX}${session.lastCompletedBlock}:${resetRes.reason}")
+                } else {
+                    FlashOperationResult.Failure("انتهت مهلة استجابة المعالج (Timeout) أثناء المزامنة: ${resetRes.reason} — منفذ USB لا يزال متصلاً.")
+                }
+            } else if (resetRes is Nec78k0TransceiveResult.ProtocolError) {
+                return FlashOperationResult.Failure("رفض المعالج أمر Reset 0x00: ${resetRes.statusLabel}")
             }
-            transceiveSingleFrame(transport, buildCommandFrame(CMD_OSC_FREQ, buildOscFreqPayload(clockFreqMhzText)), RESET_TIMEOUT_MS, onLog)
 
             detectedInfo = Nec78k0DetectedInfo(
                 deviceName = session.chipName,
@@ -452,13 +460,16 @@ object Nec78k0ProtocolEngine {
             onLog(
                 "البصمة محفوظة مسبقاً عند الاتصال (${preDetectedInfo.deviceName} • FullCS=${preDetectedInfo.fullFlashChecksumHex} • B0CS=${preDetectedInfo.block0ChecksumHex}) — بدء مزامنة السحب..."
             )
-            val resetRes = handshakeAndSendResetCommand(transport, onLog)
+            val resetRes = resync78k0Bootloader(transport, clockFreqMhzText, onLog)
             if (resetRes is Nec78k0TransceiveResult.DisconnectedOrTimeout) {
-                return FlashOperationResult.Failure(resetRes.reason)
+                return if (resetRes.isUsbDetached) {
+                    FlashOperationResult.Failure("${WATCHDOG_PREFIX}0:${resetRes.reason}")
+                } else {
+                    FlashOperationResult.Failure("انتهت مهلة استجابة المعالج (Timeout) أثناء المزامنة: ${resetRes.reason} — منفذ USB لا يزال متصلاً.")
+                }
             } else if (resetRes is Nec78k0TransceiveResult.ProtocolError) {
                 return FlashOperationResult.Failure("رفض المعالج أمر Reset 0x00: ${resetRes.statusLabel}")
             }
-            transceiveSingleFrame(transport, buildCommandFrame(CMD_OSC_FREQ, buildOscFreqPayload(clockFreqMhzText)), RESET_TIMEOUT_MS, onLog)
             val savedSession = Nec78k0RecoveryManager.findSessionForChip(context, preDetectedInfo.deviceName)
             session = savedSession ?: session
             detectedInfo = if (savedSession != null && (savedSession.fullFlashChecksum != 0 || savedSession.block0Checksum != 0)) {
@@ -474,13 +485,16 @@ object Nec78k0ProtocolEngine {
             onLog(
                 "استرجاع البصمة الأصلية المحفوظة (${session.chipName} • FullCS=${session.fullChecksumHex} • B0CS=${session.block0ChecksumHex}) بدون إعادة قراءة Block 0..."
             )
-            val resetRes = handshakeAndSendResetCommand(transport, onLog)
+            val resetRes = resync78k0Bootloader(transport, clockFreqMhzText, onLog)
             if (resetRes is Nec78k0TransceiveResult.DisconnectedOrTimeout) {
-                return FlashOperationResult.Failure("${WATCHDOG_PREFIX}0:${resetRes.reason}")
+                return if (resetRes.isUsbDetached) {
+                    FlashOperationResult.Failure("${WATCHDOG_PREFIX}0:${resetRes.reason}")
+                } else {
+                    FlashOperationResult.Failure("انتهت مهلة استجابة المعالج (Timeout) أثناء المزامنة: ${resetRes.reason} — منفذ USB لا يزال متصلاً.")
+                }
             } else if (resetRes is Nec78k0TransceiveResult.ProtocolError) {
                 return FlashOperationResult.Failure("رفض المعالج أمر Reset 0x00: ${resetRes.statusLabel}")
             }
-            transceiveSingleFrame(transport, buildCommandFrame(CMD_OSC_FREQ, buildOscFreqPayload(clockFreqMhzText)), RESET_TIMEOUT_MS, onLog)
             detectedInfo = Nec78k0DetectedInfo(
                 deviceName = session.chipName,
                 familyGroup = session.subFamily,
@@ -522,7 +536,14 @@ object Nec78k0ProtocolEngine {
             onProgress(0, totalSize, "فحص الحماية وتصفير Block 0 فقط...")
             // Check whether Block 0 was already erased (e.g., resuming after an interrupted 0x40 write)
             val b0CheckCmd = buildAddressRangeFrame(CMD_BLANK_CHECK, 0x000000, BLOCK_SIZE - 1)
-            val b0BlankRes = transceiveSingleFrame(transport, b0CheckCmd, HEADER_ACK_TIMEOUT_MS, onLog)
+            val b0BlankRes = transceiveWithTimeoutRetry(
+                transport = transport,
+                txFrame = b0CheckCmd,
+                timeoutMs = HEADER_ACK_TIMEOUT_MS,
+                clockFreqMhzText = clockFreqMhzText,
+                opLabel = "فحص فراغ Block 0 (0x32)",
+                onLog = onLog
+            )
             if (b0BlankRes is Nec78k0TransceiveResult.Success) {
                 onLog("المرحلة 2: Block 0 ممسوح مسبقاً (0x32 Blank ACK) — الاحتفاظ بالبصمة الأصلية (FullCS=${detectedInfo.fullFlashChecksumHex} • Block0CS=${detectedInfo.block0ChecksumHex}) والمتابعة لكتابة الأصفار...")
                 val touchedSession = (session ?: Nec78k0RecoveryManager.Nec78k0RecoverySession(
@@ -542,10 +563,16 @@ object Nec78k0ProtocolEngine {
                 )).copy(block0Touched = true, updatedAtMs = System.currentTimeMillis())
                 session = touchedSession
                 Nec78k0RecoveryManager.saveSessionCheckpoint(context, touchedSession)
+            } else if (b0BlankRes is Nec78k0TransceiveResult.DisconnectedOrTimeout) {
+                return if (b0BlankRes.isUsbDetached) {
+                    FlashOperationResult.Failure("${WATCHDOG_PREFIX}0:${b0BlankRes.reason}")
+                } else {
+                    FlashOperationResult.Failure("انتهت مهلة استجابة المعالج أثناء فحص Block 0 (0x32) بعد 3 محاولات إعادة مزامنة (منفذ USB متصلاً): ${b0BlankRes.reason}")
+                }
             } else {
                 onLog("المرحلة 2: مسح Block 0 (0x000000..0x0003FF) بأمر 0x22...")
                 val eraseB0Cmd = buildAddressRangeFrame(CMD_BLOCK_ERASE, 0x000000, BLOCK_SIZE - 1)
-                when (val eraseRes = transceiveSingleFrame(transport, eraseB0Cmd, HEADER_ACK_TIMEOUT_MS, onLog)) {
+                when (val eraseRes = transceiveWithTimeoutRetry(transport, eraseB0Cmd, HEADER_ACK_TIMEOUT_MS, clockFreqMhzText, "مسح Block 0 (0x22)", onLog)) {
                     is Nec78k0TransceiveResult.Success -> {
                         onLog("RX (Block 0 Erase ACK): ${toHex(eraseRes.frame.rawFrame)}")
                         val touchedSession = (session ?: Nec78k0RecoveryManager.Nec78k0RecoverySession(
@@ -576,26 +603,42 @@ object Nec78k0ProtocolEngine {
                         return FlashOperationResult.Failure("فشل مسح Block 0 (0x22): ${eraseRes.statusLabel}")
                     }
                     is Nec78k0TransceiveResult.DisconnectedOrTimeout -> {
-                        return FlashOperationResult.Failure("${WATCHDOG_PREFIX}0:${eraseRes.reason}")
+                        return if (eraseRes.isUsbDetached) {
+                            FlashOperationResult.Failure("${WATCHDOG_PREFIX}0:${eraseRes.reason}")
+                        } else {
+                            FlashOperationResult.Failure("انتهت مهلة مسح Block 0 (0x22) بعد 3 محاولات إعادة مزامنة (منفذ USB متصلاً): ${eraseRes.reason}")
+                        }
                     }
                 }
                 delay(20)
             }
 
-            onLog("المرحلة 2: كتابة أصفار في Block 0 (مرحلتان: Header 0x40 ثم 4×260B) لفتح السحب...")
-            val zeroResult = programBlockFromBuffer(
+            onLog("المرحلة 2: كتابة أصفار في Block 0 (Header 0x40 ثم 4×260B مقسّمة 32B/دفعة) لفتح السحب...")
+            when (val zeroOutcome = programBlockFromBuffer(
                 transport = transport,
                 startAddr = 0x000000,
                 endAddr = BLOCK_SIZE - 1,
                 blockData = ByteArray(BLOCK_SIZE) { 0x00 },
-                watchdogPausedBlock = 0,
+                clockFreqMhzText = clockFreqMhzText,
+                eraseBlockBeforeRetry = true,
                 onLog = onLog
-            )
-            if (zeroResult != null) {
-                if (zeroResult.contains("ERR_PROTECT", ignoreCase = true) || zeroResult.contains("0x10")) {
-                    Nec78k0RecoveryManager.markCompletedAndCleanup(context, detectedInfo.deviceName)
+            )) {
+                is ProgramOutcome.Success -> Unit
+                is ProgramOutcome.ProtocolError -> {
+                    if (zeroOutcome.isProtected) {
+                        Nec78k0RecoveryManager.markCompletedAndCleanup(context, detectedInfo.deviceName)
+                    }
+                    return FlashOperationResult.Failure(zeroOutcome.message)
                 }
-                return FlashOperationResult.Failure(zeroResult)
+                is ProgramOutcome.TransportFailure -> {
+                    return if (zeroOutcome.isUsbDetached) {
+                        FlashOperationResult.Failure("${WATCHDOG_PREFIX}0:${zeroOutcome.reason}")
+                    } else {
+                        FlashOperationResult.Failure(
+                            "انتهت مهلة استجابة المعالج لحزمة 0x40 بعد 3 محاولات إعادة مزامنة (منفذ USB لا يزال مفتوحاً ومتصلاً): ${zeroOutcome.reason}"
+                        )
+                    }
+                }
             }
 
             Nec78k0RecoveryManager.savePartialBlocksAtomically(context, detectedInfo.deviceName, fullBuffer)
@@ -620,11 +663,14 @@ object Nec78k0ProtocolEngine {
             // Fast Re-sync after Block 0 Zeroing to stabilize UART boot state for Block 1..N-1 extraction
             onLog("إعادة مزامنة سريعة قبل سحب الكتل Block 1..${blockCount - 1}...")
             delay(20)
-            val reSyncRes = handshakeAndSendResetCommand(transport, onLog)
+            val reSyncRes = resync78k0Bootloader(transport, clockFreqMhzText, onLog)
             if (reSyncRes is Nec78k0TransceiveResult.DisconnectedOrTimeout) {
-                return FlashOperationResult.Failure("${WATCHDOG_PREFIX}0:انقطع الاتصال بعد تصفير Block 0 — ثبّت المبرمجة واضغط إنقاذ المعالج.")
+                return if (reSyncRes.isUsbDetached) {
+                    FlashOperationResult.Failure("${WATCHDOG_PREFIX}0:انقطع اتصال USB OTG بعد تصفير Block 0 — ثبّت المبرمجة واضغط إنقاذ المعالج.")
+                } else {
+                    FlashOperationResult.Failure("انتهت مهلة المزامنة بعد تصفير Block 0 (منفذ USB لا يزال متصلاً): ${reSyncRes.reason}")
+                }
             }
-            transceiveSingleFrame(transport, buildCommandFrame(CMD_OSC_FREQ, buildOscFreqPayload(clockFreqMhzText)), RESET_TIMEOUT_MS, onLog)
         }
 
         // Step 3: Pull & Verify Block 1 .. Block N-1
@@ -633,14 +679,14 @@ object Nec78k0ProtocolEngine {
 
         for (blockIdx in startBlock until blockCount) {
             if (!transport.isDeviceAttached()) {
-                return pauseWithWatchdog(context, session, detectedInfo, fullBuffer, blockIdx - 1, blockCount, "انقطع اتصال USB OTG عند Block $blockIdx")
+                return pauseWithWatchdog(context, session, detectedInfo, fullBuffer, blockIdx - 1, blockCount, "فُصل كابل USB OTG عند Block $blockIdx", isUsbDetached = true)
             }
 
             val blockStart = blockIdx * BLOCK_SIZE
             val blockEnd = blockStart + BLOCK_SIZE - 1
             val blankCmd = buildAddressRangeFrame(CMD_BLANK_CHECK, blockStart, blockEnd)
 
-            when (val blankRes = transceiveSingleFrame(transport, blankCmd, 600, onLog)) {
+            when (val blankRes = transceiveWithTimeoutRetry(transport, blankCmd, 600, clockFreqMhzText, "فحص Block $blockIdx (0x32)", onLog)) {
                 is Nec78k0TransceiveResult.Success -> {
                     // Blank (0xFF x 1024)
                     for (k in 0 until BLOCK_SIZE) {
@@ -651,11 +697,20 @@ object Nec78k0ProtocolEngine {
                 }
                 is Nec78k0TransceiveResult.ProtocolError -> {
                     if (blankRes.statusCode == STS_PROTECT_ERROR) {
-                        return pauseWithWatchdog(context, session, detectedInfo, fullBuffer, blockIdx - 1, blockCount, "استلمنا ERR_PROTECT أثناء قراءة Block $blockIdx")
+                        return pauseWithWatchdog(
+                            context,
+                            session,
+                            detectedInfo,
+                            fullBuffer,
+                            blockIdx - 1,
+                            blockCount,
+                            "استلمنا ERR_PROTECT أثناء قراءة Block $blockIdx",
+                            isUsbDetached = false
+                        )
                     }
-                    // Non-blank block: verify 4x256B data frames using 0x13 Verify Command
+                    // Non-blank block: verify 4x260B data frames using 0x13 Verify Command (chunked 32B TX + up to 3 re-sync retries on timeout)
                     val candidateBlock = fullBuffer.copyOfRange(blockStart, blockStart + BLOCK_SIZE)
-                    val verifyResult = verifyBlockVia0x13(transport, blockStart, blockEnd, candidateBlock, onLog)
+                    val verifyResult = verifyBlockVia0x13(transport, blockStart, blockEnd, candidateBlock, clockFreqMhzText, onLog)
                     when (verifyResult) {
                         is VerifyOutcome.Match -> {
                             System.arraycopy(candidateBlock, 0, fullBuffer, blockStart, BLOCK_SIZE)
@@ -664,12 +719,30 @@ object Nec78k0ProtocolEngine {
                             onLog("تنبيه (Block $blockIdx): غير فارغ (0x32 -> ${blankRes.statusLabel}) والبيانات غير مطابقة لـ Verify (0x13 -> ${verifyResult.detail}).")
                         }
                         is VerifyOutcome.TransportLost -> {
-                            return pauseWithWatchdog(context, session, detectedInfo, fullBuffer, blockIdx - 1, blockCount, verifyResult.reason)
+                            return pauseWithWatchdog(
+                                context,
+                                session,
+                                detectedInfo,
+                                fullBuffer,
+                                blockIdx - 1,
+                                blockCount,
+                                verifyResult.reason,
+                                isUsbDetached = verifyResult.isUsbDetached
+                            )
                         }
                     }
                 }
                 is Nec78k0TransceiveResult.DisconnectedOrTimeout -> {
-                    return pauseWithWatchdog(context, session, detectedInfo, fullBuffer, blockIdx - 1, blockCount, blankRes.reason)
+                    return pauseWithWatchdog(
+                        context,
+                        session,
+                        detectedInfo,
+                        fullBuffer,
+                        blockIdx - 1,
+                        blockCount,
+                        blankRes.reason,
+                        isUsbDetached = blankRes.isUsbDetached
+                    )
                 }
             }
 
@@ -685,11 +758,13 @@ object Nec78k0ProtocolEngine {
                 stage = Nec78k0RecoveryManager.RecoveryStage.READING_BLOCKS,
                 lastCompletedBlock = blockIdx,
                 updatedAtMs = System.currentTimeMillis(),
-                partialBlocksPath = Nec78k0RecoveryManager.partialBlocksFile(context, detectedInfo.deviceName).absolutePath
+                partialBlocksPath = Nec78k0RecoveryManager.partialBlocksFile(context, detectedInfo.deviceName).absolutePath,
+                block0Touched = true
             )).copy(
                 stage = Nec78k0RecoveryManager.RecoveryStage.READING_BLOCKS,
                 lastCompletedBlock = blockIdx,
-                updatedAtMs = System.currentTimeMillis()
+                updatedAtMs = System.currentTimeMillis(),
+                block0Touched = true
             )
             session = updatedSession
 
@@ -742,19 +817,72 @@ object Nec78k0ProtocolEngine {
         )
 
         onLog("المرحلة 4: إعادة مسح وكتابة Block 0 المسترجع إلى المعالج عبر 0x40...")
-        val reEraseRes = transceiveSingleFrame(transport, buildAddressRangeFrame(CMD_BLOCK_ERASE, 0x000000, BLOCK_SIZE - 1), 1500, onLog)
+        val reEraseRes = transceiveWithTimeoutRetry(
+            transport = transport,
+            txFrame = buildAddressRangeFrame(CMD_BLOCK_ERASE, 0x000000, BLOCK_SIZE - 1),
+            timeoutMs = HEADER_ACK_TIMEOUT_MS,
+            clockFreqMhzText = clockFreqMhzText,
+            opLabel = "مسح Block 0 قبل الاسترجاع (0x22)",
+            onLog = onLog
+        )
         if (reEraseRes is Nec78k0TransceiveResult.DisconnectedOrTimeout) {
-            return pauseWithWatchdog(context, session, detectedInfo, fullBuffer, blockCount - 1, blockCount, reEraseRes.reason)
+            return pauseWithWatchdog(
+                context,
+                session,
+                detectedInfo,
+                fullBuffer,
+                blockCount - 1,
+                blockCount,
+                reEraseRes.reason,
+                isUsbDetached = reEraseRes.isUsbDetached
+            )
+        } else if (reEraseRes is Nec78k0TransceiveResult.ProtocolError) {
+            return pauseWithWatchdog(
+                context,
+                session,
+                detectedInfo,
+                fullBuffer,
+                blockCount - 1,
+                blockCount,
+                "فشل مسح Block 0 قبل الاسترجاع: ${reEraseRes.statusLabel}",
+                isUsbDetached = false
+            )
         }
-        val restoreErr = programBlockFromBuffer(
+
+        when (val restoreOutcome = programBlockFromBuffer(
             transport = transport,
             startAddr = 0x000000,
             endAddr = BLOCK_SIZE - 1,
             blockData = report.block0Bytes,
+            clockFreqMhzText = clockFreqMhzText,
+            eraseBlockBeforeRetry = true,
             onLog = onLog
-        )
-        if (restoreErr != null) {
-            return pauseWithWatchdog(context, session, detectedInfo, fullBuffer, blockCount - 1, blockCount, restoreErr)
+        )) {
+            is ProgramOutcome.Success -> Unit
+            is ProgramOutcome.ProtocolError -> {
+                return pauseWithWatchdog(
+                    context,
+                    session,
+                    detectedInfo,
+                    fullBuffer,
+                    blockCount - 1,
+                    blockCount,
+                    restoreOutcome.message,
+                    isUsbDetached = false
+                )
+            }
+            is ProgramOutcome.TransportFailure -> {
+                return pauseWithWatchdog(
+                    context,
+                    session,
+                    detectedInfo,
+                    fullBuffer,
+                    blockCount - 1,
+                    blockCount,
+                    restoreOutcome.reason,
+                    isUsbDetached = restoreOutcome.isUsbDetached
+                )
+            }
         }
 
         // Verify Full Flash Checksum via 0xB0
@@ -792,9 +920,15 @@ object Nec78k0ProtocolEngine {
         partialBuffer: ByteArray,
         lastGoodBlock: Int,
         blockCount: Int,
-        reason: String
+        reason: String,
+        isUsbDetached: Boolean
     ): FlashOperationResult.Failure {
         Nec78k0RecoveryManager.savePartialBlocksAtomically(context, info.deviceName, partialBuffer)
+        val nextStage = if (lastGoodBlock >= blockCount - 1) {
+            Nec78k0RecoveryManager.RecoveryStage.BLOCKS_EXTRACTED
+        } else {
+            Nec78k0RecoveryManager.RecoveryStage.READING_BLOCKS
+        }
         val saved = (session ?: Nec78k0RecoveryManager.Nec78k0RecoverySession(
             chipName = info.deviceName,
             subFamily = info.familyGroup,
@@ -804,139 +938,375 @@ object Nec78k0ProtocolEngine {
             fullFlashChecksum = info.fullFlashChecksum16,
             block0Checksum = info.block0Checksum16,
             signatureHex = info.rawSignatureHex,
-            stage = Nec78k0RecoveryManager.RecoveryStage.READING_BLOCKS,
+            stage = nextStage,
             lastCompletedBlock = lastGoodBlock.coerceAtLeast(0),
             updatedAtMs = System.currentTimeMillis(),
-            partialBlocksPath = Nec78k0RecoveryManager.partialBlocksFile(context, info.deviceName).absolutePath
+            partialBlocksPath = Nec78k0RecoveryManager.partialBlocksFile(context, info.deviceName).absolutePath,
+            block0Touched = true
         )).copy(
-            stage = Nec78k0RecoveryManager.RecoveryStage.READING_BLOCKS,
+            stage = nextStage,
             lastCompletedBlock = lastGoodBlock.coerceAtLeast(0),
-            updatedAtMs = System.currentTimeMillis()
+            updatedAtMs = System.currentTimeMillis(),
+            block0Touched = true
         )
         Nec78k0RecoveryManager.saveSessionCheckpoint(context, saved)
-        return FlashOperationResult.Failure(
-            "${WATCHDOG_PREFIX}${saved.lastCompletedBlock}:انقطع الاتصال عند الكتلة ${saved.lastCompletedBlock + 1}/$blockCount ($reason) — تم حفظ التقدم على الذاكرة، ثبّت المبرمجة للاستكمال."
-        )
+        return if (isUsbDetached) {
+            FlashOperationResult.Failure(
+                "${WATCHDOG_PREFIX}${saved.lastCompletedBlock}:انقطع اتصال USB OTG عند الكتلة ${saved.lastCompletedBlock + 1}/$blockCount ($reason) — تم حفظ التقدم على الذاكرة، ثبّت المبرمجة للاستكمال."
+            )
+        } else {
+            FlashOperationResult.Failure(
+                "انتهت مهلة استجابة المعالج (Timeout) عند الكتلة ${saved.lastCompletedBlock + 1}/$blockCount ($reason) — منفذ USB لا يزال مفتوحاً ومتصلاً، وتم حفظ التقدم بأمان على الذاكرة."
+            )
+        }
     }
 
     internal sealed class VerifyOutcome {
         data object Match : VerifyOutcome()
         data class Mismatch(val detail: String, val errorCode: Int = STS_VERIFY_ERROR, val failedPage: Int = 0) : VerifyOutcome()
-        data class TransportLost(val reason: String, val failedPage: Int = 0) : VerifyOutcome()
+        data class TransportLost(val reason: String, val failedPage: Int = 0, val isUsbDetached: Boolean = false) : VerifyOutcome()
+    }
+
+    internal sealed class ProgramOutcome {
+        data object Success : ProgramOutcome()
+        data class ProtocolError(val message: String, val isProtected: Boolean = false) : ProgramOutcome()
+        data class TransportFailure(val reason: String, val isUsbDetached: Boolean = false) : ProgramOutcome()
+    }
+
+    private sealed class FrameAckOutcome {
+        data class AckSuccess(val frame: Nec78k0RxFrame) : FrameAckOutcome()
+        data class FrameError(val errorCode: Int, val description: String, val frame: Nec78k0RxFrame) : FrameAckOutcome()
+        data class Timeout(val reason: String) : FrameAckOutcome()
+        data class UsbDetached(val reason: String) : FrameAckOutcome()
+    }
+
+    internal fun isPhysicalDisconnect(transport: Serial78k0Transport, ioError: String? = null): Boolean {
+        if (!transport.isDeviceAttached()) return true
+        if (ioError != null && (
+                ioError.contains("USB_DETACHED", ignoreCase = true) ||
+                ioError.contains("SERIAL_IO_EXCEPTION", ignoreCase = true) ||
+                ioError.contains("المنفذ مغلق") ||
+                ioError.contains("attached=false", ignoreCase = true) ||
+                ioError.contains("IOException", ignoreCase = true)
+            )
+        ) {
+            return true
+        }
+        return false
+    }
+
+    internal suspend fun resync78k0Bootloader(
+        transport: Serial78k0Transport,
+        clockFreqMhzText: String,
+        onLog: (String) -> Unit
+    ): Nec78k0TransceiveResult {
+        val resetRes = handshakeAndSendResetCommand(transport, onLog)
+        if (resetRes !is Nec78k0TransceiveResult.Success) {
+            return resetRes
+        }
+        val oscRes = transceiveSingleFrame(
+            transport,
+            buildCommandFrame(CMD_OSC_FREQ, buildOscFreqPayload(clockFreqMhzText)),
+            RESET_TIMEOUT_MS,
+            onLog
+        )
+        return when (oscRes) {
+            is Nec78k0TransceiveResult.DisconnectedOrTimeout -> oscRes
+            else -> resetRes
+        }
+    }
+
+    internal suspend fun transceiveWithTimeoutRetry(
+        transport: Serial78k0Transport,
+        txFrame: ByteArray,
+        timeoutMs: Int,
+        clockFreqMhzText: String,
+        opLabel: String,
+        onLog: (String) -> Unit
+    ): Nec78k0TransceiveResult {
+        var lastTimeout: Nec78k0TransceiveResult.DisconnectedOrTimeout? = null
+        for (attempt in 0..MAX_TIMEOUT_RETRIES) {
+            if (attempt > 0) {
+                if (!transport.isDeviceAttached()) {
+                    return Nec78k0TransceiveResult.DisconnectedOrTimeout("انقطع اتصال USB OTG عن الهاتف", isUsbDetached = true)
+                }
+                onLog("انتهت المهلة أثناء $opLabel (منفذ USB متصل) — إعادة المزامنة ثم المحاولة $attempt/$MAX_TIMEOUT_RETRIES...")
+                val resync = resync78k0Bootloader(transport, clockFreqMhzText, onLog)
+                if (resync is Nec78k0TransceiveResult.DisconnectedOrTimeout) {
+                    if (resync.isUsbDetached) return resync
+                    lastTimeout = resync
+                    continue
+                }
+            }
+            when (val res = transceiveSingleFrame(transport, txFrame, timeoutMs, onLog)) {
+                is Nec78k0TransceiveResult.Success,
+                is Nec78k0TransceiveResult.ProtocolError -> return res
+                is Nec78k0TransceiveResult.DisconnectedOrTimeout -> {
+                    if (res.isUsbDetached) return res
+                    lastTimeout = res
+                }
+            }
+        }
+        return lastTimeout ?: Nec78k0TransceiveResult.DisconnectedOrTimeout(
+            "انتهت مهلة $opLabel (${timeoutMs}ms) بعد $MAX_TIMEOUT_RETRIES محاولات إعادة مزامنة",
+            isUsbDetached = false
+        )
     }
 
     /**
-     * Two-Stage 0x13 Verify Handshake:
+     * Sends a 260-byte SOH data frame ([0x01, 0x00, ...256B, CS, END]) in 32-byte UART chunks
+     * separated by 5ms pauses to prevent 78K0 UART RX buffer overrun at 9600 bps, then enables
+     * RX Raw Live monitoring while awaiting the 6-byte [02 02 06 06 F2 03] response (2000ms).
+     */
+    private suspend fun sendDataFrameChunkedAndAwaitAck(
+        transport: Serial78k0Transport,
+        dataFrame: ByteArray,
+        timeoutMs: Int,
+        label: String,
+        onLog: (String) -> Unit
+    ): FrameAckOutcome {
+        if (!transport.isDeviceAttached()) {
+            return FrameAckOutcome.UsbDetached("انقطع كابل USB OTG قبل إرسال $label")
+        }
+        transport.flushInputBuffer()
+        transport.setRawRxMonitor(true)
+        try {
+            var offset = 0
+            while (offset < dataFrame.size) {
+                if (!transport.isDeviceAttached()) {
+                    return FrameAckOutcome.UsbDetached("انقطع كابل USB OTG أثناء إرسال $label")
+                }
+                val chunkLen = minOf(UART_DATA_CHUNK_SIZE, dataFrame.size - offset)
+                val chunk = dataFrame.copyOfRange(offset, offset + chunkLen)
+                val txErr = transport.writeRaw(chunk)
+                if (txErr != null) {
+                    return if (isPhysicalDisconnect(transport, txErr)) {
+                        FrameAckOutcome.UsbDetached("انقطاع USB/IO أثناء إرسال $label: $txErr")
+                    } else {
+                        FrameAckOutcome.Timeout("تعثر إرسال دفعة UART ($label): $txErr")
+                    }
+                }
+                offset += chunkLen
+                if (offset < dataFrame.size) {
+                    delay(UART_CHUNK_DELAY_MS)
+                }
+            }
+
+            transport.discardEcho(dataFrame.size, 9600)
+            val ack = readOneRxFrame(transport, timeoutMs) { stray ->
+                onLog("RX Raw Live ($label غير مكتمل/غير متوقع): $stray")
+            } ?: return if (!transport.isDeviceAttached()) {
+                FrameAckOutcome.UsbDetached("انقطع كابل USB OTG أثناء انتظار رد $label")
+            } else {
+                FrameAckOutcome.Timeout("انتهت مهلة انتظار رد المعالج 6 بايت ($label خلال ${timeoutMs}ms)")
+            }
+
+            return if (ack.isAckSuccess) {
+                FrameAckOutcome.AckSuccess(ack)
+            } else {
+                val errCode = ack.effectiveErrorCode
+                FrameAckOutcome.FrameError(errCode, statusDescription(errCode), ack)
+            }
+        } finally {
+            transport.setRawRxMonitor(false)
+        }
+    }
+
+    /**
+     * Two-Stage 0x13 Verify Handshake with Chunked 32B TX + up to 3 Re-Sync Retries on Timeout:
      * Stage A: Send 11-byte 0x13 Address Frame ONLY -> wait strictly for 5-byte ACK [02 01 06 F9 03] (1500ms).
-     * Stage B: Send 4 x 260-byte frames (first 3 end with 0x17 ETB, 4th ends with 0x03 ETX) -> wait for 6-byte [02 02 06 06 F2 03] (2000ms) after EACH page.
+     * Stage B: Send 4 x 260-byte frames (pages 1..3 end with 0x17 ETB, page 4 ends with 0x03 ETX)
+     *          in 32-byte chunks + 5ms delay -> wait for 6-byte [02 02 06 06 F2 03] (2000ms) after EACH page.
      */
     internal suspend fun verifyBlockVia0x13(
         transport: Serial78k0Transport,
         startAddr: Int,
         endAddr: Int,
         blockBytes: ByteArray,
+        clockFreqMhzText: String = "8 MHz",
         onLog: (String) -> Unit
     ): VerifyOutcome {
         require(blockBytes.size == BLOCK_SIZE) { "78K0 verify block must be 1024 bytes" }
         val verifyCmd = buildAddressRangeFrame(CMD_VERIFY, startAddr, endAddr)
-        when (val cmdRes = transceiveSingleFrame(transport, verifyCmd, HEADER_ACK_TIMEOUT_MS, onLog)) {
-            is Nec78k0TransceiveResult.Success -> Unit
-            is Nec78k0TransceiveResult.ProtocolError -> return VerifyOutcome.Mismatch(cmdRes.statusLabel, cmdRes.statusCode, 0)
-            is Nec78k0TransceiveResult.DisconnectedOrTimeout -> return VerifyOutcome.TransportLost(cmdRes.reason, 0)
-        }
+        var lastTimeoutReason = "انتهت مهلة Verify 0x13"
+        var lastTimeoutPage = 0
 
-        delay(5)
+        for (attempt in 0..MAX_TIMEOUT_RETRIES) {
+            if (attempt > 0) {
+                if (!transport.isDeviceAttached()) {
+                    return VerifyOutcome.TransportLost("انقطع اتصال USB OTG أثناء Verify 0x13", lastTimeoutPage, isUsbDetached = true)
+                }
+                onLog(String.format(Locale.US, "انتهت مهلة 0x13 عند 0x%06X (USB متصل) — إعادة المزامنة ثم المحاولة %d/%d...", startAddr, attempt, MAX_TIMEOUT_RETRIES))
+                val resync = resync78k0Bootloader(transport, clockFreqMhzText, onLog)
+                if (resync is Nec78k0TransceiveResult.DisconnectedOrTimeout) {
+                    if (resync.isUsbDetached) {
+                        return VerifyOutcome.TransportLost(resync.reason, lastTimeoutPage, isUsbDetached = true)
+                    }
+                    lastTimeoutReason = resync.reason
+                    continue
+                }
+            }
 
-        // Send 4 x 260B SOH frames (first 3 end with ETB 0x17, final ends with ETX 0x03)
-        for (page in 0 until 4) {
-            if (!transport.isDeviceAttached()) {
-                return VerifyOutcome.TransportLost("انقطع اتصال USB OTG أثناء Verify عند صفحة ${page + 1}/4", page + 1)
+            when (val cmdRes = transceiveSingleFrame(transport, verifyCmd, HEADER_ACK_TIMEOUT_MS, onLog)) {
+                is Nec78k0TransceiveResult.Success -> Unit
+                is Nec78k0TransceiveResult.ProtocolError -> return VerifyOutcome.Mismatch(cmdRes.statusLabel, cmdRes.statusCode, 0)
+                is Nec78k0TransceiveResult.DisconnectedOrTimeout -> {
+                    if (cmdRes.isUsbDetached) {
+                        return VerifyOutcome.TransportLost(cmdRes.reason, 0, isUsbDetached = true)
+                    }
+                    lastTimeoutReason = cmdRes.reason
+                    lastTimeoutPage = 0
+                    continue
+                }
             }
-            val offset = page * PAGE_SIZE
-            val slice = blockBytes.copyOfRange(offset, offset + PAGE_SIZE)
-            val dataFrame = buildDataFrame(slice, isLast = (page == 3))
-            transport.flushInputBuffer()
-            val txErr = transport.writeRaw(dataFrame)
-            if (txErr != null) {
-                return VerifyOutcome.TransportLost("انقطع الإرسال أثناء Verify عند صفحة ${page + 1}/4: $txErr", page + 1)
+
+            delay(5)
+
+            var pageTimedOut = false
+            for (page in 0 until 4) {
+                val offset = page * PAGE_SIZE
+                val slice = blockBytes.copyOfRange(offset, offset + PAGE_SIZE)
+                val dataFrame = buildDataFrame(slice, isLast = (page == 3))
+                when (val ackRes = sendDataFrameChunkedAndAwaitAck(transport, dataFrame, PAGE_ACK_TIMEOUT_MS, "0x13 صفحة ${page + 1}/4", onLog)) {
+                    is FrameAckOutcome.AckSuccess -> Unit
+                    is FrameAckOutcome.FrameError -> {
+                        return VerifyOutcome.Mismatch(ackRes.description, ackRes.errorCode, page + 1)
+                    }
+                    is FrameAckOutcome.UsbDetached -> {
+                        return VerifyOutcome.TransportLost(ackRes.reason, page + 1, isUsbDetached = true)
+                    }
+                    is FrameAckOutcome.Timeout -> {
+                        lastTimeoutReason = ackRes.reason
+                        lastTimeoutPage = page + 1
+                        pageTimedOut = true
+                        break
+                    }
+                }
             }
-            transport.discardEcho(dataFrame.size, 9600)
-            val frameAck = readOneRxFrame(transport, PAGE_ACK_TIMEOUT_MS) { stray ->
-                onLog("RX Raw (0x13 صفحة ${page + 1}/4): $stray")
-            } ?: return VerifyOutcome.TransportLost(
-                "انتهت مهلة انتظار ACK أثناء Verify (الصفحة ${page + 1}/4 خلال ${PAGE_ACK_TIMEOUT_MS}ms)",
-                page + 1
-            )
-            if (!frameAck.isAckSuccess) {
-                val errCode = frameAck.effectiveErrorCode
-                return VerifyOutcome.Mismatch(statusDescription(errCode), errCode, page + 1)
+            if (!pageTimedOut) {
+                return VerifyOutcome.Match
             }
         }
-        return VerifyOutcome.Match
+        return VerifyOutcome.TransportLost(
+            "$lastTimeoutReason (بعد $MAX_TIMEOUT_RETRIES محاولات إعادة مزامنة)",
+            lastTimeoutPage,
+            isUsbDetached = false
+        )
     }
 
     /**
-     * Two-Stage 0x40 Program Handshake:
+     * Two-Stage 0x40 Program Handshake with Chunked 32B TX + up to 3 Re-Sync Retries on Timeout:
      * Stage A: Send ONLY 11-byte 0x40 Address Frame -> wait strictly for 5-byte ACK [02 01 06 F9 03] (1500ms) BEFORE sending any data.
-     * Stage B: Send 4 x 260-byte frames (pages 1..3 end with 0x17 ETB, page 4 ends with 0x03 ETX) -> wait for 6-byte [02 02 06 06 F2 03] (2000ms) after EACH page.
+     * Stage B: Send 4 x 260-byte frames (pages 1..3 end with 0x17 ETB, page 4 ends with 0x03 ETX)
+     *          in 32-byte chunks + 5ms delay -> wait for 6-byte [02 02 06 06 F2 03] (2000ms) after EACH page.
      */
     internal suspend fun programBlockFromBuffer(
         transport: Serial78k0Transport,
         startAddr: Int,
         endAddr: Int,
         blockData: ByteArray,
-        watchdogPausedBlock: Int = 0,
+        clockFreqMhzText: String = "8 MHz",
+        eraseBlockBeforeRetry: Boolean = true,
         onLog: (String) -> Unit
-    ): String? {
+    ): ProgramOutcome {
         require(blockData.size == BLOCK_SIZE) { "78K0 program block must be 1024 bytes" }
         val progCmd = buildAddressRangeFrame(CMD_PROGRAM, startAddr, endAddr)
-        onLog("TX (0x40 Header 11B): ${toHex(progCmd)}")
-        when (val res = transceiveSingleFrame(transport, progCmd, HEADER_ACK_TIMEOUT_MS, onLog)) {
-            is Nec78k0TransceiveResult.Success -> {
-                onLog("RX (0x40 Header ACK): ${toHex(res.frame.rawFrame)}")
-            }
-            is Nec78k0TransceiveResult.ProtocolError -> {
-                if (res.statusCode == STS_PROTECT_ERROR) {
-                    return "الشريحة محمية (ERR_PROTECT 0x10): أمر البرمجة 0x40 مرفوض."
+        var lastTimeoutReason = "انتهت مهلة حزمة 0x40"
+
+        for (attempt in 0..MAX_TIMEOUT_RETRIES) {
+            if (attempt > 0) {
+                if (!transport.isDeviceAttached()) {
+                    return ProgramOutcome.TransportFailure("انقطع كابل USB OTG قبل إعادة محاولة 0x40", isUsbDetached = true)
                 }
-                return "رفض المعالج أمر الكتابة 0x40: ${res.statusLabel}"
-            }
-            is Nec78k0TransceiveResult.DisconnectedOrTimeout -> return "${WATCHDOG_PREFIX}${watchdogPausedBlock}:${res.reason}"
-        }
-
-        // Allow 78K0 bootloader to switch cleanly from command header mode to 260-byte data reception mode
-        delay(10)
-
-        for (page in 0 until 4) {
-            if (!transport.isDeviceAttached()) {
-                return "${WATCHDOG_PREFIX}${watchdogPausedBlock}:انقطع كابل USB OTG أثناء إرسال حزمة 0x40 (صفحة ${page + 1}/4)"
-            }
-            val offset = page * PAGE_SIZE
-            val slice = blockData.copyOfRange(offset, offset + PAGE_SIZE)
-            val isLast = (page == 3)
-            val dataFrame = buildDataFrame(slice, isLast = isLast)
-            transport.flushInputBuffer()
-            onLog("TX (0x40 صفحة ${page + 1}/4 • 260B • END=${if (isLast) "0x03 ETX" else "0x17 ETB"})")
-            val txErr = transport.writeRaw(dataFrame)
-            if (txErr != null) {
-                return "${WATCHDOG_PREFIX}${watchdogPausedBlock}:فشل إرسال بيانات 0x40 (صفحة ${page + 1}/4): $txErr"
-            }
-            transport.discardEcho(dataFrame.size, 9600)
-
-            val ack = readOneRxFrame(transport, PAGE_ACK_TIMEOUT_MS) { stray ->
-                onLog("RX Raw (0x40 صفحة ${page + 1}/4): $stray")
-            } ?: return "${WATCHDOG_PREFIX}${watchdogPausedBlock}:لم يرد المعالج على حزمة 0x40 (صفحة ${page + 1}/4 خلال ${PAGE_ACK_TIMEOUT_MS}ms)"
-
-            onLog("RX (0x40 صفحة ${page + 1}/4 ACK): ${toHex(ack.rawFrame)}")
-            if (!ack.isAckSuccess) {
-                val errCode = ack.effectiveErrorCode
-                if (errCode == STS_PROTECT_ERROR) {
-                    return "الشريحة محمية (ERR_PROTECT 0x10): تم إيقاف الكتابة عند صفحة ${page + 1}/4."
+                onLog(String.format(Locale.US, "انتهت مهلة 0x40 عند 0x%06X (USB متصل) — إعادة المزامنة ثم المحاولة %d/%d...", startAddr, attempt, MAX_TIMEOUT_RETRIES))
+                val resync = resync78k0Bootloader(transport, clockFreqMhzText, onLog)
+                if (resync is Nec78k0TransceiveResult.DisconnectedOrTimeout) {
+                    if (resync.isUsbDetached) {
+                        return ProgramOutcome.TransportFailure(resync.reason, isUsbDetached = true)
+                    }
+                    lastTimeoutReason = resync.reason
+                    continue
+                } else if (resync is Nec78k0TransceiveResult.ProtocolError) {
+                    return ProgramOutcome.ProtocolError("رفض المعالج إعادة المزامنة قبل 0x40: ${resync.statusLabel}")
                 }
-                return "فشل حرق الصفحة ${page + 1}/4 (0x40): ${statusDescription(errCode)}"
+                if (eraseBlockBeforeRetry) {
+                    val eraseCmd = buildAddressRangeFrame(CMD_BLOCK_ERASE, startAddr, endAddr)
+                    when (val eraseRes = transceiveSingleFrame(transport, eraseCmd, HEADER_ACK_TIMEOUT_MS, onLog)) {
+                        is Nec78k0TransceiveResult.Success -> delay(15)
+                        is Nec78k0TransceiveResult.ProtocolError -> {
+                            if (eraseRes.statusCode == STS_PROTECT_ERROR) {
+                                return ProgramOutcome.ProtocolError("الشريحة محمية (ERR_PROTECT 0x10): أمر البرمجة مرفوض.", isProtected = true)
+                            }
+                        }
+                        is Nec78k0TransceiveResult.DisconnectedOrTimeout -> {
+                            if (eraseRes.isUsbDetached) {
+                                return ProgramOutcome.TransportFailure(eraseRes.reason, isUsbDetached = true)
+                            }
+                            lastTimeoutReason = eraseRes.reason
+                            continue
+                        }
+                    }
+                }
+            }
+
+            onLog("TX (0x40 Header 11B): ${toHex(progCmd)}")
+            when (val res = transceiveSingleFrame(transport, progCmd, HEADER_ACK_TIMEOUT_MS, onLog)) {
+                is Nec78k0TransceiveResult.Success -> {
+                    onLog("RX (0x40 Header ACK): ${toHex(res.frame.rawFrame)}")
+                }
+                is Nec78k0TransceiveResult.ProtocolError -> {
+                    if (res.statusCode == STS_PROTECT_ERROR) {
+                        return ProgramOutcome.ProtocolError("الشريحة محمية (ERR_PROTECT 0x10): أمر البرمجة 0x40 مرفوض.", isProtected = true)
+                    }
+                    return ProgramOutcome.ProtocolError("رفض المعالج أمر الكتابة 0x40: ${res.statusLabel}")
+                }
+                is Nec78k0TransceiveResult.DisconnectedOrTimeout -> {
+                    if (res.isUsbDetached) {
+                        return ProgramOutcome.TransportFailure(res.reason, isUsbDetached = true)
+                    }
+                    lastTimeoutReason = res.reason
+                    continue
+                }
+            }
+
+            // Allow 78K0 bootloader to switch cleanly from command header mode to 260-byte data reception mode
+            delay(10)
+
+            var pageTimedOut = false
+            for (page in 0 until 4) {
+                val offset = page * PAGE_SIZE
+                val slice = blockData.copyOfRange(offset, offset + PAGE_SIZE)
+                val isLast = (page == 3)
+                val dataFrame = buildDataFrame(slice, isLast = isLast)
+                onLog("TX (0x40 صفحة ${page + 1}/4 • 260B مقسّمة 32B/دفعة • 5ms • END=${if (isLast) "0x03 ETX" else "0x17 ETB"})")
+                when (val ackRes = sendDataFrameChunkedAndAwaitAck(transport, dataFrame, PAGE_ACK_TIMEOUT_MS, "0x40 صفحة ${page + 1}/4", onLog)) {
+                    is FrameAckOutcome.AckSuccess -> {
+                        onLog("RX (0x40 صفحة ${page + 1}/4 ACK): ${toHex(ackRes.frame.rawFrame)}")
+                    }
+                    is FrameAckOutcome.UsbDetached -> {
+                        return ProgramOutcome.TransportFailure(ackRes.reason, isUsbDetached = true)
+                    }
+                    is FrameAckOutcome.Timeout -> {
+                        lastTimeoutReason = ackRes.reason
+                        pageTimedOut = true
+                        break
+                    }
+                    is FrameAckOutcome.FrameError -> {
+                        if (ackRes.errorCode == STS_PROTECT_ERROR) {
+                            return ProgramOutcome.ProtocolError("الشريحة محمية (ERR_PROTECT 0x10): تم إيقاف الكتابة عند صفحة ${page + 1}/4.", isProtected = true)
+                        }
+                        return ProgramOutcome.ProtocolError("فشل حرق الصفحة ${page + 1}/4 (0x40): ${ackRes.description}")
+                    }
+                }
+            }
+            if (!pageTimedOut) {
+                return ProgramOutcome.Success
             }
         }
-        return null
+        return ProgramOutcome.TransportFailure(
+            "$lastTimeoutReason (بعد $MAX_TIMEOUT_RETRIES محاولات إعادة مزامنة)",
+            isUsbDetached = false
+        )
     }
 
     internal suspend fun queryChecksum16(
@@ -1080,10 +1450,15 @@ object Nec78k0ProtocolEngine {
         transport.flushInputBuffer()
         val txErr = transport.writeRaw(txFrame)
         if (txErr != null) {
-            return Nec78k0TransceiveResult.DisconnectedOrTimeout("خطأ إرسال UART: $txErr", isUsbDetached = !transport.isDeviceAttached())
+            return Nec78k0TransceiveResult.DisconnectedOrTimeout(
+                "خطأ إرسال UART: $txErr",
+                isUsbDetached = isPhysicalDisconnect(transport, txErr)
+            )
         }
         transport.discardEcho(txFrame.size, 9600)
-        val rx = readOneRxFrame(transport, timeoutMs)
+        val rx = readOneRxFrame(transport, timeoutMs) { stray ->
+            onLog("RX Raw Live (استجابة غير مكتملة): $stray")
+        }
             ?: return Nec78k0TransceiveResult.DisconnectedOrTimeout(
                 "انتهت المهلة (${timeoutMs}ms) دون استلام إطار 0x02..0x03 من المعالج",
                 isUsbDetached = !transport.isDeviceAttached()

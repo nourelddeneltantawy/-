@@ -51,6 +51,7 @@ object Nec78k0FlashWriterEngine {
             blockCount = blockCount,
             totalSize = totalSize,
             preferBlockErase = useBlockErase,
+            clockFreqMhzText = clockFreqMhzText,
             onLog = onLog,
             onProgress = onProgress
         )
@@ -117,6 +118,7 @@ object Nec78k0FlashWriterEngine {
                 blockCount = blockCount,
                 totalSize = totalSize,
                 preferBlockErase = useBlockErase,
+                clockFreqMhzText = clockFreqMhzText,
                 onLog = onLog,
                 onProgress = onProgress
             )
@@ -152,27 +154,28 @@ object Nec78k0FlashWriterEngine {
                 continue
             }
 
-            // Two-Stage 0x40 Programming:
-            // Stage A: 11-byte 0x40 Address Frame -> await 5-byte ACK [02 01 06 F9 03] (1500ms)
-            // Stage B: 4 x 260-byte data frames (0x17 x3, 0x03 x1) -> await 6-byte [02 02 06 06 F2 03] (2000ms) each
-            val progErr = Nec78k0ProtocolEngine.programBlockFromBuffer(
+            // Two-Stage 0x40 Programming (32B chunked TX + 5ms delay + up to 3 re-sync retries on timeout):
+            when (val progOutcome = Nec78k0ProtocolEngine.programBlockFromBuffer(
                 transport = transport,
                 startAddr = startAddr,
                 endAddr = endAddr,
                 blockData = blockSlice,
-                watchdogPausedBlock = blockIdx,
+                clockFreqMhzText = clockFreqMhzText,
+                eraseBlockBeforeRetry = true,
                 onLog = onLog
-            )
-            if (progErr != null) {
-                val cleanErr = if (progErr.startsWith(Nec78k0ProtocolEngine.WATCHDOG_PREFIX)) {
-                    val colon = progErr.indexOf(':', Nec78k0ProtocolEngine.WATCHDOG_PREFIX.length)
-                    if (colon >= 0) progErr.substring(colon + 1) else progErr
-                } else {
-                    progErr
+            )) {
+                is Nec78k0ProtocolEngine.ProgramOutcome.Success -> Unit
+                is Nec78k0ProtocolEngine.ProgramOutcome.ProtocolError -> {
+                    return FlashOperationResult.Failure(progOutcome.message)
                 }
-                return FlashOperationResult.Failure(
-                    disconnectMessage("الكتابة", blockIdx, blockCount, cleanErr)
-                )
+                is Nec78k0ProtocolEngine.ProgramOutcome.TransportFailure -> {
+                    val failureText = if (progOutcome.isUsbDetached) {
+                        disconnectMessage("الكتابة", blockIdx, blockCount, progOutcome.reason)
+                    } else {
+                        timeoutMessage("الكتابة", blockIdx, blockCount, progOutcome.reason)
+                    }
+                    return FlashOperationResult.Failure(failureText)
+                }
             }
 
             writtenBlocks++
@@ -197,6 +200,7 @@ object Nec78k0FlashWriterEngine {
                 blockCount = blockCount,
                 totalSize = totalSize,
                 skipEmptyFfBlocks = flashWasJustErased,
+                clockFreqMhzText = clockFreqMhzText,
                 onVerifiedCount = { verifiedBlocks = it },
                 onLog = onLog,
                 onProgress = onProgress
@@ -276,6 +280,7 @@ object Nec78k0FlashWriterEngine {
             blockCount = blockCount,
             totalSize = totalSize,
             skipEmptyFfBlocks = false,
+            clockFreqMhzText = clockFreqMhzText,
             onVerifiedCount = { verifiedBlocks = it },
             onLog = onLog,
             onProgress = onProgress
@@ -317,6 +322,7 @@ object Nec78k0FlashWriterEngine {
         blockCount: Int,
         totalSize: Int,
         preferBlockErase: Boolean,
+        clockFreqMhzText: String,
         onLog: (String) -> Unit,
         onProgress: (bytesDone: Int, totalBytes: Int, label: String) -> Unit
     ): String? {
@@ -360,7 +366,14 @@ object Nec78k0FlashWriterEngine {
                 startAddr,
                 endAddr
             )
-            when (val res = Nec78k0ProtocolEngine.transceiveSingleFrame(transport, blockEraseCmd, COMMAND_TIMEOUT_MS, onLog)) {
+            when (val res = Nec78k0ProtocolEngine.transceiveWithTimeoutRetry(
+                transport = transport,
+                txFrame = blockEraseCmd,
+                timeoutMs = COMMAND_TIMEOUT_MS,
+                clockFreqMhzText = clockFreqMhzText,
+                opLabel = "مسح البلوك ${blockIdx + 1}/$blockCount (0x22)",
+                onLog = onLog
+            )) {
                 is Nec78k0ProtocolEngine.Nec78k0TransceiveResult.Success -> Unit
                 is Nec78k0ProtocolEngine.Nec78k0TransceiveResult.ProtocolError -> {
                     if (res.statusCode == Nec78k0ProtocolEngine.STS_PROTECT_ERROR) {
@@ -371,7 +384,11 @@ object Nec78k0FlashWriterEngine {
                         .format(Locale.US, startAddr)
                 }
                 is Nec78k0ProtocolEngine.Nec78k0TransceiveResult.DisconnectedOrTimeout -> {
-                    return disconnectMessage("المسح", blockIdx, blockCount, res.reason)
+                    return if (res.isUsbDetached) {
+                        disconnectMessage("المسح", blockIdx, blockCount, res.reason)
+                    } else {
+                        timeoutMessage("المسح", blockIdx, blockCount, res.reason)
+                    }
                 }
             }
             val done = minOf((blockIdx + 1) * BLOCK_SIZE, totalSize)
@@ -390,6 +407,7 @@ object Nec78k0FlashWriterEngine {
         blockCount: Int,
         totalSize: Int,
         skipEmptyFfBlocks: Boolean,
+        clockFreqMhzText: String,
         onVerifiedCount: (Int) -> Unit,
         onLog: (String) -> Unit,
         onProgress: (bytesDone: Int, totalBytes: Int, label: String) -> Unit
@@ -414,13 +432,22 @@ object Nec78k0FlashWriterEngine {
                 continue
             }
 
-            // Two-Stage 0x13 Verify:
-            // Stage A: 11-byte 0x13 Address Frame -> await 5-byte ACK [02 01 06 F9 03] (1500ms)
-            // Stage B: 4 x 260-byte data frames (0x17 x3, 0x03 x1) -> await 6-byte [02 02 06 06 F2 03] (2000ms) each
-            when (val verifyOutcome = Nec78k0ProtocolEngine.verifyBlockVia0x13(transport, startAddr, endAddr, blockSlice, onLog)) {
+            // Two-Stage 0x13 Verify (32B chunked TX + 5ms delay + up to 3 re-sync retries on timeout):
+            when (val verifyOutcome = Nec78k0ProtocolEngine.verifyBlockVia0x13(
+                transport = transport,
+                startAddr = startAddr,
+                endAddr = endAddr,
+                blockBytes = blockSlice,
+                clockFreqMhzText = clockFreqMhzText,
+                onLog = onLog
+            )) {
                 is Nec78k0ProtocolEngine.VerifyOutcome.Match -> Unit
                 is Nec78k0ProtocolEngine.VerifyOutcome.TransportLost -> {
-                    return disconnectMessage("المطابقة", blockIdx, blockCount, verifyOutcome.reason)
+                    return if (verifyOutcome.isUsbDetached) {
+                        disconnectMessage("المطابقة", blockIdx, blockCount, verifyOutcome.reason)
+                    } else {
+                        timeoutMessage("المطابقة", blockIdx, blockCount, verifyOutcome.reason)
+                    }
                 }
                 is Nec78k0ProtocolEngine.VerifyOutcome.Mismatch -> {
                     val errText = if (verifyOutcome.errorCode == Nec78k0ProtocolEngine.STS_VERIFY_ERROR && verifyOutcome.failedPage > 0) {
@@ -540,7 +567,20 @@ object Nec78k0FlashWriterEngine {
         val addr = blockIdx * BLOCK_SIZE
         return String.format(
             Locale.US,
-            "انقطع الاتصال أثناء %s عند البلوك %d/%d (العنوان 0x%06X) — %s. ثبّت المبرمجة وأعد المحاولة بأمان.",
+            "انقطع اتصال USB أثناء %s عند البلوك %d/%d (العنوان 0x%06X) — %s. ثبّت المبرمجة وأعد المحاولة بأمان.",
+            opLabel,
+            blockIdx + 1,
+            blockCount,
+            addr,
+            detail
+        )
+    }
+
+    private fun timeoutMessage(opLabel: String, blockIdx: Int, blockCount: Int, detail: String): String {
+        val addr = blockIdx * BLOCK_SIZE
+        return String.format(
+            Locale.US,
+            "انتهت مهلة استجابة المعالج (Timeout) أثناء %s عند البلوك %d/%d (العنوان 0x%06X) بعد 3 محاولات إعادة مزامنة — منفذ USB لا يزال مفتوحاً ومتصلاً: %s",
             opLabel,
             blockIdx + 1,
             blockCount,

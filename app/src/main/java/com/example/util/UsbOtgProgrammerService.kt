@@ -1672,8 +1672,8 @@ object UsbOtgProgrammerService {
      */
     private fun writeRawBytes(data: ByteArray): String? {
         return try {
-            val conn = activeConnection ?: return "UsbDeviceConnection is null (المنفذ مغلق)"
-            val out = outEndpoint ?: return "Bulk OUT endpoint is null"
+            val conn = activeConnection ?: return "USB_DETACHED:UsbDeviceConnection is null (المنفذ مغلق)"
+            val out = outEndpoint ?: return "USB_DETACHED:Bulk OUT endpoint is null"
             var offset = 0
             while (offset < data.size) {
                 val chunkLen = min(data.size - offset, out.maxPacketSize.coerceAtLeast(64))
@@ -1682,6 +1682,10 @@ object UsbOtgProgrammerService {
                 val written = conn.bulkTransfer(out, slice, slice.size, 2000)
                 if (written <= 0) {
                     val attached = activeDevice?.deviceName?.let { usbManager?.deviceList?.containsKey(it) } ?: false
+                    if (!attached) {
+                        disconnect()
+                        return "USB_DETACHED:انفصل كابل USB OTG عن الهاتف أثناء الإرسال"
+                    }
                     return "bulkTransfer(OUT) returned $written (len=${slice.size}, ep=0x%02X, attached=$attached, chip=$activeChipType)"
                         .format(out.address)
                 }
@@ -1689,7 +1693,11 @@ object UsbOtgProgrammerService {
             }
             null
         } catch (e: Throwable) {
-            "Write Exception: ${e.toString()}"
+            val attached = activeDevice?.deviceName?.let { usbManager?.deviceList?.containsKey(it) } ?: false
+            if (!attached || e is java.io.IOException) {
+                disconnect()
+            }
+            "SERIAL_IO_EXCEPTION:${e::class.java.simpleName}: ${e.message ?: e.toString()}"
         }
     }
 
