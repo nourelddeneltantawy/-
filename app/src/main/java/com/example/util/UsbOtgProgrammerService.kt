@@ -691,6 +691,9 @@ object UsbOtgProgrammerService {
 
             override suspend fun writeRaw(bytes: ByteArray): String? = writeRawBytes(bytes)
 
+            override suspend fun writeSingleBulk(bytes: ByteArray, timeoutMs: Int): String? =
+                writeSingleBulkBytes(bytes, timeoutMs)
+
             override suspend fun discardEcho(expectedCount: Int, baudRate: Int): Int {
                 return if (echoCancellationEnabled) discardEchoBytes(expectedCount) else 0
             }
@@ -1687,6 +1690,35 @@ object UsbOtgProgrammerService {
                         return "USB_DETACHED:انفصل كابل USB OTG عن الهاتف أثناء الإرسال"
                     }
                     return "bulkTransfer(OUT) returned $written (len=${slice.size}, ep=0x%02X, attached=$attached, chip=$activeChipType)"
+                        .format(out.address)
+                }
+                offset += written
+            }
+            null
+        } catch (e: Throwable) {
+            val attached = activeDevice?.deviceName?.let { usbManager?.deviceList?.containsKey(it) } ?: false
+            if (!attached || e is java.io.IOException) {
+                disconnect()
+            }
+            "SERIAL_IO_EXCEPTION:${e::class.java.simpleName}: ${e.message ?: e.toString()}"
+        }
+    }
+
+    private fun writeSingleBulkBytes(data: ByteArray, timeoutMs: Int): String? {
+        return try {
+            val conn = activeConnection ?: return "USB_DETACHED:UsbDeviceConnection is null (المنفذ مغلق)"
+            val out = outEndpoint ?: return "USB_DETACHED:Bulk OUT endpoint is null"
+            var offset = 0
+            while (offset < data.size) {
+                val slice = if (offset == 0) data else data.copyOfRange(offset, data.size)
+                val written = conn.bulkTransfer(out, slice, slice.size, timeoutMs)
+                if (written <= 0) {
+                    val attached = activeDevice?.deviceName?.let { usbManager?.deviceList?.containsKey(it) } ?: false
+                    if (!attached) {
+                        disconnect()
+                        return "USB_DETACHED:انفصل كابل USB OTG عن الهاتف أثناء الإرسال"
+                    }
+                    return "bulkTransfer(OUT single) returned $written (len=${slice.size}, ep=0x%02X, attached=$attached, chip=$activeChipType)"
                         .format(out.address)
                 }
                 offset += written

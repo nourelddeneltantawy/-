@@ -154,7 +154,7 @@ object Nec78k0FlashWriterEngine {
                 continue
             }
 
-            // Two-Stage 0x40 Programming (32B chunked TX + 5ms delay + up to 3 re-sync retries on timeout):
+            // Two-Stage 0x40 Programming (Single-Bulk 260B TX + up to 3 re-sync retries on timeout):
             when (val progOutcome = Nec78k0ProtocolEngine.programBlockFromBuffer(
                 transport = transport,
                 startAddr = startAddr,
@@ -432,7 +432,7 @@ object Nec78k0FlashWriterEngine {
                 continue
             }
 
-            // Two-Stage 0x13 Verify (32B chunked TX + 5ms delay + up to 3 re-sync retries on timeout):
+            // Two-Stage 0x13 Verify (Single-Bulk 260B TX + up to 3 re-sync retries on timeout):
             when (val verifyOutcome = Nec78k0ProtocolEngine.verifyBlockVia0x13(
                 transport = transport,
                 startAddr = startAddr,
@@ -507,24 +507,15 @@ object Nec78k0FlashWriterEngine {
             Nec78k0ProtocolEngine.normalize78k0Part(preDetectedInfo.deviceName) ==
             Nec78k0ProtocolEngine.normalize78k0Part(selectedChip.partNumber)
         ) {
-            onProgress(0, preDetectedInfo.flashSizeBytes, "مزامنة ${preDetectedInfo.deviceName} وتهيئة UART (9600 8N1)...")
-            val resetRes = Nec78k0ProtocolEngine.handshakeAndSendResetCommand(transport, onLog)
+            onProgress(0, preDetectedInfo.flashSizeBytes, "مزامنة ${preDetectedInfo.deviceName} وضبط تردد المذبذب (0x90)...")
+            val resetRes = Nec78k0ProtocolEngine.resync78k0Bootloader(transport, clockFreqMhzText, onLog)
             if (resetRes !is Nec78k0ProtocolEngine.Nec78k0TransceiveResult.Success) {
                 return null to when (resetRes) {
-                    is Nec78k0ProtocolEngine.Nec78k0TransceiveResult.ProtocolError -> "رفض المعالج أمر Reset 0x00: ${resetRes.statusLabel}"
+                    is Nec78k0ProtocolEngine.Nec78k0TransceiveResult.ProtocolError -> "رفض المعالج المزامنة/تردد المذبذب (0x90): ${resetRes.statusLabel}"
                     is Nec78k0ProtocolEngine.Nec78k0TransceiveResult.DisconnectedOrTimeout -> resetRes.reason
-                    else -> "فشل Reset 0x00"
+                    else -> "فشل Reset 0x00 / Osc Freq 0x90"
                 }
             }
-            Nec78k0ProtocolEngine.transceiveSingleFrame(
-                transport,
-                Nec78k0ProtocolEngine.buildCommandFrame(
-                    Nec78k0ProtocolEngine.CMD_OSC_FREQ,
-                    Nec78k0ProtocolEngine.buildOscFreqPayload(clockFreqMhzText)
-                ),
-                Nec78k0ProtocolEngine.RESET_TIMEOUT_MS,
-                onLog
-            )
             return preDetectedInfo to null
         }
 

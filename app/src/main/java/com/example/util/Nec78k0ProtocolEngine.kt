@@ -44,8 +44,7 @@ object Nec78k0ProtocolEngine {
     const val RESET_TIMEOUT_MS = 1500
     const val HEADER_ACK_TIMEOUT_MS = 1500
     const val PAGE_ACK_TIMEOUT_MS = 3000
-    const val UART_DATA_CHUNK_SIZE = 32
-    const val UART_CHUNK_DELAY_MS = 5L
+    const val SINGLE_BULK_WRITE_TIMEOUT_MS = 1000
     const val MAX_TIMEOUT_RETRIES = 3
 
     interface Serial78k0Transport {
@@ -60,6 +59,7 @@ object Nec78k0ProtocolEngine {
         fun flushInputBuffer()
         fun isDeviceAttached(): Boolean
         suspend fun writeRaw(bytes: ByteArray): String?
+        suspend fun writeSingleBulk(bytes: ByteArray, timeoutMs: Int = SINGLE_BULK_WRITE_TIMEOUT_MS): String?
         suspend fun discardEcho(expectedCount: Int, baudRate: Int): Int
         suspend fun readBytesWithTimeout(maxBytes: Int, timeoutMs: Int): ByteArray
     }
@@ -286,16 +286,11 @@ object Nec78k0ProtocolEngine {
             }
         }
 
-        // Step 2b: Set Oscillation Frequency (0x90)
-        val oscPayload = buildOscFreqPayload(clockFreqMhzText)
-        val oscFrame = buildCommandFrame(CMD_OSC_FREQ, oscPayload)
-        onLog("TX (Osc Freq 0x90): ${toHex(oscFrame)}")
-        when (val oscRes = transceiveSingleFrame(transport, oscFrame, RESET_TIMEOUT_MS, onLog)) {
-            is Nec78k0TransceiveResult.Success -> {
-                onLog("RX (Osc Freq ACK): ${toHex(oscRes.frame.rawFrame)}")
-            }
+        // Step 2b: Mandatory Oscillation Frequency Set (0x90) -> e.g. 8 MHz: [01 05 90 08 00 00 06 59 03]
+        when (val oscRes = sendMandatoryOscFreqCommand(transport, clockFreqMhzText, onLog)) {
+            is Nec78k0TransceiveResult.Success -> Unit
             is Nec78k0TransceiveResult.ProtocolError -> {
-                onLog("تنبيه (Osc 0x90): ${oscRes.statusLabel} — متابعة استعلام التوقيع...")
+                return null to "رفض المعالج ضبط تردد المذبذب (Osc Freq 0x90): ${oscRes.statusLabel}"
             }
             is Nec78k0TransceiveResult.DisconnectedOrTimeout -> {
                 return null to oscRes.reason
@@ -613,7 +608,7 @@ object Nec78k0ProtocolEngine {
                 delay(20)
             }
 
-            onLog("المرحلة 2: كتابة أصفار في Block 0 (Header 0x40 ثم 4×260B مقسّمة 32B/دفعة) لفتح السحب...")
+            onLog("المرحلة 2: كتابة أصفار في Block 0 (Header 0x40 ثم 4×260B دفعة واحدة عبر FIFO) لفتح السحب...")
             when (val zeroOutcome = programBlockFromBuffer(
                 transport = transport,
                 startAddr = 0x000000,
@@ -708,7 +703,7 @@ object Nec78k0ProtocolEngine {
                             isUsbDetached = false
                         )
                     }
-                    // Non-blank block: verify 4x260B data frames using 0x13 Verify Command (chunked 32B TX + up to 3 re-sync retries on timeout)
+                    // Non-blank block: verify 4x260B data frames using 0x13 Verify Command (single-bulk 260B TX + up to 3 re-sync retries on timeout)
                     val candidateBlock = fullBuffer.copyOfRange(blockStart, blockStart + BLOCK_SIZE)
                     val verifyResult = verifyBlockVia0x13(transport, blockStart, blockEnd, candidateBlock, clockFreqMhzText, onLog)
                     when (verifyResult) {
@@ -995,6 +990,28 @@ object Nec78k0ProtocolEngine {
         return false
     }
 
+    internal suspend fun sendMandatoryOscFreqCommand(
+        transport: Serial78k0Transport,
+        clockFreqMhzText: String,
+        onLog: (String) -> Unit
+    ): Nec78k0TransceiveResult {
+        val oscPayload = buildOscFreqPayload(clockFreqMhzText)
+        val oscFrame = buildCommandFrame(CMD_OSC_FREQ, oscPayload)
+        onLog("TX (Osc Freq 0x90 • إلزامي): ${toHex(oscFrame)}")
+        transport.setRawRxMonitor(true)
+        return try {
+            val oscRes = transceiveSingleFrame(transport, oscFrame, RESET_TIMEOUT_MS, onLog)
+            if (oscRes is Nec78k0TransceiveResult.Success) {
+                onLog("RX (Osc Freq 0x90 ACK): ${toHex(oscRes.frame.rawFrame)}")
+            } else if (oscRes is Nec78k0TransceiveResult.ProtocolError) {
+                onLog("RX Error (Osc Freq 0x90): ${oscRes.statusLabel}")
+            }
+            oscRes
+        } finally {
+            transport.setRawRxMonitor(false)
+        }
+    }
+
     internal suspend fun resync78k0Bootloader(
         transport: Serial78k0Transport,
         clockFreqMhzText: String,
@@ -1004,16 +1021,7 @@ object Nec78k0ProtocolEngine {
         if (resetRes !is Nec78k0TransceiveResult.Success) {
             return resetRes
         }
-        val oscRes = transceiveSingleFrame(
-            transport,
-            buildCommandFrame(CMD_OSC_FREQ, buildOscFreqPayload(clockFreqMhzText)),
-            RESET_TIMEOUT_MS,
-            onLog
-        )
-        return when (oscRes) {
-            is Nec78k0TransceiveResult.DisconnectedOrTimeout -> oscRes
-            else -> resetRes
-        }
+        return sendMandatoryOscFreqCommand(transport, clockFreqMhzText, onLog)
     }
 
     internal suspend fun transceiveWithTimeoutRetry(
@@ -1036,6 +1044,8 @@ object Nec78k0ProtocolEngine {
                     if (resync.isUsbDetached) return resync
                     lastTimeout = resync
                     continue
+                } else if (resync is Nec78k0TransceiveResult.ProtocolError) {
+                    return resync
                 }
             }
             when (val res = transceiveSingleFrame(transport, txFrame, timeoutMs, onLog)) {
@@ -1054,12 +1064,12 @@ object Nec78k0ProtocolEngine {
     }
 
     /**
-     * Sends a 260-byte SOH data frame ([0x01, 0x00, ...256B, CS, END]) in 32-byte UART chunks
-     * separated by 5ms pauses to prevent 78K0 UART RX buffer overrun at 9600 bps, then enables
-     * RX Raw Live monitoring while awaiting the 6-byte [02 02 06 06 F2 03] or 5-byte [02 01 06 F9 03]
-     * response (3000ms).
+     * Sends a 260-byte SOH data frame ([0x01, 0x00, ...256B, CS, END]) in ONE contiguous
+     * single bulkTransfer(timeout = 1000ms) call via FT232R hardware TX FIFO (no 32B chunking
+     * and no 5ms gaps that break 78K0 bootloader inter-byte timeout), then reads RX bytes
+     * continuously until STX..ETX (LEN + 4 bytes) completes while printing RX Raw Live.
      */
-    private suspend fun sendDataFrameChunkedAndAwaitAck(
+    private suspend fun sendDataFrameAndAwaitAck(
         transport: Serial78k0Transport,
         dataFrame: ByteArray,
         timeoutMs: Int,
@@ -1072,29 +1082,17 @@ object Nec78k0ProtocolEngine {
         val csByte = dataFrame[dataFrame.size - 2].toInt() and 0xFF
         val endByte = dataFrame[dataFrame.size - 1].toInt() and 0xFF
         val headPreview = toHex(dataFrame.copyOfRange(0, minOf(6, dataFrame.size)))
-        onLog(String.format(Locale.US, "TX Data 260B ($label): [%s ... CS=%02X END=%02X] • مهلة %dms", headPreview, csByte, endByte, timeoutMs))
+        onLog(String.format(Locale.US, "TX Single-Bulk 260B ($label): [%s ... CS=%02X END=%02X] • مهلة %dms", headPreview, csByte, endByte, timeoutMs))
 
         transport.flushInputBuffer()
         transport.setRawRxMonitor(true)
         try {
-            var offset = 0
-            while (offset < dataFrame.size) {
-                if (!transport.isDeviceAttached()) {
-                    return FrameAckOutcome.UsbDetached("انقطع كابل USB OTG أثناء إرسال $label")
-                }
-                val chunkLen = minOf(UART_DATA_CHUNK_SIZE, dataFrame.size - offset)
-                val chunk = dataFrame.copyOfRange(offset, offset + chunkLen)
-                val txErr = transport.writeRaw(chunk)
-                if (txErr != null) {
-                    return if (isPhysicalDisconnect(transport, txErr)) {
-                        FrameAckOutcome.UsbDetached("انقطاع USB/IO أثناء إرسال $label: $txErr")
-                    } else {
-                        FrameAckOutcome.Timeout("تعثر إرسال دفعة UART ($label): $txErr")
-                    }
-                }
-                offset += chunkLen
-                if (offset < dataFrame.size) {
-                    delay(UART_CHUNK_DELAY_MS)
+            val txErr = transport.writeSingleBulk(dataFrame, SINGLE_BULK_WRITE_TIMEOUT_MS)
+            if (txErr != null) {
+                return if (isPhysicalDisconnect(transport, txErr)) {
+                    FrameAckOutcome.UsbDetached("انقطاع USB/IO أثناء إرسال $label: $txErr")
+                } else {
+                    FrameAckOutcome.Timeout("تعثر إرسال حزمة 260B ($label): $txErr")
                 }
             }
 
@@ -1119,10 +1117,10 @@ object Nec78k0ProtocolEngine {
     }
 
     /**
-     * Two-Stage 0x13 Verify Handshake with Chunked 32B TX + up to 3 Re-Sync Retries on Timeout:
+     * Two-Stage 0x13 Verify Handshake with Single-Bulk 260B TX + up to 3 Re-Sync Retries on Timeout:
      * Stage A: Send 11-byte 0x13 Address Frame ONLY -> wait strictly for 5-byte ACK [02 01 06 F9 03] (1500ms).
      * Stage B: Send 4 x 260-byte frames (pages 1..3 end with 0x17 ETB, page 4 ends with 0x03 ETX)
-     *          in 32-byte chunks + 5ms delay -> wait for 6-byte [02 02 06 06 F2 03] (2000ms) after EACH page.
+     *          in one single bulk write -> wait dynamically for STX..ETX ACK (3000ms) after EACH page.
      */
     internal suspend fun verifyBlockVia0x13(
         transport: Serial78k0Transport,
@@ -1173,7 +1171,7 @@ object Nec78k0ProtocolEngine {
                 val offset = page * PAGE_SIZE
                 val slice = blockBytes.copyOfRange(offset, offset + PAGE_SIZE)
                 val dataFrame = buildDataFrame(slice, isLast = (page == 3))
-                when (val ackRes = sendDataFrameChunkedAndAwaitAck(transport, dataFrame, PAGE_ACK_TIMEOUT_MS, "0x13 صفحة ${page + 1}/4", onLog)) {
+                when (val ackRes = sendDataFrameAndAwaitAck(transport, dataFrame, PAGE_ACK_TIMEOUT_MS, "0x13 صفحة ${page + 1}/4", onLog)) {
                     is FrameAckOutcome.AckSuccess -> Unit
                     is FrameAckOutcome.FrameError -> {
                         return VerifyOutcome.Mismatch(ackRes.description, ackRes.errorCode, page + 1)
@@ -1201,10 +1199,10 @@ object Nec78k0ProtocolEngine {
     }
 
     /**
-     * Two-Stage 0x40 Program Handshake with Chunked 32B TX + up to 3 Re-Sync Retries on Timeout:
+     * Two-Stage 0x40 Program Handshake with Single-Bulk 260B TX + up to 3 Re-Sync Retries on Timeout:
      * Stage A: Send ONLY 11-byte 0x40 Address Frame -> wait strictly for 5-byte ACK [02 01 06 F9 03] (1500ms) BEFORE sending any data.
      * Stage B: Send 4 x 260-byte frames (pages 1..3 end with 0x17 ETB, page 4 ends with 0x03 ETX)
-     *          in 32-byte chunks + 5ms delay -> wait for 6-byte [02 02 06 06 F2 03] (2000ms) after EACH page.
+     *          in one single bulk write -> wait dynamically for STX..ETX ACK (3000ms) after EACH page.
      */
     internal suspend fun programBlockFromBuffer(
         transport: Serial78k0Transport,
@@ -1284,8 +1282,8 @@ object Nec78k0ProtocolEngine {
                 val slice = blockData.copyOfRange(offset, offset + PAGE_SIZE)
                 val isLast = (page == 3)
                 val dataFrame = buildDataFrame(slice, isLast = isLast)
-                onLog("TX (0x40 صفحة ${page + 1}/4 • 260B مقسّمة 32B/دفعة • 5ms • END=${if (isLast) "0x03 ETX" else "0x17 ETB"})")
-                when (val ackRes = sendDataFrameChunkedAndAwaitAck(transport, dataFrame, PAGE_ACK_TIMEOUT_MS, "0x40 صفحة ${page + 1}/4", onLog)) {
+                onLog("TX (0x40 صفحة ${page + 1}/4 • 260B دفعة واحدة • END=${if (isLast) "0x03 ETX" else "0x17 ETB"})")
+                when (val ackRes = sendDataFrameAndAwaitAck(transport, dataFrame, PAGE_ACK_TIMEOUT_MS, "0x40 صفحة ${page + 1}/4", onLog)) {
                     is FrameAckOutcome.AckSuccess -> {
                         onLog("RX (0x40 صفحة ${page + 1}/4 ACK): ${toHex(ackRes.frame.rawFrame)}")
                     }
@@ -1361,7 +1359,7 @@ object Nec78k0ProtocolEngine {
             integerPart.toByte(),
             fracDigit.toByte(),
             0x00,
-            0x01 // Normal speed mode multiplier
+            0x06 // 10^6 MHz scale exponent: [01 05 90 08 00 00 06 59 03] for 8.00 MHz
         )
     }
 
@@ -1507,15 +1505,15 @@ object Nec78k0ProtocolEngine {
             onUnexpectedRx?.invoke("قبل STX: ${toHex(preStx.toByteArray())}")
         }
 
-        val lenArr = transport.readBytesWithTimeout(1, (deadline - System.currentTimeMillis()).toInt().coerceIn(80, 500))
+        val lenArr = transport.readBytesWithTimeout(1, (deadline - System.currentTimeMillis()).toInt().coerceAtLeast(100))
         if (lenArr.isEmpty()) {
             onUnexpectedRx?.invoke("02 (انقطع بعد STX)")
             return null
         }
         val lenByte = lenArr[0].toInt() and 0xFF
         val dataLen = if (lenByte == 0) PAGE_SIZE else lenByte
-        val tailNeeded = dataLen + 2 // DATA + CS + ETX
-        val tail = readExactCount(transport, tailNeeded, (deadline - System.currentTimeMillis()).toInt().coerceIn(200, 1200))
+        val tailNeeded = dataLen + 2 // DATA + CS + ETX -> total (LEN + 4) bytes
+        val tail = readExactCount(transport, tailNeeded, (deadline - System.currentTimeMillis()).toInt().coerceAtLeast(250))
         if (tail == null) {
             onUnexpectedRx?.invoke(String.format(Locale.US, "02 %02X (نقص باقي الإطار)", lenByte))
             return null
