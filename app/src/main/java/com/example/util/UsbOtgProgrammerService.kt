@@ -44,7 +44,8 @@ sealed class ChipAutoDetectResult {
     data class Matched(
         val rawSignatureHex: String,
         val matchedProcessor: McuProcessor?,
-        val diagnosticMessage: String
+        val diagnosticMessage: String,
+        val nec78k0Info: Nec78k0ProtocolEngine.Nec78k0DetectedInfo? = null
     ) : ChipAutoDetectResult()
     data class Failure(val reason: String) : ChipAutoDetectResult()
 }
@@ -478,13 +479,13 @@ object UsbOtgProgrammerService {
                 true
             }
             BootSyncMode.FLMD0_78K0 -> {
-                onLog("4) إرسال نبضة المزامنة 78K0 (0x00 × 2) مع إلغاء صدى D1...")
+                onLog("4) إرسال نبضة المزامنة 78K0 ([0x00] ← 5ms ← [0x00]) مع إلغاء صدى D1...")
                 val err1 = writeWithEchoCancel(byteArrayOf(0x00), clearStaleRx = true, onLog = onLog)
                 if (err1 != null) {
                     onLog("TX ERROR (78K0 Sync #1): $err1")
                     return false
                 }
-                delay(20)
+                delay(5)
                 val err2 = writeWithEchoCancel(byteArrayOf(0x00), clearStaleRx = true, onLog = onLog)
                 if (err2 != null) {
                     onLog("TX ERROR (78K0 Sync #2): $err2")
@@ -584,6 +585,77 @@ object UsbOtgProgrammerService {
         }
     }
 
+    private fun isDeviceCurrentlyAttached(): Boolean {
+        val dev = activeDevice ?: return false
+        val mgr = usbManager ?: return false
+        return isConnected() && mgr.deviceList.containsKey(dev.deviceName)
+    }
+
+    private fun create78k0Transport(): Nec78k0ProtocolEngine.Serial78k0Transport =
+        object : Nec78k0ProtocolEngine.Serial78k0Transport {
+            override fun configureUart96008N1(onLog: (String) -> Unit): Boolean {
+                val conn = activeConnection ?: return false
+                val dev = activeDevice ?: return false
+                configureUartHardware(
+                    conn = conn,
+                    device = dev,
+                    chipType = activeChipType,
+                    baudRate = 9600,
+                    onLog = onLog,
+                    purgeHardwareFifo = (readerJob?.isActive != true)
+                )
+                return true
+            }
+
+            override fun ensureReaderListening(onLog: (String) -> Unit): Boolean {
+                val conn = activeConnection ?: return false
+                val epIn = inEndpoint ?: return false
+                if (readerJob?.isActive != true) {
+                    startContinuousReaderLoop(conn, epIn)
+                }
+                return true
+            }
+
+            override fun setRawRxMonitor(enabled: Boolean) {
+                rawRxMonitorEnabled = enabled
+            }
+
+            override fun setControlLines(dtr: Boolean, rts: Boolean, onLog: (String) -> Unit) {
+                val conn = activeConnection ?: return
+                val dev = activeDevice ?: return
+                this@UsbOtgProgrammerService.setControlLines(conn, dev, activeChipType, dtr = dtr, rts = rts, onLog = onLog)
+            }
+
+            override fun flushInputBuffer() {
+                flushRxBuffer()
+            }
+
+            override fun isDeviceAttached(): Boolean = isDeviceCurrentlyAttached()
+
+            override suspend fun writeRaw(bytes: ByteArray): String? = writeRawBytes(bytes)
+
+            override suspend fun discardEcho(expectedCount: Int, baudRate: Int): Int {
+                return if (echoCancellationEnabled) discardEchoBytes(expectedCount) else 0
+            }
+
+            override suspend fun readBytesWithTimeout(maxBytes: Int, timeoutMs: Int): ByteArray {
+                val out = ByteArrayOutputStream(maxBytes.coerceAtLeast(1))
+                val deadline = System.currentTimeMillis() + timeoutMs.toLong()
+                while (out.size() < maxBytes && System.currentTimeMillis() < deadline) {
+                    var drained = false
+                    synchronized(rxLock) {
+                        while (rxBuffer.isNotEmpty() && out.size() < maxBytes) {
+                            out.write(rxBuffer.removeFirst().toInt() and 0xFF)
+                            drained = true
+                        }
+                    }
+                    if (out.size() >= maxBytes || !isDeviceCurrentlyAttached()) break
+                    delay(if (drained) 2L else 3L)
+                }
+                return out.toByteArray()
+            }
+        }
+
     suspend fun probeChipId(
         context: Context,
         preferredChip: ProgrammerChipType?,
@@ -592,6 +664,9 @@ object UsbOtgProgrammerService {
         preferredPartNumber: String? = null,
         idCodeBytes: ByteArray = R8cProtocolEngine.DEFAULT_ID_CODE.copyOf(),
         catalog: List<McuProcessor>,
+        manualResetMode: Boolean = false,
+        clockFrequency: String = "8 MHz",
+        awaitManualReset: suspend () -> Boolean = { true },
         onLog: (String) -> Unit
     ): ChipAutoDetectResult = withContext(Dispatchers.IO) {
         externalLogSink = onLog
@@ -605,6 +680,33 @@ object UsbOtgProgrammerService {
             return@withContext ChipAutoDetectResult.Failure(
                 "تم إيقاف ميزة التعرف التلقائي وحذف الصدى في عائلة Renesas R8C. اختر المعالج يدوياً ثم انتقل لتنفيذ القراءة والكتابة والمسح مباشرة."
             )
+        }
+
+        if (famUpper.contains("78K0") && !famUpper.contains("78K0R")) {
+            setEchoCancellation(true)
+            val fallbackChip = preferredPartNumber?.let { part ->
+                catalog.firstOrNull { it.partNumber.equals(part, ignoreCase = true) }
+            }
+            val (info, err) = Nec78k0ProtocolEngine.autoDetectAndInspect(
+                context = context,
+                transport = create78k0Transport(),
+                manualResetMode = manualResetMode || !enableDtrRtsReset,
+                clockFreqMhzText = clockFrequency,
+                preferredChip = fallbackChip,
+                catalog = catalog,
+                awaitManualReset = awaitManualReset,
+                onLog = onLog
+            )
+            return@withContext if (info != null) {
+                ChipAutoDetectResult.Matched(
+                    rawSignatureHex = info.rawSignatureHex,
+                    matchedProcessor = info.matchedProcessor,
+                    diagnosticMessage = "تم التعرف على ${info.deviceName} (${info.familyGroup}) • المساحة ${info.flashSizeBytes / 1024} KB (${info.blockCount} بلوك) • FullCS=${info.fullFlashChecksumHex} • B0CS=${info.block0ChecksumHex}",
+                    nec78k0Info = info
+                )
+            } else {
+                ChipAutoDetectResult.Failure(err ?: "فشل التعرف التلقائي على معالج NEC/Renesas 78K0.")
+            }
         }
 
         val initialMode = resolveBootSyncMode(targetMainFamily)
@@ -666,11 +768,17 @@ object UsbOtgProgrammerService {
         processor: McuProcessor,
         idCodeBytes: ByteArray,
         dataFlashMode: DataFlashExportMode = DataFlashExportMode.EXCLUDE,
+        manualResetMode: Boolean = false,
+        clockFrequency: String = "8 MHz",
+        catalog: List<McuProcessor> = emptyList(),
+        resumeSession: Nec78k0RecoveryManager.Nec78k0RecoverySession? = null,
+        awaitManualReset: suspend () -> Boolean = { true },
+        on78k0DetectedInfo: (Nec78k0ProtocolEngine.Nec78k0DetectedInfo) -> Unit = {},
         onLog: (String) -> Unit,
         onProgress: (bytesDone: Int, totalBytes: Int, label: String) -> Unit
     ): FlashOperationResult = withContext(Dispatchers.IO) {
         externalLogSink = onLog
-        val initialBaud = if (processor.protocolType == ProtocolFamilyType.R8C_M16C) 9600 else baudRate
+        val initialBaud = if (processor.protocolType == ProtocolFamilyType.R8C_M16C || processor.is78k0Flmd0Mode()) 9600 else baudRate
         if (!ensureConnectionHealthy(context, preferredChip, initialBaud, enableDtrRtsReset, onLog)) {
             return@withContext FlashOperationResult.Failure("يجب الاتصال بمبرمجة USB OTG أولاً.")
         }
@@ -683,6 +791,23 @@ object UsbOtgProgrammerService {
                 baudRate = baudRate,
                 idBytes = idCodeBytes,
                 dataFlashMode = dataFlashMode,
+                onLog = onLog,
+                onProgress = onProgress
+            )
+        }
+
+        if (processor.is78k0Flmd0Mode()) {
+            setEchoCancellation(true)
+            return@withContext Nec78k0ProtocolEngine.readOrRescueFlash(
+                context = context,
+                transport = create78k0Transport(),
+                selectedChip = processor,
+                manualResetMode = manualResetMode || !enableDtrRtsReset,
+                clockFreqMhzText = clockFrequency,
+                catalog = catalog,
+                existingResumeSession = resumeSession,
+                awaitManualReset = awaitManualReset,
+                onDetectedInfo = on78k0DetectedInfo,
                 onLog = onLog,
                 onProgress = onProgress
             )

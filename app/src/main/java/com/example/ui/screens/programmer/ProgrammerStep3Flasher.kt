@@ -126,6 +126,13 @@ fun ProgrammerStep3Flasher(
     onEraseFlash: () -> Unit,
     onVerifyFlash: () -> Unit,
     onClearLogs: () -> Unit,
+    onToggleManualResetMode: (Boolean) -> Unit = {},
+    onConfirmManualReset: () -> Unit = {},
+    onCancelManualReset: () -> Unit = {},
+    onAutoDetect78k0Now: () -> Unit = {},
+    onRescue78k0Session: (com.example.util.Nec78k0RecoveryManager.Nec78k0RecoverySession) -> Unit = {},
+    onResumeFromWatchdog: () -> Unit = {},
+    onDismissWatchdog: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val mcu = state.selectedProcessor ?: return
@@ -165,6 +172,30 @@ fun ProgrammerStep3Flasher(
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
+        if (state.pendingRescueSessions.isNotEmpty()) {
+            Nec78k0RescueBannerCard(
+                sessions = state.pendingRescueSessions,
+                isBusy = state.isBusy,
+                onRescueClick = onRescue78k0Session
+            )
+        }
+
+        if (!state.watchdogAlertMessage.isNullOrBlank()) {
+            Nec78k0WatchdogAlertCard(
+                alertMessage = state.watchdogAlertMessage,
+                isBusy = state.isBusy,
+                onResumeClick = onResumeFromWatchdog,
+                onDismiss = onDismissWatchdog
+            )
+        }
+
+        if (state.awaitingManualResetPrompt) {
+            Nec78k0ManualResetPromptCard(
+                onConfirmResetDone = onConfirmManualReset,
+                onCancel = onCancelManualReset
+            )
+        }
+
         // 1. Target MCU & USB Connection Card
         Card(
             shape = RoundedCornerShape(18.dp),
@@ -371,6 +402,19 @@ fun ProgrammerStep3Flasher(
                     onClockChange = onClockChange,
                     onEraseModeChange = onEraseModeChange
                 )
+            }
+            ProtocolFamilyType.SEVEN_EIGHT_K -> {
+                if (mcu.is78k0Flmd0Mode()) {
+                    Nec78k0SettingsCard(
+                        manualResetMode = state.manualResetMode,
+                        isBusy = state.isBusy || state.isAutoDetecting,
+                        onToggleManualReset = onToggleManualResetMode,
+                        onAutoDetectNow = onAutoDetect78k0Now
+                    )
+                    state.nec78k0DetectedInfo?.let { info ->
+                        Nec78k0AutoDetectInfoCard(info = info)
+                    }
+                }
             }
             else -> Unit
         }

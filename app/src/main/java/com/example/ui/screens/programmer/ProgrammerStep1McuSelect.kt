@@ -82,6 +82,10 @@ fun ProgrammerStep1McuSelect(
     onAutoDetectChipId: () -> Unit,
     onResetUniversalAutoDetect: () -> Unit = {},
     onNextStep: () -> Unit,
+    onToggleManualResetMode: (Boolean) -> Unit = {},
+    onConfirmManualReset: () -> Unit = {},
+    onCancelManualReset: () -> Unit = {},
+    onRescue78k0Session: (com.example.util.Nec78k0RecoveryManager.Nec78k0RecoverySession) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val scrollState = rememberScrollState()
@@ -124,6 +128,15 @@ fun ProgrammerStep1McuSelect(
                     )
                 }
             }
+        }
+
+        // One-Tap MCU Rescue Banner if an interrupted 78K0 extraction session exists
+        if (state.pendingRescueSessions.isNotEmpty()) {
+            Nec78k0RescueBannerCard(
+                sessions = state.pendingRescueSessions,
+                isBusy = state.isBusy || state.isAutoDetecting,
+                onRescueClick = onRescue78k0Session
+            )
         }
 
         // Smart Instant Search Card
@@ -376,6 +389,53 @@ fun ProgrammerStep1McuSelect(
                                 )
                             }
                         }
+                    }
+
+                    // Manual Reset Mode toggle for 78K0 (adapters without DTR/RTS)
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 48.dp)
+                                .padding(horizontal = 12.dp, vertical = 4.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "وضع الريسيت اليدوي (Manual Reset لـ 78K0)",
+                                    fontSize = 11.5.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Text(
+                                    text = if (state.manualResetMode) "مفعّل: يعمل مع المبرمجات التي لا تملك أسلاك DTR/RTS" else "معطّل: تحكم تلقائي في FLMD0 و RESET",
+                                    fontSize = 10.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Switch(
+                                checked = state.manualResetMode,
+                                onCheckedChange = onToggleManualResetMode,
+                                enabled = !state.isAutoDetecting && !state.isLoadingDb,
+                                modifier = Modifier.testTag("step1_manual_reset_switch")
+                            )
+                        }
+                    }
+
+                    if (state.awaitingManualResetPrompt) {
+                        Nec78k0ManualResetPromptCard(
+                            onConfirmResetDone = onConfirmManualReset,
+                            onCancel = onCancelManualReset
+                        )
+                    }
+
+                    state.nec78k0DetectedInfo?.let { info ->
+                        Nec78k0AutoDetectInfoCard(info = info)
                     }
                 }
 

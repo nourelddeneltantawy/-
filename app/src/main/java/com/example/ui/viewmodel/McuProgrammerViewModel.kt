@@ -16,10 +16,13 @@ import com.example.data.repository.McuDatabaseRepository
 import com.example.util.ChipAutoDetectResult
 import com.example.util.FirmwareParser
 import com.example.util.FlashOperationResult
+import com.example.util.Nec78k0ProtocolEngine
+import com.example.util.Nec78k0RecoveryManager
 import com.example.util.R8cProtocolEngine
 import com.example.util.UsbConnectResult
 import com.example.util.UsbOtgProgrammerService
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -85,7 +88,15 @@ data class McuProgrammerUiState(
     val loadedNonEmptyCount: Int = 0,
     val firstNonEmptyRowIndex: Int = 0,
     val hexJumpSequence: Int = 0,
-    val logs: List<ProgrammerLogEntry> = emptyList()
+    val logs: List<ProgrammerLogEntry> = emptyList(),
+
+    // NEC / Renesas 78K0 Engine State
+    val nec78k0DetectedInfo: Nec78k0ProtocolEngine.Nec78k0DetectedInfo? = null,
+    val manualResetMode: Boolean = false,
+    val awaitingManualResetPrompt: Boolean = false,
+    val pendingRescueSessions: List<Nec78k0RecoveryManager.Nec78k0RecoverySession> = emptyList(),
+    val watchdogAlertMessage: String? = null,
+    val watchdogPausedBlock: Int? = null
 )
 
 class McuProgrammerViewModel(application: Application) : AndroidViewModel(application) {
@@ -93,6 +104,7 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
     private var allProcessors: List<McuProcessor> = emptyList()
     private val timeFormatLock = Any()
     private val timeFormat = SimpleDateFormat("HH:mm:ss", Locale.US)
+    private var manualResetDeferred: CompletableDeferred<Boolean>? = null
 
     private val _uiState = MutableStateFlow(McuProgrammerUiState())
     val uiState: StateFlow<McuProgrammerUiState> = _uiState.asStateFlow()
@@ -100,9 +112,13 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
     init {
         loadDatabase()
         refreshUsbDevices()
+        refresh78k0RescueSessions()
         viewModelScope.launch {
             UsbOtgProgrammerService.isConnectedFlow.collect { connected ->
                 _uiState.update { it.copy(isConnected = connected) }
+                if (connected) {
+                    refresh78k0RescueSessions()
+                }
             }
         }
         viewModelScope.launch {
@@ -392,6 +408,51 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
         )
     }
 
+    fun setManualResetMode(enabled: Boolean) {
+        _uiState.update { it.copy(manualResetMode = enabled) }
+        addLog(
+            if (enabled) "تم تفعيل وضع الريسيت اليدوي لـ 78K0 (لمبرمجات بدون أسلاك DTR/RTS)."
+            else "تم تفعيل الريسيت التلقائي لـ 78K0 عبر DTR (FLMD0) و RTS (RESET).",
+            LogLevel.INFO
+        )
+    }
+
+    fun confirmManualResetDone() {
+        _uiState.update { it.copy(awaitingManualResetPrompt = false) }
+        manualResetDeferred?.complete(true)
+        manualResetDeferred = null
+    }
+
+    fun cancelManualResetPrompt() {
+        _uiState.update { it.copy(awaitingManualResetPrompt = false) }
+        manualResetDeferred?.complete(false)
+        manualResetDeferred = null
+    }
+
+    fun dismissWatchdogAlert() {
+        _uiState.update { it.copy(watchdogAlertMessage = null, watchdogPausedBlock = null) }
+    }
+
+    fun refresh78k0RescueSessions() {
+        val sessions = Nec78k0RecoveryManager.findActiveRescueSessions(appContext)
+        _uiState.update { it.copy(pendingRescueSessions = sessions) }
+    }
+
+    private suspend fun waitForManualResetConfirmation(): Boolean {
+        val deferred = CompletableDeferred<Boolean>()
+        manualResetDeferred?.complete(false)
+        manualResetDeferred = deferred
+        _uiState.update { it.copy(awaitingManualResetPrompt = true) }
+        return try {
+            deferred.await()
+        } finally {
+            _uiState.update { it.copy(awaitingManualResetPrompt = false) }
+            if (manualResetDeferred === deferred) {
+                manualResetDeferred = null
+            }
+        }
+    }
+
     fun autoDetectChipId() {
         val current = _uiState.value.selectedProcessor
         val isR8c = current?.protocolType == ProtocolFamilyType.R8C_M16C ||
@@ -413,7 +474,7 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
             _uiState.update {
                 it.copy(
                     isAutoDetecting = true,
-                    autoDetectStatus = "جاري فحص $familyHint عبر USB OTG مع تتابع RTS/TX Break وتصفية صدى D1...",
+                    autoDetectStatus = "جاري فحص $familyHint عبر USB OTG مع تتابع المزامنة وتصفية الصدى...",
                     autoDetectIsSuccess = false
                 )
             }
@@ -428,7 +489,10 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                     targetMainFamily = familyHint,
                     preferredPartNumber = _uiState.value.selectedProcessor?.partNumber,
                     idCodeBytes = idBytes,
-                    catalog = allProcessors
+                    catalog = allProcessors,
+                    manualResetMode = _uiState.value.manualResetMode,
+                    clockFrequency = _uiState.value.clockFrequency,
+                    awaitManualReset = ::waitForManualResetConfirmation
                 ) { msg ->
                     addLog(msg, LogLevel.INFO)
                 }) {
@@ -441,9 +505,11 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                                 isAutoDetecting = false,
                                 isConnected = UsbOtgProgrammerService.isConnected(),
                                 autoDetectStatus = res.diagnosticMessage,
-                                autoDetectIsSuccess = true
+                                autoDetectIsSuccess = true,
+                                nec78k0DetectedInfo = res.nec78k0Info ?: it.nec78k0DetectedInfo
                             )
                         }
+                        refresh78k0RescueSessions()
                         addLog(res.diagnosticMessage, LogLevel.SUCCESS)
                     }
                     is ChipAutoDetectResult.Failure -> {
@@ -799,7 +865,29 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
         }
     }
 
-    fun readChipFlash() {
+    fun readChipFlash() = execute78k0OrStandardRead(resumeSession = null)
+
+    fun rescueOrResume78k0Flash(session: Nec78k0RecoveryManager.Nec78k0RecoverySession? = null) {
+        val target = session
+            ?: _uiState.value.selectedProcessor?.let { Nec78k0RecoveryManager.findSessionForChip(appContext, it.partNumber) }
+            ?: _uiState.value.pendingRescueSessions.firstOrNull()
+        if (target == null) {
+            addLog("لا توجد جلسة إنقاذ 78K0 غير مكتملة حالياً.", LogLevel.INFO)
+            return
+        }
+        val matchedProc = allProcessors.firstOrNull {
+            val normProc = it.partNumber.uppercase().replace("UPD", "D")
+            val normChip = target.chipName.uppercase().replace("UPD", "D").trimEnd('A', 'B', 'C', 'D')
+            normProc.startsWith(normChip.take(7))
+        }
+        if (matchedProc != null) {
+            applySelectedMcuHierarchy(matchedProc, clearSearch = true, markUserSelected = true)
+        }
+        _uiState.update { it.copy(currentStep = 3, watchdogAlertMessage = null) }
+        execute78k0OrStandardRead(resumeSession = target)
+    }
+
+    private fun execute78k0OrStandardRead(resumeSession: Nec78k0RecoveryManager.Nec78k0RecoverySession?) {
         val mcu = _uiState.value.selectedProcessor ?: return
         if (_uiState.value.isBusy) return
         val idBytes = parseIdCodeBytes() ?: run {
@@ -807,6 +895,13 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
             return
         }
         val dfMode = _uiState.value.dataFlashMode
+        val activeResume = if (resumeSession != null) {
+            resumeSession
+        } else if (mcu.is78k0Flmd0Mode() && _uiState.value.watchdogPausedBlock != null) {
+            Nec78k0RecoveryManager.findSessionForChip(appContext, mcu.partNumber)
+        } else {
+            null
+        }
 
         viewModelScope.launch {
             _uiState.update {
@@ -815,10 +910,15 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                     progress = 0.01f,
                     progressBytesDone = 0,
                     progressTotalBytes = mcu.flashSizeBytes,
-                    progressLabel = "بدء قراءة الفلاش..."
+                    progressLabel = if (activeResume != null) "استئناف إنقاذ 78K0..." else "بدء قراءة الفلاش...",
+                    watchdogAlertMessage = null
                 )
             }
-            addLog("بدء قراءة ذاكرة ${mcu.partNumber} (${mcu.flashKb}KB)...", LogLevel.INFO)
+            addLog(
+                if (activeResume != null) "بدء إنقاذ واستكمال سحب ${activeResume.chipName} من الكتلة ${activeResume.lastCompletedBlock + 1}..."
+                else "بدء قراءة ذاكرة ${mcu.partNumber} (${mcu.flashKb}KB)...",
+                LogLevel.INFO
+            )
 
             try {
                 when (val res = UsbOtgProgrammerService.executeReadFlash(
@@ -829,6 +929,14 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                     processor = mcu,
                     idCodeBytes = idBytes,
                     dataFlashMode = dfMode,
+                    manualResetMode = _uiState.value.manualResetMode,
+                    clockFrequency = _uiState.value.clockFrequency,
+                    catalog = allProcessors,
+                    resumeSession = activeResume,
+                    awaitManualReset = ::waitForManualResetConfirmation,
+                    on78k0DetectedInfo = { info ->
+                        _uiState.update { it.copy(nec78k0DetectedInfo = info) }
+                    },
                     onLog = { msg -> addLog(msg, LogLevel.INFO) },
                     onProgress = { done, total, msg ->
                         val frac = if (total > 0) (done.toFloat() / total.toFloat()).coerceIn(0f, 1f) else 0f
@@ -861,22 +969,43 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                                 loadedFormat = "Chip Read",
                                 loadedNonEmptyCount = data.count { b -> b != 0xFF.toByte() },
                                 firstNonEmptyRowIndex = firstDataRow,
-                                hexJumpSequence = it.hexJumpSequence + 1
+                                hexJumpSequence = it.hexJumpSequence + 1,
+                                watchdogAlertMessage = null,
+                                watchdogPausedBlock = null
                             )
                         }
+                        refresh78k0RescueSessions()
                         addLog(res.message, LogLevel.SUCCESS)
                     }
                     is FlashOperationResult.Failure -> {
-                        _uiState.update {
-                            it.copy(
-                                isBusy = false,
-                                progress = 0f,
-                                progressBytesDone = 0,
-                                progressTotalBytes = 0,
-                                progressLabel = ""
-                            )
+                        val rawReason = res.reason
+                        if (rawReason.startsWith(Nec78k0ProtocolEngine.WATCHDOG_PREFIX)) {
+                            val payload = rawReason.removePrefix(Nec78k0ProtocolEngine.WATCHDOG_PREFIX)
+                            val colonIdx = payload.indexOf(':')
+                            val pausedIdx = if (colonIdx > 0) payload.substring(0, colonIdx).toIntOrNull() ?: 0 else 0
+                            val cleanMsg = if (colonIdx >= 0) payload.substring(colonIdx + 1) else payload
+                            _uiState.update {
+                                it.copy(
+                                    isBusy = false,
+                                    watchdogAlertMessage = cleanMsg,
+                                    watchdogPausedBlock = pausedIdx
+                                )
+                            }
+                            refresh78k0RescueSessions()
+                            addLog("Watchdog Pause: $cleanMsg", LogLevel.WARNING)
+                        } else {
+                            _uiState.update {
+                                it.copy(
+                                    isBusy = false,
+                                    progress = 0f,
+                                    progressBytesDone = 0,
+                                    progressTotalBytes = 0,
+                                    progressLabel = ""
+                                )
+                            }
+                            refresh78k0RescueSessions()
+                            addLog(rawReason, LogLevel.ERROR)
                         }
-                        addLog(res.reason, LogLevel.ERROR)
                     }
                 }
             } catch (ce: CancellationException) {
