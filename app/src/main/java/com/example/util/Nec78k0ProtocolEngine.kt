@@ -15,8 +15,11 @@ import java.util.Locale
  */
 object Nec78k0ProtocolEngine {
     const val BLOCK_SIZE = 1024
-    const val PAGE_SIZE = 128
-    const val PAGES_PER_BLOCK = BLOCK_SIZE / PAGE_SIZE // 8 pages x 128 bytes
+    const val WORD_SIZE = 4
+    const val PAGE_SIZE = WORD_SIZE
+    const val WORDS_PER_BLOCK = BLOCK_SIZE / WORD_SIZE // 256 words x 4 bytes
+    const val PAGES_PER_BLOCK = WORDS_PER_BLOCK
+    private const val PROGRESS_WORD_INTERVAL = 16 // update progress every 16 words (64 bytes)
     private const val RX_LEN_ZERO_BYTES = 256
 
     const val SOH: Int = 0x01
@@ -44,7 +47,8 @@ object Nec78k0ProtocolEngine {
     const val WATCHDOG_PREFIX = "WATCHDOG_PAUSED:"
     const val RESET_TIMEOUT_MS = 1500
     const val HEADER_ACK_TIMEOUT_MS = 1500
-    const val PAGE_ACK_TIMEOUT_MS = 2000
+    const val WORD_ACK_TIMEOUT_MS = 1000
+    const val PAGE_ACK_TIMEOUT_MS = WORD_ACK_TIMEOUT_MS
     const val FRAME_PACKET_WRITE_TIMEOUT_MS = 1000
     const val MAX_TIMEOUT_RETRIES = 3
 
@@ -143,16 +147,16 @@ object Nec78k0ProtocolEngine {
         return out
     }
 
-    fun buildDataFrame(data128: ByteArray, isLast: Boolean): ByteArray {
-        require(data128.size == PAGE_SIZE) { "78K0 data frame must be exactly 128 bytes" }
-        val lenByte = PAGE_SIZE // 0x80 = 128 bytes
-        val cs = computeChecksum(lenByte, data128)
-        val out = ByteArray(2 + PAGE_SIZE + 2) // 132 bytes total
+    fun buildDataFrame(data4: ByteArray, @Suppress("UNUSED_PARAMETER") isLast: Boolean = true): ByteArray {
+        require(data4.size == WORD_SIZE) { "78K0 data frame must be exactly 4 bytes" }
+        val lenByte = WORD_SIZE // 0x04 = 4 bytes
+        val cs = computeChecksum(lenByte, data4)
+        val out = ByteArray(2 + WORD_SIZE + 2) // 8 bytes: [0x01, 0x04, b0, b1, b2, b3, CS, 0x03]
         out[0] = SOH.toByte()
         out[1] = lenByte.toByte()
-        System.arraycopy(data128, 0, out, 2, PAGE_SIZE)
-        out[2 + PAGE_SIZE] = cs.toByte()
-        out[2 + PAGE_SIZE + 1] = (if (isLast) ETX else ETB).toByte()
+        System.arraycopy(data4, 0, out, 2, WORD_SIZE)
+        out[2 + WORD_SIZE] = cs.toByte()
+        out[2 + WORD_SIZE + 1] = ETX.toByte()
         return out
     }
 
@@ -615,7 +619,7 @@ object Nec78k0ProtocolEngine {
                 delay(20)
             }
 
-            onLog("المرحلة 2: كتابة أصفار في Block 0 (Header 0x40 ثم 8 صفحات × 132B بـ LEN=0x80) لفتح السحب...")
+            onLog("المرحلة 2: كتابة أصفار في Block 0 (256 كلمة × 4 بايت: Header 0x40 ثم إطار 8B بـ LEN=0x04) لفتح السحب...")
             when (val zeroOutcome = programBlockFromBuffer(
                 transport = transport,
                 startAddr = 0x000000,
@@ -623,6 +627,20 @@ object Nec78k0ProtocolEngine {
                 blockData = ByteArray(BLOCK_SIZE) { 0x00 },
                 clockFreqMhzText = clockFreqMhzText,
                 eraseBlockBeforeRetry = true,
+                onWordProgress = { bytesInBlock ->
+                    onProgress(
+                        bytesInBlock.coerceAtMost(totalSize),
+                        totalSize,
+                        String.format(
+                            Locale.US,
+                            "تصفير Block 0: %d/%d بايت (%d/%d كلمة)",
+                            bytesInBlock,
+                            BLOCK_SIZE,
+                            bytesInBlock / WORD_SIZE,
+                            WORDS_PER_BLOCK
+                        )
+                    )
+                },
                 onLog = onLog
             )) {
                 is ProgramOutcome.Success -> Unit
@@ -710,9 +728,30 @@ object Nec78k0ProtocolEngine {
                             isUsbDetached = false
                         )
                     }
-                    // Non-blank block: verify 8x132B (128B/page, LEN=0x80) data frames using 0x13 Verify Command
+                    // Non-blank block: verify 256 words x 4B (8-byte frame, LEN=0x04) using 0x13 Verify Command
                     val candidateBlock = fullBuffer.copyOfRange(blockStart, blockStart + BLOCK_SIZE)
-                    val verifyResult = verifyBlockVia0x13(transport, blockStart, blockEnd, candidateBlock, clockFreqMhzText, onLog)
+                    val verifyResult = verifyBlockVia0x13(
+                        transport = transport,
+                        startAddr = blockStart,
+                        endAddr = blockEnd,
+                        blockBytes = candidateBlock,
+                        clockFreqMhzText = clockFreqMhzText,
+                        onWordProgress = { bytesInBlock ->
+                            onProgress(
+                                minOf(blockStart + bytesInBlock, totalSize),
+                                totalSize,
+                                String.format(
+                                    Locale.US,
+                                    "سحب ومطابقة Block %d/%d (%d/%d بايت)",
+                                    blockIdx,
+                                    blockCount - 1,
+                                    bytesInBlock,
+                                    BLOCK_SIZE
+                                )
+                            )
+                        },
+                        onLog = onLog
+                    )
                     when (verifyResult) {
                         is VerifyOutcome.Match -> {
                             System.arraycopy(candidateBlock, 0, fullBuffer, blockStart, BLOCK_SIZE)
@@ -858,6 +897,13 @@ object Nec78k0ProtocolEngine {
             blockData = report.block0Bytes,
             clockFreqMhzText = clockFreqMhzText,
             eraseBlockBeforeRetry = true,
+            onWordProgress = { bytesInBlock ->
+                onProgress(
+                    minOf((totalSize - BLOCK_SIZE) + bytesInBlock, totalSize),
+                    totalSize,
+                    String.format(Locale.US, "استرجاع Block 0: %d/%d بايت", bytesInBlock, BLOCK_SIZE)
+                )
+            },
             onLog = onLog
         )) {
             is ProgramOutcome.Success -> Unit
@@ -1045,46 +1091,35 @@ object Nec78k0ProtocolEngine {
     }
 
     /**
-     * Sends a 132-byte SOH data frame ([0x01, 0x80, ...128B, CS, END]) via 64B+64B+4B USB
-     * packets with 15ms spacing, enables RX Raw Live monitoring, and waits up to [timeoutMs]
-     * (2000ms) for the MCU ACK ([02 02 06 06 F2 03] or [02 01 06 F9 03]) after every page.
+     * Sends an 8-byte SOH data frame ([0x01, 0x04, b0, b1, b2, b3, CS_Data, 0x03]) and awaits
+     * the MCU 6-byte ([02 02 06 06 F2 03]) or 5-byte ([02 01 06 F9 03]) ACK with 1000ms timeout.
      */
-    private suspend fun sendDataPageFrameAndAwaitAck(
+    private suspend fun sendWordDataFrameAndAwaitAck(
         transport: Serial78k0Transport,
         dataFrame: ByteArray,
         timeoutMs: Int,
         label: String,
+        verboseLog: Boolean,
         onLog: (String) -> Unit
     ): FrameAckOutcome {
         if (!transport.isDeviceAttached()) {
             return FrameAckOutcome.UsbDetached("انقطع كابل USB OTG قبل إرسال $label")
         }
-        val csByte = dataFrame[dataFrame.size - 2].toInt() and 0xFF
-        val endByte = dataFrame[dataFrame.size - 1].toInt() and 0xFF
-        val endLabel = if (endByte == ETX) "ETX" else "ETB"
-        val headPreview = toHex(dataFrame.copyOfRange(0, minOf(6, dataFrame.size)))
-        onLog(
-            String.format(
-                Locale.US,
-                "TX 132B ($label • LEN=0x80 • 64+64+4/15ms • END=%02X %s): [%s ... CS=%02X END=%02X] • مهلة الرد %dms",
-                endByte,
-                endLabel,
-                headPreview,
-                csByte,
-                endByte,
-                timeoutMs
-            )
-        )
+        if (verboseLog) {
+            onLog("TX 8B ($label • LEN=0x04): ${toHex(dataFrame)} • مهلة الرد ${timeoutMs}ms")
+        }
 
         transport.flushInputBuffer()
-        transport.setRawRxMonitor(true)
+        if (verboseLog) {
+            transport.setRawRxMonitor(true)
+        }
         try {
-            val txErr = transport.writeFrameBytes(dataFrame, FRAME_PACKET_WRITE_TIMEOUT_MS, onLog)
+            val txErr = transport.writeRaw(dataFrame)
             if (txErr != null) {
                 return if (isPhysicalDisconnect(transport, txErr)) {
                     FrameAckOutcome.UsbDetached("انقطاع USB/IO أثناء إرسال $label: $txErr")
                 } else {
-                    FrameAckOutcome.Timeout("تعثر إرسال حزمة 132B ($label): $txErr")
+                    FrameAckOutcome.Timeout("تعثر إرسال حزمة 8B ($label): $txErr")
                 }
             }
 
@@ -1098,7 +1133,9 @@ object Nec78k0ProtocolEngine {
             }
 
             return if (ack.isAckSuccess) {
-                onLog("RX ($label ACK): ${toHex(ack.rawFrame)}")
+                if (verboseLog) {
+                    onLog("RX ($label ACK): ${toHex(ack.rawFrame)}")
+                }
                 FrameAckOutcome.AckSuccess(ack)
             } else {
                 val errCode = ack.effectiveErrorCode
@@ -1107,102 +1144,125 @@ object Nec78k0ProtocolEngine {
                 FrameAckOutcome.FrameError(errCode, desc, ack)
             }
         } finally {
-            transport.setRawRxMonitor(false)
+            if (verboseLog) {
+                transport.setRawRxMonitor(false)
+            }
         }
     }
 
     /**
-     * Two-Stage 0x13 Verify Handshake (8 x 132B Pages per 1024B Block, LEN=0x80):
-     * Stage A: Send 11-byte 0x13 Address Frame ONLY -> wait strictly for 5-byte ACK [02 01 06 F9 03] (1500ms).
-     * Stage B: Pages 1..7 (END=0x17 ETB) & Page 8 (END=0x03 ETX):
-     *          Send 132B via 64B + 64B + 4B (15ms delay) -> await ACK (2000ms) after EVERY page.
+     * NEC Core Tools 4-Byte Word Step 0x13 Verify Handshake (256 Words x 4 Bytes per 1024B Block):
+     * For offset = 0..1020 step 4:
+     *   1. Send 11-byte 0x13 Header for (wordStart..wordStart+3) -> await [02 01 06 F9 03].
+     *   2. Send 8-byte Data Frame [0x01, 0x04, b0, b1, b2, b3, CS_Data, 0x03] -> await ACK (1000ms).
      */
     internal suspend fun verifyBlockVia0x13(
         transport: Serial78k0Transport,
         startAddr: Int,
-        endAddr: Int,
+        @Suppress("UNUSED_PARAMETER") endAddr: Int,
         blockBytes: ByteArray,
         clockFreqMhzText: String = "8 MHz",
+        onWordProgress: ((bytesInBlock: Int) -> Unit)? = null,
         onLog: (String) -> Unit
     ): VerifyOutcome {
         require(blockBytes.size == BLOCK_SIZE) { "78K0 verify block must be 1024 bytes" }
-        val verifyCmd = buildAddressRangeFrame(CMD_VERIFY, startAddr, endAddr)
         var lastTimeoutReason = "انتهت مهلة Verify 0x13"
-        var lastTimeoutPage = 0
+        var lastTimeoutWord = 0
+        var resumeWordIdx = 0
 
         for (attempt in 0..MAX_TIMEOUT_RETRIES) {
             if (attempt > 0) {
                 if (!transport.isDeviceAttached()) {
-                    return VerifyOutcome.TransportLost("انقطع اتصال USB OTG أثناء Verify 0x13", lastTimeoutPage, isUsbDetached = true)
+                    return VerifyOutcome.TransportLost("انقطع اتصال USB OTG أثناء Verify 0x13", lastTimeoutWord, isUsbDetached = true)
                 }
-                onLog(String.format(Locale.US, "انتهت مهلة 0x13 عند 0x%06X (USB متصل) — إعادة المزامنة ثم المحاولة %d/%d...", startAddr, attempt, MAX_TIMEOUT_RETRIES))
+                onLog(String.format(Locale.US, "انتهت مهلة 0x13 عند الكلمة %d (0x%06X) — إعادة المزامنة ثم المحاولة %d/%d...", resumeWordIdx + 1, startAddr + (resumeWordIdx * WORD_SIZE), attempt, MAX_TIMEOUT_RETRIES))
                 val resync = resync78k0Bootloader(transport, clockFreqMhzText, onLog)
                 if (resync is Nec78k0TransceiveResult.DisconnectedOrTimeout) {
                     if (resync.isUsbDetached) {
-                        return VerifyOutcome.TransportLost(resync.reason, lastTimeoutPage, isUsbDetached = true)
+                        return VerifyOutcome.TransportLost(resync.reason, lastTimeoutWord, isUsbDetached = true)
                     }
                     lastTimeoutReason = resync.reason
                     continue
                 }
             }
 
-            onLog("TX (0x13 Header 11B): ${toHex(verifyCmd)}")
-            when (val cmdRes = transceiveSingleFrame(transport, verifyCmd, HEADER_ACK_TIMEOUT_MS, onLog)) {
-                is Nec78k0TransceiveResult.Success -> {
-                    onLog("RX (0x13 Header ACK): ${toHex(cmdRes.frame.rawFrame)}")
+            var wordTimedOut = false
+            for (wordIdx in resumeWordIdx until WORDS_PER_BLOCK) {
+                val offset = wordIdx * WORD_SIZE
+                val wordStart = startAddr + offset
+                val wordEnd = wordStart + WORD_SIZE - 1
+                val wordCmd = buildAddressRangeFrame(CMD_VERIFY, wordStart, wordEnd)
+                val isFirstGlobalWord = (wordStart == 0)
+                val verboseWord = isFirstGlobalWord || (attempt > 0 && wordIdx == resumeWordIdx)
+                val wordTag = String.format(Locale.US, "0x13 كلمة %d/%d @ 0x%06X..0x%06X", wordIdx + 1, WORDS_PER_BLOCK, wordStart, wordEnd)
+
+                if (verboseWord) {
+                    onLog("TX ($wordTag Header 11B): ${toHex(wordCmd)}")
                 }
-                is Nec78k0TransceiveResult.ProtocolError -> return VerifyOutcome.Mismatch(cmdRes.statusLabel, cmdRes.statusCode, 0)
-                is Nec78k0TransceiveResult.DisconnectedOrTimeout -> {
-                    if (cmdRes.isUsbDetached) {
-                        return VerifyOutcome.TransportLost(cmdRes.reason, 0, isUsbDetached = true)
+                when (val cmdRes = transceiveSingleFrame(transport, wordCmd, HEADER_ACK_TIMEOUT_MS, onLog)) {
+                    is Nec78k0TransceiveResult.Success -> {
+                        if (verboseWord) {
+                            onLog("RX ($wordTag Header ACK): ${toHex(cmdRes.frame.rawFrame)}")
+                        }
                     }
-                    lastTimeoutReason = cmdRes.reason
-                    lastTimeoutPage = 0
-                    continue
+                    is Nec78k0TransceiveResult.ProtocolError -> {
+                        onLog("RX Error ($wordTag Header): ${cmdRes.statusLabel}")
+                        return VerifyOutcome.Mismatch(cmdRes.statusLabel, cmdRes.statusCode, wordIdx + 1)
+                    }
+                    is Nec78k0TransceiveResult.DisconnectedOrTimeout -> {
+                        if (cmdRes.isUsbDetached) {
+                            return VerifyOutcome.TransportLost(cmdRes.reason, wordIdx + 1, isUsbDetached = true)
+                        }
+                        lastTimeoutReason = "$wordTag: ${cmdRes.reason}"
+                        lastTimeoutWord = wordIdx + 1
+                        resumeWordIdx = wordIdx
+                        wordTimedOut = true
+                        break
+                    }
                 }
-            }
 
-            delay(10)
-            transport.flushInputBuffer()
-
-            var pageTimedOut = false
-            for (page in 0 until PAGES_PER_BLOCK) {
-                val offset = page * PAGE_SIZE
-                val slice = blockBytes.copyOfRange(offset, offset + PAGE_SIZE)
-                val isLast = (page == PAGES_PER_BLOCK - 1)
-                val dataFrame = buildDataFrame(slice, isLast = isLast)
-                when (val ackRes = sendDataPageFrameAndAwaitAck(transport, dataFrame, PAGE_ACK_TIMEOUT_MS, "0x13 صفحة ${page + 1}/$PAGES_PER_BLOCK", onLog)) {
-                    is FrameAckOutcome.AckSuccess -> Unit
+                val slice = blockBytes.copyOfRange(offset, offset + WORD_SIZE)
+                val dataFrame = buildDataFrame(slice)
+                when (val ackRes = sendWordDataFrameAndAwaitAck(transport, dataFrame, WORD_ACK_TIMEOUT_MS, wordTag, verboseLog = verboseWord, onLog = onLog)) {
+                    is FrameAckOutcome.AckSuccess -> {
+                        if (isFirstGlobalWord) {
+                            onLog("تمت مطابقة أول كلمة (0x000000..0x000003) بنجاح ✓ — جاري إكمال $WORDS_PER_BLOCK كلمة...")
+                        }
+                        if ((wordIdx + 1) % PROGRESS_WORD_INTERVAL == 0 || wordIdx == WORDS_PER_BLOCK - 1) {
+                            onWordProgress?.invoke((wordIdx + 1) * WORD_SIZE)
+                        }
+                    }
                     is FrameAckOutcome.FrameError -> {
-                        return VerifyOutcome.Mismatch(ackRes.description, ackRes.errorCode, page + 1)
+                        return VerifyOutcome.Mismatch(ackRes.description, ackRes.errorCode, wordIdx + 1)
                     }
                     is FrameAckOutcome.UsbDetached -> {
-                        return VerifyOutcome.TransportLost(ackRes.reason, page + 1, isUsbDetached = true)
+                        return VerifyOutcome.TransportLost(ackRes.reason, wordIdx + 1, isUsbDetached = true)
                     }
                     is FrameAckOutcome.Timeout -> {
                         lastTimeoutReason = ackRes.reason
-                        lastTimeoutPage = page + 1
-                        pageTimedOut = true
+                        lastTimeoutWord = wordIdx + 1
+                        resumeWordIdx = wordIdx
+                        wordTimedOut = true
                         break
                     }
                 }
             }
-            if (!pageTimedOut) {
+            if (!wordTimedOut) {
                 return VerifyOutcome.Match
             }
         }
         return VerifyOutcome.TransportLost(
             "$lastTimeoutReason (بعد $MAX_TIMEOUT_RETRIES محاولات إعادة مزامنة)",
-            lastTimeoutPage,
+            lastTimeoutWord,
             isUsbDetached = false
         )
     }
 
     /**
-     * Two-Stage 0x40 Program Handshake (8 x 132B Pages per 1024B Block, LEN=0x80):
-     * Stage A: Send ONLY 11-byte 0x40 Address Frame -> wait strictly for 5-byte ACK [02 01 06 F9 03] (1500ms).
-     * Stage B: Pages 1..7 (END=0x17 ETB) & Page 8 (END=0x03 ETX):
-     *          Send 132B via 64B + 64B + 4B (15ms delay) -> await ACK [02 02 06 06 F2 03] / [02 01 06 F9 03] (2000ms) after EVERY page.
+     * NEC Core Tools 4-Byte Word Step 0x40 Program Handshake (256 Words x 4 Bytes per 1024B Block):
+     * For offset = 0..1020 step 4:
+     *   1. Send 11-byte 0x40 Header for (wordStart..wordStart+3) -> await [02 01 06 F9 03].
+     *   2. Send 8-byte Data Frame [0x01, 0x04, b0, b1, b2, b3, CS_Data, 0x03] -> await ACK (1000ms).
      */
     internal suspend fun programBlockFromBuffer(
         transport: Serial78k0Transport,
@@ -1211,18 +1271,19 @@ object Nec78k0ProtocolEngine {
         blockData: ByteArray,
         clockFreqMhzText: String = "8 MHz",
         eraseBlockBeforeRetry: Boolean = true,
+        onWordProgress: ((bytesInBlock: Int) -> Unit)? = null,
         onLog: (String) -> Unit
     ): ProgramOutcome {
         require(blockData.size == BLOCK_SIZE) { "78K0 program block must be 1024 bytes" }
-        val progCmd = buildAddressRangeFrame(CMD_PROGRAM, startAddr, endAddr)
         var lastTimeoutReason = "انتهت مهلة حزمة 0x40"
+        var resumeWordIdx = 0
 
         for (attempt in 0..MAX_TIMEOUT_RETRIES) {
             if (attempt > 0) {
                 if (!transport.isDeviceAttached()) {
                     return ProgramOutcome.TransportFailure("انقطع كابل USB OTG قبل إعادة محاولة 0x40", isUsbDetached = true)
                 }
-                onLog(String.format(Locale.US, "انتهت مهلة 0x40 عند 0x%06X (USB متصل) — إعادة المزامنة ثم المحاولة %d/%d...", startAddr, attempt, MAX_TIMEOUT_RETRIES))
+                onLog(String.format(Locale.US, "انتهت مهلة 0x40 عند الكلمة %d (0x%06X) — إعادة المزامنة ثم المحاولة %d/%d...", resumeWordIdx + 1, startAddr + (resumeWordIdx * WORD_SIZE), attempt, MAX_TIMEOUT_RETRIES))
                 val resync = resync78k0Bootloader(transport, clockFreqMhzText, onLog)
                 if (resync is Nec78k0TransceiveResult.DisconnectedOrTimeout) {
                     if (resync.isUsbDetached) {
@@ -1236,7 +1297,10 @@ object Nec78k0ProtocolEngine {
                 if (eraseBlockBeforeRetry) {
                     val eraseCmd = buildAddressRangeFrame(CMD_BLOCK_ERASE, startAddr, endAddr)
                     when (val eraseRes = transceiveSingleFrame(transport, eraseCmd, HEADER_ACK_TIMEOUT_MS, onLog)) {
-                        is Nec78k0TransceiveResult.Success -> delay(15)
+                        is Nec78k0TransceiveResult.Success -> {
+                            delay(15)
+                            resumeWordIdx = 0
+                        }
                         is Nec78k0TransceiveResult.ProtocolError -> {
                             if (eraseRes.statusCode == STS_PROTECT_ERROR) {
                                 return ProgramOutcome.ProtocolError("الشريحة محمية (ERR_PROTECT 0x10): أمر البرمجة مرفوض.", isProtected = true)
@@ -1253,55 +1317,72 @@ object Nec78k0ProtocolEngine {
                 }
             }
 
-            onLog("TX (0x40 Header 11B): ${toHex(progCmd)}")
-            when (val res = transceiveSingleFrame(transport, progCmd, HEADER_ACK_TIMEOUT_MS, onLog)) {
-                is Nec78k0TransceiveResult.Success -> {
-                    onLog("RX (0x40 Header ACK): ${toHex(res.frame.rawFrame)}")
-                }
-                is Nec78k0TransceiveResult.ProtocolError -> {
-                    if (res.statusCode == STS_PROTECT_ERROR) {
-                        return ProgramOutcome.ProtocolError("الشريحة محمية (ERR_PROTECT 0x10): أمر البرمجة 0x40 مرفوض.", isProtected = true)
-                    }
-                    return ProgramOutcome.ProtocolError("رفض المعالج أمر الكتابة 0x40: ${res.statusLabel}")
-                }
-                is Nec78k0TransceiveResult.DisconnectedOrTimeout -> {
-                    if (res.isUsbDetached) {
-                        return ProgramOutcome.TransportFailure(res.reason, isUsbDetached = true)
-                    }
-                    lastTimeoutReason = res.reason
-                    continue
-                }
-            }
+            var wordTimedOut = false
+            val startWord = if (eraseBlockBeforeRetry && attempt > 0) 0 else resumeWordIdx
+            for (wordIdx in startWord until WORDS_PER_BLOCK) {
+                val offset = wordIdx * WORD_SIZE
+                val wordStart = startAddr + offset
+                val wordEnd = wordStart + WORD_SIZE - 1
+                val wordCmd = buildAddressRangeFrame(CMD_PROGRAM, wordStart, wordEnd)
+                val isFirstGlobalWord = (wordStart == 0)
+                val verboseWord = isFirstGlobalWord || (attempt > 0 && wordIdx == startWord)
+                val wordTag = String.format(Locale.US, "0x40 كلمة %d/%d @ 0x%06X..0x%06X", wordIdx + 1, WORDS_PER_BLOCK, wordStart, wordEnd)
 
-            // Allow 78K0 bootloader to switch cleanly from command header mode to 132-byte data reception mode
-            delay(10)
-            transport.flushInputBuffer()
+                if (verboseWord) {
+                    onLog("TX ($wordTag Header 11B): ${toHex(wordCmd)}")
+                }
+                when (val res = transceiveSingleFrame(transport, wordCmd, HEADER_ACK_TIMEOUT_MS, onLog)) {
+                    is Nec78k0TransceiveResult.Success -> {
+                        if (verboseWord) {
+                            onLog("RX ($wordTag Header ACK): ${toHex(res.frame.rawFrame)}")
+                        }
+                    }
+                    is Nec78k0TransceiveResult.ProtocolError -> {
+                        if (res.statusCode == STS_PROTECT_ERROR) {
+                            return ProgramOutcome.ProtocolError("الشريحة محمية (ERR_PROTECT 0x10): أمر البرمجة 0x40 مرفوض.", isProtected = true)
+                        }
+                        return ProgramOutcome.ProtocolError("رفض المعالج أمر الكتابة ($wordTag): ${res.statusLabel}")
+                    }
+                    is Nec78k0TransceiveResult.DisconnectedOrTimeout -> {
+                        if (res.isUsbDetached) {
+                            return ProgramOutcome.TransportFailure(res.reason, isUsbDetached = true)
+                        }
+                        lastTimeoutReason = "$wordTag: ${res.reason}"
+                        resumeWordIdx = wordIdx
+                        wordTimedOut = true
+                        break
+                    }
+                }
 
-            var pageTimedOut = false
-            for (page in 0 until PAGES_PER_BLOCK) {
-                val offset = page * PAGE_SIZE
-                val slice = blockData.copyOfRange(offset, offset + PAGE_SIZE)
-                val isLast = (page == PAGES_PER_BLOCK - 1)
-                val dataFrame = buildDataFrame(slice, isLast = isLast)
-                when (val ackRes = sendDataPageFrameAndAwaitAck(transport, dataFrame, PAGE_ACK_TIMEOUT_MS, "0x40 صفحة ${page + 1}/$PAGES_PER_BLOCK", onLog)) {
-                    is FrameAckOutcome.AckSuccess -> Unit
+                val slice = blockData.copyOfRange(offset, offset + WORD_SIZE)
+                val dataFrame = buildDataFrame(slice)
+                when (val ackRes = sendWordDataFrameAndAwaitAck(transport, dataFrame, WORD_ACK_TIMEOUT_MS, wordTag, verboseLog = verboseWord, onLog = onLog)) {
+                    is FrameAckOutcome.AckSuccess -> {
+                        if (isFirstGlobalWord) {
+                            onLog("تمت برمجة أول كلمة (0x000000..0x000003) بنجاح ✓ — جاري إكمال $WORDS_PER_BLOCK كلمة...")
+                        }
+                        if ((wordIdx + 1) % PROGRESS_WORD_INTERVAL == 0 || wordIdx == WORDS_PER_BLOCK - 1) {
+                            onWordProgress?.invoke((wordIdx + 1) * WORD_SIZE)
+                        }
+                    }
                     is FrameAckOutcome.UsbDetached -> {
                         return ProgramOutcome.TransportFailure(ackRes.reason, isUsbDetached = true)
                     }
                     is FrameAckOutcome.Timeout -> {
                         lastTimeoutReason = ackRes.reason
-                        pageTimedOut = true
+                        resumeWordIdx = wordIdx
+                        wordTimedOut = true
                         break
                     }
                     is FrameAckOutcome.FrameError -> {
                         if (ackRes.errorCode == STS_PROTECT_ERROR) {
-                            return ProgramOutcome.ProtocolError("الشريحة محمية (ERR_PROTECT 0x10): تم إيقاف الكتابة عند البلوك.", isProtected = true)
+                            return ProgramOutcome.ProtocolError("الشريحة محمية (ERR_PROTECT 0x10): تم إيقاف الكتابة عند $wordTag.", isProtected = true)
                         }
-                        return ProgramOutcome.ProtocolError("فشل حرق البلوك (0x40 صفحة ${page + 1}/$PAGES_PER_BLOCK): ${ackRes.description}")
+                        return ProgramOutcome.ProtocolError("فشل حرق ($wordTag): ${ackRes.description}")
                     }
                 }
             }
-            if (!pageTimedOut) {
+            if (!wordTimedOut) {
                 return ProgramOutcome.Success
             }
         }
