@@ -15,7 +15,9 @@ import java.util.Locale
  */
 object Nec78k0ProtocolEngine {
     const val BLOCK_SIZE = 1024
-    const val PAGE_SIZE = 256
+    const val PAGE_SIZE = 128
+    const val PAGES_PER_BLOCK = BLOCK_SIZE / PAGE_SIZE // 8 pages x 128 bytes
+    private const val RX_LEN_ZERO_BYTES = 256
 
     const val SOH: Int = 0x01
     const val STX: Int = 0x02
@@ -43,7 +45,7 @@ object Nec78k0ProtocolEngine {
     const val WATCHDOG_PREFIX = "WATCHDOG_PAUSED:"
     const val RESET_TIMEOUT_MS = 1500
     const val HEADER_ACK_TIMEOUT_MS = 1500
-    const val PAGE_ACK_TIMEOUT_MS = 3000
+    const val PAGE_ACK_TIMEOUT_MS = 2000
     const val FRAME_PACKET_WRITE_TIMEOUT_MS = 1000
     const val MAX_TIMEOUT_RETRIES = 3
 
@@ -142,14 +144,14 @@ object Nec78k0ProtocolEngine {
         return out
     }
 
-    fun buildDataFrame(data256: ByteArray, isLast: Boolean): ByteArray {
-        require(data256.size == PAGE_SIZE) { "78K0 data frame must be exactly 256 bytes" }
-        val lenByte = 0x00 // 256 bytes
-        val cs = computeChecksum(lenByte, data256)
-        val out = ByteArray(2 + PAGE_SIZE + 2)
+    fun buildDataFrame(data128: ByteArray, isLast: Boolean): ByteArray {
+        require(data128.size == PAGE_SIZE) { "78K0 data frame must be exactly 128 bytes" }
+        val lenByte = PAGE_SIZE // 0x80 = 128 bytes
+        val cs = computeChecksum(lenByte, data128)
+        val out = ByteArray(2 + PAGE_SIZE + 2) // 132 bytes total
         out[0] = SOH.toByte()
         out[1] = lenByte.toByte()
-        System.arraycopy(data256, 0, out, 2, PAGE_SIZE)
+        System.arraycopy(data128, 0, out, 2, PAGE_SIZE)
         out[2 + PAGE_SIZE] = cs.toByte()
         out[2 + PAGE_SIZE + 1] = (if (isLast) ETX else ETB).toByte()
         return out
@@ -624,7 +626,7 @@ object Nec78k0ProtocolEngine {
                 delay(20)
             }
 
-            onLog("المرحلة 2: كتابة أصفار في Block 0 (Header 0x40 ثم 4×260B دفعة واحدة عبر FIFO) لفتح السحب...")
+            onLog("المرحلة 2: كتابة أصفار في Block 0 (Header 0x40 ثم 8 صفحات × 132B بـ LEN=0x80) لفتح السحب...")
             when (val zeroOutcome = programBlockFromBuffer(
                 transport = transport,
                 startAddr = 0x000000,
@@ -719,7 +721,7 @@ object Nec78k0ProtocolEngine {
                             isUsbDetached = false
                         )
                     }
-                    // Non-blank block: verify 4x260B data frames using 0x13 Verify Command (single-bulk 260B TX + up to 3 re-sync retries on timeout)
+                    // Non-blank block: verify 8x132B (128B/page, LEN=0x80) data frames using 0x13 Verify Command
                     val candidateBlock = fullBuffer.copyOfRange(blockStart, blockStart + BLOCK_SIZE)
                     val verifyResult = verifyBlockVia0x13(transport, blockStart, blockEnd, candidateBlock, clockFreqMhzText, onLog)
                     when (verifyResult) {
@@ -1099,43 +1101,11 @@ object Nec78k0ProtocolEngine {
     }
 
     /**
-     * Sends an intermediate 260-byte data frame (pages 1..3 ending in 0x17 ETB) via Paced 64B/65ms
-     * USB loop, waits 20ms only, and returns immediately WITHOUT waiting for an ACK frame because
-     * 0x17 (ETB) instructs the 78K0 bootloader to expect the remaining pages of the 1024-byte block.
+     * Sends a 132-byte SOH data frame ([0x01, 0x80, ...128B, CS, END]) via 64B+64B+4B USB
+     * packets with 15ms spacing, enables RX Raw Live monitoring, and waits up to [timeoutMs]
+     * (2000ms) for the MCU ACK ([02 02 06 06 F2 03] or [02 01 06 F9 03]) after every page.
      */
-    private suspend fun sendIntermediateDataFrame(
-        transport: Serial78k0Transport,
-        dataFrame: ByteArray,
-        label: String,
-        onLog: (String) -> Unit
-    ): FrameAckOutcome? {
-        if (!transport.isDeviceAttached()) {
-            return FrameAckOutcome.UsbDetached("انقطع كابل USB OTG قبل إرسال $label")
-        }
-        val csByte = dataFrame[dataFrame.size - 2].toInt() and 0xFF
-        val endByte = dataFrame[dataFrame.size - 1].toInt() and 0xFF
-        val headPreview = toHex(dataFrame.copyOfRange(0, minOf(6, dataFrame.size)))
-        onLog(String.format(Locale.US, "TX 260B ($label • Paced 64B/65ms • END=%02X ETB): [%s ... CS=%02X END=%02X] -> انتظار 20ms", endByte, headPreview, csByte, endByte))
-
-        val txErr = transport.writeFrameBytes(dataFrame, FRAME_PACKET_WRITE_TIMEOUT_MS, onLog)
-        if (txErr != null) {
-            return if (isPhysicalDisconnect(transport, txErr)) {
-                FrameAckOutcome.UsbDetached("انقطاع USB/IO أثناء إرسال $label: $txErr")
-            } else {
-                FrameAckOutcome.Timeout("تعثر إرسال حزمة 260B ($label): $txErr")
-            }
-        }
-        transport.discardEcho(dataFrame.size, 9600)
-        delay(20L)
-        return null
-    }
-
-    /**
-     * Sends the 4th and final 260-byte SOH data frame ([0x01, 0x00, ...256B, CS, 0x03 ETX]) via
-     * Paced 64B/65ms USB loop, waits 50ms after the loop completes, then reads the final block
-     * STX..ETX response ([02 02 06 06 F2 03] or [02 01 06 F9 03]) with timeout = 3000ms.
-     */
-    private suspend fun sendFinalBlockFrameAndAwaitAck(
+    private suspend fun sendDataPageFrameAndAwaitAck(
         transport: Serial78k0Transport,
         dataFrame: ByteArray,
         timeoutMs: Int,
@@ -1147,9 +1117,22 @@ object Nec78k0ProtocolEngine {
         }
         val csByte = dataFrame[dataFrame.size - 2].toInt() and 0xFF
         val endByte = dataFrame[dataFrame.size - 1].toInt() and 0xFF
+        val endLabel = if (endByte == ETX) "ETX" else "ETB"
         val headPreview = toHex(dataFrame.copyOfRange(0, minOf(6, dataFrame.size)))
-        onLog(String.format(Locale.US, "TX 260B ($label • Paced 64B/65ms • END=%02X ETX): [%s ... CS=%02X END=%02X] • انتظار الرد النهائي %dms", endByte, headPreview, csByte, endByte, timeoutMs))
+        onLog(
+            String.format(
+                Locale.US,
+                "TX 132B ($label • LEN=0x80 • 64+64+4/15ms • END=%02X %s): [%s ... CS=%02X END=%02X] • مهلة الرد %dms",
+                endByte,
+                endLabel,
+                headPreview,
+                csByte,
+                endByte,
+                timeoutMs
+            )
+        )
 
+        transport.flushInputBuffer()
         transport.setRawRxMonitor(true)
         try {
             val txErr = transport.writeFrameBytes(dataFrame, FRAME_PACKET_WRITE_TIMEOUT_MS, onLog)
@@ -1157,11 +1140,10 @@ object Nec78k0ProtocolEngine {
                 return if (isPhysicalDisconnect(transport, txErr)) {
                     FrameAckOutcome.UsbDetached("انقطاع USB/IO أثناء إرسال $label: $txErr")
                 } else {
-                    FrameAckOutcome.Timeout("تعثر إرسال حزمة 260B ($label): $txErr")
+                    FrameAckOutcome.Timeout("تعثر إرسال حزمة 132B ($label): $txErr")
                 }
             }
 
-            delay(50L)
             transport.discardEcho(dataFrame.size, 9600)
             val ack = readOneRxFrame(transport, timeoutMs) { stray ->
                 onLog("RX Raw Live ($label): $stray")
@@ -1172,10 +1154,13 @@ object Nec78k0ProtocolEngine {
             }
 
             return if (ack.isAckSuccess) {
+                onLog("RX ($label ACK): ${toHex(ack.rawFrame)}")
                 FrameAckOutcome.AckSuccess(ack)
             } else {
                 val errCode = ack.effectiveErrorCode
-                FrameAckOutcome.FrameError(errCode, statusDescription(errCode), ack)
+                val desc = statusDescription(errCode)
+                onLog("RX Error ($label): $desc [${toHex(ack.rawFrame)}]")
+                FrameAckOutcome.FrameError(errCode, desc, ack)
             }
         } finally {
             transport.setRawRxMonitor(false)
@@ -1183,10 +1168,10 @@ object Nec78k0ProtocolEngine {
     }
 
     /**
-     * Two-Stage 0x13 Verify Handshake (4 x 260B Pages per 1024B Block):
+     * Two-Stage 0x13 Verify Handshake (8 x 132B Pages per 1024B Block, LEN=0x80):
      * Stage A: Send 11-byte 0x13 Address Frame ONLY -> wait strictly for 5-byte ACK [02 01 06 F9 03] (1500ms).
-     * Stage B: Pages 1..3 (END=0x17 ETB): Paced 64B/65ms TX -> 20ms pause -> immediately send next page (NO ACK wait).
-     *          Page 4 (END=0x03 ETX): Paced 64B/65ms TX -> 50ms pause -> wait for final block ACK (3000ms).
+     * Stage B: Pages 1..7 (END=0x17 ETB) & Page 8 (END=0x03 ETX):
+     *          Send 132B via 64B + 64B + 4B (15ms delay) -> await ACK (2000ms) after EVERY page.
      */
     internal suspend fun verifyBlockVia0x13(
         transport: Serial78k0Transport,
@@ -1217,8 +1202,11 @@ object Nec78k0ProtocolEngine {
                 }
             }
 
+            onLog("TX (0x13 Header 11B): ${toHex(verifyCmd)}")
             when (val cmdRes = transceiveSingleFrame(transport, verifyCmd, HEADER_ACK_TIMEOUT_MS, onLog)) {
-                is Nec78k0TransceiveResult.Success -> Unit
+                is Nec78k0TransceiveResult.Success -> {
+                    onLog("RX (0x13 Header ACK): ${toHex(cmdRes.frame.rawFrame)}")
+                }
                 is Nec78k0TransceiveResult.ProtocolError -> return VerifyOutcome.Mismatch(cmdRes.statusLabel, cmdRes.statusCode, 0)
                 is Nec78k0TransceiveResult.DisconnectedOrTimeout -> {
                     if (cmdRes.isUsbDetached) {
@@ -1234,35 +1222,24 @@ object Nec78k0ProtocolEngine {
             transport.flushInputBuffer()
 
             var pageTimedOut = false
-            for (page in 0 until 4) {
+            for (page in 0 until PAGES_PER_BLOCK) {
                 val offset = page * PAGE_SIZE
                 val slice = blockBytes.copyOfRange(offset, offset + PAGE_SIZE)
-                val isLast = (page == 3)
+                val isLast = (page == PAGES_PER_BLOCK - 1)
                 val dataFrame = buildDataFrame(slice, isLast = isLast)
-                if (!isLast) {
-                    val failOutcome = sendIntermediateDataFrame(transport, dataFrame, "0x13 صفحة ${page + 1}/4", onLog)
-                    if (failOutcome is FrameAckOutcome.UsbDetached) {
-                        return VerifyOutcome.TransportLost(failOutcome.reason, page + 1, isUsbDetached = true)
-                    } else if (failOutcome is FrameAckOutcome.Timeout) {
-                        lastTimeoutReason = failOutcome.reason
+                when (val ackRes = sendDataPageFrameAndAwaitAck(transport, dataFrame, PAGE_ACK_TIMEOUT_MS, "0x13 صفحة ${page + 1}/$PAGES_PER_BLOCK", onLog)) {
+                    is FrameAckOutcome.AckSuccess -> Unit
+                    is FrameAckOutcome.FrameError -> {
+                        return VerifyOutcome.Mismatch(ackRes.description, ackRes.errorCode, page + 1)
+                    }
+                    is FrameAckOutcome.UsbDetached -> {
+                        return VerifyOutcome.TransportLost(ackRes.reason, page + 1, isUsbDetached = true)
+                    }
+                    is FrameAckOutcome.Timeout -> {
+                        lastTimeoutReason = ackRes.reason
                         lastTimeoutPage = page + 1
                         pageTimedOut = true
                         break
-                    }
-                } else {
-                    when (val ackRes = sendFinalBlockFrameAndAwaitAck(transport, dataFrame, PAGE_ACK_TIMEOUT_MS, "0x13 صفحة 4/4", onLog)) {
-                        is FrameAckOutcome.AckSuccess -> Unit
-                        is FrameAckOutcome.FrameError -> {
-                            return VerifyOutcome.Mismatch(ackRes.description, ackRes.errorCode, 4)
-                        }
-                        is FrameAckOutcome.UsbDetached -> {
-                            return VerifyOutcome.TransportLost(ackRes.reason, 4, isUsbDetached = true)
-                        }
-                        is FrameAckOutcome.Timeout -> {
-                            lastTimeoutReason = ackRes.reason
-                            lastTimeoutPage = 4
-                            pageTimedOut = true
-                        }
                     }
                 }
             }
@@ -1278,10 +1255,10 @@ object Nec78k0ProtocolEngine {
     }
 
     /**
-     * Two-Stage 0x40 Program Handshake (4 x 260B Pages per 1024B Block):
+     * Two-Stage 0x40 Program Handshake (8 x 132B Pages per 1024B Block, LEN=0x80):
      * Stage A: Send ONLY 11-byte 0x40 Address Frame -> wait strictly for 5-byte ACK [02 01 06 F9 03] (1500ms).
-     * Stage B: Pages 1..3 (END=0x17 ETB): Paced 64B/65ms TX -> 20ms pause -> immediately send next page (NO ACK wait).
-     *          Page 4 (END=0x03 ETX): Paced 64B/65ms TX -> 50ms pause -> wait for final block ACK [02 02 06 06 F2 03] / [02 01 06 F9 03] (3000ms).
+     * Stage B: Pages 1..7 (END=0x17 ETB) & Page 8 (END=0x03 ETX):
+     *          Send 132B via 64B + 64B + 4B (15ms delay) -> await ACK [02 02 06 06 F2 03] / [02 01 06 F9 03] (2000ms) after EVERY page.
      */
     internal suspend fun programBlockFromBuffer(
         transport: Serial78k0Transport,
@@ -1352,43 +1329,31 @@ object Nec78k0ProtocolEngine {
                 }
             }
 
-            // Allow 78K0 bootloader to switch cleanly from command header mode to 260-byte data reception mode
+            // Allow 78K0 bootloader to switch cleanly from command header mode to 132-byte data reception mode
             delay(10)
             transport.flushInputBuffer()
 
             var pageTimedOut = false
-            for (page in 0 until 4) {
+            for (page in 0 until PAGES_PER_BLOCK) {
                 val offset = page * PAGE_SIZE
                 val slice = blockData.copyOfRange(offset, offset + PAGE_SIZE)
-                val isLast = (page == 3)
+                val isLast = (page == PAGES_PER_BLOCK - 1)
                 val dataFrame = buildDataFrame(slice, isLast = isLast)
-                if (!isLast) {
-                    val failOutcome = sendIntermediateDataFrame(transport, dataFrame, "0x40 صفحة ${page + 1}/4", onLog)
-                    if (failOutcome is FrameAckOutcome.UsbDetached) {
-                        return ProgramOutcome.TransportFailure(failOutcome.reason, isUsbDetached = true)
-                    } else if (failOutcome is FrameAckOutcome.Timeout) {
-                        lastTimeoutReason = failOutcome.reason
+                when (val ackRes = sendDataPageFrameAndAwaitAck(transport, dataFrame, PAGE_ACK_TIMEOUT_MS, "0x40 صفحة ${page + 1}/$PAGES_PER_BLOCK", onLog)) {
+                    is FrameAckOutcome.AckSuccess -> Unit
+                    is FrameAckOutcome.UsbDetached -> {
+                        return ProgramOutcome.TransportFailure(ackRes.reason, isUsbDetached = true)
+                    }
+                    is FrameAckOutcome.Timeout -> {
+                        lastTimeoutReason = ackRes.reason
                         pageTimedOut = true
                         break
                     }
-                } else {
-                    when (val ackRes = sendFinalBlockFrameAndAwaitAck(transport, dataFrame, PAGE_ACK_TIMEOUT_MS, "0x40 صفحة 4/4", onLog)) {
-                        is FrameAckOutcome.AckSuccess -> {
-                            onLog("RX (0x40 Block ACK النهائي): ${toHex(ackRes.frame.rawFrame)}")
+                    is FrameAckOutcome.FrameError -> {
+                        if (ackRes.errorCode == STS_PROTECT_ERROR) {
+                            return ProgramOutcome.ProtocolError("الشريحة محمية (ERR_PROTECT 0x10): تم إيقاف الكتابة عند البلوك.", isProtected = true)
                         }
-                        is FrameAckOutcome.UsbDetached -> {
-                            return ProgramOutcome.TransportFailure(ackRes.reason, isUsbDetached = true)
-                        }
-                        is FrameAckOutcome.Timeout -> {
-                            lastTimeoutReason = ackRes.reason
-                            pageTimedOut = true
-                        }
-                        is FrameAckOutcome.FrameError -> {
-                            if (ackRes.errorCode == STS_PROTECT_ERROR) {
-                                return ProgramOutcome.ProtocolError("الشريحة محمية (ERR_PROTECT 0x10): تم إيقاف الكتابة عند البلوك.", isProtected = true)
-                            }
-                            return ProgramOutcome.ProtocolError("فشل حرق البلوك (0x40): ${ackRes.description}")
-                        }
+                        return ProgramOutcome.ProtocolError("فشل حرق البلوك (0x40 صفحة ${page + 1}/$PAGES_PER_BLOCK): ${ackRes.description}")
                     }
                 }
             }
@@ -1604,7 +1569,7 @@ object Nec78k0ProtocolEngine {
             return null
         }
         val lenByte = lenArr[0].toInt() and 0xFF
-        val dataLen = if (lenByte == 0) PAGE_SIZE else lenByte
+        val dataLen = if (lenByte == 0) RX_LEN_ZERO_BYTES else lenByte
         val tailNeeded = dataLen + 2 // DATA + CS + ETX -> total (LEN + 4) bytes
         val tail = readExactCount(transport, tailNeeded, (deadline - System.currentTimeMillis()).toInt().coerceAtLeast(250))
         if (tail == null) {

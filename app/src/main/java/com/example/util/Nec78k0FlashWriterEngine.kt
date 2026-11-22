@@ -12,7 +12,7 @@ import java.util.Locale
  */
 object Nec78k0FlashWriterEngine {
     private const val BLOCK_SIZE = Nec78k0ProtocolEngine.BLOCK_SIZE // 1024 B (0x0400)
-    private const val COMMAND_TIMEOUT_MS = Nec78k0ProtocolEngine.PAGE_ACK_TIMEOUT_MS
+    private const val COMMAND_TIMEOUT_MS = 3000
 
     suspend fun eraseFlash(
         context: Context,
@@ -154,7 +154,7 @@ object Nec78k0FlashWriterEngine {
                 continue
             }
 
-            // Two-Stage 0x40 Programming (Single-Bulk 260B TX + up to 3 re-sync retries on timeout):
+            // Two-Stage 0x40 Programming (8x132B Pages @ LEN=0x80 + up to 3 re-sync retries on timeout):
             when (val progOutcome = Nec78k0ProtocolEngine.programBlockFromBuffer(
                 transport = transport,
                 startAddr = startAddr,
@@ -432,7 +432,7 @@ object Nec78k0FlashWriterEngine {
                 continue
             }
 
-            // Two-Stage 0x13 Verify (Single-Bulk 260B TX + up to 3 re-sync retries on timeout):
+            // Two-Stage 0x13 Verify (8x132B Pages @ LEN=0x80 + up to 3 re-sync retries on timeout):
             when (val verifyOutcome = Nec78k0ProtocolEngine.verifyBlockVia0x13(
                 transport = transport,
                 startAddr = startAddr,
@@ -454,7 +454,7 @@ object Nec78k0FlashWriterEngine {
                         val pageAddr = startAddr + ((verifyOutcome.failedPage - 1) * Nec78k0ProtocolEngine.PAGE_SIZE)
                         String.format(
                             Locale.US,
-                            "فشل المطابقة (ERR_VERIFY 0x0F): اختلاف في البيانات عند البلوك %d/%d (العنوان 0x%06X..0x%06X • الإطار %d/4 @ 0x%06X).",
+                            "فشل المطابقة (ERR_VERIFY 0x0F): اختلاف في البيانات عند البلوك %d/%d (العنوان 0x%06X..0x%06X • الإطار %d/${Nec78k0ProtocolEngine.PAGES_PER_BLOCK} @ 0x%06X).",
                             blockIdx + 1,
                             blockCount,
                             startAddr,
