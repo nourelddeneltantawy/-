@@ -1733,7 +1733,7 @@ object UsbOtgProgrammerService {
                 totalSent += written
                 offset += written
                 if (offset < data.size) {
-                    delay(15L) // 15ms pacing between 64B + 64B + 4B USB chunks (132B frame) prevents FT232R 128B TX FIFO overflow
+                    delay(65L) // 65ms pacing matches 9600 bps physical wire drain (66.6ms/64B) so 260B STX frames never overflow FT232R 128B TX FIFO
                 }
             }
             onLog("تم إرسال $totalSent/${data.size} بايت بنجاح")

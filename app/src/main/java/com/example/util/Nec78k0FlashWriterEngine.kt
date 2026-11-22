@@ -154,7 +154,7 @@ object Nec78k0FlashWriterEngine {
                 continue
             }
 
-            // NEC Core Tools 4-Byte Word Step 0x40 Programming (256 Words x 4 Bytes, LEN=0x04):
+            // Standard NEC 78K0 0x40 Programming (1024B Block -> 4 x 260B STX Frames):
             when (val progOutcome = Nec78k0ProtocolEngine.programBlockFromBuffer(
                 transport = transport,
                 startAddr = startAddr,
@@ -162,7 +162,7 @@ object Nec78k0FlashWriterEngine {
                 blockData = blockSlice,
                 clockFreqMhzText = clockFreqMhzText,
                 eraseBlockBeforeRetry = true,
-                onWordProgress = { bytesInBlock ->
+                onPageProgress = { bytesInBlock ->
                     onProgress(
                         minOf(startAddr + bytesInBlock, totalSize),
                         totalSize,
@@ -447,14 +447,14 @@ object Nec78k0FlashWriterEngine {
                 continue
             }
 
-            // NEC Core Tools 4-Byte Word Step 0x13 Verify (256 Words x 4 Bytes, LEN=0x04):
+            // Standard NEC 78K0 0x13 Verify (1024B Block -> 4 x 260B STX Frames):
             when (val verifyOutcome = Nec78k0ProtocolEngine.verifyBlockVia0x13(
                 transport = transport,
                 startAddr = startAddr,
                 endAddr = endAddr,
                 blockBytes = blockSlice,
                 clockFreqMhzText = clockFreqMhzText,
-                onWordProgress = { bytesInBlock ->
+                onPageProgress = { bytesInBlock ->
                     onProgress(
                         minOf(startAddr + bytesInBlock, totalSize),
                         totalSize,
@@ -484,7 +484,7 @@ object Nec78k0FlashWriterEngine {
                         val pageAddr = startAddr + ((verifyOutcome.failedPage - 1) * Nec78k0ProtocolEngine.PAGE_SIZE)
                         String.format(
                             Locale.US,
-                            "فشل المطابقة (ERR_VERIFY 0x0F): اختلاف في البيانات عند البلوك %d/%d (العنوان 0x%06X..0x%06X • الكلمة %d/${Nec78k0ProtocolEngine.PAGES_PER_BLOCK} @ 0x%06X).",
+                            "فشل المطابقة (ERR_VERIFY 0x0F): اختلاف في البيانات عند البلوك %d/%d (العنوان 0x%06X..0x%06X • الإطار %d/${Nec78k0ProtocolEngine.PAGES_PER_BLOCK} @ 0x%06X).",
                             blockIdx + 1,
                             blockCount,
                             startAddr,
