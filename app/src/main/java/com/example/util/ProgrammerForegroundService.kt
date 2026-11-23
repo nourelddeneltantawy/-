@@ -61,12 +61,13 @@ class ProgrammerForegroundService : Service() {
 
     private fun acquireLocalWakeLock() {
         try {
-            if (wakeLock?.isHeld == true) return
             val pm = getSystemService(Context.POWER_SERVICE) as? PowerManager ?: return
-            wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, WAKE_LOCK_TAG).apply {
-                setReferenceCounted(false)
-                acquire(20 * 60 * 1000L)
+            if (wakeLock == null) {
+                wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, WAKE_LOCK_TAG).apply {
+                    setReferenceCounted(false)
+                }
             }
+            wakeLock?.acquire(WAKE_LOCK_TIMEOUT_MS)
         } catch (_: Throwable) {}
     }
 
@@ -111,25 +112,30 @@ class ProgrammerForegroundService : Service() {
         private const val CHANNEL_ID = "mcu_programmer_session_channel"
         private const val NOTIFICATION_ID = 4780
         private const val WAKE_LOCK_TAG = "WasherMotors::McuFlashWakeLock"
+        private const val WAKE_LOCK_TIMEOUT_MS = 60 * 60 * 1000L
+        private const val RENEW_THROTTLE_MS = 4000L
         private const val ACTION_START_OR_UPDATE = "com.example.action.PROGRAMMER_FGS_START"
         private const val ACTION_STOP = "com.example.action.PROGRAMMER_FGS_STOP"
         private const val EXTRA_STATUS_TEXT = "extra_status_text"
 
         @Volatile
         private var fallbackWakeLock: PowerManager.WakeLock? = null
+        @Volatile
+        private var lastRenewUpdateMs: Long = 0L
         private val lockGuard = Any()
 
         fun acquireSessionLock(context: Context, statusText: String) {
             val appCtx = context.applicationContext
             synchronized(lockGuard) {
+                lastRenewUpdateMs = System.currentTimeMillis()
                 try {
-                    if (fallbackWakeLock?.isHeld != true) {
-                        val pm = appCtx.getSystemService(Context.POWER_SERVICE) as? PowerManager
+                    val pm = appCtx.getSystemService(Context.POWER_SERVICE) as? PowerManager
+                    if (fallbackWakeLock == null) {
                         fallbackWakeLock = pm?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, WAKE_LOCK_TAG)?.apply {
                             setReferenceCounted(false)
-                            acquire(20 * 60 * 1000L)
                         }
                     }
+                    fallbackWakeLock?.acquire(WAKE_LOCK_TIMEOUT_MS)
                 } catch (_: Throwable) {}
             }
             try {
@@ -141,9 +147,16 @@ class ProgrammerForegroundService : Service() {
             } catch (_: Throwable) {}
         }
 
+        fun renewSessionLock(context: Context, statusText: String) {
+            val now = System.currentTimeMillis()
+            if (now - lastRenewUpdateMs < RENEW_THROTTLE_MS) return
+            acquireSessionLock(context, statusText)
+        }
+
         fun releaseSessionLock(context: Context) {
             val appCtx = context.applicationContext
             synchronized(lockGuard) {
+                lastRenewUpdateMs = 0L
                 try {
                     if (fallbackWakeLock?.isHeld == true) {
                         fallbackWakeLock?.release()

@@ -789,7 +789,7 @@ fun ProgrammerStep3Flasher(
                                     text = state.progressLabel.ifBlank { "جاري التنفيذ..." },
                                     fontSize = 11.sp,
                                     color = MaterialTheme.colorScheme.onSurface,
-                                    maxLines = 1,
+                                    maxLines = 2,
                                     overflow = TextOverflow.Ellipsis,
                                     modifier = Modifier.weight(1f)
                                 )
