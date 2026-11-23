@@ -28,6 +28,7 @@ object Nec78k0ProtocolEngine {
 
     const val CMD_RESET: Int = 0x00
     const val CMD_VERIFY: Int = 0x13
+    const val CMD_READ: Int = 0x18
     const val CMD_CHIP_ERASE: Int = 0x20
     const val CMD_BLOCK_ERASE: Int = 0x22
     const val CMD_BLANK_CHECK: Int = 0x32
@@ -106,7 +107,8 @@ object Nec78k0ProtocolEngine {
         val sts1: Int,
         val payload: ByteArray,
         val rawFrame: ByteArray,
-        val checksumValid: Boolean
+        val checksumValid: Boolean,
+        val endByte: Int = ETX
     ) {
         val sts2: Int?
             get() = if (payload.size >= 2) (payload[1].toInt() and 0xFF) else null
@@ -571,89 +573,284 @@ object Nec78k0ProtocolEngine {
         val fullBuffer = Nec78k0RecoveryManager.loadPartialBlocks(context, detectedInfo.deviceName, totalSize)
             ?: ByteArray(totalSize) { 0xFF.toByte() }
 
-        // Step 2 (Zeroing Block 0 Only) — skipped cleanly if resuming after Block 0 was already zeroed
+        // المرحلة 2: استخراج Block 0 عبر فرق Checksum (0x40 صفر + 0xB0) ثم مسحه وتصفيره
         if (session == null || session.lastCompletedBlock < 0) {
-            onProgress(0, totalSize, "فحص الحماية وتصفير Block 0 فقط...")
-            // Check whether Block 0 was already erased (e.g., resuming after an interrupted 0x40 write)
-            val b0CheckCmd = buildAddressRangeFrame(CMD_BLANK_CHECK, 0x000000, BLOCK_SIZE - 1)
-            val b0BlankRes = transceiveWithTimeoutRetry(
-                transport = transport,
-                txFrame = b0CheckCmd,
-                timeoutMs = HEADER_ACK_TIMEOUT_MS,
-                clockFreqMhzText = clockFreqMhzText,
-                opLabel = "فحص فراغ Block 0 (0x32)",
-                onLog = onLog
-            )
-            if (b0BlankRes is Nec78k0TransceiveResult.Success) {
-                onLog("المرحلة 2: Block 0 ممسوح مسبقاً (0x32 Blank ACK) — الاحتفاظ بالبصمة الأصلية (FullCS=${detectedInfo.fullFlashChecksumHex} • Block0CS=${detectedInfo.block0ChecksumHex}) والمتابعة لكتابة الأصفار...")
-                val touchedSession = (session ?: Nec78k0RecoveryManager.Nec78k0RecoverySession(
-                    chipName = detectedInfo.deviceName,
-                    subFamily = detectedInfo.familyGroup,
-                    lastAddress = detectedInfo.lastAddress,
-                    blockCount = blockCount,
-                    hasDataFlash = detectedInfo.hasDataFlash,
-                    fullFlashChecksum = detectedInfo.fullFlashChecksum16,
-                    block0Checksum = detectedInfo.block0Checksum16,
-                    signatureHex = detectedInfo.rawSignatureHex,
-                    stage = Nec78k0RecoveryManager.RecoveryStage.DETECTED,
-                    lastCompletedBlock = -1,
-                    updatedAtMs = System.currentTimeMillis(),
-                    partialBlocksPath = Nec78k0RecoveryManager.partialBlocksFile(context, detectedInfo.deviceName).absolutePath,
-                    block0Touched = true
-                )).copy(block0Touched = true, updatedAtMs = System.currentTimeMillis())
-                session = touchedSession
-                Nec78k0RecoveryManager.saveSessionCheckpoint(context, touchedSession)
-            } else if (b0BlankRes is Nec78k0TransceiveResult.DisconnectedOrTimeout) {
-                return if (b0BlankRes.isUsbDetached) {
-                    FlashOperationResult.Failure("${WATCHDOG_PREFIX}0:${b0BlankRes.reason}")
-                } else {
-                    FlashOperationResult.Failure("انتهت مهلة استجابة المعالج أثناء فحص Block 0 (0x32) بعد 3 محاولات إعادة مزامنة (منفذ USB متصلاً): ${b0BlankRes.reason}")
-                }
-            } else {
-                onLog("المرحلة 2: مسح Block 0 (0x000000..0x0003FF) بأمر 0x22...")
-                val eraseB0Cmd = buildAddressRangeFrame(CMD_BLOCK_ERASE, 0x000000, BLOCK_SIZE - 1)
-                when (val eraseRes = transceiveWithTimeoutRetry(transport, eraseB0Cmd, HEADER_ACK_TIMEOUT_MS, clockFreqMhzText, "مسح Block 0 (0x22)", onLog)) {
-                    is Nec78k0TransceiveResult.Success -> {
-                        onLog("RX (Block 0 Erase ACK): ${toHex(eraseRes.frame.rawFrame)}")
-                        val touchedSession = (session ?: Nec78k0RecoveryManager.Nec78k0RecoverySession(
-                            chipName = detectedInfo.deviceName,
-                            subFamily = detectedInfo.familyGroup,
-                            lastAddress = detectedInfo.lastAddress,
-                            blockCount = blockCount,
-                            hasDataFlash = detectedInfo.hasDataFlash,
-                            fullFlashChecksum = detectedInfo.fullFlashChecksum16,
-                            block0Checksum = detectedInfo.block0Checksum16,
-                            signatureHex = detectedInfo.rawSignatureHex,
-                            stage = Nec78k0RecoveryManager.RecoveryStage.DETECTED,
-                            lastCompletedBlock = -1,
-                            updatedAtMs = System.currentTimeMillis(),
-                            partialBlocksPath = Nec78k0RecoveryManager.partialBlocksFile(context, detectedInfo.deviceName).absolutePath,
-                            block0Touched = true
-                        )).copy(block0Touched = true, updatedAtMs = System.currentTimeMillis())
-                        session = touchedSession
-                        Nec78k0RecoveryManager.saveSessionCheckpoint(context, touchedSession)
-                    }
-                    is Nec78k0TransceiveResult.ProtocolError -> {
-                        if (eraseRes.statusCode == STS_PROTECT_ERROR) {
-                            Nec78k0RecoveryManager.markCompletedAndCleanup(context, detectedInfo.deviceName)
-                            return FlashOperationResult.Failure(
-                                "المعالج محمي برمجياً ضد القراءة/المسح (ERR_PROTECT 0x10). تم إيقاف العملية فوراً قبل أي تعديل لحماية بياناتك."
-                            )
-                        }
-                        return FlashOperationResult.Failure("فشل مسح Block 0 (0x22): ${eraseRes.statusLabel}")
-                    }
-                    is Nec78k0TransceiveResult.DisconnectedOrTimeout -> {
-                        return if (eraseRes.isUsbDetached) {
-                            FlashOperationResult.Failure("${WATCHDOG_PREFIX}0:${eraseRes.reason}")
-                        } else {
-                            FlashOperationResult.Failure("انتهت مهلة مسح Block 0 (0x22) بعد 3 محاولات إعادة مزامنة (منفذ USB متصلاً): ${eraseRes.reason}")
-                        }
+            onProgress(0, totalSize, "المرحلة 2: فحص واستخراج Block 0 عبر فرق 0xB0...")
+
+            // Check if resuming a legacy session where Block 0 was already erased without differential capture
+            var alreadyBlankLegacy = false
+            if (session?.block0Touched == true && !session.block0OriginalExtracted && session.block0DiffNextIndex == 0) {
+                val b0BlankRes = transceiveWithTimeoutRetry(
+                    transport = transport,
+                    txFrame = buildAddressRangeFrame(CMD_BLANK_CHECK, 0x000000, BLOCK_SIZE - 1),
+                    timeoutMs = HEADER_ACK_TIMEOUT_MS,
+                    clockFreqMhzText = clockFreqMhzText,
+                    opLabel = "فحص حالة Block 0 (0x32)",
+                    onLog = onLog
+                )
+                if (b0BlankRes is Nec78k0TransceiveResult.Success) {
+                    alreadyBlankLegacy = true
+                } else if (b0BlankRes is Nec78k0TransceiveResult.ProtocolError && b0BlankRes.statusCode == STS_PROTECT_ERROR) {
+                    Nec78k0RecoveryManager.markCompletedAndCleanup(context, detectedInfo.deviceName)
+                    return FlashOperationResult.Failure(
+                        "المعالج محمي برمجياً ضد القراءة/المسح (ERR_PROTECT 0x10). تم إيقاف العملية فوراً لحماية بياناتك."
+                    )
+                } else if (b0BlankRes is Nec78k0TransceiveResult.DisconnectedOrTimeout) {
+                    return if (b0BlankRes.isUsbDetached) {
+                        FlashOperationResult.Failure("${WATCHDOG_PREFIX}0:${b0BlankRes.reason}")
+                    } else {
+                        FlashOperationResult.Failure("انتهت مهلة فحص Block 0 (0x32): ${b0BlankRes.reason}")
                     }
                 }
-                delay(20)
             }
 
-            onLog("المرحلة 2: كتابة أصفار في Block 0 (Header 0x40 للنطاق الكامل ثم 4×260B بدءاً بـ 0x02 STX) لفتح السحب...")
+            if (!alreadyBlankLegacy && session?.block0OriginalExtracted != true) {
+                val startByteIdx = (session?.block0DiffNextIndex ?: 0).coerceIn(0, BLOCK_SIZE)
+                if (startByteIdx < BLOCK_SIZE) {
+                    onLog(
+                        if (startByteIdx == 0) {
+                            "المرحلة 2: استخراج Original_Byte[0..1023] في Block 0 عبر فرق Checksum (0x40 كتابة 0x00 + 0xB0)..."
+                        } else {
+                            "المرحلة 2: استئناف استخراج Block 0 عبر فرق 0xB0 من البايت $startByteIdx/1023..."
+                        }
+                    )
+
+                    val initialCsRes = queryChecksum16WithRetry(
+                        transport = transport,
+                        startAddr = 0x000000,
+                        endAddr = BLOCK_SIZE - 1,
+                        clockFreqMhzText = clockFreqMhzText,
+                        opLabel = "قراءة CS_prev للكتلة Block 0 (0xB0)",
+                        maxRetries = 2,
+                        verboseLog = true,
+                        onLog = onLog
+                    )
+                    var csPrev = when (initialCsRes) {
+                        is ChecksumQueryResult.Success -> initialCsRes.checksum16 and 0xFFFF
+                        is ChecksumQueryResult.TransportLost -> {
+                            return pauseWithWatchdog(
+                                context, session, detectedInfo, fullBuffer, -1, blockCount,
+                                initialCsRes.reason, isUsbDetached = initialCsRes.isUsbDetached,
+                                block0OriginalExtracted = false, block0DiffNextIndex = startByteIdx, block0DiffPrevCs = -1
+                            )
+                        }
+                        is ChecksumQueryResult.ProtocolError -> {
+                            if (initialCsRes.statusCode == STS_PROTECT_ERROR) {
+                                Nec78k0RecoveryManager.markCompletedAndCleanup(context, detectedInfo.deviceName)
+                                return FlashOperationResult.Failure("المعالج محمي برمجياً (ERR_PROTECT 0x10).")
+                            }
+                            return FlashOperationResult.Failure("فشل قراءة CS_prev لـ Block 0 (0xB0): ${initialCsRes.statusLabel}")
+                        }
+                        is ChecksumQueryResult.ParameterError -> {
+                            return FlashOperationResult.Failure("خطأ معاملات (0x05) في فحص 0xB0 لـ Block 0.")
+                        }
+                    }
+
+                    val stage2StartMs = System.currentTimeMillis()
+                    var writeMode: ZeroWriteGranularity? = null
+                    val b0Working = fullBuffer.copyOfRange(0, BLOCK_SIZE)
+
+                    for (byteIdx in startByteIdx until BLOCK_SIZE) {
+                        currentCoroutineContext().ensureActive()
+                        if (!transport.isDeviceAttached()) {
+                            System.arraycopy(b0Working, 0, fullBuffer, 0, BLOCK_SIZE)
+                            return pauseWithWatchdog(
+                                context, session, detectedInfo, fullBuffer, -1, blockCount,
+                                "انقطع كابل USB OTG أثناء استخراج Block 0 عند البايت $byteIdx/1023",
+                                isUsbDetached = true,
+                                block0OriginalExtracted = false,
+                                block0DiffNextIndex = byteIdx,
+                                block0DiffPrevCs = csPrev
+                            )
+                        }
+
+                        val (modeUsed, zeroRes) = writeSingleByteZeroWithAutoGranularity(
+                            transport = transport,
+                            byteIdx = byteIdx,
+                            currentMode = writeMode,
+                            clockFreqMhzText = clockFreqMhzText,
+                            onLog = onLog
+                        )
+                        writeMode = modeUsed
+
+                        when (zeroRes) {
+                            is DiffWriteOutcome.ProceedToChecksum -> Unit
+                            is DiffWriteOutcome.Protected -> {
+                                if (byteIdx == 0 && session?.block0Touched != true) {
+                                    Nec78k0RecoveryManager.markCompletedAndCleanup(context, detectedInfo.deviceName)
+                                }
+                                return FlashOperationResult.Failure(zeroRes.reason)
+                            }
+                            is DiffWriteOutcome.ProtocolError -> {
+                                System.arraycopy(b0Working, 0, fullBuffer, 0, BLOCK_SIZE)
+                                return pauseWithWatchdog(
+                                    context, session, detectedInfo, fullBuffer, -1, blockCount,
+                                    zeroRes.reason, isUsbDetached = false,
+                                    block0OriginalExtracted = false, block0DiffNextIndex = byteIdx, block0DiffPrevCs = csPrev
+                                )
+                            }
+                            is DiffWriteOutcome.TransportLost -> {
+                                System.arraycopy(b0Working, 0, fullBuffer, 0, BLOCK_SIZE)
+                                return pauseWithWatchdog(
+                                    context, session, detectedInfo, fullBuffer, -1, blockCount,
+                                    zeroRes.reason, isUsbDetached = zeroRes.isUsbDetached,
+                                    block0OriginalExtracted = false, block0DiffNextIndex = byteIdx, block0DiffPrevCs = csPrev
+                                )
+                            }
+                        }
+
+                        // Query new Checksum CS_curr after zeroing byte[byteIdx]
+                        val currCsRes = queryChecksum16WithRetry(
+                            transport = transport,
+                            startAddr = 0x000000,
+                            endAddr = BLOCK_SIZE - 1,
+                            clockFreqMhzText = clockFreqMhzText,
+                            opLabel = "0xB0 تفاضلي Block 0 [$byteIdx]",
+                            maxRetries = 2,
+                            verboseLog = false,
+                            onLog = onLog
+                        )
+                        val csCurr = when (currCsRes) {
+                            is ChecksumQueryResult.Success -> currCsRes.checksum16 and 0xFFFF
+                            is ChecksumQueryResult.TransportLost -> {
+                                System.arraycopy(b0Working, 0, fullBuffer, 0, BLOCK_SIZE)
+                                return pauseWithWatchdog(
+                                    context, session, detectedInfo, fullBuffer, -1, blockCount,
+                                    currCsRes.reason, isUsbDetached = currCsRes.isUsbDetached,
+                                    block0OriginalExtracted = false, block0DiffNextIndex = byteIdx, block0DiffPrevCs = csPrev
+                                )
+                            }
+                            is ChecksumQueryResult.ProtocolError -> {
+                                System.arraycopy(b0Working, 0, fullBuffer, 0, BLOCK_SIZE)
+                                return pauseWithWatchdog(
+                                    context, session, detectedInfo, fullBuffer, -1, blockCount,
+                                    "فشل 0xB0 عند البايت $byteIdx من Block 0: ${currCsRes.statusLabel}",
+                                    isUsbDetached = false,
+                                    block0OriginalExtracted = false, block0DiffNextIndex = byteIdx, block0DiffPrevCs = csPrev
+                                )
+                            }
+                            is ChecksumQueryResult.ParameterError -> {
+                                System.arraycopy(b0Working, 0, fullBuffer, 0, BLOCK_SIZE)
+                                return pauseWithWatchdog(
+                                    context, session, detectedInfo, fullBuffer, -1, blockCount,
+                                    "خطأ معاملات (0x05) في 0xB0 عند البايت $byteIdx",
+                                    isUsbDetached = false,
+                                    block0OriginalExtracted = false, block0DiffNextIndex = byteIdx, block0DiffPrevCs = csPrev
+                                )
+                            }
+                        }
+
+                        // 78K0 Checksum16 = (0x10000 - sum) & 0xFFFF => subtracting Original_Byte[i] increases checksum by Original_Byte[i]
+                        val delta = (csCurr - csPrev) and 0xFFFF
+                        if (delta > 0xFF) {
+                            System.arraycopy(b0Working, 0, fullBuffer, 0, BLOCK_SIZE)
+                            return pauseWithWatchdog(
+                                context, session, detectedInfo, fullBuffer, -1, blockCount,
+                                String.format(
+                                    Locale.US,
+                                    "فرق Checksum غير متسق عند بايت %d (CS_prev=%04X -> CS_curr=%04X, Δ=%04X).",
+                                    byteIdx, csPrev, csCurr, delta
+                                ),
+                                isUsbDetached = false,
+                                block0OriginalExtracted = false, block0DiffNextIndex = byteIdx, block0DiffPrevCs = csPrev
+                            )
+                        }
+
+                        b0Working[byteIdx] = (delta and 0xFF).toByte()
+                        csPrev = csCurr
+
+                        if (byteIdx % 8 == 0 || byteIdx == BLOCK_SIZE - 1) {
+                            val etaB0 = formatEtaSuffix(byteIdx + 1, startByteIdx, BLOCK_SIZE, stage2StartMs)
+                            val labelB0 = String.format(
+                                Locale.US,
+                                "استخراج Block 0 تفاضلياً: %d/1024 (0x%02X)%s",
+                                byteIdx + 1, delta and 0xFF, etaB0
+                            )
+                            onProgress(byteIdx + 1, totalSize, labelB0)
+                            ProgrammerForegroundService.renewSessionLock(context, labelB0)
+                        }
+
+                        if (byteIdx % 32 == 31 || byteIdx == BLOCK_SIZE - 1) {
+                            System.arraycopy(b0Working, 0, fullBuffer, 0, BLOCK_SIZE)
+                            Nec78k0RecoveryManager.savePartialBlocksAtomically(context, detectedInfo.deviceName, fullBuffer)
+                            val interimSession = (session ?: Nec78k0RecoveryManager.Nec78k0RecoverySession(
+                                chipName = detectedInfo.deviceName,
+                                subFamily = detectedInfo.familyGroup,
+                                lastAddress = detectedInfo.lastAddress,
+                                blockCount = blockCount,
+                                hasDataFlash = detectedInfo.hasDataFlash,
+                                fullFlashChecksum = detectedInfo.fullFlashChecksum16,
+                                block0Checksum = detectedInfo.block0Checksum16,
+                                signatureHex = detectedInfo.rawSignatureHex,
+                                stage = Nec78k0RecoveryManager.RecoveryStage.DETECTED,
+                                lastCompletedBlock = -1,
+                                updatedAtMs = System.currentTimeMillis(),
+                                partialBlocksPath = Nec78k0RecoveryManager.partialBlocksFile(context, detectedInfo.deviceName).absolutePath,
+                                block0Touched = true
+                            )).copy(
+                                updatedAtMs = System.currentTimeMillis(),
+                                block0Touched = true,
+                                block0OriginalExtracted = (byteIdx == BLOCK_SIZE - 1),
+                                block0DiffNextIndex = byteIdx + 1,
+                                block0DiffPrevCs = csPrev
+                            )
+                            session = interimSession
+                            Nec78k0RecoveryManager.saveSessionCheckpoint(context, interimSession)
+                        }
+                    }
+
+                    System.arraycopy(b0Working, 0, fullBuffer, 0, BLOCK_SIZE)
+                    val verifiedB0Cs = Nec78k0Block0Reconstructor.compute78k0Checksum16(b0Working)
+                    val targetB0Cs = detectedInfo.block0Checksum16 and 0xFFFF
+                    if (targetB0Cs != 0 && verifiedB0Cs != targetB0Cs) {
+                        return pauseWithWatchdog(
+                            context, session, detectedInfo, fullBuffer, -1, blockCount,
+                            String.format(
+                                Locale.US,
+                                "مجموع Original_Byte[0..1023] المستخرج (%04X) لم يطابق Block0_Checksum الأصلي (%04X).",
+                                verifiedB0Cs, targetB0Cs
+                            ),
+                            isUsbDetached = false,
+                            block0OriginalExtracted = false, block0DiffNextIndex = BLOCK_SIZE, block0DiffPrevCs = csPrev
+                        )
+                    }
+
+                    onLog(
+                        String.format(
+                            Locale.US,
+                            "تم استخراج Original_Byte[0..1023] كاملاً وتطابقت بصمته مع Block0_Checksum الأصلي (%04X) بنسبة 100%%.",
+                            verifiedB0Cs
+                        )
+                    )
+                }
+            }
+
+            // Erase Block 0 (0x22) and write 1024 x 0x00 (0x40) to unlock reading Block 1..31
+            onLog("المرحلة 2: مسح Block 0 (0x000000..0x0003FF) بأمر 0x22 ثم كتابة 1024 بايت من الأصفار (0x00) بأمر 0x40 لفتح القراءة...")
+            val eraseB0Cmd = buildAddressRangeFrame(CMD_BLOCK_ERASE, 0x000000, BLOCK_SIZE - 1)
+            when (val eraseRes = transceiveWithTimeoutRetry(transport, eraseB0Cmd, HEADER_ACK_TIMEOUT_MS, clockFreqMhzText, "مسح Block 0 (0x22)", onLog)) {
+                is Nec78k0TransceiveResult.Success -> {
+                    onLog("RX (Block 0 Erase ACK): ${toHex(eraseRes.frame.rawFrame)}")
+                }
+                is Nec78k0TransceiveResult.ProtocolError -> {
+                    if (eraseRes.statusCode == STS_PROTECT_ERROR) {
+                        Nec78k0RecoveryManager.markCompletedAndCleanup(context, detectedInfo.deviceName)
+                        return FlashOperationResult.Failure(
+                            "المعالج محمي برمجياً ضد القراءة/المسح (ERR_PROTECT 0x10)."
+                        )
+                    }
+                    return FlashOperationResult.Failure("فشل مسح Block 0 (0x22): ${eraseRes.statusLabel}")
+                }
+                is Nec78k0TransceiveResult.DisconnectedOrTimeout -> {
+                    return if (eraseRes.isUsbDetached) {
+                        FlashOperationResult.Failure("${WATCHDOG_PREFIX}0:${eraseRes.reason}")
+                    } else {
+                        FlashOperationResult.Failure("انتهت مهلة مسح Block 0 (0x22): ${eraseRes.reason}")
+                    }
+                }
+            }
+            delay(20)
+
             when (val zeroOutcome = programBlockFromBuffer(
                 transport = transport,
                 startAddr = 0x000000,
@@ -668,10 +865,7 @@ object Nec78k0ProtocolEngine {
                         String.format(
                             Locale.US,
                             "تصفير Block 0 (%d/%d بايت • صفحة %d/%d)",
-                            bytesInBlock,
-                            BLOCK_SIZE,
-                            bytesInBlock / PAGE_SIZE,
-                            PAGES_PER_BLOCK
+                            bytesInBlock, BLOCK_SIZE, bytesInBlock / PAGE_SIZE, PAGES_PER_BLOCK
                         )
                     )
                 },
@@ -688,13 +882,12 @@ object Nec78k0ProtocolEngine {
                     return if (zeroOutcome.isUsbDetached) {
                         FlashOperationResult.Failure("${WATCHDOG_PREFIX}0:${zeroOutcome.reason}")
                     } else {
-                        FlashOperationResult.Failure(
-                            "انتهت مهلة استجابة المعالج لحزمة 0x40 بعد 3 محاولات إعادة مزامنة (منفذ USB لا يزال مفتوحاً ومتصلاً): ${zeroOutcome.reason}"
-                        )
+                        FlashOperationResult.Failure("انتهت مهلة تصفير Block 0 (0x40): ${zeroOutcome.reason}")
                     }
                 }
             }
 
+            val b0ExtractedFlag = !alreadyBlankLegacy
             Nec78k0RecoveryManager.savePartialBlocksAtomically(context, detectedInfo.deviceName, fullBuffer)
             session = Nec78k0RecoveryManager.Nec78k0RecoverySession(
                 chipName = detectedInfo.deviceName,
@@ -709,60 +902,64 @@ object Nec78k0ProtocolEngine {
                 lastCompletedBlock = 0,
                 updatedAtMs = System.currentTimeMillis(),
                 partialBlocksPath = Nec78k0RecoveryManager.partialBlocksFile(context, detectedInfo.deviceName).absolutePath,
-                block0Touched = true
+                block0Touched = true,
+                block0OriginalExtracted = b0ExtractedFlag,
+                block0DiffNextIndex = BLOCK_SIZE,
+                block0DiffPrevCs = 0
             )
             Nec78k0RecoveryManager.saveSessionCheckpoint(context, session)
-            onLog("تم تصفير Block 0 وتثبيت نقطة الاسترجاع الذرية بنجاح.")
+            onLog("تم تصفير Block 0 بالكامل وحفظ نسخة Original_Byte[0..1023] بأمان.")
 
-            // Fast Re-sync after Block 0 Zeroing to stabilize UART boot state for Block 1..N-1 extraction
-            onLog("إعادة مزامنة سريعة قبل سحب الكتل Block 1..${blockCount - 1}...")
-            delay(20)
+            // إعادة تهيئة الاتصال (Reset / Sync) قبل بدء المرحلة 3 (قراءة 0x18)
+            onLog("إعادة تهيئة الاتصال (Reset / Sync) لفتح قراءة البلوكات Block 1..${blockCount - 1}...")
+            delay(25)
             val reSyncRes = resync78k0Bootloader(transport, clockFreqMhzText, onLog)
             if (reSyncRes is Nec78k0TransceiveResult.DisconnectedOrTimeout) {
                 return if (reSyncRes.isUsbDetached) {
                     FlashOperationResult.Failure("${WATCHDOG_PREFIX}0:انقطع اتصال USB OTG بعد تصفير Block 0 — ثبّت المبرمجة واضغط إنقاذ المعالج.")
                 } else {
-                    FlashOperationResult.Failure("انتهت مهلة المزامنة بعد تصفير Block 0 (منفذ USB لا يزال متصلاً): ${reSyncRes.reason}")
+                    FlashOperationResult.Failure("انتهت مهلة المزامنة بعد تصفير Block 0: ${reSyncRes.reason}")
                 }
             }
         }
 
-        // Step 3: Pull & Verify Block 1 .. Block N-1 (Per-Page 256B Empty Check + Extraction + Mandatory 0xB0 Verification)
+        // المرحلة 3: القراءة السريعة المباشرة للبلوكات 1 إلى 31 عبر أمر 0x18 + التحقق بـ 0xB0
         val startBlock = (session?.lastCompletedBlock ?: 0).coerceAtLeast(0) + 1
-        onLog("المرحلة 3: سحب ومطابقة الكتل من Block $startBlock إلى Block ${blockCount - 1} (عبر فحص الصفحات 0x13 والتأكد الإلزامي بـ 0xB0)...")
+        if (startBlock < blockCount) {
+            onLog("المرحلة 3: القراءة السريعة للبلوكات من Block $startBlock إلى Block ${blockCount - 1} عبر أمر 0x18 + التحقق ببصمة 0xB0...")
+        }
 
         val extractionStartMs = System.currentTimeMillis()
         val initialDoneBytes = minOf(startBlock * BLOCK_SIZE, totalSize)
-        val probeCaps = ExtractionCapabilities()
+        var supports1024Read: Boolean? = null
 
         for (blockIdx in startBlock until blockCount) {
             currentCoroutineContext().ensureActive()
             if (!transport.isDeviceAttached()) {
-                return pauseWithWatchdog(context, session, detectedInfo, fullBuffer, blockIdx - 1, blockCount, "فُصل كابل USB OTG عند Block $blockIdx", isUsbDetached = true)
+                return pauseWithWatchdog(
+                    context, session, detectedInfo, fullBuffer, blockIdx - 1, blockCount,
+                    "فُصل كابل USB OTG عند Block $blockIdx", isUsbDetached = true
+                )
             }
 
             val blockStart = blockIdx * BLOCK_SIZE
             val blockEnd = blockStart + BLOCK_SIZE - 1
-            val existingBlockCandidate = fullBuffer.copyOfRange(blockStart, blockStart + BLOCK_SIZE)
-
             val etaNow = formatEtaSuffix(blockStart, initialDoneBytes, totalSize, extractionStartMs)
-            ProgrammerForegroundService.renewSessionLock(
-                context,
-                "سحب Block $blockIdx/${blockCount - 1}$etaNow"
-            )
+            ProgrammerForegroundService.renewSessionLock(context, "قراءة 0x18: Block $blockIdx/${blockCount - 1}$etaNow")
+            onProgress(blockStart, totalSize, "قراءة Block $blockIdx/${blockCount - 1} (أمر 0x18)$etaNow")
 
-            var blockVerifiedBytes: ByteArray? = null
-            var blockFailureReason = "فشل استخراج وتوثيق Block $blockIdx"
+            var verifiedBlockBytes: ByteArray? = null
+            var blockFailureReason = "فشل قراءة وتوثيق Block $blockIdx"
             var blockFailureIsUsb = false
 
-            for (blockAttempt in 0..1) {
-                if (blockAttempt > 0) {
+            for (attempt in 0..2) {
+                if (attempt > 0) {
                     if (!transport.isDeviceAttached()) {
                         blockFailureIsUsb = true
                         blockFailureReason = "انقطع اتصال USB OTG أثناء إعادة محاولة Block $blockIdx"
                         break
                     }
-                    onLog("إعادة محاولة سحب وتوثيق Block $blockIdx بعد المزامنة ($blockAttempt/1)...")
+                    onLog("إعادة المحاولة لـ Block $blockIdx بعد إعادة المزامنة ($attempt/2)...")
                     val rs = resync78k0Bootloader(transport, clockFreqMhzText, onLog)
                     if (rs is Nec78k0TransceiveResult.DisconnectedOrTimeout) {
                         blockFailureIsUsb = rs.isUsbDetached
@@ -771,210 +968,141 @@ object Nec78k0ProtocolEngine {
                     }
                 }
 
-                val candidateBytes = ByteArray(BLOCK_SIZE) { 0xFF.toByte() }
-                val blankCmd = buildAddressRangeFrame(CMD_BLANK_CHECK, blockStart, blockEnd)
-                var needPageExtraction = false
+                val readBytes = ByteArray(BLOCK_SIZE)
+                var readFailed = false
 
-                when (val blankRes = transceiveWithTimeoutRetry(transport, blankCmd, 600, clockFreqMhzText, "فحص Block $blockIdx (0x32)", onLog)) {
-                    is Nec78k0TransceiveResult.Success -> {
-                        // Blank block (0xFF x 1024)
-                        onProgress(
-                            blockStart,
-                            totalSize,
-                            "Block $blockIdx/${blockCount - 1}: فارغ (0xFF)${formatEtaSuffix(blockStart, initialDoneBytes, totalSize, extractionStartMs)}"
-                        )
-                    }
-                    is Nec78k0TransceiveResult.ProtocolError -> {
-                        if (blankRes.statusCode == STS_PROTECT_ERROR) {
-                            return pauseWithWatchdog(
-                                context,
-                                session,
-                                detectedInfo,
-                                fullBuffer,
-                                blockIdx - 1,
-                                blockCount,
-                                "استلمنا ERR_PROTECT (0x10) أثناء قراءة Block $blockIdx",
-                                isUsbDetached = false
-                            )
+                if (supports1024Read != false) {
+                    when (val fullReadRes = readRangeVia0x18(
+                        transport = transport,
+                        startAddr = blockStart,
+                        endAddr = blockEnd,
+                        expectedLength = BLOCK_SIZE,
+                        clockFreqMhzText = clockFreqMhzText,
+                        label = "قراءة Block $blockIdx (0x18)",
+                        onBytesReceived = { rxSoFar ->
+                            val liveDone = minOf(blockStart + rxSoFar, totalSize)
+                            val liveEta = formatEtaSuffix(liveDone, initialDoneBytes, totalSize, extractionStartMs)
+                            onProgress(liveDone, totalSize, "قراءة Block $blockIdx/${blockCount - 1} ($rxSoFar/1024 B)$liveEta")
+                        },
+                        onLog = onLog
+                    )) {
+                        is Read0x18Result.Success -> {
+                            supports1024Read = true
+                            System.arraycopy(fullReadRes.bytes, 0, readBytes, 0, BLOCK_SIZE)
                         }
-                        needPageExtraction = true
-                    }
-                    is Nec78k0TransceiveResult.DisconnectedOrTimeout -> {
-                        return pauseWithWatchdog(
-                            context,
-                            session,
-                            detectedInfo,
-                            fullBuffer,
-                            blockIdx - 1,
-                            blockCount,
-                            blankRes.reason,
-                            isUsbDetached = blankRes.isUsbDetached
-                        )
-                    }
-                }
-
-                if (needPageExtraction) {
-                    onLog("Block $blockIdx/${blockCount - 1} (0x%06X): غير فارغ — بدء فحص الصفحات (4×256B)...".format(Locale.US, blockStart))
-                    var pageExtractFailed = false
-                    var useWholeBlockFallback = (probeCaps.supports256PageVerify == false)
-
-                    if (!useWholeBlockFallback) {
-                        for (pageIdx in 0 until PAGES_PER_BLOCK) {
-                            currentCoroutineContext().ensureActive()
-                            val pageStart = blockStart + (pageIdx * PAGE_SIZE)
-                            val existingPageSlice = existingBlockCandidate.copyOfRange(
-                                pageIdx * PAGE_SIZE,
-                                (pageIdx + 1) * PAGE_SIZE
-                            )
-
-                            val pageOutcome = extractSinglePage256(
-                                context = context,
-                                transport = transport,
-                                blockIdx = blockIdx,
-                                blockCount = blockCount,
-                                pageIdx = pageIdx,
-                                pageStartAddr = pageStart,
-                                existingPageCandidate = existingPageSlice,
-                                clockFreqMhzText = clockFreqMhzText,
-                                caps = probeCaps,
-                                totalSize = totalSize,
-                                initialDoneBytes = initialDoneBytes,
-                                extractionStartMs = extractionStartMs,
-                                onProgress = onProgress,
-                                onLog = onLog
-                            )
-
-                            when (pageOutcome) {
-                                is PageExtractResult.Extracted -> {
-                                    System.arraycopy(pageOutcome.bytes, 0, candidateBytes, pageIdx * PAGE_SIZE, PAGE_SIZE)
-                                }
-                                is PageExtractResult.Requires1024BlockFallback -> {
-                                    probeCaps.supports256PageVerify = false
-                                    useWholeBlockFallback = true
-                                    break
-                                }
-                                is PageExtractResult.TransportLost -> {
-                                    return pauseWithWatchdog(
-                                        context,
-                                        session,
-                                        detectedInfo,
-                                        fullBuffer,
-                                        blockIdx - 1,
-                                        blockCount,
-                                        pageOutcome.reason,
-                                        isUsbDetached = pageOutcome.isUsbDetached
-                                    )
-                                }
-                                is PageExtractResult.Failed -> {
-                                    blockFailureReason = pageOutcome.reason
-                                    blockFailureIsUsb = false
-                                    pageExtractFailed = true
-                                    break
-                                }
-                            }
+                        is Read0x18Result.ParameterUnsupported -> {
+                            supports1024Read = false
+                            onLog("ملاحظة: أمر 0x18 بنطاق 1024B أرجع 0x05 — التبديل إلى قراءة 4 صفحات × 256B بأمر 0x18.")
                         }
-                    }
-
-                    if (useWholeBlockFallback && !pageExtractFailed) {
-                        onLog("Block $blockIdx: المعالج لا يقبل 0x13 لنطاق 256B (0x05) — فحص الكتلة كاملة 1024B (4×260B STX)...")
-                        val blkVerify = verifyBlockVia0x13(
-                            transport = transport,
-                            startAddr = blockStart,
-                            endAddr = blockEnd,
-                            blockBytes = existingBlockCandidate,
-                            clockFreqMhzText = clockFreqMhzText,
-                            onPageProgress = { bytesInBlock ->
-                                val done = minOf(blockStart + bytesInBlock, totalSize)
-                                val eta = formatEtaSuffix(done, initialDoneBytes, totalSize, extractionStartMs)
-                                onProgress(done, totalSize, "Block $blockIdx/${blockCount - 1} ($bytesInBlock/$BLOCK_SIZE B)$eta")
-                            },
-                            onLog = onLog
-                        )
-                        when (blkVerify) {
-                            is VerifyOutcome.Match -> {
-                                System.arraycopy(existingBlockCandidate, 0, candidateBytes, 0, BLOCK_SIZE)
-                            }
-                            is VerifyOutcome.Mismatch -> {
-                                blockFailureReason = "فشل مطابقة Block $blockIdx عبر 0x13 (${blkVerify.detail}) والكتلة غير قابلة للاستخراج بصفحة 256B."
-                                pageExtractFailed = true
-                            }
-                            is VerifyOutcome.TransportLost -> {
+                        is Read0x18Result.TransportLost -> {
+                            blockFailureIsUsb = fullReadRes.isUsbDetached
+                            blockFailureReason = fullReadRes.reason
+                            readFailed = true
+                            if (fullReadRes.isUsbDetached) break
+                        }
+                        is Read0x18Result.ProtocolError -> {
+                            if (fullReadRes.statusCode == STS_PROTECT_ERROR) {
                                 return pauseWithWatchdog(
-                                    context,
-                                    session,
-                                    detectedInfo,
-                                    fullBuffer,
-                                    blockIdx - 1,
-                                    blockCount,
-                                    blkVerify.reason,
-                                    isUsbDetached = blkVerify.isUsbDetached
+                                    context, session, detectedInfo, fullBuffer, blockIdx - 1, blockCount,
+                                    "استلمنا ERR_PROTECT (0x10) عند قراءة Block $blockIdx عبر 0x18", isUsbDetached = false
                                 )
                             }
+                            blockFailureReason = "رفض المعالج أمر 0x18 لـ Block $blockIdx: ${fullReadRes.statusLabel}"
+                            readFailed = true
                         }
-                    }
-
-                    if (pageExtractFailed) {
-                        continue
                     }
                 }
 
-                // Mandatory Block Checksum Verification via 0xB0 (for EVERY block 1..N-1)
-                val localBlockCs = Nec78k0Block0Reconstructor.compute78k0Checksum16(candidateBytes)
-                val hwCsResult = queryChecksum16WithRetry(
+                if (!readFailed && supports1024Read == false) {
+                    for (pageIdx in 0 until PAGES_PER_BLOCK) {
+                        val pStart = blockStart + (pageIdx * PAGE_SIZE)
+                        val pEnd = pStart + PAGE_SIZE - 1
+                        when (val pageReadRes = readRangeVia0x18(
+                            transport = transport,
+                            startAddr = pStart,
+                            endAddr = pEnd,
+                            expectedLength = PAGE_SIZE,
+                            clockFreqMhzText = clockFreqMhzText,
+                            label = "قراءة Block $blockIdx صفحة ${pageIdx + 1}/4 (0x18)",
+                            onBytesReceived = { rxSoFar ->
+                                val totalInBlock = pageIdx * PAGE_SIZE + rxSoFar
+                                val liveDone = minOf(blockStart + totalInBlock, totalSize)
+                                val liveEta = formatEtaSuffix(liveDone, initialDoneBytes, totalSize, extractionStartMs)
+                                onProgress(liveDone, totalSize, "قراءة Block $blockIdx/${blockCount - 1} ($totalInBlock/1024 B)$liveEta")
+                            },
+                            onLog = onLog
+                        )) {
+                            is Read0x18Result.Success -> {
+                                System.arraycopy(pageReadRes.bytes, 0, readBytes, pageIdx * PAGE_SIZE, PAGE_SIZE)
+                            }
+                            is Read0x18Result.ParameterUnsupported -> {
+                                blockFailureReason = "رفض المعالج أمر القراءة 0x18 لنطاق 256B أيضاً (0x05 Parameter Error)."
+                                readFailed = true
+                                break
+                            }
+                            is Read0x18Result.TransportLost -> {
+                                blockFailureIsUsb = pageReadRes.isUsbDetached
+                                blockFailureReason = pageReadRes.reason
+                                readFailed = true
+                                break
+                            }
+                            is Read0x18Result.ProtocolError -> {
+                                blockFailureReason = "خطأ في أمر القراءة 0x18 لـ Block $blockIdx صفحة ${pageIdx + 1}: ${pageReadRes.statusLabel}"
+                                readFailed = true
+                                break
+                            }
+                        }
+                    }
+                }
+
+                if (readFailed) {
+                    if (blockFailureIsUsb) break
+                    continue
+                }
+
+                // Mandatory Checksum Verification for the read block via 0xB0
+                val localBlockCs = Nec78k0Block0Reconstructor.compute78k0Checksum16(readBytes)
+                when (val hwCsRes = queryChecksum16WithRetry(
                     transport = transport,
                     startAddr = blockStart,
                     endAddr = blockEnd,
                     clockFreqMhzText = clockFreqMhzText,
-                    opLabel = "تحقق Block $blockIdx (0xB0)",
+                    opLabel = "تحقق بصمة Block $blockIdx (0xB0)",
                     maxRetries = 2,
-                    verboseLog = needPageExtraction,
+                    verboseLog = false,
                     onLog = onLog
-                )
-                when (hwCsResult) {
+                )) {
                     is ChecksumQueryResult.Success -> {
-                        val hwCs = hwCsResult.checksum16 and 0xFFFF
+                        val hwCs = hwCsRes.checksum16 and 0xFFFF
                         if (hwCs == (localBlockCs and 0xFFFF)) {
-                            blockVerifiedBytes = candidateBytes
-                            if (needPageExtraction) {
-                                onLog(
-                                    String.format(
-                                        Locale.US,
-                                        "تم تأكيد Block %d/%d عبر 0xB0 بنجاح (CS=%04X مطابق 100%%).",
-                                        blockIdx,
-                                        blockCount - 1,
-                                        hwCs
-                                    )
-                                )
-                            }
+                            verifiedBlockBytes = readBytes
                             break
                         } else {
                             blockFailureReason = String.format(
                                 Locale.US,
-                                "عدم تطابق Checksum (0xB0) في Block %d: المحلي=%04X != المعالج=%04X",
-                                blockIdx,
-                                localBlockCs and 0xFFFF,
-                                hwCs
+                                "عدم تطابق Checksum (0xB0) لـ Block %d: المحسوب=%04X != المعالج=%04X",
+                                blockIdx, localBlockCs and 0xFFFF, hwCs
                             )
                             onLog(blockFailureReason)
                         }
                     }
                     is ChecksumQueryResult.ParameterError -> {
-                        blockFailureReason = "رفض المعالج فحص Checksum (0xB0) للكتلة Block $blockIdx (0x05 Parameter Error)"
+                        blockFailureReason = "خطأ معاملات (0x05) عند فحص بصمة Block $blockIdx بـ 0xB0"
                         onLog(blockFailureReason)
                     }
                     is ChecksumQueryResult.ProtocolError -> {
-                        blockFailureReason = "خطأ Checksum (0xB0) في Block $blockIdx: ${hwCsResult.statusLabel}"
+                        blockFailureReason = "فشل فحص بصمة Block $blockIdx (0xB0): ${hwCsRes.statusLabel}"
                         onLog(blockFailureReason)
                     }
                     is ChecksumQueryResult.TransportLost -> {
-                        blockFailureIsUsb = hwCsResult.isUsbDetached
-                        blockFailureReason = hwCsResult.reason
-                        if (hwCsResult.isUsbDetached) break
+                        blockFailureIsUsb = hwCsRes.isUsbDetached
+                        blockFailureReason = hwCsRes.reason
+                        if (hwCsRes.isUsbDetached) break
                     }
                 }
             }
 
-            if (blockVerifiedBytes == null) {
+            if (verifiedBlockBytes == null) {
                 return pauseWithWatchdog(
                     context = context,
                     session = session,
@@ -987,7 +1115,7 @@ object Nec78k0ProtocolEngine {
                 )
             }
 
-            System.arraycopy(blockVerifiedBytes, 0, fullBuffer, blockStart, BLOCK_SIZE)
+            System.arraycopy(verifiedBlockBytes, 0, fullBuffer, blockStart, BLOCK_SIZE)
 
             val updatedSession = (session ?: Nec78k0RecoveryManager.Nec78k0RecoverySession(
                 chipName = detectedInfo.deviceName,
@@ -1002,7 +1130,8 @@ object Nec78k0ProtocolEngine {
                 lastCompletedBlock = blockIdx,
                 updatedAtMs = System.currentTimeMillis(),
                 partialBlocksPath = Nec78k0RecoveryManager.partialBlocksFile(context, detectedInfo.deviceName).absolutePath,
-                block0Touched = true
+                block0Touched = true,
+                block0OriginalExtracted = true
             )).copy(
                 stage = Nec78k0RecoveryManager.RecoveryStage.READING_BLOCKS,
                 lastCompletedBlock = blockIdx,
@@ -1011,8 +1140,7 @@ object Nec78k0ProtocolEngine {
             )
             session = updatedSession
 
-            val hasCodeInBlock = blockVerifiedBytes.any { it != 0xFF.toByte() }
-            if (hasCodeInBlock || blockIdx % 4 == 0 || blockIdx == blockCount - 1) {
+            if (blockIdx % 4 == 0 || blockIdx == blockCount - 1) {
                 Nec78k0RecoveryManager.savePartialBlocksAtomically(context, detectedInfo.deviceName, fullBuffer)
                 Nec78k0RecoveryManager.saveSessionCheckpoint(context, updatedSession)
             }
@@ -1022,18 +1150,23 @@ object Nec78k0ProtocolEngine {
             onProgress(
                 bytesDone,
                 totalSize,
-                String.format(Locale.US, "تم توثيق Block %d/%d (0x%06X)%s", blockIdx, blockCount - 1, blockStart, etaLabel)
+                String.format(Locale.US, "تم قراءة وتوثيق Block %d/%d (0x%06X)%s", blockIdx, blockCount - 1, blockStart, etaLabel)
             )
-            ProgrammerForegroundService.renewSessionLock(
-                context,
-                "تم تأكيد Block $blockIdx/${blockCount - 1}$etaLabel"
-            )
-            if (blockIdx % 8 == 0 || blockIdx == blockCount - 1) {
-                onLog("تم تأكيد Block $blockIdx/${blockCount - 1} (${bytesDone / 1024}/${totalSize / 1024} KB)$etaLabel")
+            ProgrammerForegroundService.renewSessionLock(context, "قراءة Block $blockIdx/${blockCount - 1}$etaLabel")
+            if (blockIdx % 4 == 0 || blockIdx == blockCount - 1) {
+                onLog(
+                    String.format(
+                        Locale.US,
+                        "تمت قراءة وتوثيق Block %d/%d (%d/%d KB • 0xB0=%04X)%s",
+                        blockIdx, blockCount - 1, bytesDone / 1024, totalSize / 1024,
+                        Nec78k0Block0Reconstructor.compute78k0Checksum16(verifiedBlockBytes),
+                        etaLabel
+                    )
+                )
             }
         }
 
-        // Persist BLOCKS_EXTRACTED checkpoint before touching Block 0 restore
+        // Persist BLOCKS_EXTRACTED checkpoint before Step 4 Restore
         Nec78k0RecoveryManager.savePartialBlocksAtomically(context, detectedInfo.deviceName, fullBuffer)
         session = (session ?: Nec78k0RecoveryManager.Nec78k0RecoverySession(
             chipName = detectedInfo.deviceName,
@@ -1048,7 +1181,8 @@ object Nec78k0ProtocolEngine {
             lastCompletedBlock = blockCount - 1,
             updatedAtMs = System.currentTimeMillis(),
             partialBlocksPath = Nec78k0RecoveryManager.partialBlocksFile(context, detectedInfo.deviceName).absolutePath,
-            block0Touched = true
+            block0Touched = true,
+            block0OriginalExtracted = true
         )).copy(
             stage = Nec78k0RecoveryManager.RecoveryStage.BLOCKS_EXTRACTED,
             lastCompletedBlock = blockCount - 1,
@@ -1057,57 +1191,53 @@ object Nec78k0ProtocolEngine {
         )
         Nec78k0RecoveryManager.saveSessionCheckpoint(context, session)
 
-        // Step 4: Decode & Reconstruct Block 0 + Write 0x40 + Verify Full Checksum 0xB0
-        onProgress(totalSize - BLOCK_SIZE, totalSize, "استرجاع Block 0 ومطابقة Checksum الكامل...")
-        ProgrammerForegroundService.renewSessionLock(context, "جاري استرجاع Block 0 ومطابقة 0xB0...")
-        onLog("المرحلة 4: تحليل متجهات CALL/BR في Block 1..${blockCount - 1} وإعادة بناء Block 0 برمجياً...")
-        val report = Nec78k0Block0Reconstructor.reconstructBlock0(
-            fullFlashBuffer = fullBuffer,
-            targetBlock0Checksum16 = detectedInfo.block0Checksum16,
-            targetFullChecksum16 = detectedInfo.fullFlashChecksum16
-        )
-        System.arraycopy(report.block0Bytes, 0, fullBuffer, 0, BLOCK_SIZE)
-        Nec78k0RecoveryManager.savePartialBlocksAtomically(context, detectedInfo.deviceName, fullBuffer)
-        onLog(
-            String.format(
-                Locale.US,
-                "تم إعادة بناء Block 0 (Reset Vector -> 0x%04X • البصمة %04X • التطابق البرمجي=%s).",
-                report.detectedEntryAddress,
-                report.computedBlock0Checksum16,
-                if (report.checksumMatched) "100%" else "تقريبي"
-            )
-        )
+        // المرحلة 4: إعادة كتابة Original_Byte[0..1023] المحفوظ إلى Block 0 + التحقق من Full Flash Checksum 0xB0
+        onProgress(totalSize - BLOCK_SIZE, totalSize, "المرحلة 4: استعادة Block 0 الأصلي وفحص Checksum النهائي...")
+        ProgrammerForegroundService.renewSessionLock(context, "استعادة Block 0 الأصلي ومطابقة 0xB0...")
 
-        onLog("المرحلة 4: إعادة مسح وكتابة Block 0 المسترجع إلى المعالج عبر 0x40...")
+        val savedBlock0Bytes = fullBuffer.copyOfRange(0, BLOCK_SIZE)
+        val savedBlock0Cs = Nec78k0Block0Reconstructor.compute78k0Checksum16(savedBlock0Bytes)
+        val hasExactOriginalBlock0 = (session.block0OriginalExtracted) ||
+            (detectedInfo.block0Checksum16 != 0 && savedBlock0Cs == (detectedInfo.block0Checksum16 and 0xFFFF))
+
+        val block0ToRestore = if (hasExactOriginalBlock0) {
+            onLog(
+                String.format(
+                    Locale.US,
+                    "المرحلة 4: إعادة مسح Block 0 (0x22) وكتابة النسخة الأصلية Original_Byte[0..1023] (CS=%04X) عبر 0x40...",
+                    savedBlock0Cs
+                )
+            )
+            savedBlock0Bytes
+        } else {
+            onLog("المرحلة 4 (إنقاذ احتياطي): لا تتوفر نسخة Original_Byte[0..1023] من جلسة قديمة — إعادة بناء Block 0 برمجياً...")
+            val report = Nec78k0Block0Reconstructor.reconstructBlock0(
+                fullFlashBuffer = fullBuffer,
+                targetBlock0Checksum16 = detectedInfo.block0Checksum16,
+                targetFullChecksum16 = detectedInfo.fullFlashChecksum16
+            )
+            System.arraycopy(report.block0Bytes, 0, fullBuffer, 0, BLOCK_SIZE)
+            Nec78k0RecoveryManager.savePartialBlocksAtomically(context, detectedInfo.deviceName, fullBuffer)
+            report.block0Bytes
+        }
+
         val reEraseRes = transceiveWithTimeoutRetry(
             transport = transport,
             txFrame = buildAddressRangeFrame(CMD_BLOCK_ERASE, 0x000000, BLOCK_SIZE - 1),
             timeoutMs = HEADER_ACK_TIMEOUT_MS,
             clockFreqMhzText = clockFreqMhzText,
-            opLabel = "مسح Block 0 قبل الاسترجاع (0x22)",
+            opLabel = "مسح Block 0 قبل الاستعادة (0x22)",
             onLog = onLog
         )
         if (reEraseRes is Nec78k0TransceiveResult.DisconnectedOrTimeout) {
             return pauseWithWatchdog(
-                context,
-                session,
-                detectedInfo,
-                fullBuffer,
-                blockCount - 1,
-                blockCount,
-                reEraseRes.reason,
-                isUsbDetached = reEraseRes.isUsbDetached
+                context, session, detectedInfo, fullBuffer, blockCount - 1, blockCount,
+                reEraseRes.reason, isUsbDetached = reEraseRes.isUsbDetached
             )
         } else if (reEraseRes is Nec78k0TransceiveResult.ProtocolError) {
             return pauseWithWatchdog(
-                context,
-                session,
-                detectedInfo,
-                fullBuffer,
-                blockCount - 1,
-                blockCount,
-                "فشل مسح Block 0 قبل الاسترجاع: ${reEraseRes.statusLabel}",
-                isUsbDetached = false
+                context, session, detectedInfo, fullBuffer, blockCount - 1, blockCount,
+                "فشل مسح Block 0 قبل الاستعادة: ${reEraseRes.statusLabel}", isUsbDetached = false
             )
         }
 
@@ -1115,14 +1245,14 @@ object Nec78k0ProtocolEngine {
             transport = transport,
             startAddr = 0x000000,
             endAddr = BLOCK_SIZE - 1,
-            blockData = report.block0Bytes,
+            blockData = block0ToRestore,
             clockFreqMhzText = clockFreqMhzText,
             eraseBlockBeforeRetry = true,
             onPageProgress = { bytesInBlock ->
                 onProgress(
                     minOf((totalSize - BLOCK_SIZE) + bytesInBlock, totalSize),
                     totalSize,
-                    String.format(Locale.US, "استرجاع Block 0: %d/%d بايت", bytesInBlock, BLOCK_SIZE)
+                    String.format(Locale.US, "استعادة Block 0 الأصلي: %d/%d بايت", bytesInBlock, BLOCK_SIZE)
                 )
             },
             onLog = onLog
@@ -1130,47 +1260,28 @@ object Nec78k0ProtocolEngine {
             is ProgramOutcome.Success -> Unit
             is ProgramOutcome.ProtocolError -> {
                 return pauseWithWatchdog(
-                    context,
-                    session,
-                    detectedInfo,
-                    fullBuffer,
-                    blockCount - 1,
-                    blockCount,
-                    restoreOutcome.message,
-                    isUsbDetached = false
+                    context, session, detectedInfo, fullBuffer, blockCount - 1, blockCount,
+                    restoreOutcome.message, isUsbDetached = false
                 )
             }
             is ProgramOutcome.TransportFailure -> {
                 return pauseWithWatchdog(
-                    context,
-                    session,
-                    detectedInfo,
-                    fullBuffer,
-                    blockCount - 1,
-                    blockCount,
-                    restoreOutcome.reason,
-                    isUsbDetached = restoreOutcome.isUsbDetached
+                    context, session, detectedInfo, fullBuffer, blockCount - 1, blockCount,
+                    restoreOutcome.reason, isUsbDetached = restoreOutcome.isUsbDetached
                 )
             }
         }
 
-        // Resync cleanly after Block 0 restore so 0xB0 Full Flash Checksum never receives 0x1B stale state
+        // Resync cleanly after restoring Block 0, then verify Full Flash Checksum via 0xB0 against Stage 1
         delay(35)
         val finalSyncRes = resync78k0Bootloader(transport, clockFreqMhzText, onLog)
         if (finalSyncRes is Nec78k0TransceiveResult.DisconnectedOrTimeout && finalSyncRes.isUsbDetached) {
             return pauseWithWatchdog(
-                context,
-                session,
-                detectedInfo,
-                fullBuffer,
-                blockCount - 1,
-                blockCount,
-                finalSyncRes.reason,
-                isUsbDetached = true
+                context, session, detectedInfo, fullBuffer, blockCount - 1, blockCount,
+                finalSyncRes.reason, isUsbDetached = true
             )
         }
 
-        // Verify Full Flash Checksum via 0xB0 strictly against saved original FullCS (e.g. 0xD081)
         val finalCsRes = queryChecksum16WithRetry(
             transport = transport,
             startAddr = 0x000000,
@@ -1223,7 +1334,7 @@ object Nec78k0ProtocolEngine {
                 blockCount = blockCount,
                 reason = String.format(
                     Locale.US,
-                    "عدم تطابق Checksum النهائي (0xB0): الحالي=%04X != الأصلي=%04X — لم تكتمل المطابقة ولن يُحذف ملف الاسترجاع.",
+                    "عدم تطابق Checksum النهائي (0xB0): الحالي=%04X != الأصلي=%04X — لن تُحذف نسخة الاسترجاع حتى تطابق الكارت الأصلي.",
                     finalCs and 0xFFFF,
                     detectedInfo.fullFlashChecksum16 and 0xFFFF
                 ),
@@ -1233,10 +1344,10 @@ object Nec78k0ProtocolEngine {
 
         // Clean up checkpoint files ONLY once full checksum matches 100%
         Nec78k0RecoveryManager.markCompletedAndCleanup(context, detectedInfo.deviceName)
-        onProgress(totalSize, totalSize, "اكتملت القراءة")
+        onProgress(totalSize, totalSize, "تم سحب السوفت وير واستعادة المعالج الأصلي بنجاح 100%")
 
         return FlashOperationResult.Success(
-            message = "اكتملت القراءة وتفريغ ${detectedInfo.deviceName} (${totalSize / 1024} KB / $blockCount بلوك) واسترجاع Block 0 مع تطابق 0xB0 Checksum (${detectedInfo.fullFlashChecksumHex}) بنسبة 100%.",
+            message = "تم سحب السوفت وير واستعادة المعالج الأصلي بنجاح 100% (FullCS=${detectedInfo.fullFlashChecksumHex})",
             bytesTransferred = fullBuffer,
             baseAddress = 0
         )
@@ -1250,13 +1361,16 @@ object Nec78k0ProtocolEngine {
         lastGoodBlock: Int,
         blockCount: Int,
         reason: String,
-        isUsbDetached: Boolean
+        isUsbDetached: Boolean,
+        block0OriginalExtracted: Boolean = session?.block0OriginalExtracted ?: false,
+        block0DiffNextIndex: Int = session?.block0DiffNextIndex ?: 0,
+        block0DiffPrevCs: Int = session?.block0DiffPrevCs ?: -1
     ): FlashOperationResult.Failure {
         Nec78k0RecoveryManager.savePartialBlocksAtomically(context, info.deviceName, partialBuffer)
-        val nextStage = if (lastGoodBlock >= blockCount - 1) {
-            Nec78k0RecoveryManager.RecoveryStage.BLOCKS_EXTRACTED
-        } else {
-            Nec78k0RecoveryManager.RecoveryStage.READING_BLOCKS
+        val nextStage = when {
+            lastGoodBlock >= blockCount - 1 -> Nec78k0RecoveryManager.RecoveryStage.BLOCKS_EXTRACTED
+            lastGoodBlock >= 0 -> Nec78k0RecoveryManager.RecoveryStage.READING_BLOCKS
+            else -> Nec78k0RecoveryManager.RecoveryStage.DETECTED
         }
         val saved = (session ?: Nec78k0RecoveryManager.Nec78k0RecoverySession(
             chipName = info.deviceName,
@@ -1268,24 +1382,31 @@ object Nec78k0ProtocolEngine {
             block0Checksum = info.block0Checksum16,
             signatureHex = info.rawSignatureHex,
             stage = nextStage,
-            lastCompletedBlock = lastGoodBlock.coerceAtLeast(0),
+            lastCompletedBlock = lastGoodBlock.coerceAtLeast(-1),
             updatedAtMs = System.currentTimeMillis(),
             partialBlocksPath = Nec78k0RecoveryManager.partialBlocksFile(context, info.deviceName).absolutePath,
-            block0Touched = true
+            block0Touched = true,
+            block0OriginalExtracted = block0OriginalExtracted,
+            block0DiffNextIndex = block0DiffNextIndex,
+            block0DiffPrevCs = block0DiffPrevCs
         )).copy(
             stage = nextStage,
-            lastCompletedBlock = lastGoodBlock.coerceAtLeast(0),
+            lastCompletedBlock = lastGoodBlock.coerceAtLeast(-1),
             updatedAtMs = System.currentTimeMillis(),
-            block0Touched = true
+            block0Touched = true,
+            block0OriginalExtracted = block0OriginalExtracted,
+            block0DiffNextIndex = block0DiffNextIndex,
+            block0DiffPrevCs = block0DiffPrevCs
         )
         Nec78k0RecoveryManager.saveSessionCheckpoint(context, saved)
+        val blockDisplay = (saved.lastCompletedBlock + 1).coerceAtLeast(0)
         return if (isUsbDetached) {
             FlashOperationResult.Failure(
-                "${WATCHDOG_PREFIX}${saved.lastCompletedBlock}:انقطع اتصال USB OTG عند الكتلة ${saved.lastCompletedBlock + 1}/$blockCount ($reason) — تم حفظ التقدم على الذاكرة، ثبّت المبرمجة للاستكمال."
+                "${WATCHDOG_PREFIX}${saved.lastCompletedBlock}:انقطع اتصال USB OTG عند الكتلة $blockDisplay/$blockCount ($reason) — تم حفظ التقدم على الذاكرة، ثبّت المبرمجة للاستكمال."
             )
         } else {
             FlashOperationResult.Failure(
-                "انتهت مهلة استجابة المعالج (Timeout) عند الكتلة ${saved.lastCompletedBlock + 1}/$blockCount ($reason) — منفذ USB لا يزال مفتوحاً ومتصلاً، وتم حفظ التقدم بأمان على الذاكرة."
+                "توقفت العملية عند الكتلة $blockDisplay/$blockCount ($reason) — منفذ USB لا يزال متصلاً، وتم حفظ التقدم بأمان على الذاكرة."
             )
         }
     }
@@ -1371,24 +1492,25 @@ object Nec78k0ProtocolEngine {
         )
     }
 
-    private data class ExtractionCapabilities(
-        var supports256PageVerify: Boolean? = null,
-        var supportsCumulativeChecksum: Boolean? = null,
-        var supports1ByteVerify: Boolean? = null
-    )
-
-    private sealed class PageExtractResult {
-        data class Extracted(val bytes: ByteArray) : PageExtractResult()
-        data object Requires1024BlockFallback : PageExtractResult()
-        data class TransportLost(val reason: String, val isUsbDetached: Boolean) : PageExtractResult()
-        data class Failed(val reason: String) : PageExtractResult()
+    private enum class ZeroWriteGranularity {
+        ONE_BYTE,
+        FOUR_BYTES,
+        PAGE_256_BYTES,
+        BLOCK_1024_BYTES
     }
 
-    private sealed class ProbeExtractResult {
-        data class Extracted(val bytes: ByteArray) : ProbeExtractResult()
-        data object ProbeUnsupported : ProbeExtractResult()
-        data class TransportLost(val reason: String, val isUsbDetached: Boolean) : ProbeExtractResult()
-        data class Failed(val reason: String) : ProbeExtractResult()
+    private sealed class DiffWriteOutcome {
+        data object ProceedToChecksum : DiffWriteOutcome()
+        data class Protected(val reason: String) : DiffWriteOutcome()
+        data class ProtocolError(val reason: String) : DiffWriteOutcome()
+        data class TransportLost(val reason: String, val isUsbDetached: Boolean) : DiffWriteOutcome()
+    }
+
+    private sealed class Read0x18Result {
+        data class Success(val bytes: ByteArray) : Read0x18Result()
+        data object ParameterUnsupported : Read0x18Result()
+        data class ProtocolError(val statusCode: Int, val statusLabel: String) : Read0x18Result()
+        data class TransportLost(val reason: String, val isUsbDetached: Boolean) : Read0x18Result()
     }
 
     internal sealed class ChecksumQueryResult {
@@ -1396,14 +1518,6 @@ object Nec78k0ProtocolEngine {
         data object ParameterError : ChecksumQueryResult()
         data class ProtocolError(val statusCode: Int, val statusLabel: String) : ChecksumQueryResult()
         data class TransportLost(val reason: String, val isUsbDetached: Boolean) : ChecksumQueryResult()
-    }
-
-    private sealed class RangeVerifyOutcome {
-        data object Match : RangeVerifyOutcome()
-        data class Mismatch(val errorCode: Int, val description: String) : RangeVerifyOutcome()
-        data object ParameterUnsupported : RangeVerifyOutcome()
-        data class ProtocolError(val errorCode: Int, val description: String) : RangeVerifyOutcome()
-        data class TransportLost(val reason: String, val isUsbDetached: Boolean) : RangeVerifyOutcome()
     }
 
     private fun formatEtaSuffix(
@@ -1414,7 +1528,7 @@ object Nec78k0ProtocolEngine {
     ): String {
         val elapsedMs = System.currentTimeMillis() - startTimeMs
         val delta = bytesDone - initialDoneBytes
-        if (elapsedMs < 1500L || delta < 32 || bytesDone >= totalBytes) return ""
+        if (elapsedMs < 1500L || delta < 8 || bytesDone >= totalBytes) return ""
         val remainingBytes = (totalBytes - bytesDone).coerceAtLeast(0)
         val etaSec = ((remainingBytes.toDouble() / delta.toDouble()) * (elapsedMs / 1000.0)).toLong().coerceAtLeast(1L)
         val hours = etaSec / 3600L
@@ -1427,517 +1541,261 @@ object Nec78k0ProtocolEngine {
         }
     }
 
-    private suspend fun extractSinglePage256(
-        context: Context,
+    /**
+     * Writes 0x00 at [byteIdx] in Block 0 (leaving preceding bytes 0x00 and following bytes 0xFF/untouched)
+     * without erasing Block 0 first. Automatically detects the smallest 0x40 write granularity supported
+     * by the target bootloader (1B -> 4B -> 256B -> 1024B).
+     */
+    private suspend fun writeSingleByteZeroWithAutoGranularity(
         transport: Serial78k0Transport,
-        blockIdx: Int,
-        blockCount: Int,
-        pageIdx: Int,
-        pageStartAddr: Int,
-        existingPageCandidate: ByteArray,
+        byteIdx: Int,
+        currentMode: ZeroWriteGranularity?,
         clockFreqMhzText: String,
-        caps: ExtractionCapabilities,
-        totalSize: Int,
-        initialDoneBytes: Int,
-        extractionStartMs: Long,
-        onProgress: (bytesDone: Int, totalBytes: Int, label: String) -> Unit,
         onLog: (String) -> Unit
-    ): PageExtractResult {
-        val pageEndAddr = pageStartAddr + PAGE_SIZE - 1
-        val pageNum = pageIdx + 1
-
-        // If partial buffer already contains recovered non-FF bytes for this page, confirm in 1 frame
-        if (existingPageCandidate.any { it != 0xFF.toByte() }) {
-            when (val existingRes = verifyRangeVia0x13(
-                transport = transport,
-                startAddr = pageStartAddr,
-                endAddr = pageEndAddr,
-                data = existingPageCandidate,
-                clockFreqMhzText = clockFreqMhzText,
-                verboseLog = false,
-                label = "0x13 B$blockIdx P$pageNum (Saved)",
-                onLog = onLog
-            )) {
-                is RangeVerifyOutcome.Match -> {
-                    caps.supports256PageVerify = true
-                    return PageExtractResult.Extracted(existingPageCandidate)
-                }
-                is RangeVerifyOutcome.ParameterUnsupported -> return PageExtractResult.Requires1024BlockFallback
-                is RangeVerifyOutcome.TransportLost -> return PageExtractResult.TransportLost(existingRes.reason, existingRes.isUsbDetached)
-                is RangeVerifyOutcome.ProtocolError -> return PageExtractResult.Failed("خطأ بروتوكول أثناء فحص Block $blockIdx صفحة $pageNum: ${existingRes.description}")
-                is RangeVerifyOutcome.Mismatch -> Unit
-            }
-        }
-
-        // Step 1: Empty Page Check (0x13 with 256 x 0xFF)
-        val allFfPage = ByteArray(PAGE_SIZE) { 0xFF.toByte() }
-        val etaCheck = formatEtaSuffix(pageStartAddr, initialDoneBytes, totalSize, extractionStartMs)
-        onProgress(
-            pageStartAddr,
-            totalSize,
-            "فحص Block $blockIdx/${blockCount - 1} • صفحة $pageNum/$PAGES_PER_BLOCK (0xFF)$etaCheck"
-        )
-        when (val emptyRes = verifyRangeVia0x13(
-            transport = transport,
-            startAddr = pageStartAddr,
-            endAddr = pageEndAddr,
-            data = allFfPage,
-            clockFreqMhzText = clockFreqMhzText,
-            verboseLog = true,
-            label = "0x13 فحص فراغ B$blockIdx ص$pageNum",
-            onLog = onLog
-        )) {
-            is RangeVerifyOutcome.Match -> {
-                caps.supports256PageVerify = true
-                return PageExtractResult.Extracted(allFfPage)
-            }
-            is RangeVerifyOutcome.ParameterUnsupported -> return PageExtractResult.Requires1024BlockFallback
-            is RangeVerifyOutcome.TransportLost -> return PageExtractResult.TransportLost(emptyRes.reason, emptyRes.isUsbDetached)
-            is RangeVerifyOutcome.ProtocolError -> return PageExtractResult.Failed("رفض المعالج فحص 0x13 عند Block $blockIdx صفحة $pageNum: ${emptyRes.description}")
-            is RangeVerifyOutcome.Mismatch -> {
-                caps.supports256PageVerify = true
-                onLog(
-                    String.format(
-                        Locale.US,
-                        "Block %d صفحة %d/%d (0x%06X): رُفضت 0xFF بـ %s — تحتوي على بيانات برمجية، بدء الاستخراج...",
-                        blockIdx,
-                        pageNum,
-                        PAGES_PER_BLOCK,
-                        pageStartAddr,
-                        emptyRes.description
-                    )
-                )
-            }
-        }
-
-        // Fast 1-frame check for all-0x00 page
-        val allZeroPage = ByteArray(PAGE_SIZE) { 0x00 }
-        when (val zeroRes = verifyRangeVia0x13(
-            transport = transport,
-            startAddr = pageStartAddr,
-            endAddr = pageEndAddr,
-            data = allZeroPage,
-            clockFreqMhzText = clockFreqMhzText,
-            verboseLog = false,
-            label = "0x13 B$blockIdx ص$pageNum (0x00)",
-            onLog = onLog
-        )) {
-            is RangeVerifyOutcome.Match -> {
-                onLog("Block $blockIdx صفحة $pageNum/4: مطابقة 100% كصفحة مصفّرة (0x00).")
-                return PageExtractResult.Extracted(allZeroPage)
-            }
-            is RangeVerifyOutcome.TransportLost -> return PageExtractResult.TransportLost(zeroRes.reason, zeroRes.isUsbDetached)
-            else -> Unit
-        }
-
-        // Step 2A: Try cumulative 1-byte 0xB0 Checksum extraction if supported by silicon
-        if (caps.supportsCumulativeChecksum != false) {
-            when (val csExtract = extractPageViaCumulative0xB0(
-                context = context,
-                transport = transport,
-                blockIdx = blockIdx,
-                blockCount = blockCount,
-                pageIdx = pageIdx,
-                pageStartAddr = pageStartAddr,
-                clockFreqMhzText = clockFreqMhzText,
-                totalSize = totalSize,
-                initialDoneBytes = initialDoneBytes,
-                extractionStartMs = extractionStartMs,
-                onProgress = onProgress,
-                onLog = onLog
-            )) {
-                is ProbeExtractResult.Extracted -> {
-                    caps.supportsCumulativeChecksum = true
-                    return PageExtractResult.Extracted(csExtract.bytes)
-                }
-                is ProbeExtractResult.ProbeUnsupported -> {
-                    caps.supportsCumulativeChecksum = false
-                    onLog("ملاحظة: فحص 0xB0 لبايت واحد غير مدعوم في هذه النسخة (0x05) — التبديل تلقائياً إلى 0x13.")
-                }
-                is ProbeExtractResult.TransportLost -> return PageExtractResult.TransportLost(csExtract.reason, csExtract.isUsbDetached)
-                is ProbeExtractResult.Failed -> {
-                    caps.supportsCumulativeChecksum = false
-                    onLog("تحذير 0xB0 التراكمي عند Block $blockIdx صفحة $pageNum: ${csExtract.reason}")
-                }
-            }
-        }
-
-        // Step 2B: Try 1-byte 0x13 [addr..addr] extraction if supported by silicon
-        if (caps.supports1ByteVerify != false) {
-            when (val singleByteExtract = extractPageVia1Byte0x13(
-                context = context,
-                transport = transport,
-                blockIdx = blockIdx,
-                blockCount = blockCount,
-                pageIdx = pageIdx,
-                pageStartAddr = pageStartAddr,
-                clockFreqMhzText = clockFreqMhzText,
-                totalSize = totalSize,
-                initialDoneBytes = initialDoneBytes,
-                extractionStartMs = extractionStartMs,
-                onProgress = onProgress,
-                onLog = onLog
-            )) {
-                is ProbeExtractResult.Extracted -> {
-                    caps.supports1ByteVerify = true
-                    return PageExtractResult.Extracted(singleByteExtract.bytes)
-                }
-                is ProbeExtractResult.ProbeUnsupported -> {
-                    caps.supports1ByteVerify = false
-                    onLog("ملاحظة: أمر 0x13 لبايت واحد غير مدعوم (0x05) — تشغيل الاستخراج المتسلسل 256B عبر 0x13...")
-                }
-                is ProbeExtractResult.TransportLost -> return PageExtractResult.TransportLost(singleByteExtract.reason, singleByteExtract.isUsbDetached)
-                is ProbeExtractResult.Failed -> return PageExtractResult.Failed(singleByteExtract.reason)
-            }
-        }
-
-        // Step 2C: User-specified 256B Sequential Extraction via 0x13 (test 0xFF then 0x00..0xFE per byte)
-        val pageData = ByteArray(PAGE_SIZE) { 0xFF.toByte() }
-        var consecutiveUnresolved = 0
-
-        for (byteIdx in 0 until PAGE_SIZE) {
-            currentCoroutineContext().ensureActive()
-            var matchedFullPage = false
-            var matchedByteValue: Int? = null
-            val bytesDoneNow = minOf(pageStartAddr + byteIdx, totalSize)
-            val eta = formatEtaSuffix(bytesDoneNow, initialDoneBytes, totalSize, extractionStartMs)
-
-            ProgrammerForegroundService.renewSessionLock(
-                context,
-                "استخراج Block $blockIdx/${blockCount - 1} • ص$pageNum • بايت $byteIdx/255$eta"
+    ): Pair<ZeroWriteGranularity, DiffWriteOutcome> {
+        val order = if (currentMode != null) {
+            listOf(currentMode)
+        } else {
+            listOf(
+                ZeroWriteGranularity.ONE_BYTE,
+                ZeroWriteGranularity.FOUR_BYTES,
+                ZeroWriteGranularity.PAGE_256_BYTES,
+                ZeroWriteGranularity.BLOCK_1024_BYTES
             )
-
-            // Test 0xFF first, then 0x00..0xFE
-            for (step in 0 until 256) {
-                currentCoroutineContext().ensureActive()
-                val candVal = if (step == 0) 0xFF else step - 1
-                pageData[byteIdx] = candVal.toByte()
-
-                if (step % 16 == 0) {
-                    val liveDone = minOf(pageStartAddr + byteIdx, totalSize)
-                    val liveEta = formatEtaSuffix(liveDone, initialDoneBytes, totalSize, extractionStartMs)
-                    onProgress(
-                        liveDone,
-                        totalSize,
-                        String.format(
-                            Locale.US,
-                            "سحب B%d/%d • ص%d • بايت %d/255 (0x%02X)%s",
-                            blockIdx,
-                            blockCount - 1,
-                            pageNum,
-                            byteIdx,
-                            candVal,
-                            liveEta
-                        )
-                    )
-                }
-
-                when (val probeRes = verifyRangeVia0x13(
-                    transport = transport,
-                    startAddr = pageStartAddr,
-                    endAddr = pageEndAddr,
-                    data = pageData,
-                    clockFreqMhzText = clockFreqMhzText,
-                    verboseLog = false,
-                    label = "0x13 B$blockIdx P$pageNum [$byteIdx]=${"%02X".format(candVal)}",
-                    onLog = onLog
-                )) {
-                    is RangeVerifyOutcome.Match -> {
-                        matchedByteValue = candVal
-                        matchedFullPage = true
-                        break
-                    }
-                    is RangeVerifyOutcome.Mismatch -> {
-                        // Continue scanning candidates (0x1C / 0x0F)
-                    }
-                    is RangeVerifyOutcome.ParameterUnsupported -> {
-                        return PageExtractResult.Requires1024BlockFallback
-                    }
-                    is RangeVerifyOutcome.ProtocolError -> {
-                        return PageExtractResult.Failed("توقف فحص Block $blockIdx صفحة $pageNum عند بايت $byteIdx: ${probeRes.description}")
-                    }
-                    is RangeVerifyOutcome.TransportLost -> {
-                        return PageExtractResult.TransportLost(probeRes.reason, probeRes.isUsbDetached)
-                    }
-                }
-            }
-
-            if (matchedFullPage && matchedByteValue != null) {
-                onLog(
-                    String.format(
-                        Locale.US,
-                        "Block %d صفحة %d/4: تطابقت الصفحة بالكامل عند البايت %d/255 (0x%02X -> 0x06 ACK).",
-                        blockIdx,
-                        pageNum,
-                        byteIdx,
-                        matchedByteValue
-                    )
-                )
-                return PageExtractResult.Extracted(pageData)
-            } else {
-                // Keep 0xFF placeholder and check whether subsequent byte resolves
-                pageData[byteIdx] = 0xFF.toByte()
-                consecutiveUnresolved++
-                onLog(
-                    String.format(
-                        Locale.US,
-                        "تحذير (Block %d صفحة %d/4): لم تتطابق أي قيمة (0x00..0xFF) للبايت %d (وجود بايتات غير 0xFF لاحقة بالصفحة).",
-                        blockIdx,
-                        pageNum,
-                        byteIdx
-                    )
-                )
-                if (consecutiveUnresolved >= 2) {
-                    return PageExtractResult.Failed(
-                        "تعذّر استخراج Block $blockIdx صفحة $pageNum عبر 0x13 فقط: الشريحة رفضت أوامر 1-بايت (0x05) وتحتوي الصفحة على عدة بايتات كود متجاورة غير 0xFF، مما يجعل 0x13 (256B) يرد دائماً بـ 0x1C قبل مطابقة كامل الصفحة."
-                    )
-                }
-            }
         }
 
-        return PageExtractResult.Failed("لم تصل Block $blockIdx صفحة $pageNum إلى ACK (0x06) عبر 0x13.")
+        for (mode in order) {
+            val (startAddr, endAddr, pages) = when (mode) {
+                ZeroWriteGranularity.ONE_BYTE -> Triple(byteIdx, byteIdx, listOf(byteArrayOf(0x00)))
+                ZeroWriteGranularity.FOUR_BYTES -> {
+                    val wStart = byteIdx and 0xFFFC
+                    val wEnd = wStart + 3
+                    val offsetInWord = byteIdx - wStart
+                    val buf = ByteArray(4) { idx -> if (idx <= offsetInWord) 0x00 else 0xFF.toByte() }
+                    Triple(wStart, wEnd, listOf(buf))
+                }
+                ZeroWriteGranularity.PAGE_256_BYTES -> {
+                    val pStart = byteIdx and 0xFF00
+                    val pEnd = pStart + PAGE_SIZE - 1
+                    val offsetInPage = byteIdx - pStart
+                    val buf = ByteArray(PAGE_SIZE) { idx -> if (idx <= offsetInPage) 0x00 else 0xFF.toByte() }
+                    Triple(pStart, pEnd, listOf(buf))
+                }
+                ZeroWriteGranularity.BLOCK_1024_BYTES -> {
+                    val list = (0 until PAGES_PER_BLOCK).map { page ->
+                        ByteArray(PAGE_SIZE) { pOff ->
+                            val globalIdx = page * PAGE_SIZE + pOff
+                            if (globalIdx <= byteIdx) 0x00 else 0xFF.toByte()
+                        }
+                    }
+                    Triple(0x000000, BLOCK_SIZE - 1, list)
+                }
+            }
+
+            var paramUnsupported = false
+            var outcome: DiffWriteOutcome = DiffWriteOutcome.ProceedToChecksum
+            val progCmd = buildAddressRangeFrame(CMD_PROGRAM, startAddr, endAddr)
+
+            for (attempt in 0..MAX_TIMEOUT_RETRIES) {
+                if (attempt > 0) {
+                    if (!transport.isDeviceAttached()) {
+                        return mode to DiffWriteOutcome.TransportLost("انقطع اتصال USB OTG أثناء كتابة 0x00 عند بايت $byteIdx", true)
+                    }
+                    onLog("إعادة المزامنة أثناء تصفير البايت $byteIdx في Block 0 (محاولة $attempt/$MAX_TIMEOUT_RETRIES)...")
+                    val rs = resync78k0Bootloader(transport, clockFreqMhzText, onLog)
+                    if (rs is Nec78k0TransceiveResult.DisconnectedOrTimeout) {
+                        if (rs.isUsbDetached) {
+                            return mode to DiffWriteOutcome.TransportLost(rs.reason, true)
+                        }
+                        outcome = DiffWriteOutcome.TransportLost(rs.reason, false)
+                        continue
+                    }
+                }
+
+                when (val hdrRes = transceiveSingleFrame(transport, progCmd, HEADER_ACK_TIMEOUT_MS, onLog, verboseLog = false)) {
+                    is Nec78k0TransceiveResult.Success -> Unit
+                    is Nec78k0TransceiveResult.ProtocolError -> {
+                        if (hdrRes.statusCode == STS_PARAMETER_ERROR && currentMode == null) {
+                            paramUnsupported = true
+                            break
+                        }
+                        if (hdrRes.statusCode == STS_PROTECT_ERROR) {
+                            return mode to DiffWriteOutcome.Protected("الشريحة محمية (ERR_PROTECT 0x10): أمر 0x40 مرفوض عند البايت $byteIdx.")
+                        }
+                        return mode to DiffWriteOutcome.ProtocolError("رفض المعالج أمر 0x40 للبايت $byteIdx: ${hdrRes.statusLabel}")
+                    }
+                    is Nec78k0TransceiveResult.DisconnectedOrTimeout -> {
+                        if (hdrRes.isUsbDetached) {
+                            return mode to DiffWriteOutcome.TransportLost(hdrRes.reason, true)
+                        }
+                        outcome = DiffWriteOutcome.TransportLost(hdrRes.reason, false)
+                        continue
+                    }
+                }
+
+                delay(if (mode == ZeroWriteGranularity.ONE_BYTE || mode == ZeroWriteGranularity.FOUR_BYTES) 3L else 8L)
+                transport.flushInputBuffer()
+
+                var timedOut = false
+                for (pIdx in pages.indices) {
+                    val isLast = (pIdx == pages.lastIndex)
+                    val frame = buildVariableDataFrame(pages[pIdx], isLast = isLast)
+                    when (val ack = sendStxDataPageAndAwaitAck(transport, frame, PAGE_ACK_TIMEOUT_MS, "0x40 B0[$byteIdx]", onLog, verboseLog = false)) {
+                        is FrameAckOutcome.AckSuccess -> {
+                            outcome = DiffWriteOutcome.ProceedToChecksum
+                        }
+                        is FrameAckOutcome.FrameError -> {
+                            if (ack.errorCode == STS_PROTECT_ERROR) {
+                                return mode to DiffWriteOutcome.Protected("الشريحة محمية (ERR_PROTECT 0x10) عند بايت $byteIdx.")
+                            }
+                            if (ack.errorCode == STS_PARAMETER_ERROR && currentMode == null) {
+                                paramUnsupported = true
+                                break
+                            }
+                            // In multi-byte mask writes (0xFF over existing code bytes), internal post-write verify may return 0x1C after programming 0x00
+                            if (isVerifyMismatchCode(ack.errorCode) && mode != ZeroWriteGranularity.ONE_BYTE) {
+                                outcome = DiffWriteOutcome.ProceedToChecksum
+                                break
+                            }
+                            return mode to DiffWriteOutcome.ProtocolError("فشل كتابة 0x00 للبايت $byteIdx: ${ack.description}")
+                        }
+                        is FrameAckOutcome.UsbDetached -> {
+                            return mode to DiffWriteOutcome.TransportLost(ack.reason, true)
+                        }
+                        is FrameAckOutcome.Timeout -> {
+                            outcome = DiffWriteOutcome.TransportLost(ack.reason, false)
+                            timedOut = true
+                            break
+                        }
+                    }
+                }
+                if (paramUnsupported) break
+                if (!timedOut) {
+                    if (currentMode == null && byteIdx == 0) {
+                        onLog("نمط الكتابة التفاضلية النشط لـ Block 0 (0x40): ${mode.name}")
+                    }
+                    return mode to outcome
+                }
+            }
+            if (!paramUnsupported) {
+                return mode to outcome
+            }
+        }
+        return ZeroWriteGranularity.BLOCK_1024_BYTES to DiffWriteOutcome.ProtocolError("رفض المعالج جميع أحجام إطار الكتابة 0x40 بـ 0x05.")
     }
 
-    private suspend fun extractPageViaCumulative0xB0(
-        context: Context,
-        transport: Serial78k0Transport,
-        blockIdx: Int,
-        blockCount: Int,
-        pageIdx: Int,
-        pageStartAddr: Int,
-        clockFreqMhzText: String,
-        totalSize: Int,
-        initialDoneBytes: Int,
-        extractionStartMs: Long,
-        onProgress: (bytesDone: Int, totalBytes: Int, label: String) -> Unit,
-        onLog: (String) -> Unit
-    ): ProbeExtractResult {
-        val pageEndAddr = pageStartAddr + PAGE_SIZE - 1
-        val pageNum = pageIdx + 1
-        val out = ByteArray(PAGE_SIZE)
-        var prevSum = 0
-
-        for (i in 0 until PAGE_SIZE) {
-            currentCoroutineContext().ensureActive()
-            val targetEnd = pageStartAddr + i
-            val csRes = queryChecksum16WithRetry(
-                transport = transport,
-                startAddr = pageStartAddr,
-                endAddr = targetEnd,
-                clockFreqMhzText = clockFreqMhzText,
-                opLabel = "0xB0 تراكمي B$blockIdx ص$pageNum [$i]",
-                maxRetries = 1,
-                verboseLog = false,
-                onLog = onLog
-            )
-            when (csRes) {
-                is ChecksumQueryResult.ParameterError -> return ProbeExtractResult.ProbeUnsupported
-                is ChecksumQueryResult.ProtocolError -> {
-                    return if (i == 0) ProbeExtractResult.ProbeUnsupported else ProbeExtractResult.Failed("خطأ 0xB0 عند بايت $i: ${csRes.statusLabel}")
-                }
-                is ChecksumQueryResult.TransportLost -> return ProbeExtractResult.TransportLost(csRes.reason, csRes.isUsbDetached)
-                is ChecksumQueryResult.Success -> {
-                    val currSum = (0 - (csRes.checksum16 and 0xFFFF)) and 0xFFFF
-                    val byteVal = (currSum - prevSum) and 0xFF
-                    out[i] = byteVal.toByte()
-                    prevSum = currSum
-                }
-            }
-
-            if (i % 8 == 0 || i == PAGE_SIZE - 1) {
-                val done = minOf(pageStartAddr + i + 1, totalSize)
-                val eta = formatEtaSuffix(done, initialDoneBytes, totalSize, extractionStartMs)
-                onProgress(done, totalSize, "استخراج 0xB0: B$blockIdx/${blockCount - 1} • ص$pageNum • بايت $i/255$eta")
-                ProgrammerForegroundService.renewSessionLock(context, "استخراج B$blockIdx/${blockCount - 1} • بايت $i/255$eta")
-            }
-        }
-
-        // Cross-check reconstructed 256B page via 0x13 (02 00 ... ETX)
-        return when (val verifyRes = verifyRangeVia0x13(
-            transport = transport,
-            startAddr = pageStartAddr,
-            endAddr = pageEndAddr,
-            data = out,
-            clockFreqMhzText = clockFreqMhzText,
-            verboseLog = true,
-            label = "0x13 توثيق B$blockIdx ص$pageNum",
-            onLog = onLog
-        )) {
-            is RangeVerifyOutcome.Match -> {
-                onLog("Block $blockIdx صفحة $pageNum/4: تم استخراج 256B عبر 0xB0 ومطابقتها بـ 0x13 بنجاح 100%.")
-                ProbeExtractResult.Extracted(out)
-            }
-            is RangeVerifyOutcome.TransportLost -> ProbeExtractResult.TransportLost(verifyRes.reason, verifyRes.isUsbDetached)
-            is RangeVerifyOutcome.Mismatch -> ProbeExtractResult.Failed("اختلاف 0x13 بعد استخراج 0xB0 في Block $blockIdx صفحة $pageNum: ${verifyRes.description}")
-            is RangeVerifyOutcome.ProtocolError -> ProbeExtractResult.Failed("خطأ 0x13 بعد استخراج 0xB0: ${verifyRes.description}")
-            is RangeVerifyOutcome.ParameterUnsupported -> ProbeExtractResult.Extracted(out)
-        }
-    }
-
-    private suspend fun extractPageVia1Byte0x13(
-        context: Context,
-        transport: Serial78k0Transport,
-        blockIdx: Int,
-        blockCount: Int,
-        pageIdx: Int,
-        pageStartAddr: Int,
-        clockFreqMhzText: String,
-        totalSize: Int,
-        initialDoneBytes: Int,
-        extractionStartMs: Long,
-        onProgress: (bytesDone: Int, totalBytes: Int, label: String) -> Unit,
-        onLog: (String) -> Unit
-    ): ProbeExtractResult {
-        val pageEndAddr = pageStartAddr + PAGE_SIZE - 1
-        val pageNum = pageIdx + 1
-        val out = ByteArray(PAGE_SIZE) { 0xFF.toByte() }
-        val singleBuf = ByteArray(1)
-
-        for (i in 0 until PAGE_SIZE) {
-            currentCoroutineContext().ensureActive()
-            val addr = pageStartAddr + i
-            var resolved: Int? = null
-            val done = minOf(addr, totalSize)
-            val eta = formatEtaSuffix(done, initialDoneBytes, totalSize, extractionStartMs)
-
-            if (i % 4 == 0) {
-                ProgrammerForegroundService.renewSessionLock(context, "سحب 1B: B$blockIdx/${blockCount - 1} • ص$pageNum • بايت $i/255$eta")
-            }
-
-            for (step in 0 until 256) {
-                currentCoroutineContext().ensureActive()
-                val cand = if (step == 0) 0xFF else step - 1
-                singleBuf[0] = cand.toByte()
-                if (step % 32 == 0) {
-                    onProgress(done, totalSize, "سحب B$blockIdx/${blockCount - 1} • ص$pageNum • بايت $i/255 (0x${"%02X".format(cand)})$eta")
-                }
-
-                when (val res = verifyRangeVia0x13(
-                    transport = transport,
-                    startAddr = addr,
-                    endAddr = addr,
-                    data = singleBuf,
-                    clockFreqMhzText = clockFreqMhzText,
-                    verboseLog = false,
-                    label = "0x13 1B 0x${"%06X".format(addr)}=${"%02X".format(cand)}",
-                    onLog = onLog
-                )) {
-                    is RangeVerifyOutcome.Match -> {
-                        resolved = cand
-                        break
-                    }
-                    is RangeVerifyOutcome.Mismatch -> Unit
-                    is RangeVerifyOutcome.ParameterUnsupported -> {
-                        return if (i == 0) ProbeExtractResult.ProbeUnsupported else ProbeExtractResult.Failed("توقف 0x13 1B بـ 0x05 عند البايت $i")
-                    }
-                    is RangeVerifyOutcome.TransportLost -> return ProbeExtractResult.TransportLost(res.reason, res.isUsbDetached)
-                    is RangeVerifyOutcome.ProtocolError -> return ProbeExtractResult.Failed("خطأ 0x13 عند بايت $i: ${res.description}")
-                }
-            }
-
-            if (resolved == null) {
-                return ProbeExtractResult.Failed("لم تتطابق أي قيمة (0x00..0xFF) للبايت $i في Block $blockIdx صفحة $pageNum.")
-            }
-            out[i] = resolved.toByte()
-            if (i % 32 == 31) {
-                onLog("Block $blockIdx صفحة $pageNum/4: تم سحب ${i + 1}/256 بايت...")
-            }
-        }
-
-        // Confirm whole 256B page via standard 0x13 frame
-        return when (val pageVerify = verifyRangeVia0x13(
-            transport = transport,
-            startAddr = pageStartAddr,
-            endAddr = pageEndAddr,
-            data = out,
-            clockFreqMhzText = clockFreqMhzText,
-            verboseLog = true,
-            label = "0x13 توثيق B$blockIdx ص$pageNum",
-            onLog = onLog
-        )) {
-            is RangeVerifyOutcome.Match -> {
-                onLog("Block $blockIdx صفحة $pageNum/4: اكتمل استخراج 256B ومطابقتها بنجاح 100%.")
-                ProbeExtractResult.Extracted(out)
-            }
-            is RangeVerifyOutcome.TransportLost -> ProbeExtractResult.TransportLost(pageVerify.reason, pageVerify.isUsbDetached)
-            is RangeVerifyOutcome.Mismatch -> ProbeExtractResult.Failed("اختلاف مطابقة صفحة 256B بعد استخراج البايتات في Block $blockIdx ص$pageNum: ${pageVerify.description}")
-            is RangeVerifyOutcome.ProtocolError -> ProbeExtractResult.Failed("خطأ 0x13 عند توثيق Block $blockIdx ص$pageNum: ${pageVerify.description}")
-            is RangeVerifyOutcome.ParameterUnsupported -> ProbeExtractResult.Extracted(out)
-        }
-    }
-
-    private suspend fun verifyRangeVia0x13(
+    /**
+     * Reads [expectedLength] bytes (1024B block or 256B page) from the unlocked 78K0 flash
+     * using Command 0x18 ([01 07 18 Start(3B) End(3B) CS 03]) and receives STX (0x02) data frames.
+     */
+    private suspend fun readRangeVia0x18(
         transport: Serial78k0Transport,
         startAddr: Int,
         endAddr: Int,
-        data: ByteArray,
+        expectedLength: Int,
         clockFreqMhzText: String,
-        verboseLog: Boolean,
         label: String,
+        onBytesReceived: (Int) -> Unit,
         onLog: (String) -> Unit
-    ): RangeVerifyOutcome {
-        val verifyCmd = buildAddressRangeFrame(CMD_VERIFY, startAddr, endAddr)
-        val dataFrame = buildVariableDataFrame(data, isLast = true)
-        var lastTimeoutReason = "انتهت مهلة Verify 0x13"
+    ): Read0x18Result {
+        val readCmd = buildAddressRangeFrame(CMD_READ, startAddr, endAddr)
+        var lastTimeoutReason = "انتهت مهلة القراءة 0x18"
 
         for (attempt in 0..MAX_TIMEOUT_RETRIES) {
             if (attempt > 0) {
                 if (!transport.isDeviceAttached()) {
-                    return RangeVerifyOutcome.TransportLost("انقطع اتصال USB OTG أثناء $label", isUsbDetached = true)
+                    return Read0x18Result.TransportLost("انقطع اتصال USB OTG أثناء $label", isUsbDetached = true)
                 }
-                onLog("انتهت المهلة أثناء $label — إعادة المزامنة ثم المحاولة $attempt/$MAX_TIMEOUT_RETRIES...")
+                onLog("إعادة المحاولة لـ $label بعد المزامنة ($attempt/$MAX_TIMEOUT_RETRIES)...")
                 val rs = resync78k0Bootloader(transport, clockFreqMhzText, onLog)
                 if (rs is Nec78k0TransceiveResult.DisconnectedOrTimeout) {
-                    if (rs.isUsbDetached) return RangeVerifyOutcome.TransportLost(rs.reason, isUsbDetached = true)
+                    if (rs.isUsbDetached) return Read0x18Result.TransportLost(rs.reason, isUsbDetached = true)
                     lastTimeoutReason = rs.reason
                     continue
                 }
             }
 
-            if (verboseLog) onLog("TX ($label Header): ${toHex(verifyCmd)}")
-            when (val cmdRes = transceiveSingleFrame(transport, verifyCmd, HEADER_ACK_TIMEOUT_MS, onLog, verboseLog = verboseLog)) {
+            if (attempt == 0) {
+                onLog("TX ($label): ${toHex(readCmd)}")
+            }
+            when (val cmdRes = transceiveSingleFrame(transport, readCmd, HEADER_ACK_TIMEOUT_MS, onLog, verboseLog = true)) {
                 is Nec78k0TransceiveResult.Success -> Unit
                 is Nec78k0TransceiveResult.ProtocolError -> {
-                    return when {
-                        cmdRes.statusCode == STS_PARAMETER_ERROR -> RangeVerifyOutcome.ParameterUnsupported
-                        isVerifyMismatchCode(cmdRes.statusCode) -> RangeVerifyOutcome.Mismatch(cmdRes.statusCode, cmdRes.statusLabel)
-                        else -> RangeVerifyOutcome.ProtocolError(cmdRes.statusCode, cmdRes.statusLabel)
+                    return when (cmdRes.statusCode) {
+                        STS_PARAMETER_ERROR -> Read0x18Result.ParameterUnsupported
+                        else -> Read0x18Result.ProtocolError(cmdRes.statusCode, cmdRes.statusLabel)
                     }
                 }
                 is Nec78k0TransceiveResult.DisconnectedOrTimeout -> {
-                    if (cmdRes.isUsbDetached) return RangeVerifyOutcome.TransportLost(cmdRes.reason, isUsbDetached = true)
+                    if (cmdRes.isUsbDetached) return Read0x18Result.TransportLost(cmdRes.reason, isUsbDetached = true)
                     lastTimeoutReason = cmdRes.reason
                     continue
                 }
             }
 
-            delay(if (data.size >= PAGE_SIZE) 8L else 3L)
-            transport.flushInputBuffer()
+            // Read incoming STX (0x02) data frames for this 0x18 command
+            val out = ByteArrayOutputStream(expectedLength)
+            val hostAckFrame = buildCommandFrame(STS_ACK)
+            var frameTimedOut = false
+            var frameBadCs = false
+            var lastEndByte = ETB
 
-            val ackRes = sendStxDataPageAndAwaitAck(
-                transport = transport,
-                dataFrame = dataFrame,
-                timeoutMs = PAGE_ACK_TIMEOUT_MS,
-                label = label,
-                onLog = onLog,
-                verboseLog = verboseLog
-            )
-            when (ackRes) {
-                is FrameAckOutcome.AckSuccess -> return RangeVerifyOutcome.Match
-                is FrameAckOutcome.FrameError -> {
-                    return when {
-                        isVerifyMismatchCode(ackRes.errorCode) -> RangeVerifyOutcome.Mismatch(ackRes.errorCode, ackRes.description)
-                        ackRes.errorCode == STS_PARAMETER_ERROR -> RangeVerifyOutcome.ParameterUnsupported
-                        else -> RangeVerifyOutcome.ProtocolError(ackRes.errorCode, ackRes.description)
+            transport.setRawRxMonitor(false)
+            while (out.size() < expectedLength) {
+                currentCoroutineContext().ensureActive()
+                if (!transport.isDeviceAttached()) {
+                    return Read0x18Result.TransportLost("انقطع اتصال USB OTG أثناء استلام بيانات $label", isUsbDetached = true)
+                }
+
+                // Wait first 600ms silently for back-to-back STX data frames; if ETB pauses, send host ACK [01 01 06 F9 03]
+                var rxFrame = readOneRxFrame(transport, if (out.size() == 0) PAGE_ACK_TIMEOUT_MS else 650) { stray ->
+                    onLog("RX Raw Live ($label): $stray")
+                }
+                if (rxFrame == null && out.size() > 0 && lastEndByte == ETB && transport.isDeviceAttached()) {
+                    transport.writeRaw(hostAckFrame)
+                    transport.discardEcho(hostAckFrame.size, 9600)
+                    rxFrame = readOneRxFrame(transport, PAGE_ACK_TIMEOUT_MS) { stray ->
+                        onLog("RX Raw Live ($label بعد ACK): $stray")
                     }
                 }
-                is FrameAckOutcome.UsbDetached -> return RangeVerifyOutcome.TransportLost(ackRes.reason, isUsbDetached = true)
-                is FrameAckOutcome.Timeout -> {
-                    lastTimeoutReason = ackRes.reason
+
+                if (rxFrame == null) {
+                    lastTimeoutReason = "انتهت مهلة استلام إطار STX (0x02) في $label (تم استلام ${out.size()}/$expectedLength بايت)"
+                    frameTimedOut = true
+                    break
+                }
+                if (!rxFrame.checksumValid) {
+                    onLog("خطأ Checksum في إطار بيانات $label [${toHex(rxFrame.rawFrame.copyOfRange(0, minOf(12, rxFrame.rawFrame.size)))}...]")
+                    lastTimeoutReason = "خطأ Checksum أثناء استقبال $label"
+                    frameBadCs = true
+                    break
+                }
+
+                // Handle trailing short protocol error frame if MCU aborts mid-read
+                if (rxFrame.payload.size <= 2 && rxFrame.endByte == ETX && out.size() + rxFrame.payload.size < expectedLength) {
+                    val errCode = rxFrame.sts1
+                    return if (errCode == STS_PARAMETER_ERROR) {
+                        Read0x18Result.ParameterUnsupported
+                    } else {
+                        Read0x18Result.ProtocolError(errCode, statusDescription(errCode))
+                    }
+                }
+
+                out.write(rxFrame.payload)
+                lastEndByte = rxFrame.endByte
+                onBytesReceived(minOf(out.size(), expectedLength))
+                if (rxFrame.endByte == ETX && out.size() >= expectedLength) {
+                    break
                 }
             }
+
+            if (!frameTimedOut && !frameBadCs && out.size() >= expectedLength) {
+                val full = out.toByteArray()
+                return Read0x18Result.Success(if (full.size == expectedLength) full else full.copyOfRange(0, expectedLength))
+            }
         }
-        return RangeVerifyOutcome.TransportLost(
+
+        return Read0x18Result.TransportLost(
             "$lastTimeoutReason (بعد $MAX_TIMEOUT_RETRIES محاولات)",
             isUsbDetached = !transport.isDeviceAttached()
         )
@@ -2566,7 +2424,8 @@ object Nec78k0ProtocolEngine {
             sts1 = sts1,
             payload = payload,
             rawFrame = rawOut.toByteArray(),
-            checksumValid = checksumValid
+            checksumValid = checksumValid,
+            endByte = etxByte
         )
     }
 

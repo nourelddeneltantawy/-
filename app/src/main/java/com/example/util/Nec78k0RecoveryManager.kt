@@ -43,7 +43,10 @@ object Nec78k0RecoveryManager {
         val lastCompletedBlock: Int,
         val updatedAtMs: Long,
         val partialBlocksPath: String,
-        val block0Touched: Boolean = false
+        val block0Touched: Boolean = false,
+        val block0OriginalExtracted: Boolean = false,
+        val block0DiffNextIndex: Int = 0,
+        val block0DiffPrevCs: Int = -1
     ) {
         val flashSizeBytes: Int
             get() = lastAddress + 1
@@ -101,6 +104,9 @@ object Nec78k0RecoveryManager {
             put("updatedAtMs", session.updatedAtMs)
             put("partialBlocksPath", canonicalPartial)
             put("block0Touched", session.block0Touched || session.stage != RecoveryStage.DETECTED || session.lastCompletedBlock >= 0)
+            put("block0OriginalExtracted", session.block0OriginalExtracted)
+            put("block0DiffNextIndex", session.block0DiffNextIndex)
+            put("block0DiffPrevCs", session.block0DiffPrevCs)
         }
         writeBytesAtomically(target, json.toString(2).toByteArray(Charsets.UTF_8))
         return target
@@ -204,7 +210,10 @@ object Nec78k0RecoveryManager {
                 lastCompletedBlock = lastDone,
                 updatedAtMs = obj.optLong("updatedAtMs", file.lastModified()),
                 partialBlocksPath = obj.optString("partialBlocksPath", ""),
-                block0Touched = obj.optBoolean("block0Touched", stage != RecoveryStage.DETECTED || lastDone >= 0)
+                block0Touched = obj.optBoolean("block0Touched", stage != RecoveryStage.DETECTED || lastDone >= 0),
+                block0OriginalExtracted = obj.optBoolean("block0OriginalExtracted", false),
+                block0DiffNextIndex = obj.optInt("block0DiffNextIndex", 0),
+                block0DiffPrevCs = obj.optInt("block0DiffPrevCs", -1)
             )
         } catch (_: Throwable) {
             null
