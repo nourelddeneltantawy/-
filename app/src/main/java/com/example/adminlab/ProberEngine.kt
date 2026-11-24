@@ -101,6 +101,8 @@ class ProberEngine(context: Context) {
     @Volatile
     private var lastSyncLock: SyncLock? = null
     @Volatile
+    private var activeWinningOscPayload: ByteArray? = null
+    @Volatile
     private var pendingConfirmDeferred: CompletableDeferred<Boolean>? = null
 
     private val transport = ProberUsbTransport(
@@ -156,6 +158,7 @@ class ProberEngine(context: Context) {
         if (activeJob?.isActive == true) return
         val family = _state.value.selectedFamily
         lastSyncLock = null
+        activeWinningOscPayload = null
 
         activeJob = scope.launch {
             _state.value = _state.value.copy(
@@ -214,6 +217,8 @@ class ProberEngine(context: Context) {
     fun bypassSyncAndRunStages2To4() {
         if (activeJob?.isActive == true) return
         val family = _state.value.selectedFamily
+        lastSyncLock = null
+        activeWinningOscPayload = null
 
         activeJob = scope.launch {
             val defaultBaud = if (family == ProberTargetFamily.STM32_UART) 115200 else 9600
@@ -384,6 +389,7 @@ class ProberEngine(context: Context) {
         val c0Bytes = if (sigCapture.rawC0Payload.isNotEmpty()) sigCapture.rawC0Payload else autoId.rawC0Payload
         val (stage4Summary, winningOscCmdPayload) = runStage4DynamicFamilyAlgorithms(sync, summary, c0Bytes)
         summary = stage4Summary
+        activeWinningOscPayload = winningOscCmdPayload
         updateStep(
             "stage4_timing_bounds",
             ChecklistStepStatus.PASSED,
@@ -393,11 +399,18 @@ class ProberEngine(context: Context) {
 
         // Lock winning oscillator frequency into the session before Stage 5!
         if (winningOscCmdPayload != null && sync.framing == DetectedFraming.NEC_STX_ETX) {
-            resyncLight(sync)
-            transport.transceive(
+            ensureBootloaderReady(sync, "تثبيت التردد الفائز 0x90 قبل المرحلة 5", relockOsc = false)
+            var lockRx = transport.transceive(
                 buildNecCommandFrame(0x90, winningOscCmdPayload),
-                12, 200, "Lock Crystal Matrix [0x90 -> ${winningOscCmdPayload.toHexStr()}]", stopOnCompleteNecFrame = true
+                12, 220, "Lock Crystal Matrix [0x90 -> ${winningOscCmdPayload.toHexStr()}]", stopOnCompleteNecFrame = true
             )
+            if (lockRx.isEmpty()) {
+                hardwareResetAndResync(sync, "إعادة تزامن لتثبيت 0x90", relockOsc = false)
+                lockRx = transport.transceive(
+                    buildNecCommandFrame(0x90, winningOscCmdPayload),
+                    12, 220, "Lock Crystal Matrix Retry [0x90 -> ${winningOscCmdPayload.toHexStr()}]", stopOnCompleteNecFrame = true
+                )
+            }
         }
 
         // STAGE 5: Sequential Modal Warning Dialog (No Hot-Swap!)
@@ -407,6 +420,7 @@ class ProberEngine(context: Context) {
                 advancedSchoolsNotes = "المعالج مفتوح للسحب الآمن ($winningReadDesc) — اكتملت المراحل 1..4 دون لمس الفلاش."
             )
             updateSummaryAndBlueprint(finalSummary)
+            ensureBootloaderReady(sync, "تهيئة المرحلة 6", relockOsc = true)
             finalSummary = runStage6UniversalLiveReadProof(sync, finalSummary, userCancelledStage5 = false)
             updateSummaryAndBlueprint(finalSummary)
             _state.value = _state.value.copy(
@@ -1081,6 +1095,7 @@ class ProberEngine(context: Context) {
         }
 
         val candidateBytes = mutableListOf<Pair<Int, Int>>()
+        var consecutiveNoReply = 0
         for (cmd in 0x00..0xFF) {
             currentCoroutineContext().ensureActive()
             if (cmd % 32 == 0) {
@@ -1110,7 +1125,7 @@ class ProberEngine(context: Context) {
                 buildNecCommandFrame(cmd)
             }
 
-            val rx = transport.transceive(
+            var rx = transport.transceive(
                 txBytes = tx,
                 expectedMax = 12,
                 timeoutMs = 60,
@@ -1118,6 +1133,26 @@ class ProberEngine(context: Context) {
                 stopOnCompleteNecFrame = true,
                 logTxRx = false
             )
+            if (rx.isEmpty() && sync.framing == DetectedFraming.NEC_STX_ETX) {
+                consecutiveNoReply++
+                if (consecutiveNoReply >= 3 || cmd == 0x90 || cmd == 0x9A || cmd == 0xA0) {
+                    consecutiveNoReply = 0
+                    val ping = transport.transceive(buildNecCommandFrame(0x00), 12, 140, "Sweep Ping", stopOnCompleteNecFrame = true, logTxRx = false)
+                    if (parseNecStatus(ping) != ACK_NEC) {
+                        hardwareResetAndResync(sync, "استعادة التزامن في المرحلة 3 عند الأمر 0x%02X".format(cmd), relockOsc = false)
+                        rx = transport.transceive(
+                            txBytes = tx,
+                            expectedMax = 12,
+                            timeoutMs = 70,
+                            label = "Sweep Retry 0x%02X".format(cmd),
+                            stopOnCompleteNecFrame = true,
+                            logTxRx = false
+                        )
+                    }
+                }
+            } else {
+                consecutiveNoReply = 0
+            }
             if (rx.isEmpty()) continue
 
             val sts = if (sync.framing == DetectedFraming.NEC_STX_ETX) parseNecStatus(rx) else (rx[0].toInt() and 0xFF)
@@ -1127,6 +1162,7 @@ class ProberEngine(context: Context) {
             }
         }
 
+        ensureBootloaderReady(sync, "تأكيد الجاهزية قبل فحص أطوال LEN", relockOsc = false)
         for ((cmd, initialSts) in candidateBytes) {
             currentCoroutineContext().ensureActive()
             val detectedLen = probeExactParamLen(sync, cmd, initialSts)
@@ -1161,11 +1197,11 @@ class ProberEngine(context: Context) {
                 }
                 cmd == 0x9A && lenArgs == 1 -> byteArrayOf(0x00)
                 cmd == 0x90 && lenArgs == 1 -> byteArrayOf(0x00)
-                cmd == 0x90 && lenArgs == 4 -> byteArrayOf(0x08, 0x00, 0x00, 0x06)
+                cmd == 0x90 && lenArgs == 4 -> byteArrayOf(0x80.toByte(), 0x00, 0x06, 0x05)
                 else -> ByteArray(lenArgs) { fillByte }
             }
 
-            val rx = transport.transceive(
+            var rx = transport.transceive(
                 txBytes = buildNecCommandFrame(cmd, args),
                 expectedMax = 12,
                 timeoutMs = 110,
@@ -1173,9 +1209,20 @@ class ProberEngine(context: Context) {
                 stopOnCompleteNecFrame = true,
                 logTxRx = false
             )
+            if (rx.isEmpty() && sync.framing == DetectedFraming.NEC_STX_ETX) {
+                hardwareResetAndResync(sync, "انقطاع الاستجابة في فحص LEN=$lenArgs للأمر 0x%02X".format(cmd), relockOsc = false)
+                rx = transport.transceive(
+                    txBytes = buildNecCommandFrame(cmd, args),
+                    expectedMax = 12,
+                    timeoutMs = 120,
+                    label = "LEN=$lenArgs Retry [0x%02X]".format(cmd),
+                    stopOnCompleteNecFrame = true,
+                    logTxRx = false
+                )
+            }
             val sts = parseNecStatus(rx)
             if (sts == ACK_NEC || sts == STS_BLANK_CHECK_ERROR) {
-                if (cmd == 0x13 && sts == ACK_NEC) resyncLight(sync)
+                if (cmd == 0x13 && sts == ACK_NEC) ensureBootloaderReady(sync, "تنظيف بعد 0x13", relockOsc = false)
                 return lenArgs
             }
         }
@@ -1216,6 +1263,8 @@ class ProberEngine(context: Context) {
         var measuredFrameToFrameMs = 18
 
         if (sync.framing == DetectedFraming.NEC_STX_ETX) {
+            ensureBootloaderReady(sync, "بداية المرحلة 4", relockOsc = false)
+
             // 4.1: Dynamic Flash Size Boundary Probe (8KB -> 512KB)
             val c0ParsedEnd = parseNecSignatureEndAddress(rawC0Payload)
             val endCandidates = listOf(
@@ -1232,7 +1281,11 @@ class ProberEngine(context: Context) {
                 currentCoroutineContext().ensureActive()
                 val t0 = System.currentTimeMillis()
                 val csCmd = buildNecCommandFrame(0xB0, addrRangeBytes(0x000000, endAddr))
-                val rx = transport.transceive(csCmd, 16, 280, "4.1 Boundary 0xB0 [$label]", stopOnCompleteNecFrame = true)
+                var rx = transport.transceive(csCmd, 16, 280, "4.1 Boundary 0xB0 [$label]", stopOnCompleteNecFrame = true)
+                if (rx.isEmpty()) {
+                    hardwareResetAndResync(sync, "4.1 Boundary 0xB0 Timeout [$label]", relockOsc = false)
+                    rx = transport.transceive(csCmd, 16, 280, "4.1 Boundary 0xB0 Retry [$label]", stopOnCompleteNecFrame = true)
+                }
                 val sts = parseNecStatus(rx)
                 if (sts == ACK_NEC || parseChecksum16(rx) != null) {
                     rttSamples.add((System.currentTimeMillis() - t0).toInt())
@@ -1251,10 +1304,18 @@ class ProberEngine(context: Context) {
             for (bSize in listOf(1024, 512, 2048, 4096)) {
                 currentCoroutineContext().ensureActive()
                 val endOff = bSize - 1
-                val rx = transport.transceive(
-                    buildNecCommandFrame(0x32, byteArrayOf(0x00, 0x00, 0x00, 0x00, ((endOff ushr 8) and 0xFF).toByte(), (endOff and 0xFF).toByte())),
+                val cmd32 = buildNecCommandFrame(0x32, byteArrayOf(0x00, 0x00, 0x00, 0x00, ((endOff ushr 8) and 0xFF).toByte(), (endOff and 0xFF).toByte()))
+                var rx = transport.transceive(
+                    cmd32,
                     12, 220, "4.1 Block Probe 0x32 [${bSize}B]", stopOnCompleteNecFrame = true
                 )
+                if (rx.isEmpty()) {
+                    hardwareResetAndResync(sync, "4.1 Block Probe 0x32 Timeout [${bSize}B]", relockOsc = false)
+                    rx = transport.transceive(
+                        cmd32,
+                        12, 220, "4.1 Block Probe 0x32 Retry [${bSize}B]", stopOnCompleteNecFrame = true
+                    )
+                }
                 val sts = parseNecStatus(rx)
                 if (sts == ACK_NEC || sts == STS_BLANK_CHECK_ERROR) {
                     blockSize = bSize
@@ -1262,8 +1323,26 @@ class ProberEngine(context: Context) {
                 }
             }
 
-            // 4.2: COMPLETE CRYSTAL MATRIX FOR 0x90 (4-byte 5V 0x06 / 0x00 / 3.3V 0x03, then 1-byte 0x00..0x14)
+            // 4.2: COMPLETE CRYSTAL MATRIX FOR 0x90 (Official NEC 78K0 Mantissa+Exponent+Voltage first, then legacy 4B & 1B)
+            ensureBootloaderReady(sync, "تهيئة مصفوفة التردد 0x90", relockOsc = false)
             val matrix4B = listOf(
+                // Official NEC 78K0 Datasheet Format: [Freq_BCD, Freq_Dec, PowerOf10, Voltage_V] @ 5.0V (0x05)
+                Triple("8.00 MHz (NEC Official 5.0V)", byteArrayOf(0x80.toByte(), 0x00, 0x06, 0x05), "8.00 MHz (5.0V)"),
+                Triple("4.00 MHz (NEC Official 5.0V)", byteArrayOf(0x40, 0x00, 0x06, 0x05), "4.00 MHz (5.0V)"),
+                Triple("5.00 MHz (NEC Official 5.0V)", byteArrayOf(0x50, 0x00, 0x06, 0x05), "5.00 MHz (5.0V)"),
+                Triple("10.00 MHz (NEC Official 5.0V)", byteArrayOf(0x10, 0x00, 0x07, 0x05), "10.00 MHz (5.0V)"),
+                Triple("12.00 MHz (NEC Official 5.0V)", byteArrayOf(0x12, 0x00, 0x07, 0x05), "12.00 MHz (5.0V)"),
+                Triple("16.00 MHz (NEC Official 5.0V)", byteArrayOf(0x16, 0x00, 0x07, 0x05), "16.00 MHz (5.0V)"),
+                Triple("20.00 MHz (NEC Official 5.0V)", byteArrayOf(0x20, 0x00, 0x07, 0x05), "20.00 MHz (5.0V)"),
+                // Official NEC 78K0 Datasheet Format @ 3.3V (0x03)
+                Triple("8.00 MHz (NEC Official 3.3V)", byteArrayOf(0x80.toByte(), 0x00, 0x06, 0x03), "8.00 MHz (3.3V)"),
+                Triple("4.00 MHz (NEC Official 3.3V)", byteArrayOf(0x40, 0x00, 0x06, 0x03), "4.00 MHz (3.3V)"),
+                Triple("5.00 MHz (NEC Official 3.3V)", byteArrayOf(0x50, 0x00, 0x06, 0x03), "5.00 MHz (3.3V)"),
+                Triple("10.00 MHz (NEC Official 3.3V)", byteArrayOf(0x10, 0x00, 0x07, 0x03), "10.00 MHz (3.3V)"),
+                Triple("12.00 MHz (NEC Official 3.3V)", byteArrayOf(0x12, 0x00, 0x07, 0x03), "12.00 MHz (3.3V)"),
+                Triple("16.00 MHz (NEC Official 3.3V)", byteArrayOf(0x16, 0x00, 0x07, 0x03), "16.00 MHz (3.3V)"),
+                Triple("20.00 MHz (NEC Official 3.3V)", byteArrayOf(0x20, 0x00, 0x07, 0x03), "20.00 MHz (3.3V)"),
+                // Legacy fallback entries
                 Triple("8 MHz (5V)", byteArrayOf(0x08, 0x00, 0x00, 0x06), "8 MHz (5V)"),
                 Triple("8 MHz (Default)", byteArrayOf(0x08, 0x00, 0x00, 0x00), "8 MHz (Default)"),
                 Triple("4 MHz (5V)", byteArrayOf(0x04, 0x00, 0x00, 0x06), "4 MHz (5V)"),
@@ -1275,7 +1354,7 @@ class ProberEngine(context: Context) {
                 Triple("12 MHz (0x0C 5V)", byteArrayOf(0x0C, 0x00, 0x00, 0x06), "12 MHz (5V)"),
                 Triple("16/22 MHz (0x16 5V)", byteArrayOf(0x16, 0x00, 0x00, 0x06), "16/22 MHz (5V)"),
                 Triple("20 MHz (0x20 5V)", byteArrayOf(0x20, 0x00, 0x00, 0x06), "20 MHz (5V)"),
-                // 3.3V variants (0x03)
+                // 3.3V legacy variants (0x03)
                 Triple("8 MHz (3.3V)", byteArrayOf(0x08, 0x00, 0x00, 0x03), "8 MHz (3.3V)"),
                 Triple("4 MHz (3.3V)", byteArrayOf(0x04, 0x00, 0x00, 0x03), "4 MHz (3.3V)"),
                 Triple("5 MHz (3.3V)", byteArrayOf(0x05, 0x00, 0x00, 0x03), "5 MHz (3.3V)"),
@@ -1291,14 +1370,23 @@ class ProberEngine(context: Context) {
             val matrixLogs = mutableListOf<String>()
             for ((label, payload, mhzLabel) in matrix4B) {
                 currentCoroutineContext().ensureActive()
-                val rx = transport.transceive(
+                var rx = transport.transceive(
                     buildNecCommandFrame(0x90, payload),
-                    12, 180, "4.2 Crystal 4B [0x90 ${payload.toHexStr()}]", stopOnCompleteNecFrame = true
+                    12, 200, "4.2 Crystal 4B [$label -> ${payload.toHexStr()}]", stopOnCompleteNecFrame = true
                 )
-                val sts = parseNecStatus(rx)
+                var sts = parseNecStatus(rx)
+                if (rx.isEmpty() || sts == null) {
+                    hardwareResetAndResync(sync, "0x90 بدون رد بعد ${payload.toHexStr()}", relockOsc = false)
+                    rx = transport.transceive(
+                        buildNecCommandFrame(0x90, payload),
+                        12, 200, "4.2 Crystal 4B Retry [${payload.toHexStr()}]", stopOnCompleteNecFrame = true
+                    )
+                    sts = parseNecStatus(rx)
+                }
                 matrixLogs.add("${payload.toHexStr()}=${formatByte(sts)}")
                 if (sts == ACK_NEC) {
                     winningOscPayload = payload
+                    activeWinningOscPayload = payload
                     winningOscText = "0x90 [${payload.toHexStr()}] -> ACK 0x06"
                     detectedCrystal = mhzLabel
                     appendLog(ProberLogDirection.SUCCESS, "✅ مصفوفة الكريستالات: نجح التردد $mhzLabel (${payload.toHexStr()}) بـ ACK 0x06!")
@@ -1307,6 +1395,7 @@ class ProberEngine(context: Context) {
             }
 
             if (winningOscPayload == null) {
+                ensureBootloaderReady(sync, "استئناف مصفوفة 0x90 (1-بايت)", relockOsc = false)
                 val matrix1B = listOf(
                     0x00 to "Internal Oscillator (0x00)",
                     0x04 to "4 MHz (1B)",
@@ -1322,14 +1411,23 @@ class ProberEngine(context: Context) {
                 for ((code, mhzLabel) in matrix1B) {
                     currentCoroutineContext().ensureActive()
                     val payload = byteArrayOf(code.toByte())
-                    val rx = transport.transceive(
+                    var rx = transport.transceive(
                         buildNecCommandFrame(0x90, payload),
-                        12, 180, "4.2 Crystal 1B [0x90 0x%02X]".format(code), stopOnCompleteNecFrame = true
+                        12, 200, "4.2 Crystal 1B [0x90 0x%02X]".format(code), stopOnCompleteNecFrame = true
                     )
-                    val sts = parseNecStatus(rx)
+                    var sts = parseNecStatus(rx)
+                    if (rx.isEmpty() || sts == null) {
+                        hardwareResetAndResync(sync, "0x90 (1B) بدون رد بعد 0x%02X".format(code), relockOsc = false)
+                        rx = transport.transceive(
+                            buildNecCommandFrame(0x90, payload),
+                            12, 200, "4.2 Crystal 1B Retry [0x90 0x%02X]".format(code), stopOnCompleteNecFrame = true
+                        )
+                        sts = parseNecStatus(rx)
+                    }
                     matrixLogs.add("0x%02X=%s".format(code, formatByte(sts)))
                     if (sts == ACK_NEC) {
                         winningOscPayload = payload
+                        activeWinningOscPayload = payload
                         winningOscText = "0x90 [0x%02X] -> ACK 0x06".format(code)
                         detectedCrystal = mhzLabel
                         appendLog(ProberLogDirection.SUCCESS, "✅ مصفوفة الكريستالات (1-بايت): نجح $mhzLabel بـ ACK 0x06!")
@@ -1346,15 +1444,23 @@ class ProberEngine(context: Context) {
             }
 
             // 4.3: Multi-Stage Baud Rate State Machine (0x9A across 19200..115200 + 0x00 Ping verify)
+            ensureBootloaderReady(sync, "تهيئة تبديل السرعة 0x9A", relockOsc = true)
             val baudTargets = listOf(19200 to 0x01, 38400 to 0x02, 57600 to 0x03, 115200 to 0x04)
             val switchSamples = mutableListOf<Int>()
             for ((targetBaud, code) in baudTargets) {
                 currentCoroutineContext().ensureActive()
                 val tStart = System.currentTimeMillis()
-                val swRx = transport.transceive(
+                var swRx = transport.transceive(
                     buildNecCommandFrame(0x9A, byteArrayOf(code.toByte())),
                     12, 220, "4.3 Baud 0x9A [$targetBaud code=0x%02X]".format(code), stopOnCompleteNecFrame = true
                 )
+                if (swRx.isEmpty()) {
+                    hardwareResetAndResync(sync, "4.3 Baud 0x9A Timeout [$targetBaud]", relockOsc = true)
+                    swRx = transport.transceive(
+                        buildNecCommandFrame(0x9A, byteArrayOf(code.toByte())),
+                        12, 220, "4.3 Baud 0x9A Retry [$targetBaud code=0x%02X]".format(code), stopOnCompleteNecFrame = true
+                    )
+                }
                 if (parseNecStatus(swRx) == ACK_NEC) {
                     transport.configureUart(targetBaud, evenParity = sync.evenParity)
                     delay(18)
@@ -1369,24 +1475,26 @@ class ProberEngine(context: Context) {
                         switchSamples.add(dtSwitch)
                         appendLog(ProberLogDirection.SUCCESS, "✅ تأكيد سرعة $targetBaud bps عبر 0x9A + Ping 0x00!")
                     }
-                    transport.configureUart(sync.baudRate, evenParity = sync.evenParity)
-                    if (sync.useResetToggle) {
-                        transport.pulseResetSequence(sync.inverted, holdResetMs = sync.resetPulseMs.toLong(), settleMs = sync.postResetDelayMs.toLong())
-                        resyncHandshakeQuiet(sync)
-                    } else {
-                        resyncLight(sync)
-                    }
+                    hardwareResetAndResync(sync, "العودة للسرعة الأساسية بعد اختبار $targetBaud bps", relockOsc = true)
                 }
             }
             if (switchSamples.isNotEmpty()) measuredBaudSwitchMs = switchSamples.average().toInt().coerceIn(10, 120)
             baudRule = "Connect at ${sync.baudRate} ${sync.parityMode} -> lock 0x90 ($winningOscText) -> send 0x9A [code] -> wait ${measuredBaudSwitchMs}ms -> reconfigure host UART -> confirm 0x00 Ping -> Supported: ${supportedBauds.distinct().sorted().joinToString("/")} bps"
 
             // 4.4: STX (0x02) Frame Probe (256B LEN=0x00 & 128B LEN=0x80 with ETB/ETX) + 6-Point Timing Map
+            ensureBootloaderReady(sync, "تهيئة اختبار إطارات STX", relockOsc = true)
             val tCmd256 = System.currentTimeMillis()
-            val h256 = transport.transceive(
+            var h256 = transport.transceive(
                 buildNecCommandFrame(0x13, byteArrayOf(0x00, 0x00, 0x00, 0x00, 0x00, 0xFF.toByte())),
                 12, 240, "4.4 STX 256B Header [0x13]", stopOnCompleteNecFrame = true
             )
+            if (h256.isEmpty()) {
+                hardwareResetAndResync(sync, "4.4 STX 256B Header Timeout", relockOsc = true)
+                h256 = transport.transceive(
+                    buildNecCommandFrame(0x13, byteArrayOf(0x00, 0x00, 0x00, 0x00, 0x00, 0xFF.toByte())),
+                    12, 240, "4.4 STX 256B Header Retry [0x13]", stopOnCompleteNecFrame = true
+                )
+            }
             if (parseNecStatus(h256) == ACK_NEC) {
                 measuredCmdToDataMs = (System.currentTimeMillis() - tCmd256).toInt().coerceIn(5, 80)
                 delay(5)
@@ -1395,6 +1503,9 @@ class ProberEngine(context: Context) {
                     buildNecDataFrame(ByteArray(256) { 0xFF.toByte() }, isLast = true),
                     16, 480, "4.4 STX 256B Frame (LEN=0x00, ETX=0x03)", stopOnCompleteNecFrame = true, paced64B = true
                 )
+                if (rx256.isEmpty()) {
+                    hardwareResetAndResync(sync, "4.4 STX 256B Data Timeout", relockOsc = true)
+                }
                 val sts256 = effectiveNecStatus(rx256)
                 if (sts256 == ACK_NEC || sts256 == STS_VERIFY_ERROR || sts256 == STS_VERIFY_ERROR_1C) {
                     supportedStxPages.add(256)
@@ -1403,15 +1514,25 @@ class ProberEngine(context: Context) {
                 }
             }
 
-            val h128 = transport.transceive(
+            var h128 = transport.transceive(
                 buildNecCommandFrame(0x13, byteArrayOf(0x00, 0x00, 0x00, 0x00, 0x00, 0x7F.toByte())),
                 12, 240, "4.4 STX 128B Header [0x13]", stopOnCompleteNecFrame = true
             )
+            if (h128.isEmpty()) {
+                hardwareResetAndResync(sync, "4.4 STX 128B Header Timeout", relockOsc = true)
+                h128 = transport.transceive(
+                    buildNecCommandFrame(0x13, byteArrayOf(0x00, 0x00, 0x00, 0x00, 0x00, 0x7F.toByte())),
+                    12, 240, "4.4 STX 128B Header Retry [0x13]", stopOnCompleteNecFrame = true
+                )
+            }
             if (parseNecStatus(h128) == ACK_NEC) {
                 val rx128 = transport.transceive(
                     buildNecDataFrame(ByteArray(128) { 0xFF.toByte() }, isLast = true),
                     16, 380, "4.4 STX 128B Frame (LEN=0x80, ETX=0x03)", stopOnCompleteNecFrame = true, paced64B = true
                 )
+                if (rx128.isEmpty()) {
+                    hardwareResetAndResync(sync, "4.4 STX 128B Data Timeout", relockOsc = true)
+                }
                 val sts128 = effectiveNecStatus(rx128)
                 if (sts128 == ACK_NEC || sts128 == STS_VERIFY_ERROR || sts128 == STS_VERIFY_ERROR_1C) {
                     supportedStxPages.add(128)
@@ -1432,12 +1553,15 @@ class ProberEngine(context: Context) {
                             buildNecDataFrame(ByteArray(128) { 0xFF.toByte() }, isLast = true),
                             16, 360, "4.4 STX 128B #2 (ETX=0x03)", stopOnCompleteNecFrame = true, paced64B = true
                         )
+                        if (rxEtx.isEmpty()) {
+                            hardwareResetAndResync(sync, "4.4 STX Dual-128B Timeout", relockOsc = true)
+                        }
                         val stsLast = effectiveNecStatus(rxEtx)
                         if (stsLast == ACK_NEC || stsLast == STS_VERIFY_ERROR || stsLast == STS_VERIFY_ERROR_1C) {
                             supportedStxPages.add(128)
                         }
                     } else {
-                        resyncLight(sync)
+                        hardwareResetAndResync(sync, "4.4 STX ETB Recovery", relockOsc = true)
                     }
                 }
             }
@@ -1530,11 +1654,15 @@ class ProberEngine(context: Context) {
             )
             updateStep("stage5_safety_gate", stepBadge, stepDetail)
             updateSummaryAndBlueprint(workingSummary)
+            hardwareResetAndResync(sync, "تهيئة وإعادة تزامن للمرحلة 6 بعد المرحلة 5", relockOsc = true)
             workingSummary = runStage6UniversalLiveReadProof(sync, workingSummary, userCancelledStage5 = userCancelled)
             updateSummaryAndBlueprint(workingSummary)
+            val finalBanner = if (workingSummary.liveReadProofPassed) {
+                "$bannerMsg | ✅ المرحلة 6: ${workingSummary.liveReadProofFirst32Hex.take(23)}..."
+            } else bannerMsg
             _state.value = _state.value.copy(
                 phase = ProberStagePhase.COMPLETED,
-                stageBanner = bannerMsg,
+                stageBanner = finalBanner,
                 pendingConfirmDialog = null
             )
         }
@@ -1565,7 +1693,7 @@ class ProberEngine(context: Context) {
             stageBanner = "جاري تنفيذ الخطوة 5.1: تصفير Block 0 وحساب فرق البصمة..."
         )
         updateStep("stage5_safety_gate", ChecklistStepStatus.RUNNING, "جاري تنفيذ 5.1: قراءة البصمة 0xB0 ثم مسح Block 0...")
-        resyncLight(sync)
+        ensureBootloaderReady(sync, "تهيئة الخطوة 5.1", relockOsc = true)
 
         val step1Result = executeStage5Step1(sync)
         results.add(step1Result)
@@ -1600,7 +1728,7 @@ class ProberEngine(context: Context) {
             stageBanner = "جاري تنفيذ الخطوة 5.2: اختبار الكتابة الجزئية 0x40 STX..."
         )
         updateStep("stage5_safety_gate", ChecklistStepStatus.RUNNING, "جاري تنفيذ 5.2: الكتابة الجزئية 0x40 + STX 0xFE...")
-        resyncLight(sync)
+        ensureBootloaderReady(sync, "تهيئة الخطوة 5.2", relockOsc = true)
 
         val step2Result = executeStage5Step2(sync)
         results.add(step2Result)
@@ -1635,7 +1763,7 @@ class ProberEngine(context: Context) {
             stageBanner = "جاري تنفيذ الخطوة 5.3: المسح الكلي للرقاقة 0x20 وفك القفل..."
         )
         updateStep("stage5_safety_gate", ChecklistStepStatus.RUNNING, "جاري تنفيذ 5.3: المسح الكلي 0x20 وقياس eraseWriteBusyWaitMs...")
-        resyncLight(sync)
+        ensureBootloaderReady(sync, "تهيئة الخطوة 5.3", relockOsc = true)
 
         val step3Result = executeStage5Step3(sync)
         results.add(step3Result)
@@ -1662,18 +1790,31 @@ class ProberEngine(context: Context) {
     private suspend fun executeStage5Step1(sync: SyncLock): Stage5StepResult {
         val t0 = System.currentTimeMillis()
         if (sync.framing == DetectedFraming.NEC_STX_ETX) {
-            val b0Range = byteArrayOf(0x00, 0x00, 0x00, 0x00, 0x03, 0xFF.toByte())
-            val csBeforeRx = transport.transceive(buildNecCommandFrame(0xB0, b0Range), 16, 400, "5.1 Block-0 CS Before [0xB0]", stopOnCompleteNecFrame = true)
+            val blockEnd = ((_state.value.blueprintSummary.blockSizeBytes ?: 1024) - 1).coerceAtLeast(0x3FF)
+            val b0Range = addrRangeBytes(0x000000, blockEnd)
+            var csBeforeRx = transport.transceive(buildNecCommandFrame(0xB0, b0Range), 16, 400, "5.1 Block-0 CS Before [0xB0]", stopOnCompleteNecFrame = true)
+            if (csBeforeRx.isEmpty()) {
+                hardwareResetAndResync(sync, "5.1 0xB0 Before Timeout", relockOsc = true)
+                csBeforeRx = transport.transceive(buildNecCommandFrame(0xB0, b0Range), 16, 400, "5.1 Block-0 CS Before Retry [0xB0]", stopOnCompleteNecFrame = true)
+            }
             val csBefore = parseChecksum16(csBeforeRx) ?: run {
                 if (parseNecStatus(csBeforeRx) == ACK_NEC) parseChecksum16(transport.readFollowUp(12, 300, true)) else null
             }
 
-            val eraseRx = transport.transceive(buildNecCommandFrame(0x22, b0Range), 12, 1300, "5.1 Block-0 Erase [0x22]", stopOnCompleteNecFrame = true)
+            var eraseRx = transport.transceive(buildNecCommandFrame(0x22, b0Range), 12, 1300, "5.1 Block-0 Erase [0x22]", stopOnCompleteNecFrame = true)
+            if (eraseRx.isEmpty()) {
+                hardwareResetAndResync(sync, "5.1 0x22 Erase Timeout", relockOsc = true)
+                eraseRx = transport.transceive(buildNecCommandFrame(0x22, b0Range), 12, 1300, "5.1 Block-0 Erase Retry [0x22]", stopOnCompleteNecFrame = true)
+            }
             val eraseSts = parseNecStatus(eraseRx)
             var csAfter: Int? = null
             if (eraseSts == ACK_NEC) {
                 delay(20)
-                val csAfterRx = transport.transceive(buildNecCommandFrame(0xB0, b0Range), 16, 400, "5.1 Block-0 CS After [0xB0]", stopOnCompleteNecFrame = true)
+                var csAfterRx = transport.transceive(buildNecCommandFrame(0xB0, b0Range), 16, 400, "5.1 Block-0 CS After [0xB0]", stopOnCompleteNecFrame = true)
+                if (csAfterRx.isEmpty()) {
+                    hardwareResetAndResync(sync, "5.1 0xB0 After Timeout", relockOsc = true)
+                    csAfterRx = transport.transceive(buildNecCommandFrame(0xB0, b0Range), 16, 400, "5.1 Block-0 CS After Retry [0xB0]", stopOnCompleteNecFrame = true)
+                }
                 csAfter = parseChecksum16(csAfterRx) ?: run {
                     if (parseNecStatus(csAfterRx) == ACK_NEC) parseChecksum16(transport.readFollowUp(12, 300, true)) else null
                 }
@@ -1704,32 +1845,77 @@ class ProberEngine(context: Context) {
     private suspend fun executeStage5Step2(sync: SyncLock): Stage5StepResult {
         val t0 = System.currentTimeMillis()
         if (sync.framing == DetectedFraming.NEC_STX_ETX) {
-            val b0Range = byteArrayOf(0x00, 0x00, 0x00, 0x00, 0x03, 0xFF.toByte())
+            val blockSize = (_state.value.blueprintSummary.blockSizeBytes ?: 1024).coerceAtLeast(256)
+            val pageSize = (_state.value.blueprintSummary.pageSizeBytes ?: 256).coerceIn(128, 256)
+            val b0Range = addrRangeBytes(0x000000, blockSize - 1)
             val partialRange = byteArrayOf(0x00, 0x00, 0x00, 0x00, 0x00, 0x03)
+
             var partHdrRx = transport.transceive(buildNecCommandFrame(0x40, partialRange), 12, 420, "5.2 Partial Write 4B [0x40]", stopOnCompleteNecFrame = true)
+            if (partHdrRx.isEmpty()) {
+                hardwareResetAndResync(sync, "5.2 0x40 4B Header Timeout", relockOsc = true)
+                partHdrRx = transport.transceive(buildNecCommandFrame(0x40, partialRange), 12, 420, "5.2 Partial Write 4B Retry [0x40]", stopOnCompleteNecFrame = true)
+            }
             var partRangeUsed = "4B (0x0000..0x0003)"
             var partSts = parseNecStatus(partHdrRx)
-            var partFrameSize = 4
-            if (partSts != ACK_NEC) {
-                partHdrRx = transport.transceive(buildNecCommandFrame(0x40, b0Range), 12, 420, "5.2 Partial Write Block-0 [0x40]", stopOnCompleteNecFrame = true)
-                partRangeUsed = "1KB Block-0 (0x0000..0x03FF)"
-                partSts = parseNecStatus(partHdrRx)
-                partFrameSize = 256
-            }
             var dataOverwriteAck = false
+
             if (partSts == ACK_NEC) {
-                val testSlice = ByteArray(partFrameSize) { 0xFF.toByte() }.also { it[0] = 0xFE.toByte() }
-                val stxFrame = buildNecDataFrame(testSlice, isLast = true)
+                val testSlice = ByteArray(4) { 0xFF.toByte() }.also { it[0] = 0xFE.toByte() }
                 val dataRx = transport.transceive(
-                    stxFrame,
-                    12, 700, "5.2 STX Bit-Clear 0xFE [0x40]",
-                    stopOnCompleteNecFrame = true,
-                    paced64B = stxFrame.size > 64
+                    buildNecDataFrame(testSlice, isLast = true),
+                    12, 700, "5.2 STX 4B Bit-Clear 0xFE [0x40]",
+                    stopOnCompleteNecFrame = true
                 )
-                val dSts1 = parseNecStatus(dataRx)
-                val dSts2 = parseNecSecondStatus(dataRx)
-                dataOverwriteAck = (dSts1 == ACK_NEC && (dSts2 == null || dSts2 == ACK_NEC))
+                if (dataRx.isEmpty()) {
+                    hardwareResetAndResync(sync, "5.2 0x40 4B STX Timeout", relockOsc = true)
+                } else {
+                    val dSts1 = parseNecStatus(dataRx)
+                    val dSts2 = parseNecSecondStatus(dataRx)
+                    dataOverwriteAck = (dSts1 == ACK_NEC && (dSts2 == null || dSts2 == ACK_NEC))
+                }
             }
+
+            if (!dataOverwriteAck) {
+                if (partSts == ACK_NEC) {
+                    hardwareResetAndResync(sync, "5.2 التحول لكتابة Block-0 الكامل 0x40", relockOsc = true)
+                }
+                partHdrRx = transport.transceive(buildNecCommandFrame(0x40, b0Range), 12, 450, "5.2 Write Block-0 [0x40]", stopOnCompleteNecFrame = true)
+                if (partHdrRx.isEmpty()) {
+                    hardwareResetAndResync(sync, "5.2 0x40 Block-0 Header Timeout", relockOsc = true)
+                    partHdrRx = transport.transceive(buildNecCommandFrame(0x40, b0Range), 12, 450, "5.2 Write Block-0 Retry [0x40]", stopOnCompleteNecFrame = true)
+                }
+                partRangeUsed = "${blockSize}B Block-0 (0x0000..0x%04X)".format(blockSize - 1)
+                partSts = parseNecStatus(partHdrRx)
+                if (partSts == ACK_NEC) {
+                    val pageCount = (blockSize / pageSize).coerceAtLeast(1)
+                    var allOk = true
+                    for (p in 0 until pageCount) {
+                        val isLast = (p == pageCount - 1)
+                        val slice = ByteArray(pageSize) { 0xFF.toByte() }.also { if (p == 0) it[0] = 0xFE.toByte() }
+                        val stxFrame = buildNecDataFrame(slice, isLast = isLast)
+                        val dataRx = transport.transceive(
+                            stxFrame,
+                            12, if (isLast) 800 else 450,
+                            "5.2 STX Page $p/${pageCount - 1} [0x40]",
+                            stopOnCompleteNecFrame = true,
+                            paced64B = stxFrame.size > 64
+                        )
+                        if (dataRx.isEmpty()) {
+                            hardwareResetAndResync(sync, "5.2 STX Page $p Timeout", relockOsc = true)
+                            allOk = false
+                            break
+                        }
+                        val dSts1 = parseNecStatus(dataRx)
+                        val dSts2 = parseNecSecondStatus(dataRx)
+                        if (dSts1 != ACK_NEC || (dSts2 != null && dSts2 != ACK_NEC)) {
+                            allOk = false
+                            break
+                        }
+                    }
+                    dataOverwriteAck = allOk
+                }
+            }
+
             val dt = (System.currentTimeMillis() - t0).coerceAtLeast(1L)
             val passed = (partSts == ACK_NEC && dataOverwriteAck)
             val detail = when {
@@ -1756,10 +1942,19 @@ class ProberEngine(context: Context) {
     private suspend fun executeStage5Step3(sync: SyncLock): Stage5StepResult {
         val t0 = System.currentTimeMillis()
         if (sync.framing == DetectedFraming.NEC_STX_ETX) {
-            val c5Rx = transport.transceive(buildNecCommandFrame(0xC5), 16, 300, "5.3 Security Query [0xC5]", stopOnCompleteNecFrame = true)
+            var c5Rx = transport.transceive(buildNecCommandFrame(0xC5), 16, 300, "5.3 Security Query [0xC5]", stopOnCompleteNecFrame = true)
+            if (c5Rx.isEmpty()) {
+                hardwareResetAndResync(sync, "5.3 0xC5 Timeout", relockOsc = true)
+                c5Rx = transport.transceive(buildNecCommandFrame(0xC5), 16, 300, "5.3 Security Query Retry [0xC5]", stopOnCompleteNecFrame = true)
+            }
             val c5Ok = parseNecStatus(c5Rx) == ACK_NEC
-            val tErase = System.currentTimeMillis()
-            val chipEraseRx = transport.transceive(buildNecCommandFrame(0x20), 12, 2000, "5.3 Full Chip Erase [0x20]", stopOnCompleteNecFrame = true)
+            var tErase = System.currentTimeMillis()
+            var chipEraseRx = transport.transceive(buildNecCommandFrame(0x20), 12, 2200, "5.3 Full Chip Erase [0x20]", stopOnCompleteNecFrame = true)
+            if (chipEraseRx.isEmpty()) {
+                hardwareResetAndResync(sync, "5.3 0x20 Chip Erase Timeout", relockOsc = true)
+                tErase = System.currentTimeMillis()
+                chipEraseRx = transport.transceive(buildNecCommandFrame(0x20), 12, 2200, "5.3 Full Chip Erase Retry [0x20]", stopOnCompleteNecFrame = true)
+            }
             val eraseDt = (System.currentTimeMillis() - tErase).coerceAtLeast(1L)
             val ceSts = parseNecStatus(chipEraseRx)
             val dt = (System.currentTimeMillis() - t0).coerceAtLeast(1L)
@@ -1802,9 +1997,10 @@ class ProberEngine(context: Context) {
             ChecklistStepStatus.RUNNING,
             "فحص Page 0 (256B) والتحقق من عدم وجود Echo ثم مطابقة الذاكرة..."
         )
-        resyncLight(sync)
+        ensureBootloaderReady(sync, "تهيئة المرحلة 6", relockOsc = true)
 
         val pageSize = (summary.pageSizeBytes ?: 256).coerceIn(128, 256)
+        val blockSize = (summary.blockSizeBytes ?: 1024).coerceAtLeast(pageSize)
         val page0Start = if (sync.framing == DetectedFraming.STM32_ACK) 0x08000000 else 0x000000
         val flashEndAddr = parseFlashEndAddress(summary, sync)
 
@@ -1842,23 +2038,45 @@ class ProberEngine(context: Context) {
             }
         } else if (sync.framing == DetectedFraming.NEC_STX_ETX) {
             // Locked bootloader (no direct Read / no 1B 0xB0): probe blank vs non-blank safely using 0x32 & 0x13
-            val b0Check = transport.transceive(
+            var b0Check = transport.transceive(
                 buildNecCommandFrame(0x32, addrRangeBytes(0x000000, pageSize - 1)),
-                12, 260, "6.0 Blank Check [0x32 Page 0]", stopOnCompleteNecFrame = true
+                12, 280, "6.0 Blank Check [0x32 Page 0]", stopOnCompleteNecFrame = true
             )
+            if (b0Check.isEmpty()) {
+                hardwareResetAndResync(sync, "6.0 Blank Check 0x32 Timeout", relockOsc = true)
+                b0Check = transport.transceive(
+                    buildNecCommandFrame(0x32, addrRangeBytes(0x000000, pageSize - 1)),
+                    12, 280, "6.0 Blank Check Retry [0x32 Page 0]", stopOnCompleteNecFrame = true
+                )
+            }
+            if (parseNecStatus(b0Check) == STS_PARAM_ERROR) {
+                b0Check = transport.transceive(
+                    buildNecCommandFrame(0x32, addrRangeBytes(0x000000, blockSize - 1)),
+                    12, 280, "6.0 Blank Check Block-0 [0x32]", stopOnCompleteNecFrame = true
+                )
+            }
             if (parseNecStatus(b0Check) == ACK_NEC) {
                 isChipBlankOrZero = true
             } else {
-                val hdr = transport.transceive(
+                var hdr = transport.transceive(
                     buildNecCommandFrame(0x13, addrRangeBytes(0x000000, pageSize - 1)),
-                    12, 260, "6.0 Verify 0xFF Probe [0x13 Page 0]", stopOnCompleteNecFrame = true
+                    12, 280, "6.0 Verify 0xFF Probe [0x13 Page 0]", stopOnCompleteNecFrame = true
                 )
+                if (hdr.isEmpty()) {
+                    hardwareResetAndResync(sync, "6.0 Verify 0x13 Header Timeout", relockOsc = true)
+                    hdr = transport.transceive(
+                        buildNecCommandFrame(0x13, addrRangeBytes(0x000000, pageSize - 1)),
+                        12, 280, "6.0 Verify 0xFF Probe Retry [0x13 Page 0]", stopOnCompleteNecFrame = true
+                    )
+                }
                 if (parseNecStatus(hdr) == ACK_NEC) {
                     val vRx = transport.transceive(
                         buildNecDataFrame(ByteArray(pageSize) { 0xFF.toByte() }, isLast = true),
                         16, 480, "6.0 Verify All-0xFF [0x13]", stopOnCompleteNecFrame = true, paced64B = true
                     )
-                    if (effectiveNecStatus(vRx) == ACK_NEC) {
+                    if (vRx.isEmpty()) {
+                        hardwareResetAndResync(sync, "6.0 Verify All-0xFF STX Timeout", relockOsc = true)
+                    } else if (effectiveNecStatus(vRx) == ACK_NEC) {
                         isChipBlankOrZero = true
                     }
                 }
@@ -1969,7 +2187,7 @@ class ProberEngine(context: Context) {
             }
 
             delay(35)
-            resyncLight(sync)
+            ensureBootloaderReady(sync, "تجهيز القراءة/المطابقة بعد الكتابة بالمرحلة 6", relockOsc = true)
 
             // Execute discovered Read command on the exact same address (lastPageStart)
             val (readBack, rbMethod, rbEchoSample) = readFlashPageForProof(sync, summary, lastPageStart, pageSize)
@@ -2007,10 +2225,17 @@ class ProberEngine(context: Context) {
             val (vSup, vPass, vDet) = verifyExtractedPageOnChip(sync, lastPageStart, writePage)
             var csMatched = false
             if (sync.framing == DetectedFraming.NEC_STX_ETX) {
-                val csRx = transport.transceive(
+                var csRx = transport.transceive(
                     buildNecCommandFrame(0xB0, addrRangeBytes(lastPageStart, lastPageEnd)),
                     16, 360, "6.2 Checksum Verify [0xB0 $rangeHex]", stopOnCompleteNecFrame = true
                 )
+                if (csRx.isEmpty()) {
+                    hardwareResetAndResync(sync, "6.2 Checksum Verify 0xB0 Timeout", relockOsc = true)
+                    csRx = transport.transceive(
+                        buildNecCommandFrame(0xB0, addrRangeBytes(lastPageStart, lastPageEnd)),
+                        16, 360, "6.2 Checksum Verify Retry [0xB0 $rangeHex]", stopOnCompleteNecFrame = true
+                    )
+                }
                 val csHw = parseChecksum16(csRx) ?: run {
                     if (parseNecStatus(csRx) == ACK_NEC) parseChecksum16(transport.readFollowUp(12, 280, true)) else null
                 }
@@ -2219,35 +2444,63 @@ class ProberEngine(context: Context) {
         }
 
         val endAddr = startAddr + pageData.size - 1
-        val hdr1 = transport.transceive(
+        var hdr1 = transport.transceive(
             buildNecCommandFrame(0x13, addrRangeBytes(startAddr, endAddr)),
             12, 320, "Stage6 Verify Orig Header [0x13]", stopOnCompleteNecFrame = true
         )
+        if (hdr1.isEmpty()) {
+            hardwareResetAndResync(sync, "Stage6 Verify Orig Header Timeout", relockOsc = true)
+            hdr1 = transport.transceive(
+                buildNecCommandFrame(0x13, addrRangeBytes(startAddr, endAddr)),
+                12, 320, "Stage6 Verify Orig Header Retry [0x13]", stopOnCompleteNecFrame = true
+            )
+        }
         if (parseNecStatus(hdr1) != ACK_NEC) {
             return Triple(false, false, "أمر 0x13 غير مدعوم (${formatByte(parseNecStatus(hdr1))})")
         }
-        val origRx = transport.transceive(
+        var origRx = transport.transceive(
             buildNecDataFrame(pageData, isLast = true),
             16, 620, "Stage6 Verify Original ${pageData.size}B",
             stopOnCompleteNecFrame = true,
             paced64B = pageData.size > 64
         )
+        if (origRx.isEmpty()) {
+            hardwareResetAndResync(sync, "Stage6 Verify Orig Data Timeout", relockOsc = true)
+            val hRetry = transport.transceive(buildNecCommandFrame(0x13, addrRangeBytes(startAddr, endAddr)), 12, 320, "Stage6 Verify Orig Header #2", stopOnCompleteNecFrame = true)
+            if (parseNecStatus(hRetry) == ACK_NEC) {
+                origRx = transport.transceive(buildNecDataFrame(pageData, isLast = true), 16, 620, "Stage6 Verify Original Retry", stopOnCompleteNecFrame = true, paced64B = pageData.size > 64)
+            }
+        }
         val origSts = effectiveNecStatus(origRx)
         delay(15)
 
         val mutated = pageData.copyOf().also { it[0] = (it[0].toInt() xor 0x01).toByte() }
-        val hdr2 = transport.transceive(
+        var hdr2 = transport.transceive(
             buildNecCommandFrame(0x13, addrRangeBytes(startAddr, endAddr)),
             12, 320, "Stage6 Verify Mutated Header [0x13]", stopOnCompleteNecFrame = true
         )
+        if (hdr2.isEmpty()) {
+            hardwareResetAndResync(sync, "Stage6 Verify Mutated Header Timeout", relockOsc = true)
+            hdr2 = transport.transceive(
+                buildNecCommandFrame(0x13, addrRangeBytes(startAddr, endAddr)),
+                12, 320, "Stage6 Verify Mutated Header Retry [0x13]", stopOnCompleteNecFrame = true
+            )
+        }
         var mutSts: Int? = null
         if (parseNecStatus(hdr2) == ACK_NEC) {
-            val mutRx = transport.transceive(
+            var mutRx = transport.transceive(
                 buildNecDataFrame(mutated, isLast = true),
                 16, 620, "Stage6 Verify 1B-Mutated ${pageData.size}B",
                 stopOnCompleteNecFrame = true,
                 paced64B = pageData.size > 64
             )
+            if (mutRx.isEmpty()) {
+                hardwareResetAndResync(sync, "Stage6 Verify Mutated Data Timeout", relockOsc = true)
+                val h2Retry = transport.transceive(buildNecCommandFrame(0x13, addrRangeBytes(startAddr, endAddr)), 12, 320, "Stage6 Verify Mutated Header #2", stopOnCompleteNecFrame = true)
+                if (parseNecStatus(h2Retry) == ACK_NEC) {
+                    mutRx = transport.transceive(buildNecDataFrame(mutated, isLast = true), 16, 620, "Stage6 Verify 1B-Mutated Retry", stopOnCompleteNecFrame = true, paced64B = pageData.size > 64)
+                }
+            }
             mutSts = effectiveNecStatus(mutRx)
         }
 
@@ -2292,32 +2545,58 @@ class ProberEngine(context: Context) {
         }
 
         if (sync.framing == DetectedFraming.NEC_STX_ETX) {
-            val hdr = transport.transceive(
+            var hdr = transport.transceive(
                 buildNecCommandFrame(0x40, addrRangeBytes(lastPageStart, lastPageEnd)),
                 12, 420, "Stage6 Write Header [0x40 0x%06X..0x%06X]".format(lastPageStart, lastPageEnd),
                 stopOnCompleteNecFrame = true
             )
+            if (hdr.isEmpty()) {
+                hardwareResetAndResync(sync, "Stage6 0x40 Single-Page Header Timeout", relockOsc = true)
+                hdr = transport.transceive(
+                    buildNecCommandFrame(0x40, addrRangeBytes(lastPageStart, lastPageEnd)),
+                    12, 420, "Stage6 Write Header Retry [0x40 0x%06X..0x%06X]".format(lastPageStart, lastPageEnd),
+                    stopOnCompleteNecFrame = true
+                )
+            }
             if (parseNecStatus(hdr) == ACK_NEC) {
                 val frame = buildNecDataFrame(payloadPage, isLast = true)
                 val rx = transport.transceive(frame, 12, busyWait + 300, "Stage6 Write STX Payload", stopOnCompleteNecFrame = true, paced64B = true)
                 val s1 = parseNecStatus(rx)
                 val s2 = parseNecSecondStatus(rx)
                 val ok = (s1 == ACK_NEC && (s2 == null || s2 == ACK_NEC))
-                return ok to "0x40 Single-Page (${formatByte(s1)}/${formatByte(s2)})"
+                if (ok) {
+                    return true to "0x40 Single-Page (${formatByte(s1)}/${formatByte(s2)})"
+                }
+                hardwareResetAndResync(sync, "التبديل إلى الكتابة المتوافقة مع البلوك 0x22+0x40", relockOsc = true)
             }
 
             // Block-aligned fallback (e.g. NEC 78K0 requiring 1KB block alignment for 0x40)
             val blockSize = (summary.blockSizeBytes ?: 1024).coerceAtLeast(payloadPage.size)
             val blockStart = (lastPageEnd + 1 - blockSize).coerceAtLeast(0)
-            transport.transceive(
+            var eRx = transport.transceive(
                 buildNecCommandFrame(0x22, addrRangeBytes(blockStart, lastPageEnd)),
                 12, 1200, "Stage6 Block Erase Last Block [0x22]", stopOnCompleteNecFrame = true
             )
-            val bHdr = transport.transceive(
+            if (eRx.isEmpty()) {
+                hardwareResetAndResync(sync, "Stage6 0x22 Block Erase Timeout", relockOsc = true)
+                eRx = transport.transceive(
+                    buildNecCommandFrame(0x22, addrRangeBytes(blockStart, lastPageEnd)),
+                    12, 1200, "Stage6 Block Erase Retry [0x22]", stopOnCompleteNecFrame = true
+                )
+            }
+            var bHdr = transport.transceive(
                 buildNecCommandFrame(0x40, addrRangeBytes(blockStart, lastPageEnd)),
                 12, 450, "Stage6 Write Block Header [0x40 0x%06X..0x%06X]".format(blockStart, lastPageEnd),
                 stopOnCompleteNecFrame = true
             )
+            if (bHdr.isEmpty()) {
+                hardwareResetAndResync(sync, "Stage6 0x40 Block Header Timeout", relockOsc = true)
+                bHdr = transport.transceive(
+                    buildNecCommandFrame(0x40, addrRangeBytes(blockStart, lastPageEnd)),
+                    12, 450, "Stage6 Write Block Header Retry [0x40 0x%06X..0x%06X]".format(blockStart, lastPageEnd),
+                    stopOnCompleteNecFrame = true
+                )
+            }
             if (parseNecStatus(bHdr) != ACK_NEC) {
                 return false to "0x40 Header Rejected (${formatByte(parseNecStatus(bHdr))})"
             }
@@ -2331,6 +2610,10 @@ class ProberEngine(context: Context) {
                     12, if (isLast) busyWait + 350 else 500,
                     "Stage6 Write Page $p/${pageCount - 1}", stopOnCompleteNecFrame = true, paced64B = true
                 )
+                if (rx.isEmpty()) {
+                    hardwareResetAndResync(sync, "Stage6 Write Page $p Timeout", relockOsc = true)
+                    return false to "Page $p Timeout"
+                }
                 val s1 = parseNecStatus(rx)
                 val s2 = parseNecSecondStatus(rx)
                 if (s1 != ACK_NEC || (s2 != null && s2 != ACK_NEC)) {
@@ -2396,18 +2679,74 @@ class ProberEngine(context: Context) {
         _state.value.checklist.any { it.id == "stage2_verify_0x13" && it.status == ChecklistStepStatus.PASSED } ||
             _state.value.blueprintSummary.discoveredCommands.any { it.cmdByte == 0x13 }
 
-    private suspend fun resyncHandshakeQuiet(sync: SyncLock) {
-        if (sync.framing != DetectedFraming.NEC_STX_ETX) return
+    private suspend fun ensureBootloaderReady(sync: SyncLock, reason: String, relockOsc: Boolean = true) {
+        if (sync.framing != DetectedFraming.NEC_STX_ETX) {
+            resyncLight(sync)
+            return
+        }
+        val ping = transport.transceive(
+            buildNecCommandFrame(0x00),
+            12, 180, "Ping [0x00]", stopOnCompleteNecFrame = true, logTxRx = false
+        )
+        if (parseNecStatus(ping) != ACK_NEC) {
+            hardwareResetAndResync(sync, reason, relockOsc = relockOsc)
+        }
+    }
+
+    private suspend fun hardwareResetAndResync(
+        sync: SyncLock,
+        reason: String,
+        relockOsc: Boolean = true
+    ): Boolean {
+        currentCoroutineContext().ensureActive()
+        appendLog(
+            ProberLogDirection.WARN,
+            "🔄 استعادة التزامن التلقائية (Auto Re-Sync): $reason"
+        )
+        transport.configureUart(sync.baudRate, evenParity = sync.evenParity)
+        if (sync.useResetToggle) {
+            transport.pulseResetSequence(
+                invertedPolarity = sync.inverted,
+                holdResetMs = sync.resetPulseMs.toLong(),
+                settleMs = sync.postResetDelayMs.toLong()
+            )
+        } else {
+            transport.setControlLines(dtr = false, rts = false)
+            delay(80)
+        }
+        transport.flushRx()
+        val ok = resyncHandshakeQuiet(sync)
+        if (ok && relockOsc && sync.framing == DetectedFraming.NEC_STX_ETX) {
+            val osc = activeWinningOscPayload
+            if (osc != null) {
+                transport.transceive(
+                    buildNecCommandFrame(0x90, osc),
+                    12, 220, "Auto Re-Lock [0x90 -> ${osc.toHexStr()}]",
+                    stopOnCompleteNecFrame = true,
+                    logTxRx = false
+                )
+            }
+        }
+        return ok
+    }
+
+    private suspend fun resyncHandshakeQuiet(sync: SyncLock): Boolean {
+        if (sync.framing != DetectedFraming.NEC_STX_ETX) {
+            delay(25)
+            transport.flushRx()
+            return true
+        }
         transport.writeRawBytes(byteArrayOf(0x00))
         delay(sync.syncByteGapMs.toLong())
         transport.writeRawBytes(byteArrayOf(0x00))
         delay(50)
         transport.drainAvailableRaw(20)
         transport.flushRx()
-        transport.transceive(
+        val rx = transport.transceive(
             buildNecCommandFrame(0x00),
             12, 350, "Quiet Resync [0x00]", stopOnCompleteNecFrame = true, logTxRx = false
         )
+        return parseNecStatus(rx) == ACK_NEC
     }
 
     // ==================== HELPERS ====================
