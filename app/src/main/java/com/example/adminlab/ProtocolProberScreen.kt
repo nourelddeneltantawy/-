@@ -142,7 +142,7 @@ fun ProtocolProberScreen(
                             overflow = TextOverflow.Ellipsis
                         )
                         Text(
-                            text = "فاحص عالمي لأي شركة ومعالج • مصفوفة كريستالات • 3 بطاقات تصدير",
+                            text = "التعرف التلقائي الذكي (USBDM + FT232 Auto-ID) • تكييف البروتوكول • 3 بطاقات",
                             fontSize = 11.sp,
                             color = Color(0xFFF59E0B),
                             fontWeight = FontWeight.Medium,
@@ -784,7 +784,7 @@ private fun UsbStatusHeaderCard(
                         text = when {
                             status.isConnected && status.hasPermission -> "USB متصل وجاهز"
                             status.isConnected -> "متصل — اضغط لمنح الصلاحية"
-                            else -> "قم بتوصيل محول USB-TTL عبر OTG"
+                            else -> "قم بتوصيل مبرمجة USBDM أو محول FT232/UART عبر OTG"
                         },
                         fontSize = 11.sp,
                         fontWeight = FontWeight.SemiBold,

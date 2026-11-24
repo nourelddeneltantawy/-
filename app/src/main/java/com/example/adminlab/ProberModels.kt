@@ -6,23 +6,35 @@ import java.util.Date
 import java.util.Locale
 
 enum class ProberTargetFamily(val labelAr: String) {
-    AUTO_DETECT("اكتشاف شامل تلقائي لأي شركة (Universal Auto-Detect)"),
+    AUTO_DETECT("اكتشاف شامل تلقائي لأي شركة (USBDM + FT232 Auto-ID)"),
     NEC_78K0("NEC / Renesas 78K0 / RL78 / V850 / RX"),
+    FREESCALE_HCS08("Freescale / NXP HCS08 / S08 (USBDM / 1.5Mbps BDM)"),
+    SAMSUNG_S3F("Samsung S3F8 / S3F9 / S3P ISP"),
     RENESAS_R8C_RL78("Renesas R8C / M16C / H8 / SH"),
-    STM32_UART("STM32 / Nuvoton / PIC / Holtek Auto-Baud"),
+    STM32_UART("STM32 / STM8 / Nuvoton / PIC Auto-Baud"),
     GENERIC_UART("TI / Infineon / NXP / AVR / ESP / مخصص")
 }
 
-enum class ProberUsbChip(val displayName: String, val vendorIds: List<Int>) {
-    FT232R("FTDI FT232R / FT232RL", listOf(0x0403)),
+enum class ProberUsbChip(
+    val displayName: String,
+    val vendorIds: List<Int>,
+    val productIds: List<Int> = emptyList()
+) {
+    USBDM("USBDM BDM Programmer (Freescale / NXP)", listOf(0x16D0), listOf(0x0567)),
+    FT232R("FTDI FT232R / FT232RL (Red UART)", listOf(0x0403)),
     CH340G("WCH CH340G / CH341", listOf(0x1A86)),
     CP2102("Silicon Labs CP2102 / CP210x", listOf(0x10C4)),
     PL2303("Prolific PL2303", listOf(0x067B)),
     CDC_ACM("USB CDC-ACM / Generic UART", emptyList());
 
     companion object {
+        fun fromDevice(vid: Int, pid: Int): ProberUsbChip {
+            if (vid == 0x16D0 && pid == 0x0567) return USBDM
+            return entries.firstOrNull { it.productIds.isEmpty() && vid in it.vendorIds } ?: CDC_ACM
+        }
+
         fun fromVendorId(vid: Int): ProberUsbChip =
-            entries.firstOrNull { vid in it.vendorIds } ?: CDC_ACM
+            entries.firstOrNull { it.productIds.isEmpty() && vid in it.vendorIds } ?: CDC_ACM
     }
 }
 
@@ -32,7 +44,8 @@ data class ProberUsbStatus(
     val chipModel: String = "غير محدد",
     val vidPidHex: String = "--",
     val hasPermission: Boolean = false,
-    val deviceCount: Int = 0
+    val deviceCount: Int = 0,
+    val isUsbdm: Boolean = false
 )
 
 enum class ProberLogDirection {
@@ -151,6 +164,42 @@ enum class DetectedFraming(
         endianness = "Little-Endian (20-bit/24-bit: A0, A1, A2)",
         checksumFormula = "Direct Single-Wire / 16x0x00 + 0xB0/0xFB UART Framing"
     ),
+    USBDM_BDM(
+        label = "USBDM Native Bulk BDM (Freescale / NXP HCS08)",
+        sohHex = "USBDM [LEN, CMD]",
+        stxHex = "BDM Memory Block",
+        etbHex = "N/A",
+        etxHex = "0x00 (BDM_RC_OK)",
+        ackHex = "0x00 (BDM_RC_OK)",
+        errCmdHex = "0x01+ (BDM_RC_ERR)",
+        errParamHex = "0x03 (ILLEGAL_PARAMS)",
+        endianness = "Big-Endian (16-bit / 32-bit Addr)",
+        checksumFormula = "Native USB Bulk Framing + HCS08 FCMD (0x41/0x20)"
+    ),
+    FREESCALE_SINGLE_WIRE_BDM(
+        label = "Freescale / NXP Single-Wire BDM via FT232 @ 1.5 Mbps",
+        sohHex = "BDM Sync (0xFE / 0xC0)",
+        stxHex = "BKGD Single-Wire Stream",
+        etbHex = "N/A",
+        etxHex = "1.5 Mbps BKGD",
+        ackHex = "SDID / BDM SYNC",
+        errCmdHex = "Timeout",
+        errParamHex = "No Sync",
+        endianness = "Big-Endian (16-bit Addr)",
+        checksumFormula = "FT232 TX+1kΩ+RX -> BKGD Single-Wire @ 1,500,000 bps (8N1)"
+    ),
+    SAMSUNG_ISP(
+        label = "Samsung S3F8 / S3F9 / S3P ISP Bootloader",
+        sohHex = "0xAA 0x55 / 0x80 Sync",
+        stxHex = "Samsung ISP Page",
+        etbHex = "N/A",
+        etxHex = "ACK / CS",
+        ackHex = "0xAA / 0x06",
+        errCmdHex = "0x15 / Timeout",
+        errParamHex = "0xFF",
+        endianness = "Big-Endian (16-bit)",
+        checksumFormula = "8-bit Sum Checksum (Samsung ISP)"
+    ),
     CUSTOM_RAW(
         label = "بروتوكول نصي / قياسي / UART مخصص (NXP / AVR / ESP / TI / Unknown)",
         sohHex = "Raw / ASCII / SLIP",
@@ -239,15 +288,15 @@ data class ProberUiState(
 }
 
 fun defaultChecklist(): List<ChecklistStepItem> = listOf(
-    ChecklistStepItem("stage1_handshake", "المرحلة 1", "التزامن الأعمى (8N1/8E1، 4800..115200، 5 أنماط عالمية) + Auto-ID"),
-    ChecklistStepItem("stage2_direct_read", "المرحلة 2.1", "مدرسة القراءة المباشرة (0x11, 0x03, 0x18, 0x74, 0xBA, 0xD0, 0xFF)"),
+    ChecklistStepItem("stage1_handshake", "المرحلة 1", "التعرف التلقائي الشامل على المبرمجة والبروسيسور (USBDM + FT232 Multi-Vendor Auto-ID)"),
+    ChecklistStepItem("stage2_direct_read", "المرحلة 2.1", "مدرسة القراءة المباشرة (0x11, 0x03, 0x18, 0x74, 0xBA, 0xD0, BDM Read)"),
     ChecklistStepItem("stage2_checksum_1b", "المرحلة 2.2", "مدرسة السحب عبر بصمة بايت واحد (0xB0 على 1B ثم 2B)"),
     ChecklistStepItem("stage2_verify_0x13", "المرحلة 2.3", "مدرسة التحقق التدريجي (Verify 0x13: مقارنة صفحة 0xFF مع 0x00 لكشف القفل)"),
-    ChecklistStepItem("stage2_signature", "المرحلة 2.4", "مدرسة قراءة التوقيع والهوية (0xC0, 0xC5, 0xFB, 0x01, 0x02, 0x9F, 0xAF)"),
+    ChecklistStepItem("stage2_signature", "المرحلة 2.4", "مدرسة قراءة التوقيع والهوية (0xC0, 0xC5, 0xFB, SDIDH/L, Samsung/STM32 ID)"),
     ChecklistStepItem("stage2_ram_stub", "المرحلة 2.5", "مدرسة حقن الكود في الرام (RAM Stub في عنوان مؤقت آمن)"),
     ChecklistStepItem("stage3_cmd_sweep", "المرحلة 3", "المسح الجراحي الشامل للأوامر 0x00..0xFF وأطوال المعاملات LEN 0..8"),
-    ChecklistStepItem("stage4_timing_bounds", "المرحلة 4", "مصفوفة الكريستالات 0x90 + حدود الفلاش 8KB..512KB + تبديل السرعة + STX + 6 أزمنة"),
-    ChecklistStepItem("stage5_safety_gate", "المرحلة 5", "بوابة الأمان التفاعلية (تصفير Block 0، الكتابة الجزئية، والمسح الكلي 0x20)"),
+    ChecklistStepItem("stage4_timing_bounds", "المرحلة 4", "تكييف البروتوكول والسرعة: مصفوفة 0x90 + حدود الفلاش + تبديل السرعة + 6 أزمنة"),
+    ChecklistStepItem("stage5_safety_gate", "المرحلة 5", "بوابة الأمان التفاعلية (تصفير Block 0 / Mass Erase / الكتابة الجزئية)"),
     ChecklistStepItem("stage6_live_read_proof", "المرحلة 6", "إثبات صحة السحب الفعلي (Universal Live Read Proof — عينة مليئة أو فارغة 0xFF)")
 )
 
@@ -263,6 +312,42 @@ private fun buildWorkflows(state: ProberUiState): Pair<List<String>, List<String
     val tm = s.timingMap
     val safeExtractSchoolIds = setOf("stage2_direct_read", "stage2_checksum_1b", "stage2_ram_stub")
     val isLocked = state.checklist.none { it.id in safeExtractSchoolIds && it.status == ChecklistStepStatus.PASSED }
+
+    if (framing == DetectedFraming.USBDM_BDM || framing == DetectedFraming.FREESCALE_SINGLE_WIRE_BDM) {
+        val readWf = listOf(
+            "1. Adapter Setup: ${if (framing == DetectedFraming.USBDM_BDM) "Open USBDM USB Bulk (EP1 OUT / EP2 IN), CMD_USBDM_GET_CAPABILITIES [0x02,0x01], SET_VDD 5V, SET_TARGET HCS08, CONNECT + SYNC" else "Open FT232 at 1,500,000 bps (8N1) Single-Wire BKGD (TX+1kΩ+RX) and send BDM Sync (0xFE/0xC0)"}.",
+            "2. Silicon Auto-ID: Read HCS08 SDIDH/SDIDL (0x1806..0x1807) -> ${s.inferredModel} (${s.chipSignature}).",
+            if (!isLocked) {
+                "3. Safe BDM Memory Read: Read Flash up to ${s.flashEndAddressHex} via ${s.winningReadMethod} in ${s.pageSizeBytes ?: 256}B chunks."
+            } else {
+                "3. Target Flash is SECURED (FSEC locked): Cannot read directly without Mass Erase (FCMD 0x41) security unlock."
+            }
+        )
+        val writeWf = listOf(
+            "1. Connect via ${framing.label} and sync bus clock (${s.detectedCrystalMhz}).",
+            "2. Erase Flash via HCS08 FSTAT/FCMD 0x41 (Mass Erase) or 0x40 (Page Erase), waiting ${tm.eraseWriteBusyWaitMs}ms.",
+            "3. Program Flash via FCMD 0x20 (Byte Program) / 0x25 (Burst Program) in ${s.pageSizeBytes ?: 64}B blocks and verify read-back."
+        )
+        return readWf to writeWf
+    }
+
+    if (framing == DetectedFraming.SAMSUNG_ISP) {
+        val readWf = listOf(
+            "1. Pulse RESET and open UART at ${s.baudRate ?: 9600} bps ${s.parityMode}; send Samsung ISP Sync (0xAA 0x55 / 0x80).",
+            "2. Query Samsung Chip ID -> ${s.inferredModel} (${s.chipSignature}).",
+            if (!isLocked) {
+                "3. Extract Flash up to ${s.flashEndAddressHex} via ${s.winningReadMethod} in ${s.pageSizeBytes ?: 256}B pages."
+            } else {
+                "3. Target Readout Protected: Execute Samsung ISP Erase/Unprotect before reprogramming."
+            }
+        )
+        val writeWf = listOf(
+            "1. Sync Samsung ISP at ${s.baudRate ?: 9600} bps (${s.syncPulseHex}).",
+            "2. Erase Sectors/Chip via Samsung ISP Erase command (wait ${tm.eraseWriteBusyWaitMs}ms).",
+            "3. Stream ${s.pageSizeBytes ?: 256}B pages with 8-bit checksum and verify against Flash."
+        )
+        return readWf to writeWf
+    }
 
     val readWorkflow = buildList {
         add("1. Apply Pin Logic: FLMD0/MODE=${s.flmd0PinState}, RESET Idle=${s.resetPinIdleState}, Pulse=${s.resetPinPulsePolarity} (${tm.resetPulseMs}ms -> wait ${tm.postResetDelayMs}ms).")
