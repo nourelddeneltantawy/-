@@ -725,7 +725,7 @@ private fun Stage5HotSwapSafetyGateCard(
                 ) {
                     Icon(Icons.Default.SwapHoriz, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(modifier = Modifier.width(6.dp))
-                    Text("فصل وتبديل الكارتة ثم الاستكمال (Hot-Swap & Resume)", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    Text("تبديل الكارتة والاستكمال (Hot-Swap & Resume)", fontSize = 12.sp, fontWeight = FontWeight.Bold)
                 }
             } else {
                 Surface(
@@ -768,7 +768,7 @@ private fun Stage5HotSwapSafetyGateCard(
             ) {
                 Icon(Icons.Default.Restore, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(modifier = Modifier.width(6.dp))
-                Text("استعادة السوفت وير الأصلي (Emergency Flash Restore)", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                Text("استعادة السوفت وير الأصلي (Emergency Restore)", fontSize = 12.sp, fontWeight = FontWeight.Bold)
             }
 
             OutlinedButton(
@@ -782,7 +782,7 @@ private fun Stage5HotSwapSafetyGateCard(
             ) {
                 Icon(Icons.Default.DoneAll, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(modifier = Modifier.width(6.dp))
-                Text("إنهاء الفحص والاكتفاء بالنتائج الآمنة", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                Text("إنهاء الفحص والاكتفاء بالتقرير الحالي", fontSize = 12.sp, fontWeight = FontWeight.Bold)
             }
         }
     }

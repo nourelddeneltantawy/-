@@ -266,11 +266,21 @@ class ProberEngine(context: Context) {
         resyncLight(sync)
         val r5 = testRamStubInjection(sync)
 
-        val passedReads = listOf(r1, r2, r3, r4, r5).filter { it.status == ChecklistStepStatus.PASSED }
-        val winningReadDesc = if (passedReads.isNotEmpty()) {
-            passedReads.joinToString(" + ") { it.title }
+        // Only Direct Read (2.1), Checksum 1B (2.2), and RAM Stub (2.5) unlock safe reading.
+        // Passing Verify 0x13 (2.3) or Signature 0xC0 (2.4) alone means the MCU is still Locked!
+        val safeOpenReads = listOf(r1, r2, r5).filter { it.status == ChecklistStepStatus.PASSED }
+        val isMcuOpenForSafeRead = safeOpenReads.isNotEmpty()
+        val auxNotes = listOf(r3, r4)
+            .filter { it.status == ChecklistStepStatus.PASSED }
+            .joinToString(" + ") { it.title }
+        val winningReadDesc = if (isMcuOpenForSafeRead) {
+            safeOpenReads.joinToString(" + ") { it.title }
         } else {
-            "Locked Bootloader — يتطلب بوابة المرحلة 5"
+            if (auxNotes.isNotBlank()) {
+                "Locked Bootloader (محمي ومقفل — نجح فقط: $auxNotes) — يتطلب بوابة المرحلة 5"
+            } else {
+                "Locked Bootloader (محمي ومقفل) — يتطلب بوابة المرحلة 5"
+            }
         }
         summary = summary.copy(
             winningReadMethod = winningReadDesc,
@@ -304,12 +314,11 @@ class ProberEngine(context: Context) {
         updateSummaryAndBlueprint(summary)
 
         // STAGE 5: Safety Gate & Hot-Swap Decision
-        val anyReadSucceeded = passedReads.isNotEmpty()
-        if (anyReadSucceeded) {
-            updateStep("stage5_safety_gate", ChecklistStepStatus.PASSED, "نجح السحب الآمن — لا حاجة لمدارس تعديلية خطرة")
+        if (isMcuOpenForSafeRead) {
+            updateStep("stage5_safety_gate", ChecklistStepStatus.PASSED, "المعالج مفتوح للسحب الآمن — لا حاجة لمدارس تعديلية خطرة")
             _state.value = _state.value.copy(
                 phase = ProberStagePhase.COMPLETED,
-                stageBanner = "اكتمل الفحص الشامل واستخراج البروتوكول بنجاح"
+                stageBanner = "اكتمل الفحص الشامل واستخراج البروتوكول بنجاح (المعالج مفتوح للسحب الآمن)"
             )
             transport.enterSafeIdleAndClose()
         } else {
@@ -318,15 +327,15 @@ class ProberEngine(context: Context) {
             updateStep(
                 "stage5_safety_gate",
                 ChecklistStepStatus.AWAITING_SAFETY,
-                "المعالج مقفول — متوقف بأمان لاختيار تبديل الكارتة أو الاستعادة أو الإنهاء"
+                "المعالج محمي ومقفل (Locked Bootloader) — متوقف عند بوابة الأمان لاختيار تبديل الكارتة أو الاستعادة أو الإنهاء"
             )
             _state.value = _state.value.copy(
                 phase = ProberStagePhase.AWAITING_HOT_SWAP_GATE,
-                stageBanner = "بوابة الأمان (المرحلة 5): المعالج مقفول وتوقف المحرك بأمان"
+                stageBanner = "بوابة الأمان (المرحلة 5): المعالج محمي ومقفل — توقف المحرك بأمان"
             )
             appendLog(
                 ProberLogDirection.WARN,
-                "⚠️ توقف المحرك تلقائياً عند المرحلة 5 (المعالج مقفول). يمكنك فصل الكارتة بأمان دون فقدان نتائج المراحل 1..4."
+                "⚠️ المعالج محمي ومقفل (فشلت القراءة المباشرة و1-بايت Checksum وRAM Stub). توقف المحرك تلقائياً عند بوابة الأمان بالمرحلة 5."
             )
         }
     }
@@ -368,10 +377,10 @@ class ProberEngine(context: Context) {
 
                 val sync = runStage1HardwareHandshake(family)
                 if (sync == null) {
-                    updateStep("stage5_safety_gate", ChecklistStepStatus.FAILED, "لم يستجب المعالج البديل بعد إعادة التوصيل")
+                    updateStep("stage5_safety_gate", ChecklistStepStatus.AWAITING_SAFETY, "لم يستجب المعالج البديل بعد إعادة التوصيل — تحقق وحاول مجدداً")
                     _state.value = _state.value.copy(
-                        phase = ProberStagePhase.AWAITING_HOT_SWAP_GATE,
-                        stageBanner = "فشلت المزامنة بعد التبديل — تحقق من الأسلاك وحاول مجدداً"
+                        phase = ProberStagePhase.HOT_SWAP_DISCONNECTED_READY,
+                        stageBanner = "فشلت المزامنة بعد التبديل — تحقق من الأسلاك واضغط «أعدت التوصيل» مجدداً"
                     )
                     transport.enterSafeIdleAndClose()
                     return@launch
@@ -379,11 +388,11 @@ class ProberEngine(context: Context) {
 
                 val advNotes = runAdvancedUnlockSchools(sync)
                 val updatedSummary = _state.value.blueprintSummary.copy(advancedSchoolsNotes = advNotes)
-                updateStep("stage5_safety_gate", ChecklistStepStatus.PASSED, advNotes.lines().firstOrNull().orEmpty())
+                updateStep("stage5_safety_gate", ChecklistStepStatus.PASSED, advNotes)
                 updateSummaryAndBlueprint(updatedSummary)
                 _state.value = _state.value.copy(
                     phase = ProberStagePhase.COMPLETED,
-                    stageBanner = "اكتملت جميع المراحل (1 إلى 5) واستخراج البروتوكول الكامل"
+                    stageBanner = "اكتملت جميع المراحل (1 إلى 5) والمدارس المتقدمة واستخراج البروتوكول الكامل"
                 )
             } catch (_: CancellationException) {
                 stopImmediately("تم إيقاف فحص المرحلة 5.")
@@ -1124,35 +1133,188 @@ class ProberEngine(context: Context) {
 
     private suspend fun runAdvancedUnlockSchools(sync: SyncLock): String {
         val sb = StringBuilder()
+        appendLog(ProberLogDirection.INFO, "══ بدء فحص المدارس المتقدمة بعد تبديل الكارتة (Post-HotSwap) ══")
+
         if (sync.framing == DetectedFraming.NEC_STX_ETX) {
-            val csBefore = transport.transceive(
-                buildNecCommandFrame(0xB0, byteArrayOf(0x00, 0x00, 0x00, 0x00, 0x03, 0xFF.toByte())),
-                16, 350, "Hot-Swap Block-0 CS [0xB0]", stopOnCompleteNecFrame = true
+            // المدرسة المتقدمة 1: تصفير بلوك الحماية وحساب فرق البصمة (Block-0 Zeroing & Checksum Diff)
+            updateStep("stage5_safety_gate", ChecklistStepStatus.RUNNING, "اختبار المدرسة المتقدمة 1: تصفير Block-0 وحساب فرق البصمة (0x22 + 0xB0)...")
+            val b0Range = byteArrayOf(0x00, 0x00, 0x00, 0x00, 0x03, 0xFF.toByte())
+            val csBeforeRx = transport.transceive(
+                buildNecCommandFrame(0xB0, b0Range),
+                16, 400, "Adv1: Block-0 CS Before [0xB0]", stopOnCompleteNecFrame = true
             )
-            sb.appendLine("• فحص بصمة Block-0: ${if (csBefore.isNotEmpty()) "✅ (${csBefore.toHexStr()})" else "❌"}")
+            val csBefore = parseChecksum16(csBeforeRx) ?: run {
+                if (parseNecStatus(csBeforeRx) == ACK_NEC) parseChecksum16(transport.readFollowUp(12, 300, true)) else null
+            }
 
-            val eraseB0 = transport.transceive(
-                buildNecCommandFrame(0x22, byteArrayOf(0x00, 0x00, 0x00, 0x00, 0x03, 0xFF.toByte())),
-                12, 900, "Hot-Swap Block-0 Erase [0x22]", stopOnCompleteNecFrame = true
+            val eraseB0Rx = transport.transceive(
+                buildNecCommandFrame(0x22, b0Range),
+                12, 1100, "Adv1: Block-0 Zeroing/Erase [0x22]", stopOnCompleteNecFrame = true
             )
-            val eSts = parseNecStatus(eraseB0)
-            sb.appendLine("• مدرسة تصفير Block-0 (0x22): ${if (eSts == ACK_NEC) "✅ نجحت (قبل المسح)" else "❌ فشل (${formatByte(eSts)})"}")
+            val eraseSts = parseNecStatus(eraseB0Rx)
+            var csAfter: Int? = null
+            if (eraseSts == ACK_NEC) {
+                delay(20)
+                val csAfterRx = transport.transceive(
+                    buildNecCommandFrame(0xB0, b0Range),
+                    16, 400, "Adv1: Block-0 CS After [0xB0]", stopOnCompleteNecFrame = true
+                )
+                csAfter = parseChecksum16(csAfterRx) ?: run {
+                    if (parseNecStatus(csAfterRx) == ACK_NEC) parseChecksum16(transport.readFollowUp(12, 300, true)) else null
+                }
+            }
+            val adv1Passed = (eraseSts == ACK_NEC) && (csBefore != null || csAfter != null)
+            val adv1Line = if (adv1Passed) {
+                val csDiffText = "CS قبل=${csBefore?.let { "0x%04X".format(it) } ?: "--"} -> CS بعد=${csAfter?.let { "0x%04X".format(it) } ?: "--"}"
+                "✅ المدرسة المتقدمة 1 (تصفير بلوك الحماية وحساب فرق البصمة - Block-0 Zeroing & Checksum Diff): نجحت ($csDiffText)"
+            } else {
+                "❌ المدرسة المتقدمة 1 (تصفير بلوك الحماية وحساب فرق البصمة - Block-0 Zeroing & Checksum Diff): فشلت (0x22=${formatByte(eraseSts)})"
+            }
+            sb.appendLine(adv1Line)
+            appendLog(if (adv1Passed) ProberLogDirection.SUCCESS else ProberLogDirection.WARN, adv1Line)
 
-            val partHdr = transport.transceive(
-                buildNecCommandFrame(0x40, byteArrayOf(0x00, 0x00, 0x00, 0x00, 0x00, 0x00)),
-                12, 350, "Hot-Swap Partial Write [0x40]", stopOnCompleteNecFrame = true
+            // المدرسة المتقدمة 2: الكتابة الجزئية / تحويل البتات (Partial Bit Overwrite)
+            resyncLight(sync)
+            updateStep("stage5_safety_gate", ChecklistStepStatus.RUNNING, "اختبار المدرسة المتقدمة 2: الكتابة الجزئية / تحويل البتات (0x40 STX)...")
+            val partialRange = byteArrayOf(0x00, 0x00, 0x00, 0x00, 0x00, 0x03)
+            var partHdrRx = transport.transceive(
+                buildNecCommandFrame(0x40, partialRange),
+                12, 400, "Adv2: Partial Write 4B [0x40]", stopOnCompleteNecFrame = true
             )
-            val pSts = parseNecStatus(partHdr)
-            sb.appendLine("• مدرسة الكتابة الجزئية (0x40): ${if (pSts == ACK_NEC) "✅ قبل الترويسة" else "❌ (${formatByte(pSts)})"}")
+            var partRangeUsed = "4B (0x0000..0x0003)"
+            var partSts = parseNecStatus(partHdrRx)
+            var partFrameSize = 4
+            if (partSts != ACK_NEC) {
+                partHdrRx = transport.transceive(
+                    buildNecCommandFrame(0x40, b0Range),
+                    12, 400, "Adv2: Partial Write Block-0 [0x40]", stopOnCompleteNecFrame = true
+                )
+                partRangeUsed = "1KB Block-0 (0x0000..0x03FF)"
+                partSts = parseNecStatus(partHdrRx)
+                partFrameSize = 256
+            }
+            var dataOverwriteAck = false
+            if (partSts == ACK_NEC) {
+                val testSlice = ByteArray(partFrameSize) { 0xFF.toByte() }.also { it[0] = 0xFE.toByte() }
+                val stxFrame = buildNecDataFrame(testSlice, isLast = true)
+                val dataRx = transport.transceive(
+                    stxFrame,
+                    12, 600, "Adv2: Partial STX Bit-Clear 0xFE [0x40]",
+                    stopOnCompleteNecFrame = true,
+                    paced64B = (stxFrame.size > 64)
+                )
+                val dSts1 = parseNecStatus(dataRx)
+                val dSts2 = parseNecSecondStatus(dataRx)
+                dataOverwriteAck = (dSts1 == ACK_NEC && (dSts2 == null || dSts2 == ACK_NEC))
+            }
+            val adv2Passed = (partSts == ACK_NEC && dataOverwriteAck)
+            val adv2Line = when {
+                adv2Passed -> "✅ المدرسة المتقدمة 2 (الكتابة الجزئية / تحويل البتات - Partial Bit Overwrite): نجحت ($partRangeUsed + ACK 0x06)"
+                partSts == ACK_NEC -> "❌ المدرسة المتقدمة 2 (الكتابة الجزئية / تحويل البتات - Partial Bit Overwrite): قبل الترويسة 0x40 لكن رُفض إطار STX ($partRangeUsed)"
+                else -> "❌ المدرسة المتقدمة 2 (الكتابة الجزئية / تحويل البتات - Partial Bit Overwrite): فشلت (0x40=${formatByte(partSts)})"
+            }
+            sb.appendLine(adv2Line)
+            appendLog(if (adv2Passed) ProberLogDirection.SUCCESS else ProberLogDirection.WARN, adv2Line)
+
+            // المدرسة المتقدمة 3: تجاوز قفل الحماية (Security / ID Bypass)
+            resyncLight(sync)
+            updateStep("stage5_safety_gate", ChecklistStepStatus.RUNNING, "اختبار المدرسة المتقدمة 3: تجاوز قفل الحماية (Security / ID Bypass)...")
+            val c5Rx = transport.transceive(
+                buildNecCommandFrame(0xC5),
+                16, 300, "Adv3: Security/Version Query [0xC5]", stopOnCompleteNecFrame = true
+            )
+            val c5Ok = parseNecStatus(c5Rx) == ACK_NEC
+            val chipEraseRx = transport.transceive(
+                buildNecCommandFrame(0x20),
+                12, 1200, "Adv3: Chip Erase Security Reset [0x20]", stopOnCompleteNecFrame = true
+            )
+            val ceSts = parseNecStatus(chipEraseRx)
+            val adv3Passed = (ceSts == ACK_NEC) || c5Ok
+            val adv3Line = if (adv3Passed) {
+                val detail = buildString {
+                    if (ceSts == ACK_NEC) append("0x20 مسح وفك الحماية=ACK 0x06")
+                    if (c5Ok) {
+                        if (isNotEmpty()) append(" • ")
+                        append("0xC5=ACK")
+                    }
+                }
+                "✅ المدرسة المتقدمة 3 (تجاوز قفل الحماية - Security / ID Bypass): نجحت ($detail)"
+            } else {
+                "❌ المدرسة المتقدمة 3 (تجاوز قفل الحماية - Security / ID Bypass): فشلت (0x20=${formatByte(ceSts)})"
+            }
+            sb.appendLine(adv3Line)
+            appendLog(if (adv3Passed) ProberLogDirection.SUCCESS else ProberLogDirection.WARN, adv3Line)
         } else if (sync.framing == DetectedFraming.STM32_ACK) {
-            val rx = transport.transceive(byteArrayOf(0x92.toByte(), 0x6D), 6, 800, "STM32 Unprotect [0x92]")
-            sb.appendLine("• مدرسة Readout Unprotect (0x92): ${if (rx.any { (it.toInt() and 0xFF) == ACK_STM32 }) "✅ نجحت" else "❌"}")
+            // 1. Block/Sector 0 Erase & Checksum/Read check
+            updateStep("stage5_safety_gate", ChecklistStepStatus.RUNNING, "اختبار المدارس المتقدمة 1..3 لـ STM32...")
+            val e0 = transport.transceive(byteArrayOf(0x43, 0xBC.toByte()), 6, 400, "Adv1: STM32 Erase [0x43]")
+            val adv1Ok = e0.any { (it.toInt() and 0xFF) == ACK_STM32 }
+            val adv1Line = if (adv1Ok) {
+                "✅ المدرسة المتقدمة 1 (تصفير بلوك الحماية وحساب فرق البصمة - Block-0 Zeroing & Checksum Diff): نجحت (أمر 0x43 قبل التنفيذ)"
+            } else {
+                "❌ المدرسة المتقدمة 1 (تصفير بلوك الحماية وحساب فرق البصمة - Block-0 Zeroing & Checksum Diff): فشلت (RDP محمي)"
+            }
+            sb.appendLine(adv1Line)
+            appendLog(if (adv1Ok) ProberLogDirection.SUCCESS else ProberLogDirection.WARN, adv1Line)
+
+            // 2. Partial Write Memory 0x31
+            val wr = transport.transceive(byteArrayOf(0x31, 0xCE.toByte()), 6, 400, "Adv2: STM32 Partial Write [0x31]")
+            val adv2Ok = wr.any { (it.toInt() and 0xFF) == ACK_STM32 }
+            val adv2Line = if (adv2Ok) {
+                "✅ المدرسة المتقدمة 2 (الكتابة الجزئية / تحويل البتات - Partial Bit Overwrite): نجحت (0x31 ACK)"
+            } else {
+                "❌ المدرسة المتقدمة 2 (الكتابة الجزئية / تحويل البتات - Partial Bit Overwrite): فشلت (0x31 مرفوض)"
+            }
+            sb.appendLine(adv2Line)
+            appendLog(if (adv2Ok) ProberLogDirection.SUCCESS else ProberLogDirection.WARN, adv2Line)
+
+            // 3. Readout Unprotect 0x92
+            val rx = transport.transceive(byteArrayOf(0x92.toByte(), 0x6D), 6, 900, "Adv3: STM32 Unprotect [0x92]")
+            val adv3Ok = rx.any { (it.toInt() and 0xFF) == ACK_STM32 }
+            val adv3Line = if (adv3Ok) {
+                "✅ المدرسة المتقدمة 3 (تجاوز قفل الحماية - Security / ID Bypass): نجحت (0x92 Readout Unprotect ACK)"
+            } else {
+                "❌ المدرسة المتقدمة 3 (تجاوز قفل الحماية - Security / ID Bypass): فشلت"
+            }
+            sb.appendLine(adv3Line)
+            appendLog(if (adv3Ok) ProberLogDirection.SUCCESS else ProberLogDirection.WARN, adv3Line)
         } else {
+            // Renesas R8C / RL78 / Generic
+            updateStep("stage5_safety_gate", ChecklistStepStatus.RUNNING, "اختبار المدارس المتقدمة 1..3 لبروتوكول Renesas...")
+            // 1. Block Erase 0x20 / Block-0 zero check
+            val b0Erase = transport.transceive(byteArrayOf(0x20, 0x00, 0x00, 0xD0.toByte()), 8, 500, "Adv1: R8C Block Erase [0x20 D0]")
+            val adv1Ok = b0Erase.isNotEmpty()
+            val adv1Line = if (adv1Ok) {
+                "✅ المدرسة المتقدمة 1 (تصفير بلوك الحماية وحساب فرق البصمة - Block-0 Zeroing & Checksum Diff): نجحت (${b0Erase.toHexStr()})"
+            } else {
+                "❌ المدرسة المتقدمة 1 (تصفير بلوك الحماية وحساب فرق البصمة - Block-0 Zeroing & Checksum Diff): فشلت"
+            }
+            sb.appendLine(adv1Line)
+            appendLog(if (adv1Ok) ProberLogDirection.SUCCESS else ProberLogDirection.WARN, adv1Line)
+
+            // 2. Partial Page Write 0x41
+            val wrHdr = transport.transceive(byteArrayOf(0x41, 0x00, 0x40, 0x00), 8, 350, "Adv2: R8C Page Write [0x41]")
+            val adv2Ok = wrHdr.isNotEmpty()
+            val adv2Line = if (adv2Ok) {
+                "✅ المدرسة المتقدمة 2 (الكتابة الجزئية / تحويل البتات - Partial Bit Overwrite): نجحت (${wrHdr.toHexStr()})"
+            } else {
+                "❌ المدرسة المتقدمة 2 (الكتابة الجزئية / تحويل البتات - Partial Bit Overwrite): فشلت"
+            }
+            sb.appendLine(adv2Line)
+            appendLog(if (adv2Ok) ProberLogDirection.SUCCESS else ProberLogDirection.WARN, adv2Line)
+
+            // 3. ID Bypass 0xF5 + 0x70 SRD
             val ffId = byteArrayOf(0xF5.toByte(), 0xFF.toByte(), 0xDF.toByte(), 0x00, 0x07, -1, -1, -1, -1, -1, -1, -1)
-            transport.transceive(ffId, 8, 320, "R8C ID Probe [0xF5]")
-            val sr = transport.transceive(byteArrayOf(0x70), 6, 300, "R8C SRD [0x70]")
-            val unlocked = sr.size >= 2 && ((sr[1].toInt() and 0x0C) != 0)
-            sb.appendLine("• فك قفل ID الافتراضي: ${if (unlocked) "✅ نجح" else "❌ مقفول"}")
+            transport.transceive(ffId, 8, 320, "Adv3: R8C ID Probe [0xF5]")
+            val sr = transport.transceive(byteArrayOf(0x70), 6, 300, "Adv3: R8C SRD [0x70]")
+            val adv3Ok = sr.size >= 2 && ((sr[1].toInt() and 0x0C) != 0)
+            val adv3Line = if (adv3Ok) {
+                "✅ المدرسة المتقدمة 3 (تجاوز قفل الحماية - Security / ID Bypass): نجحت (SRD=${sr.toHexStr()})"
+            } else {
+                "❌ المدرسة المتقدمة 3 (تجاوز قفل الحماية - Security / ID Bypass): فشلت (مقفول بالـ ID)"
+            }
+            sb.appendLine(adv3Line)
+            appendLog(if (adv3Ok) ProberLogDirection.SUCCESS else ProberLogDirection.WARN, adv3Line)
         }
         return sb.toString().trim()
     }

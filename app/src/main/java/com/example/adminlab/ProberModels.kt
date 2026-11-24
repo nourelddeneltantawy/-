@@ -181,7 +181,8 @@ fun defaultChecklist(): List<ChecklistStepItem> = listOf(
 fun formatAiReadyBlueprintJson(state: ProberUiState): String {
     val s = state.blueprintSummary
     val now = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())
-    val readPasses = state.checklist.filter { it.id.startsWith("stage2_") && it.status == ChecklistStepStatus.PASSED }
+    val safeExtractSchoolIds = setOf("stage2_direct_read", "stage2_checksum_1b", "stage2_ram_stub")
+    val readPasses = state.checklist.filter { it.id in safeExtractSchoolIds && it.status == ChecklistStepStatus.PASSED }
     val framing = s.framing
 
     fun esc(v: String): String = v
