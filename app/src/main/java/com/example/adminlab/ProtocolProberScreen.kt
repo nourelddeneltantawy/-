@@ -4,12 +4,8 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
-import android.net.Uri
-import android.provider.OpenableColumns
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -41,17 +37,14 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.DeleteSweep
-import androidx.compose.material.icons.filled.DoneAll
 import androidx.compose.material.icons.filled.HourglassTop
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Restore
 import androidx.compose.material.icons.filled.Science
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Stop
-import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material.icons.filled.Usb
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
@@ -93,6 +86,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.DialogProperties
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -105,26 +99,7 @@ fun ProtocolProberScreen(
     val uiState by engine.state.collectAsState()
 
     var showFamilyDropdown by remember { mutableStateOf(false) }
-    var pendingRestoreFile by remember { mutableStateOf<Pair<String, ByteArray>?>(null) }
     val logListState = rememberLazyListState()
-
-    val firmwarePicker = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocument()
-    ) { uri: Uri? ->
-        if (uri != null) {
-            try {
-                val fileName = resolveUriDisplayName(context, uri)
-                val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
-                if (bytes != null && bytes.isNotEmpty()) {
-                    pendingRestoreFile = fileName to bytes
-                } else {
-                    Toast.makeText(context, "تعذر قراءة ملف السوفت وير المختار", Toast.LENGTH_SHORT).show()
-                }
-            } catch (t: Throwable) {
-                Toast.makeText(context, "خطأ في فتح الملف: ${t.message}", Toast.LENGTH_SHORT).show()
-            }
-        }
-    }
 
     BackHandler {
         engine.stopImmediately()
@@ -160,7 +135,7 @@ fun ProtocolProberScreen(
                             overflow = TextOverflow.Ellipsis
                         )
                         Text(
-                            text = "فحص متسلسل آمن + بوابة Hot-Swap + Blueprint",
+                            text = "استخراج البروتوكول الديناميكي للعائلة + بوابة تحذير المرحلة 5",
                             fontSize = 11.sp,
                             color = Color(0xFFF59E0B),
                             fontWeight = FontWeight.Medium
@@ -344,26 +319,16 @@ fun ProtocolProberScreen(
                     color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
-                        Text(
-                            text = uiState.stageBanner,
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                        if (uiState.restoreProgressText.isNotBlank()) {
-                            Spacer(modifier = Modifier.height(2.dp))
-                            Text(
-                                text = uiState.restoreProgressText,
-                                fontSize = 11.sp,
-                                color = Color(0xFF059669),
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
-                    }
+                    Text(
+                        text = uiState.stageBanner,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp)
+                    )
                 }
 
-                // BYPASS SYNC BUTTON (shown when Stage 1 fails or user wants direct Stages 2.1..4 testing)
+                // BYPASS SYNC BUTTON (shown when Stage 1 sync fails)
                 if (uiState.canBypassSync && !uiState.isBusy) {
                     Button(
                         onClick = { engine.bypassSyncAndRunStages2To4() },
@@ -387,7 +352,7 @@ fun ProtocolProberScreen(
                     }
                 }
 
-                // LIVE HEX LOG CONSOLE (Prominent above checklist so Stage 1 TX/RX bytes show immediately)
+                // LIVE HEX LOG CONSOLE
                 Card(
                     shape = RoundedCornerShape(16.dp),
                     colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
@@ -408,9 +373,11 @@ fun ProtocolProberScreen(
                             TextButton(
                                 onClick = { engine.clearLogs() },
                                 enabled = !uiState.isBusy && uiState.logs.isNotEmpty(),
-                                modifier = Modifier.testTag("prober_clear_logs_button")
+                                modifier = Modifier
+                                    .heightIn(min = 48.dp)
+                                    .testTag("prober_clear_logs_button")
                             ) {
-                                Icon(Icons.Default.DeleteSweep, contentDescription = "مسح", tint = Color(0xFF94A3B8), modifier = Modifier.size(16.dp))
+                                Icon(Icons.Default.DeleteSweep, contentDescription = "مسح السجل", tint = Color(0xFF94A3B8), modifier = Modifier.size(16.dp))
                                 Spacer(modifier = Modifier.width(4.dp))
                                 Text("مسح", fontSize = 12.sp, color = Color(0xFF94A3B8))
                             }
@@ -463,38 +430,22 @@ fun ProtocolProberScreen(
                     }
                 }
 
-                // STAGE 5: SAFETY GATE / HOT-SWAP / EMERGENCY RESTORE CARD
-                if (uiState.isWaitingAtSafetyGate) {
-                    Stage5HotSwapSafetyGateCard(
-                        phase = uiState.phase,
-                        onBeginHotSwap = { engine.enterHotSwapStandby() },
-                        onResumeAfterReconnect = {
-                            engine.refreshUsbStatus()
-                            engine.resumeAdvancedAfterHotSwap()
-                        },
-                        onEmergencyRestoreClick = {
-                            firmwarePicker.launch(arrayOf("*/*"))
-                        },
-                        onFinishSafeOnly = { engine.finishWithSafeResultsOnly() }
-                    )
-                }
-
                 // LIVE STEP-BY-STEP CHECKLIST
                 LiveChecklistCard(items = uiState.checklist)
 
-                // 4. BOTTOM CARD: AI-READY PROTOCOL BLUEPRINT
+                // BOTTOM CARD: DYNAMIC FAMILY PROTOCOL BLUEPRINT
                 AiReadyBlueprintCard(
                     blueprintText = uiState.blueprintText,
                     summary = uiState.blueprintSummary,
                     onCopyBlueprint = {
                         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
-                        clipboard?.setPrimaryClip(ClipData.newPlainText("AiReadyProtocolBlueprint", uiState.blueprintText))
-                        Toast.makeText(context, "تم نسخ البروتوكول الكامل (AI-Ready Blueprint) بنجاح", Toast.LENGTH_SHORT).show()
+                        clipboard?.setPrimaryClip(ClipData.newPlainText("DynamicFamilyProtocolBlueprint", uiState.blueprintText))
+                        Toast.makeText(context, "تم نسخ البروتوكول الكامل (Dynamic Blueprint) بنجاح", Toast.LENGTH_SHORT).show()
                     },
                     onShareBlueprint = {
                         val intent = Intent(Intent.ACTION_SEND).apply {
                             type = "text/plain"
-                            putExtra(Intent.EXTRA_SUBJECT, "AI-Ready Protocol Blueprint")
+                            putExtra(Intent.EXTRA_SUBJECT, "Dynamic Family Protocol Blueprint")
                             putExtra(Intent.EXTRA_TEXT, uiState.blueprintText)
                         }
                         context.startActivity(Intent.createChooser(intent, "مشاركة البروتوكول الكامل"))
@@ -506,35 +457,80 @@ fun ProtocolProberScreen(
         }
     }
 
-    // Emergency Flash Restore confirmation dialog after file selection
-    val restorePair = pendingRestoreFile
-    if (restorePair != null) {
+    // SEQUENTIAL STAGE 5 MODAL WARNING DIALOG (NO HOT-SWAP)
+    val pendingPrompt = uiState.pendingConfirmDialog
+    if (pendingPrompt != null) {
         AlertDialog(
-            onDismissRequest = { pendingRestoreFile = null },
-            icon = { Icon(Icons.Default.Restore, contentDescription = null, tint = Color(0xFFDC2626), modifier = Modifier.size(32.dp)) },
-            title = { Text("تأكيد استعادة السوفت وير الأصلي", fontWeight = FontWeight.Bold, fontSize = 17.sp) },
-            text = {
-                Text(
-                    text = "الملف المختار: ${restorePair.first}\nالحجم: ${restorePair.second.size} بايت\n\nسيتم مسح وبرمجة المعالج المتصل فوراً بهذا الملف. تأكد من توصيل الكابل بإحكام.",
-                    fontSize = 13.sp,
-                    lineHeight = 20.sp
+            onDismissRequest = { /* Mandatory decision: cannot dismiss outside or via back press */ },
+            properties = DialogProperties(
+                dismissOnBackPress = false,
+                dismissOnClickOutside = false
+            ),
+            icon = {
+                Icon(
+                    imageVector = Icons.Default.Warning,
+                    contentDescription = "تحذير أمان",
+                    tint = Color(0xFFDC2626),
+                    modifier = Modifier.size(34.dp)
                 )
+            },
+            title = {
+                Text(
+                    text = "⚠️ تحذير أمان: إجراء قد يعدّل أو يمسح السوفت وير",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 16.sp,
+                    color = Color(0xFFB91C1C)
+                )
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = Color(0xFFF59E0B).copy(alpha = 0.16f),
+                        border = BorderStroke(1.dp, Color(0xFFD97706)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = "الخطوة (${pendingPrompt.stepIndex} من ${pendingPrompt.totalSteps}): ${pendingPrompt.stepTitle}",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFF92400E),
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                        )
+                    }
+                    Text(
+                        text = pendingPrompt.impactDescription,
+                        fontSize = 13.sp,
+                        lineHeight = 20.sp,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                }
             },
             confirmButton = {
                 Button(
-                    onClick = {
-                        val pair = restorePair
-                        pendingRestoreFile = null
-                        engine.emergencyRestoreFirmware(pair.first, pair.second)
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626)),
-                    modifier = Modifier.testTag("confirm_emergency_restore_button")
+                    onClick = { engine.confirmPendingStage5Step() },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color(0xFFDC2626),
+                        contentColor = Color.White
+                    ),
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier
+                        .heightIn(min = 48.dp)
+                        .testTag("stage5_confirm_continue_button")
                 ) {
-                    Text("بدء الاستعادة الفورية")
+                    Text("استكمال", fontWeight = FontWeight.Bold, fontSize = 13.sp)
                 }
             },
             dismissButton = {
-                TextButton(onClick = { pendingRestoreFile = null }) { Text("إلغاء") }
+                OutlinedButton(
+                    onClick = { engine.cancelPendingStage5AndFinish() },
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier
+                        .heightIn(min = 48.dp)
+                        .testTag("stage5_cancel_stop_button")
+                ) {
+                    Text("إلغاء / توقف إلى هنا", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                }
             }
         )
     }
@@ -674,121 +670,6 @@ private fun LiveChecklistCard(items: List<ChecklistStepItem>) {
 }
 
 @Composable
-private fun Stage5HotSwapSafetyGateCard(
-    phase: ProberStagePhase,
-    onBeginHotSwap: () -> Unit,
-    onResumeAfterReconnect: () -> Unit,
-    onEmergencyRestoreClick: () -> Unit,
-    onFinishSafeOnly: () -> Unit
-) {
-    val isInHotSwapStandby = phase == ProberStagePhase.HOT_SWAP_DISCONNECTED_READY
-
-    Card(
-        shape = RoundedCornerShape(18.dp),
-        colors = CardDefaults.cardColors(containerColor = Color(0xFFDC2626).copy(alpha = 0.10f)),
-        border = BorderStroke(2.dp, Color(0xFFDC2626)),
-        modifier = Modifier
-            .fillMaxWidth()
-            .testTag("stage5_safety_gate_card")
-    ) {
-        Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Icon(Icons.Default.Warning, contentDescription = "تحذير أمان", tint = Color(0xFFDC2626), modifier = Modifier.size(28.dp))
-                Text(
-                    text = "بوابة الأمان — المرحلة 5 (المعالج مقفول)",
-                    fontSize = 15.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = Color(0xFFB91C1C)
-                )
-            }
-
-            Text(
-                text = "⚠️ تحذير أمان: الخطوة القادمة ستستخدم مدارس تعدّل في بيانات المعالج (مثل تصفير بلوك الحماية) وقد تؤدي لتلف السوفت وير إذا انقطع الاتصال. يمكنك الآن فصل المبرمجة والكارتة بأمان دون ضياع نتائج الفحص السابقة.",
-                fontSize = 13.sp,
-                lineHeight = 20.sp,
-                fontWeight = FontWeight.SemiBold,
-                color = MaterialTheme.colorScheme.onSurface
-            )
-
-            if (!isInHotSwapStandby) {
-                Button(
-                    onClick = onBeginHotSwap,
-                    shape = RoundedCornerShape(12.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD97706), contentColor = Color.White),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(min = 50.dp)
-                        .testTag("hot_swap_button")
-                ) {
-                    Icon(Icons.Default.SwapHoriz, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("تبديل الكارتة والاستكمال (Hot-Swap & Resume)", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                }
-            } else {
-                Surface(
-                    shape = RoundedCornerShape(10.dp),
-                    color = Color(0xFFF59E0B).copy(alpha = 0.2f),
-                    border = BorderStroke(1.dp, Color(0xFFD97706)),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text(
-                        text = "وضع التبديل نشط: تم تحرير USB بأمان. بدّل الكارتة الآن ووصل كارتة التجارب ثم اضغط الزر بالأسفل.",
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = Color(0xFF92400E),
-                        modifier = Modifier.padding(10.dp)
-                    )
-                }
-                Button(
-                    onClick = onResumeAfterReconnect,
-                    shape = RoundedCornerShape(12.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF059669), contentColor = Color.White),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(min = 52.dp)
-                        .testTag("resume_after_hotswap_button")
-                ) {
-                    Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("أعدت التوصيل — استكمل المدارس المتقدمة", fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                }
-            }
-
-            Button(
-                onClick = onEmergencyRestoreClick,
-                shape = RoundedCornerShape(12.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626), contentColor = Color.White),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(min = 50.dp)
-                    .testTag("emergency_flash_restore_button")
-            ) {
-                Icon(Icons.Default.Restore, contentDescription = null, modifier = Modifier.size(18.dp))
-                Spacer(modifier = Modifier.width(6.dp))
-                Text("استعادة السوفت وير الأصلي (Emergency Restore)", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-            }
-
-            OutlinedButton(
-                onClick = onFinishSafeOnly,
-                shape = RoundedCornerShape(12.dp),
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(min = 48.dp)
-                    .testTag("finish_safe_only_button")
-            ) {
-                Icon(Icons.Default.DoneAll, contentDescription = null, modifier = Modifier.size(18.dp))
-                Spacer(modifier = Modifier.width(6.dp))
-                Text("إنهاء الفحص والاكتفاء بالتقرير الحالي", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-            }
-        }
-    }
-}
-
-@Composable
 private fun AiReadyBlueprintCard(
     blueprintText: String,
     summary: ProberBlueprintSummary,
@@ -812,16 +693,16 @@ private fun AiReadyBlueprintCard(
                 Icon(Icons.Default.Code, contentDescription = null, tint = Color(0xFF059669), modifier = Modifier.size(22.dp))
                 Column {
                     Text(
-                        text = "البروتوكول النهائي الكامل (AI-Ready Protocol Blueprint)",
+                        text = "البروتوكول الديناميكي الكامل للعائلة (Dynamic Family Blueprint)",
                         fontSize = 14.sp,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.onSurface
                     )
                     Text(
                         text = if (hasBlueprint) {
-                            "Baud=${summary.baudRate ?: "--"} | Page=${summary.pageSizeBytes ?: "--"}B | Block=${summary.blockSizeBytes ?: "--"}B | Cmds=${summary.discoveredCommands.size}"
+                            "Baud=${summary.supportedBaudRates.ifEmpty { listOfNotNull(summary.baudRate) }.joinToString("/")} | End=${summary.flashEndAddressHex} | STX=${summary.supportedStxPageSizes} | Cmds=${summary.discoveredCommands.size}"
                         } else {
-                            "يتم توليده تلقائياً بالصيغة التقنية المنظمة فور بدء الفحص"
+                            "يتم توليده تلقائياً بالصيغة الهندسية المنظمة فور بدء الفحص"
                         },
                         fontSize = 11.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -832,13 +713,13 @@ private fun AiReadyBlueprintCard(
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(min = 120.dp, max = 260.dp)
+                    .heightIn(min = 120.dp, max = 280.dp)
                     .background(Color(0xFF0F172A), RoundedCornerShape(12.dp))
                     .verticalScroll(rememberScrollState())
                     .padding(10.dp)
             ) {
                 Text(
-                    text = if (hasBlueprint) blueprintText else "{\n  \"status\": \"اضغط بدء الفحص الشامل لتوليد ملف البروتوكول الكامل\"\n}",
+                    text = if (hasBlueprint) blueprintText else "{\n  \"status\": \"اضغط بدء الفحص الشامل لتوليد البروتوكول الديناميكي للعائلة\"\n}",
                     fontSize = 11.sp,
                     fontFamily = FontFamily.Monospace,
                     color = Color(0xFF34D399),
@@ -880,17 +761,4 @@ private fun AiReadyBlueprintCard(
             }
         }
     }
-}
-
-private fun resolveUriDisplayName(context: Context, uri: Uri): String {
-    var name = "firmware.bin"
-    try {
-        context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
-            val idx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-            if (idx >= 0 && cursor.moveToFirst()) {
-                name = cursor.getString(idx) ?: name
-            }
-        }
-    } catch (_: Throwable) {}
-    return name
 }
