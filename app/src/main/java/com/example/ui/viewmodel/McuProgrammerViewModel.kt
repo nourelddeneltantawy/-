@@ -458,6 +458,12 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
         _uiState.update { it.copy(pendingRescueSessions = sessions) }
     }
 
+    fun dismiss78k0RescueSession(session: Nec78k0RecoveryManager.Nec78k0RecoverySession) {
+        Nec78k0RecoveryManager.markCompletedAndCleanup(appContext, session.chipName)
+        refresh78k0RescueSessions()
+        addLog("تم إلغاء وإخفاء وضع إنقاذ المعالج لـ ${session.chipName}.", LogLevel.INFO)
+    }
+
     private fun isSelectedTarget78k0(state: McuProgrammerUiState = _uiState.value): Boolean {
         val mcu = state.selectedProcessor
         if (mcu != null) return mcu.is78k0Flmd0Mode()

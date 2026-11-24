@@ -82,7 +82,6 @@ fun ProgrammerStep1McuSelect(
     onAutoDetectChipId: () -> Unit,
     onResetUniversalAutoDetect: () -> Unit = {},
     onNextStep: () -> Unit,
-    onRescue78k0Session: (com.example.util.Nec78k0RecoveryManager.Nec78k0RecoverySession) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val scrollState = rememberScrollState()
@@ -125,15 +124,6 @@ fun ProgrammerStep1McuSelect(
                     )
                 }
             }
-        }
-
-        // One-Tap MCU Rescue Banner if an interrupted 78K0 extraction session exists
-        if (state.pendingRescueSessions.isNotEmpty()) {
-            Nec78k0RescueBannerCard(
-                sessions = state.pendingRescueSessions,
-                isBusy = state.isBusy || state.isAutoDetecting,
-                onRescueClick = onRescue78k0Session
-            )
         }
 
         // Smart Instant Search Card

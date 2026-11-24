@@ -14,6 +14,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.BuildCircle
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Warning
@@ -23,6 +24,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -44,6 +46,7 @@ fun Nec78k0RescueBannerCard(
     sessions: List<Nec78k0RecoveryManager.Nec78k0RecoverySession>,
     isBusy: Boolean,
     onRescueClick: (Nec78k0RecoveryManager.Nec78k0RecoverySession) -> Unit,
+    onDismissClick: (Nec78k0RecoveryManager.Nec78k0RecoverySession) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val latest = sessions.firstOrNull() ?: return
@@ -75,6 +78,19 @@ fun Nec78k0RescueBannerCard(
                         text = "جلسة غير مكتملة لـ ${latest.chipName} • ${latest.stage.labelAr}",
                         fontSize = 11.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                IconButton(
+                    onClick = { onDismissClick(latest) },
+                    enabled = !isBusy,
+                    modifier = Modifier
+                        .size(48.dp)
+                        .testTag("nec78k0_rescue_dismiss_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Close,
+                        contentDescription = "إلغاء وإخفاء وضع الإنقاذ",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }

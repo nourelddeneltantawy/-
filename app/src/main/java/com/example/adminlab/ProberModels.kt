@@ -56,7 +56,8 @@ enum class ChecklistStepStatus(val badgeText: String) {
     RUNNING("⏳ جاري"),
     PASSED("✅ نجح"),
     FAILED("❌ فشل"),
-    AWAITING_SAFETY("⚠️ بانتظار موافقة الأمان")
+    AWAITING_SAFETY("⚠️ بانتظار موافقة الأمان"),
+    BYPASSED("⚠️ تم التجاوز")
 }
 
 data class ChecklistStepItem(
@@ -152,6 +153,7 @@ data class ProberUiState(
     val blueprintSummary: ProberBlueprintSummary = ProberBlueprintSummary(),
     val blueprintText: String = "",
     val restoreProgressText: String = "",
+    val canBypassSync: Boolean = false,
     val logs: List<ProberLogEntry> = emptyList()
 ) {
     val isBusy: Boolean

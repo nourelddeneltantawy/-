@@ -66,6 +66,10 @@ class ProberUsbTransport(
         private set
     @Volatile
     var echoLoopbackObserved: Boolean = false
+    @Volatile
+    private var currentDtrState: Boolean = false
+    @Volatile
+    private var currentRtsState: Boolean = false
 
     @Volatile
     private var readerJob: Job? = null
@@ -223,8 +227,10 @@ class ProberUsbTransport(
         val conn = activeConnection ?: return
         when (activeChip) {
             ProberUsbChip.FT232R -> {
-                conn.controlTransfer(0x40, 0x00, 0x0000, 0, null, 0, 400)
-                conn.controlTransfer(0x40, 0x09, 0x0002, 0, null, 0, 400)
+                conn.controlTransfer(0x40, 0x00, 0x0000, 0, null, 0, 500) // Reset
+                conn.controlTransfer(0x40, 0x00, 0x0001, 0, null, 0, 500) // Purge RX FIFO
+                conn.controlTransfer(0x40, 0x00, 0x0002, 0, null, 0, 500) // Purge TX FIFO
+                conn.controlTransfer(0x40, 0x09, 0x0002, 0, null, 0, 500) // Latency timer 2ms
                 val divisor = when (baudRate) {
                     9600 -> 0x4138
                     19200 -> 0x809C
@@ -232,25 +238,26 @@ class ProberUsbTransport(
                     57600 -> 0x0034
                     else -> (3_000_000 / baudRate.coerceAtLeast(300))
                 }
-                conn.controlTransfer(0x40, 0x03, divisor, 0, null, 0, 400)
-                conn.controlTransfer(0x40, 0x04, 0x0008, 0, null, 0, 400)
-                conn.controlTransfer(0x40, 0x02, 0x0000, 0, null, 0, 400)
+                conn.controlTransfer(0x40, 0x03, divisor, 0, null, 0, 500) // Set baud divisor
+                conn.controlTransfer(0x40, 0x04, 0x0008, 0, null, 0, 500) // 8N1
+                conn.controlTransfer(0x40, 0x02, 0x0000, 0, null, 0, 500) // Flow control OFF
             }
             ProberUsbChip.CP2102 -> {
                 val idx = controlInterfaceIndex
-                conn.controlTransfer(0x41, 0x00, 0x0001, idx, null, 0, 400)
+                conn.controlTransfer(0x41, 0x00, 0x0001, idx, null, 0, 500)
                 val baudBytes = byteArrayOf(
                     (baudRate and 0xFF).toByte(),
                     ((baudRate ushr 8) and 0xFF).toByte(),
                     ((baudRate ushr 16) and 0xFF).toByte(),
                     ((baudRate ushr 24) and 0xFF).toByte()
                 )
-                val r = conn.controlTransfer(0x41, 0x1E, 0, idx, baudBytes, baudBytes.size, 400)
+                val r = conn.controlTransfer(0x41, 0x1E, 0, idx, baudBytes, baudBytes.size, 500)
                 if (r < 0) {
                     val div = (3686400 / baudRate.coerceAtLeast(300)) and 0xFFFF
-                    conn.controlTransfer(0x41, 0x01, div, idx, null, 0, 400)
+                    conn.controlTransfer(0x41, 0x01, div, idx, null, 0, 500)
                 }
-                conn.controlTransfer(0x41, 0x03, 0x0800, idx, null, 0, 400)
+                conn.controlTransfer(0x41, 0x03, 0x0800, idx, null, 0, 500)
+                conn.controlTransfer(0x41, 0x12, 0x000F, idx, null, 0, 500)
             }
             ProberUsbChip.CH340G -> {
                 conn.controlTransfer(0x40, 0xA1, 0, 0, null, 0, 400)
@@ -283,6 +290,8 @@ class ProberUsbTransport(
     }
 
     fun setControlLines(dtr: Boolean, rts: Boolean) {
+        currentDtrState = dtr
+        currentRtsState = rts
         val conn = activeConnection ?: return
         when (activeChip) {
             ProberUsbChip.FT232R -> {
@@ -304,22 +313,105 @@ class ProberUsbTransport(
         }
     }
 
+    fun setDtr(enabled: Boolean) {
+        currentDtrState = enabled
+        val conn = activeConnection ?: return
+        when (activeChip) {
+            ProberUsbChip.FT232R -> {
+                val value = if (enabled) 0x0101 else 0x0100
+                conn.controlTransfer(0x40, 0x01, value, 0, null, 0, 300)
+            }
+            ProberUsbChip.CP2102 -> {
+                val value = if (enabled) 0x0101 else 0x0100
+                conn.controlTransfer(0x41, 0x07, value, controlInterfaceIndex, null, 0, 300)
+            }
+            else -> setControlLines(dtr = currentDtrState, rts = currentRtsState)
+        }
+    }
+
+    fun setRts(enabled: Boolean) {
+        currentRtsState = enabled
+        val conn = activeConnection ?: return
+        when (activeChip) {
+            ProberUsbChip.FT232R -> {
+                val value = if (enabled) 0x0202 else 0x0200
+                conn.controlTransfer(0x40, 0x01, value, 0, null, 0, 300)
+            }
+            ProberUsbChip.CP2102 -> {
+                val value = if (enabled) 0x0202 else 0x0200
+                conn.controlTransfer(0x41, 0x07, value, controlInterfaceIndex, null, 0, 300)
+            }
+            else -> setControlLines(dtr = currentDtrState, rts = currentRtsState)
+        }
+    }
+
     suspend fun pulseResetSequence(
         invertedPolarity: Boolean,
-        holdResetMs: Long = 65L,
-        settleMs: Long = 105L
+        holdResetMs: Long = 100L,
+        settleMs: Long = 150L
     ) {
         val flmd0High = invertedPolarity
         val resetLow = !invertedPolarity
         val resetHigh = invertedPolarity
-        setControlLines(dtr = flmd0High, rts = resetLow)
+        setDtr(flmd0High)
+        setRts(resetLow)
         delay(holdResetMs)
-        setControlLines(dtr = flmd0High, rts = resetHigh)
+        setDtr(flmd0High)
+        setRts(resetHigh)
         delay(settleMs)
     }
 
     fun flushRx() {
         synchronized(rxQueue) { rxQueue.clear() }
+    }
+
+    fun writeRawBytes(data: ByteArray): String? = writeBytesRaw(data)
+
+    suspend fun drainAvailableRaw(waitMs: Long = 20L): ByteArray {
+        val out = ByteArrayOutputStream()
+        val deadline = System.currentTimeMillis() + waitMs.coerceAtLeast(1L)
+        while (true) {
+            currentCoroutineContext().ensureActive()
+            synchronized(rxQueue) {
+                while (rxQueue.isNotEmpty()) {
+                    out.write(rxQueue.removeFirst().toInt() and 0xFF)
+                }
+            }
+            if (System.currentTimeMillis() >= deadline) break
+            delay(3)
+        }
+        return out.toByteArray()
+    }
+
+    suspend fun readNecHandshakeOrRaw(
+        timeoutMs: Int,
+        echoCandidate: ByteArray,
+        onRawChunk: (ByteArray) -> Unit
+    ): ByteArray {
+        val rawAccum = ByteArrayOutputStream()
+        val deadline = System.currentTimeMillis() + timeoutMs.toLong()
+        while (System.currentTimeMillis() < deadline) {
+            currentCoroutineContext().ensureActive()
+            val chunkOut = ByteArrayOutputStream()
+            synchronized(rxQueue) {
+                while (rxQueue.isNotEmpty()) {
+                    val b = rxQueue.removeFirst().toInt() and 0xFF
+                    chunkOut.write(b)
+                    rawAccum.write(b)
+                }
+            }
+            val chunk = chunkOut.toByteArray()
+            if (chunk.isNotEmpty()) {
+                onRawChunk(chunk)
+                val full = rawAccum.toByteArray()
+                val stripped = stripEchoPrefix(echoCandidate, full)
+                if (isCompleteNecResponse(stripped)) {
+                    return stripped
+                }
+            }
+            delay(4)
+        }
+        return stripEchoPrefix(echoCandidate, rawAccum.toByteArray())
     }
 
     suspend fun transceive(
@@ -359,10 +451,21 @@ class ProberUsbTransport(
             skipEchoPrefixLen = if (echoLoopbackObserved) txBytes.size else 0
         )
 
-        val clean = stripEchoPrefix(txBytes, raw)
+        val hadEchoPrefix = txBytes.isNotEmpty() && raw.size >= txBytes.size && raw.copyOfRange(0, txBytes.size).contentEquals(txBytes)
+        var clean = stripEchoPrefix(txBytes, raw)
+        if (hadEchoPrefix && clean.isEmpty() && expectedMax > 0) {
+            // First time diode echo was observed: read genuine MCU response after the stripped echo!
+            clean = readRx(
+                expectedMax = expectedMax,
+                timeoutMs = timeoutMs,
+                stopOnCompleteNecFrame = stopOnCompleteNecFrame,
+                skipEchoPrefixLen = 0
+            )
+        }
         if (logTxRx) {
             if (clean.isEmpty()) {
-                onLog(ProberLogDirection.RX, "(Timeout ${timeoutMs}ms)")
+                val echoNote = if (hadEchoPrefix) " [Echo Only: ${raw.toHexStr()}]" else ""
+                onLog(ProberLogDirection.RX, "(Timeout ${timeoutMs}ms)$echoNote")
             } else {
                 onLog(ProberLogDirection.RX, clean.toHexStr())
             }
@@ -436,7 +539,9 @@ class ProberUsbTransport(
             }
             val now = System.currentTimeMillis()
             if (tookAny) {
-                lastByteAt = now
+                if (out.size() > skipEchoPrefixLen) {
+                    lastByteAt = now
+                }
                 if (stopOnCompleteNecFrame) {
                     val bytes = out.toByteArray()
                     val payloadStart = if (bytes.size > skipEchoPrefixLen) skipEchoPrefixLen else 0
@@ -446,7 +551,7 @@ class ProberUsbTransport(
                 if (out.size() >= expectedMax) break
             }
             if (now >= deadline) break
-            if (lastByteAt > 0L && (now - lastByteAt) >= 30L) break
+            if (lastByteAt > 0L && (now - lastByteAt) >= 45L) break
             delay(3)
         }
         return out.toByteArray()

@@ -363,26 +363,31 @@ fun ProtocolProberScreen(
                     }
                 }
 
-                // STAGE 5: SAFETY GATE / HOT-SWAP / EMERGENCY RESTORE CARD
-                if (uiState.isWaitingAtSafetyGate) {
-                    Stage5HotSwapSafetyGateCard(
-                        phase = uiState.phase,
-                        onBeginHotSwap = { engine.enterHotSwapStandby() },
-                        onResumeAfterReconnect = {
-                            engine.refreshUsbStatus()
-                            engine.resumeAdvancedAfterHotSwap()
-                        },
-                        onEmergencyRestoreClick = {
-                            firmwarePicker.launch(arrayOf("*/*"))
-                        },
-                        onFinishSafeOnly = { engine.finishWithSafeResultsOnly() }
-                    )
+                // BYPASS SYNC BUTTON (shown when Stage 1 fails or user wants direct Stages 2.1..4 testing)
+                if (uiState.canBypassSync && !uiState.isBusy) {
+                    Button(
+                        onClick = { engine.bypassSyncAndRunStages2To4() },
+                        shape = RoundedCornerShape(14.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = Color(0xFFD97706),
+                            contentColor = Color.White
+                        ),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 52.dp)
+                            .testTag("bypass_sync_button")
+                    ) {
+                        Icon(Icons.Default.Warning, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "تجاوز التزامن واختبار الأوامر مباشرة",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 13.sp
+                        )
+                    }
                 }
 
-                // LIVE STEP-BY-STEP CHECKLIST
-                LiveChecklistCard(items = uiState.checklist)
-
-                // LIVE HEX LOG CONSOLE
+                // LIVE HEX LOG CONSOLE (Prominent above checklist so Stage 1 TX/RX bytes show immediately)
                 Card(
                     shape = RoundedCornerShape(16.dp),
                     colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
@@ -416,14 +421,14 @@ fun ProtocolProberScreen(
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(200.dp)
+                                .height(210.dp)
                                 .background(Color(0xFF020617), RoundedCornerShape(10.dp))
                                 .padding(8.dp)
                         ) {
                             if (uiState.logs.isEmpty()) {
                                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                                     Text(
-                                        text = "اضغط «بدء الفحص الشامل واستخراج البروتوكول» لمتابعة الحزم لحظياً...",
+                                        text = "اضغط «بدء الفحص الشامل واستخراج البروتوكول» لمتابعة حزم TX / RX لحظياً...",
                                         fontSize = 12.sp,
                                         color = Color(0xFF64748B)
                                     )
@@ -457,6 +462,25 @@ fun ProtocolProberScreen(
                         }
                     }
                 }
+
+                // STAGE 5: SAFETY GATE / HOT-SWAP / EMERGENCY RESTORE CARD
+                if (uiState.isWaitingAtSafetyGate) {
+                    Stage5HotSwapSafetyGateCard(
+                        phase = uiState.phase,
+                        onBeginHotSwap = { engine.enterHotSwapStandby() },
+                        onResumeAfterReconnect = {
+                            engine.refreshUsbStatus()
+                            engine.resumeAdvancedAfterHotSwap()
+                        },
+                        onEmergencyRestoreClick = {
+                            firmwarePicker.launch(arrayOf("*/*"))
+                        },
+                        onFinishSafeOnly = { engine.finishWithSafeResultsOnly() }
+                    )
+                }
+
+                // LIVE STEP-BY-STEP CHECKLIST
+                LiveChecklistCard(items = uiState.checklist)
 
                 // 4. BOTTOM CARD: AI-READY PROTOCOL BLUEPRINT
                 AiReadyBlueprintCard(
@@ -604,7 +628,8 @@ private fun LiveChecklistCard(items: List<ChecklistStepItem>) {
                     ChecklistStepStatus.RUNNING -> Triple(Color(0xFF0284C7).copy(alpha = 0.12f), Color(0xFF0284C7), Icons.Default.HourglassTop)
                     ChecklistStepStatus.PASSED -> Triple(Color(0xFF10B981).copy(alpha = 0.12f), Color(0xFF059669), Icons.Default.CheckCircle)
                     ChecklistStepStatus.FAILED -> Triple(Color(0xFFEF4444).copy(alpha = 0.10f), Color(0xFFDC2626), Icons.Default.Cancel)
-                    ChecklistStepStatus.AWAITING_SAFETY -> Triple(Color(0xFFF59E0B).copy(alpha = 0.15f), Color(0xFFD97706), Icons.Default.Warning)
+                    ChecklistStepStatus.AWAITING_SAFETY,
+                    ChecklistStepStatus.BYPASSED -> Triple(Color(0xFFF59E0B).copy(alpha = 0.15f), Color(0xFFD97706), Icons.Default.Warning)
                 }
 
                 Surface(

@@ -125,22 +125,26 @@ class ProberEngine(context: Context) {
                 checklist = defaultChecklist(),
                 blueprintSummary = ProberBlueprintSummary(),
                 blueprintText = "",
-                restoreProgressText = ""
+                restoreProgressText = "",
+                canBypassSync = false
             )
             appendLog(ProberLogDirection.INFO, "══ بدء الفحص الشامل واستخراج البروتوكول (${family.labelAr}) ══")
 
             try {
                 if (!transport.openSession()) {
-                    failPipeline("تعذر فتح منفذ USB OTG. تأكد من توصيل المبرمجة ومنح الصلاحية.")
+                    failPipeline("تعذر فتح منفذ USB OTG. تأكد من توصيل المبرمجة ومنح الصلاحية.", allowBypass = false)
                     return@launch
                 }
 
                 // STAGE 1
-                updateStep("stage1_handshake", ChecklistStepStatus.RUNNING, "مسح قطبية DTR/RTS والسرعات 9600..115200")
+                updateStep("stage1_handshake", ChecklistStepStatus.RUNNING, "تهيئة FT232R (9600 8N1) ونبض FLMD0/RESET + 0x00")
                 val sync = runStage1HardwareHandshake(family)
                 if (sync == null) {
-                    updateStep("stage1_handshake", ChecklistStepStatus.FAILED, "لم يرد المعالج على أي نبضة تزامن")
-                    failPipeline("فشل التزامن في المرحلة 1. تأكد من توصيل TX/RX و FLMD0/BOOT0 و RESET.")
+                    updateStep("stage1_handshake", ChecklistStepStatus.FAILED, "لم يرد المعالج على أي نبضة تزامن — يمكنك الضغط على «تجاوز التزامن»")
+                    failPipeline(
+                        "فشل التزامن في المرحلة 1. تأكد من TX/RX و FLMD0 و RESET أو استخدم زر «تجاوز التزامن واختبار الأوامر مباشرة».",
+                        allowBypass = true
+                    )
                     return@launch
                 }
                 lastSyncLock = sync
@@ -150,103 +154,180 @@ class ProberEngine(context: Context) {
                     "${sync.baudRate} bps | ${sync.framing.label} | ${sync.dtrPolarity}"
                 )
 
-                var summary = ProberBlueprintSummary(
-                    baudRate = sync.baudRate,
-                    maxBaudTested = sync.baudRate,
-                    dtrPolarity = sync.dtrPolarity,
-                    rtsPolarity = sync.rtsPolarity,
-                    echoCancellation = transport.echoLoopbackObserved,
-                    syncPulseHex = sync.syncPulseHex,
-                    framing = sync.framing,
-                    safeDelayMs = (sync.latencySampleMs + 15).coerceIn(15, 250)
-                )
-                updateSummaryAndBlueprint(summary)
-
-                // STAGE 2: 5 Safe Read Schools
-                _state.value = _state.value.copy(stageBanner = "جاري تنفيذ المرحلة 2: فحص مدارس السحب الآمنة...")
-
-                val r1 = testDirectMemoryRead(sync)
-                resyncLight(sync)
-                val r2 = testChecksum1ByteAttack(sync)
-                resyncLight(sync)
-                val r3 = testVerify0x13Probe(sync)
-                resyncLight(sync)
-                val r4 = testSignatureRegisterRead(sync)
-                resyncLight(sync)
-                val r5 = testRamStubInjection(sync)
-
-                val passedReads = listOf(r1, r2, r3, r4, r5).filter { it.status == ChecklistStepStatus.PASSED }
-                val winningReadDesc = if (passedReads.isNotEmpty()) {
-                    passedReads.joinToString(" + ") { it.title }
-                } else {
-                    "Locked Bootloader — يتطلب بوابة المرحلة 5"
-                }
-                summary = summary.copy(
-                    winningReadMethod = winningReadDesc,
-                    chipSignature = r4.takeIf { it.status == ChecklistStepStatus.PASSED }?.detail ?: ""
-                )
-                updateSummaryAndBlueprint(summary)
-
-                // STAGE 3: Full 0x00..0xFF Command & Length Sweep (Strict Guard Active)
-                _state.value = _state.value.copy(stageBanner = "جاري تنفيذ المرحلة 3: المسح الجراحي للأوامر 0x00..0xFF...")
-                updateStep("stage3_cmd_sweep", ChecklistStepStatus.RUNNING, "مسح 0x00..0xFF مع قائمة الحماية الصارمة...")
-                resyncLight(sync)
-                val discoveredCmds = runStage3SurgicalCommandSweep(sync)
-                updateStep(
-                    "stage3_cmd_sweep",
-                    if (discoveredCmds.isNotEmpty()) ChecklistStepStatus.PASSED else ChecklistStepStatus.FAILED,
-                    "تم اكتشاف ${discoveredCmds.size} أمر مع أطوال المعاملات LEN"
-                )
-                summary = summary.copy(discoveredCommands = discoveredCmds)
-                updateSummaryAndBlueprint(summary)
-
-                // STAGE 4: Timing, Boundaries & Speed
-                _state.value = _state.value.copy(stageBanner = "جاري تنفيذ المرحلة 4: فحص السرعة وحدود الصفحة والبلوك...")
-                updateStep("stage4_timing_bounds", ChecklistStepStatus.RUNNING, "اختبار 0x9A، Page Size، Block Size، وزمن الاستجابة")
-                resyncLight(sync)
-                summary = runStage4TimingAndBoundaries(sync, summary)
-                updateStep(
-                    "stage4_timing_bounds",
-                    ChecklistStepStatus.PASSED,
-                    "Page=${summary.pageSizeBytes}B | Block=${summary.blockSizeBytes}B | MaxBaud=${summary.maxBaudTested} | Delay=${summary.safeDelayMs}ms"
-                )
-                updateSummaryAndBlueprint(summary)
-
-                // STAGE 5: Safety Gate & Hot-Swap Decision
-                val anyReadSucceeded = passedReads.isNotEmpty()
-                if (anyReadSucceeded) {
-                    updateStep("stage5_safety_gate", ChecklistStepStatus.PASSED, "نجح السحب الآمن — لا حاجة لمدارس تعديلية خطرة")
-                    _state.value = _state.value.copy(
-                        phase = ProberStagePhase.COMPLETED,
-                        stageBanner = "اكتمل الفحص الشامل واستخراج البروتوكول بنجاح"
-                    )
-                    transport.enterSafeIdleAndClose()
-                } else {
-                    // Put lines into Safe Idle and pause for Hot-Swap / Emergency Restore / Finish
-                    transport.enterSafeIdleAndClose()
-                    updateStep(
-                        "stage5_safety_gate",
-                        ChecklistStepStatus.AWAITING_SAFETY,
-                        "المعالج مقفول — متوقف بأمان لاختيار تبديل الكارتة أو الاستعادة أو الإنهاء"
-                    )
-                    _state.value = _state.value.copy(
-                        phase = ProberStagePhase.AWAITING_HOT_SWAP_GATE,
-                        stageBanner = "بوابة الأمان (المرحلة 5): المعالج مقفول وتوقف المحرك بأمان"
-                    )
-                    appendLog(
-                        ProberLogDirection.WARN,
-                        "⚠️ توقف المحرك تلقائياً عند المرحلة 5 (المعالج مقفول). يمكنك فصل الكارتة بأمان دون فقدان نتائج المراحل 1..4."
-                    )
-                }
+                executeStages2To5(sync)
             } catch (_: CancellationException) {
                 stopImmediately("تم إيقاف الفحص فوراً بناءً على طلب المشرف.")
             } catch (t: Throwable) {
-                failPipeline("خطأ أثناء التنفيذ: ${t.message ?: t::class.java.simpleName}")
+                failPipeline("خطأ أثناء التنفيذ: ${t.message ?: t::class.java.simpleName}", allowBypass = (lastSyncLock == null))
             } finally {
                 if (!_state.value.isWaitingAtSafetyGate) {
                     transport.closeSession()
                 }
             }
+        }
+    }
+
+    /**
+     * Bypasses Stage 1 Sync lock and runs Stages 2.1 -> 4 (+ Stage 5 Gate) directly at default UART settings.
+     */
+    fun bypassSyncAndRunStages2To4() {
+        if (activeJob?.isActive == true) return
+        val family = _state.value.selectedFamily
+
+        activeJob = scope.launch {
+            val defaultBaud = when (family) {
+                ProberTargetFamily.STM32_UART -> 115200
+                else -> 9600
+            }
+            val defaultFraming = when (family) {
+                ProberTargetFamily.STM32_UART -> DetectedFraming.STM32_ACK
+                ProberTargetFamily.RENESAS_R8C_RL78 -> DetectedFraming.RENESAS_RAW
+                else -> DetectedFraming.NEC_STX_ETX
+            }
+
+            _state.value = _state.value.copy(
+                phase = ProberStagePhase.RUNNING_SAFE_PIPELINE,
+                stageBanner = "تجاوز المرحلة 1 — اختبار الأوامر مباشرة ($defaultBaud bps)...",
+                checklist = defaultChecklist(),
+                blueprintSummary = ProberBlueprintSummary(),
+                blueprintText = "",
+                restoreProgressText = "",
+                canBypassSync = false
+            )
+            appendLog(
+                ProberLogDirection.WARN,
+                "⚠️ تم تجاوز التزامن يدوياً — فتح المنفذ على $defaultBaud bps (${defaultFraming.label}) وبدء المراحل 2.1 إلى 4 مباشرة..."
+            )
+
+            try {
+                if (!transport.openSession()) {
+                    failPipeline("تعذر فتح منفذ USB OTG لتجاوز التزامن.", allowBypass = true)
+                    return@launch
+                }
+                transport.configureUart(defaultBaud)
+                transport.setControlLines(dtr = false, rts = false)
+                delay(40)
+                transport.flushRx()
+
+                val bypassSync = SyncLock(
+                    baudRate = defaultBaud,
+                    dtrPolarity = "تجاوز يدوي (FLMD0/DTR=false, RTS=false)",
+                    rtsPolarity = "Bypassed",
+                    inverted = false,
+                    useResetToggle = false,
+                    syncPulseHex = "Bypassed (Direct Mode)",
+                    framing = defaultFraming,
+                    firstReplyHex = "Bypassed",
+                    latencySampleMs = 25
+                )
+                lastSyncLock = bypassSync
+                updateStep(
+                    "stage1_handshake",
+                    ChecklistStepStatus.BYPASSED,
+                    "تم التجاوز يدوياً • $defaultBaud bps • ${defaultFraming.label}"
+                )
+
+                executeStages2To5(bypassSync)
+            } catch (_: CancellationException) {
+                stopImmediately("تم إيقاف الفحص فوراً بناءً على طلب المشرف.")
+            } catch (t: Throwable) {
+                failPipeline("خطأ أثناء التنفيذ بعد التجاوز: ${t.message ?: t::class.java.simpleName}", allowBypass = true)
+            } finally {
+                if (!_state.value.isWaitingAtSafetyGate) {
+                    transport.closeSession()
+                }
+            }
+        }
+    }
+
+    private suspend fun executeStages2To5(sync: SyncLock) {
+        var summary = ProberBlueprintSummary(
+            baudRate = sync.baudRate,
+            maxBaudTested = sync.baudRate,
+            dtrPolarity = sync.dtrPolarity,
+            rtsPolarity = sync.rtsPolarity,
+            echoCancellation = transport.echoLoopbackObserved,
+            syncPulseHex = sync.syncPulseHex,
+            framing = sync.framing,
+            safeDelayMs = (sync.latencySampleMs + 15).coerceIn(15, 250)
+        )
+        updateSummaryAndBlueprint(summary)
+
+        // STAGE 2: 5 Safe Read Schools
+        _state.value = _state.value.copy(stageBanner = "جاري تنفيذ المرحلة 2: فحص مدارس السحب الآمنة...")
+
+        val r1 = testDirectMemoryRead(sync)
+        resyncLight(sync)
+        val r2 = testChecksum1ByteAttack(sync)
+        resyncLight(sync)
+        val r3 = testVerify0x13Probe(sync)
+        resyncLight(sync)
+        val r4 = testSignatureRegisterRead(sync)
+        resyncLight(sync)
+        val r5 = testRamStubInjection(sync)
+
+        val passedReads = listOf(r1, r2, r3, r4, r5).filter { it.status == ChecklistStepStatus.PASSED }
+        val winningReadDesc = if (passedReads.isNotEmpty()) {
+            passedReads.joinToString(" + ") { it.title }
+        } else {
+            "Locked Bootloader — يتطلب بوابة المرحلة 5"
+        }
+        summary = summary.copy(
+            winningReadMethod = winningReadDesc,
+            chipSignature = r4.takeIf { it.status == ChecklistStepStatus.PASSED }?.detail ?: ""
+        )
+        updateSummaryAndBlueprint(summary)
+
+        // STAGE 3: Full 0x00..0xFF Command & Length Sweep (Strict Guard Active)
+        _state.value = _state.value.copy(stageBanner = "جاري تنفيذ المرحلة 3: المسح الجراحي للأوامر 0x00..0xFF...")
+        updateStep("stage3_cmd_sweep", ChecklistStepStatus.RUNNING, "مسح 0x00..0xFF مع قائمة الحماية الصارمة...")
+        resyncLight(sync)
+        val discoveredCmds = runStage3SurgicalCommandSweep(sync)
+        updateStep(
+            "stage3_cmd_sweep",
+            if (discoveredCmds.isNotEmpty()) ChecklistStepStatus.PASSED else ChecklistStepStatus.FAILED,
+            "تم اكتشاف ${discoveredCmds.size} أمر مع أطوال المعاملات LEN"
+        )
+        summary = summary.copy(discoveredCommands = discoveredCmds)
+        updateSummaryAndBlueprint(summary)
+
+        // STAGE 4: Timing, Boundaries & Speed
+        _state.value = _state.value.copy(stageBanner = "جاري تنفيذ المرحلة 4: فحص السرعة وحدود الصفحة والبلوك...")
+        updateStep("stage4_timing_bounds", ChecklistStepStatus.RUNNING, "اختبار 0x9A، Page Size، Block Size، وزمن الاستجابة")
+        resyncLight(sync)
+        summary = runStage4TimingAndBoundaries(sync, summary)
+        updateStep(
+            "stage4_timing_bounds",
+            ChecklistStepStatus.PASSED,
+            "Page=${summary.pageSizeBytes}B | Block=${summary.blockSizeBytes}B | MaxBaud=${summary.maxBaudTested} | Delay=${summary.safeDelayMs}ms"
+        )
+        updateSummaryAndBlueprint(summary)
+
+        // STAGE 5: Safety Gate & Hot-Swap Decision
+        val anyReadSucceeded = passedReads.isNotEmpty()
+        if (anyReadSucceeded) {
+            updateStep("stage5_safety_gate", ChecklistStepStatus.PASSED, "نجح السحب الآمن — لا حاجة لمدارس تعديلية خطرة")
+            _state.value = _state.value.copy(
+                phase = ProberStagePhase.COMPLETED,
+                stageBanner = "اكتمل الفحص الشامل واستخراج البروتوكول بنجاح"
+            )
+            transport.enterSafeIdleAndClose()
+        } else {
+            // Put lines into Safe Idle and pause for Hot-Swap / Emergency Restore / Finish
+            transport.enterSafeIdleAndClose()
+            updateStep(
+                "stage5_safety_gate",
+                ChecklistStepStatus.AWAITING_SAFETY,
+                "المعالج مقفول — متوقف بأمان لاختيار تبديل الكارتة أو الاستعادة أو الإنهاء"
+            )
+            _state.value = _state.value.copy(
+                phase = ProberStagePhase.AWAITING_HOT_SWAP_GATE,
+                stageBanner = "بوابة الأمان (المرحلة 5): المعالج مقفول وتوقف المحرك بأمان"
+            )
+            appendLog(
+                ProberLogDirection.WARN,
+                "⚠️ توقف المحرك تلقائياً عند المرحلة 5 (المعالج مقفول). يمكنك فصل الكارتة بأمان دون فقدان نتائج المراحل 1..4."
+            )
         }
     }
 
@@ -432,12 +513,131 @@ class ProberEngine(context: Context) {
 
     // ==================== STAGE 1 IMPLEMENTATION ====================
 
+    private suspend fun tryLiteralNec78k0Handshake(
+        baud: Int,
+        polDesc: String,
+        inverted: Boolean,
+        useResetToggle: Boolean
+    ): SyncLock? {
+        currentCoroutineContext().ensureActive()
+        transport.configureUart(baud)
+        transport.flushRx()
+
+        if (useResetToggle) {
+            val dtrFlmd0High = inverted
+            val rtsResetLow = !inverted
+            val rtsResetHigh = inverted
+            appendLog(
+                ProberLogDirection.INFO,
+                "تهيئة 78K0 ($baud bps 8N1 | $polDesc): setDTR($dtrFlmd0High)[FLMD0=+5V] + setRTS($rtsResetLow)[RESET=0V] -> 100ms -> setRTS($rtsResetHigh)[RESET=+5V] -> 150ms"
+            )
+            transport.setDtr(dtrFlmd0High)
+            transport.setRts(rtsResetLow)
+            delay(100)
+            transport.setDtr(dtrFlmd0High)
+            transport.setRts(rtsResetHigh)
+            delay(150)
+            transport.flushRx()
+        } else {
+            appendLog(ProberLogDirection.INFO, "تهيئة 78K0 ($baud bps 8N1 | بدون نبضة Reset): setDTR(false), setRTS(false)")
+            transport.setControlLines(dtr = false, rts = false)
+            delay(50)
+            transport.flushRx()
+        }
+
+        // Literal 78K0 two-pulse sync: 0x00 -> 10ms -> 0x00 -> 50ms
+        appendLog(ProberLogDirection.TX, "78K0 Sync Pulse #1 @ $baud -> 00")
+        transport.writeRawBytes(byteArrayOf(0x00))?.let { err ->
+            appendLog(ProberLogDirection.ERROR, "TX Error (Sync #1): $err")
+            return null
+        }
+        delay(10)
+
+        appendLog(ProberLogDirection.TX, "78K0 Sync Pulse #2 @ $baud -> 00")
+        transport.writeRawBytes(byteArrayOf(0x00))?.let { err ->
+            appendLog(ProberLogDirection.ERROR, "TX Error (Sync #2): $err")
+            return null
+        }
+        delay(50)
+
+        val pulseRaw = transport.drainAvailableRaw(25)
+        if (pulseRaw.isNotEmpty()) {
+            if (pulseRaw.size == 2 && pulseRaw[0] == 0x00.toByte() && pulseRaw[1] == 0x00.toByte()) {
+                transport.echoLoopbackObserved = true
+                appendLog(ProberLogDirection.RX, "صدى نبضة المزامنة (Diode Echo): ${pulseRaw.toHexStr()}")
+            } else {
+                appendLog(ProberLogDirection.RX, "Raw بعد نبضة 0x00: ${pulseRaw.toHexStr()}")
+            }
+        }
+        transport.flushRx()
+
+        val resetCmd = buildNecCommandFrame(0x00) // 01 01 00 FF 03
+        appendLog(ProberLogDirection.TX, "NEC Reset 0x00 ($polDesc • 1500ms) -> ${resetCmd.toHexStr()}")
+        val tNec = System.currentTimeMillis()
+        transport.writeRawBytes(resetCmd)?.let { err ->
+            appendLog(ProberLogDirection.ERROR, "TX Error (Reset 0x00): $err")
+            return null
+        }
+
+        val reply = transport.readNecHandshakeOrRaw(
+            timeoutMs = 1500,
+            echoCandidate = resetCmd,
+            onRawChunk = { chunk ->
+                appendLog(ProberLogDirection.RX, "Live Raw Chunk: ${chunk.toHexStr()}")
+            }
+        )
+        val dtNec = (System.currentTimeMillis() - tNec).toInt().coerceAtLeast(5)
+
+        if (reply.isEmpty()) {
+            appendLog(ProberLogDirection.RX, "(Timeout 1500ms بعد Reset 0x00 @ $baud | $polDesc)")
+            return null
+        }
+
+        appendLog(ProberLogDirection.RX, "Clean Reply: ${reply.toHexStr()}")
+        if (reply.any { (it.toInt() and 0xFF) == STX }) {
+            appendLog(ProberLogDirection.SUCCESS, "✅ نجح التزامن الحرفي 78K0 ($baud bps | $polDesc): ${reply.toHexStr()}")
+            return SyncLock(
+                baudRate = baud,
+                dtrPolarity = polDesc,
+                rtsPolarity = if (useResetToggle) (if (inverted) "Active-High Pulse (100/150ms)" else "Active-Low Pulse (100/150ms)") else "Static",
+                inverted = inverted,
+                useResetToggle = useResetToggle,
+                syncPulseHex = "0x00 (10ms) 0x00 + 01 01 00 FF 03",
+                framing = DetectedFraming.NEC_STX_ETX,
+                firstReplyHex = reply.toHexStr(),
+                latencySampleMs = dtNec
+            )
+        }
+        return null
+    }
+
     private suspend fun runStage1HardwareHandshake(family: ProberTargetFamily): SyncLock? {
+        // 1. Always execute literal FT232R 78K0 handshake first for NEC_78K0, AUTO_DETECT, and GENERIC_UART
+        if (family == ProberTargetFamily.NEC_78K0 ||
+            family == ProberTargetFamily.AUTO_DETECT ||
+            family == ProberTargetFamily.GENERIC_UART
+        ) {
+            appendLog(ProberLogDirection.INFO, "── المرحلة 1: التهيئة الحرفية لـ FT232R + 78K0 (9600 bps, 8N1) ──")
+            tryLiteralNec78k0Handshake(9600, "Active-Low (DTR=FLMD0, RTS=RESET)", inverted = false, useResetToggle = true)?.let { return it }
+
+            appendLog(ProberLogDirection.WARN, "لم يستجب بالقطبية الأولى — إعادة المحاولة في الخلفية بعكس قطبية DTR/RTS...")
+            tryLiteralNec78k0Handshake(9600, "Active-High / عكس القطبية", inverted = true, useResetToggle = true)?.let { return it }
+
+            tryLiteralNec78k0Handshake(9600, "بدون نبضة خطوط (Direct 9600)", inverted = false, useResetToggle = false)?.let { return it }
+
+            if (family == ProberTargetFamily.NEC_78K0) {
+                for (extraBaud in listOf(19200, 38400)) {
+                    tryLiteralNec78k0Handshake(extraBaud, "Active-Low (DTR=FLMD0, RTS=RESET)", inverted = false, useResetToggle = true)?.let { return it }
+                }
+                return null
+            }
+        }
+
+        // 2. Multi-protocol / multi-baud scan for STM32, R8C/RL78, or Auto-Detect fallback
         val bauds = when (family) {
-            ProberTargetFamily.NEC_78K0 -> listOf(9600, 19200, 38400, 57600, 115200)
             ProberTargetFamily.STM32_UART -> listOf(115200, 57600, 38400, 19200, 9600)
             ProberTargetFamily.RENESAS_R8C_RL78 -> listOf(9600, 38400, 57600, 19200, 115200)
-            else -> listOf(9600, 19200, 38400, 57600, 115200)
+            else -> listOf(115200, 38400, 19200, 57600, 9600)
         }
 
         val configs = listOf(
@@ -447,11 +647,6 @@ class ProberEngine(context: Context) {
         )
 
         val pulses: List<Pair<String, ByteArray>> = when (family) {
-            ProberTargetFamily.NEC_78K0 -> listOf(
-                "0x00 (NEC Reset Sync)" to byteArrayOf(0x00, 0x00),
-                "SOH 0x01 Reset [0x00]" to buildNecCommandFrame(0x00),
-                "0x55 (Baud Sync)" to byteArrayOf(0x55)
-            )
             ProberTargetFamily.STM32_UART -> listOf(
                 "0x7F (STM32 Sync)" to byteArrayOf(0x7F),
                 "0x00" to byteArrayOf(0x00),
@@ -464,10 +659,10 @@ class ProberEngine(context: Context) {
                 "0xA0" to byteArrayOf(0xA0.toByte())
             )
             else -> listOf(
-                "0x00 (Reset/Sync)" to byteArrayOf(0x00, 0x00),
-                "0x7F (Boot Sync)" to byteArrayOf(0x7F),
+                "0x7F (STM32 Boot Sync)" to byteArrayOf(0x7F),
                 "0x55 (AutoBaud)" to byteArrayOf(0x55),
-                "0xA0 (Boot Pulse)" to byteArrayOf(0xA0.toByte())
+                "0xA0 (Boot Pulse)" to byteArrayOf(0xA0.toByte()),
+                "0xB0 (Renesas Status)" to byteArrayOf(0xB0.toByte())
             )
         }
 
@@ -479,10 +674,10 @@ class ProberEngine(context: Context) {
             for ((polDesc, inverted, doToggle) in configs) {
                 currentCoroutineContext().ensureActive()
                 if (doToggle) {
-                    transport.pulseResetSequence(inverted, holdResetMs = 65L, settleMs = 105L)
+                    transport.pulseResetSequence(inverted, holdResetMs = 100L, settleMs = 150L)
                 } else {
                     transport.setControlLines(dtr = false, rts = false)
-                    delay(35)
+                    delay(50)
                 }
                 transport.flushRx()
 
@@ -492,40 +687,11 @@ class ProberEngine(context: Context) {
                     val rx = transport.transceive(
                         txBytes = pulseBytes,
                         expectedMax = 24,
-                        timeoutMs = 200,
+                        timeoutMs = 260,
                         label = "Sync [$pulseName @ $baud | $polDesc]"
                     )
                     val dt = (System.currentTimeMillis() - t0).toInt().coerceAtLeast(5)
                     if (rx.isEmpty()) continue
-
-                    if (transport.echoLoopbackObserved && rx.isEmpty()) continue
-
-                    val p0 = pulseBytes[0].toInt() and 0xFF
-                    if (p0 == 0x00 && rx.none { (it.toInt() and 0xFF) == STX }) {
-                        delay(20)
-                        val tNec = System.currentTimeMillis()
-                        val necAck = transport.transceive(
-                            txBytes = buildNecCommandFrame(0x00),
-                            expectedMax = 16,
-                            timeoutMs = 260,
-                            label = "NEC SOH Reset [0x00]",
-                            stopOnCompleteNecFrame = true
-                        )
-                        val dtNec = (System.currentTimeMillis() - tNec).toInt().coerceAtLeast(5)
-                        if (necAck.any { (it.toInt() and 0xFF) == STX }) {
-                            return SyncLock(
-                                baudRate = baud,
-                                dtrPolarity = polDesc,
-                                rtsPolarity = if (doToggle) (if (inverted) "Active-High Pulse" else "Active-Low Pulse") else "Static",
-                                inverted = inverted,
-                                useResetToggle = doToggle,
-                                syncPulseHex = "0x00 + SOH Reset",
-                                framing = DetectedFraming.NEC_STX_ETX,
-                                firstReplyHex = necAck.toHexStr(),
-                                latencySampleMs = dtNec
-                            )
-                        }
-                    }
 
                     return SyncLock(
                         baudRate = baud,
@@ -1088,11 +1254,12 @@ class ProberEngine(context: Context) {
         _state.value = next.copy(blueprintText = formatAiReadyBlueprintJson(next))
     }
 
-    private fun failPipeline(reason: String) {
+    private fun failPipeline(reason: String, allowBypass: Boolean = false) {
         appendLog(ProberLogDirection.ERROR, reason)
         _state.value = _state.value.copy(
             phase = ProberStagePhase.ERROR,
-            stageBanner = reason
+            stageBanner = reason,
+            canBypassSync = allowBypass
         )
     }
 

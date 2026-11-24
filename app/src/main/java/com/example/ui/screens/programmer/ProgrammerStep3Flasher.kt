@@ -133,6 +133,7 @@ fun ProgrammerStep3Flasher(
     onVerifyFlash: () -> Unit,
     onClearLogs: () -> Unit,
     onRescue78k0Session: (com.example.util.Nec78k0RecoveryManager.Nec78k0RecoverySession) -> Unit = {},
+    onDismiss78k0Session: (com.example.util.Nec78k0RecoveryManager.Nec78k0RecoverySession) -> Unit = {},
     onResumeFromWatchdog: () -> Unit = {},
     onDismissWatchdog: () -> Unit = {},
     modifier: Modifier = Modifier
@@ -179,7 +180,8 @@ fun ProgrammerStep3Flasher(
             Nec78k0RescueBannerCard(
                 sessions = state.pendingRescueSessions,
                 isBusy = state.isBusy,
-                onRescueClick = onRescue78k0Session
+                onRescueClick = onRescue78k0Session,
+                onDismissClick = onDismiss78k0Session
             )
         }
 
