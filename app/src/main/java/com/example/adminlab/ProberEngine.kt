@@ -27,7 +27,6 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -82,13 +81,47 @@ data class ProberLogEntry(
     val message: String
 )
 
+enum class ProbeCheckStatus {
+    PENDING,
+    RUNNING,
+    PASSED,
+    FAILED
+}
+
+data class SchoolProbeItem(
+    val id: String,
+    val title: String,
+    val subtitle: String,
+    val status: ProbeCheckStatus = ProbeCheckStatus.PENDING,
+    val commandHex: String = "--",
+    val detail: String = ""
+)
+
+enum class DangerousSchoolType(
+    val title: String,
+    val warningText: String
+) {
+    BLOCK0_ZEROING(
+        title = "مدرسة تصفير بلوك الحماية (Block-0 Zeroing)",
+        warningText = "تحذير: تعدّل في أول بلوك وتعيده؛ انقطاع السلك يسبب تلف السوفت وير."
+    ),
+    PARTIAL_BIT_OVERWRITE(
+        title = "مدرسة الكتابة الجزئية للبتات (Partial Bit Overwrite)",
+        warningText = "تحذير: تغيّر في بايتات الفلاش وتُتلف السوفت وير الأصلي."
+    ),
+    SECURITY_AUTO_ERASE(
+        title = "مدرسة تجاوز قفل الحماية (Security Auto-Erase)",
+        warningText = "خطر شديد: قد يمسح المعالج ذاكرته تلقائياً."
+    )
+}
+
 enum class ProberOutcomeKind {
     IDLE,
     RUNNING,
-    SUCCESS_SCHOOL,
+    COMPLETED,
     LOCKED_BOOTLOADER,
     NO_SYNC,
-    ADVANCED_DIAGNOSTIC,
+    DANGEROUS_MANUAL_RESULT,
     STOPPED,
     ERROR
 }
@@ -97,11 +130,14 @@ data class ProberResult(
     val kind: ProberOutcomeKind = ProberOutcomeKind.IDLE,
     val headline: String = "",
     val detail: String = "",
-    val schoolName: String = "",
-    val commandHex: String = "--",
     val baudRate: Int? = null,
     val framingType: String = "--",
-    val detectedChipSignature: String = "",
+    val polaritySummary: String = "--",
+    val detectedSignature: String = "",
+    val winningReadMethod: String = "--",
+    val supportedWriteCmd: String = "--",
+    val supportedEraseCmd: String = "--",
+    val supportedBlankCheckCmd: String = "--",
     val sampleRxHex: String = ""
 )
 
@@ -109,14 +145,62 @@ data class ProberUiState(
     val usbStatus: ProberUsbStatus = ProberUsbStatus(),
     val selectedFamily: ProberTargetFamily = ProberTargetFamily.AUTO_DETECT,
     val isProbing: Boolean = false,
-    val stageLabel: String = "جاهز للفحص الآمن",
+    val stageLabel: String = "جاهز للفحص الشامل الآمن",
+    val readSchools: List<SchoolProbeItem> = defaultReadSchools(),
+    val writeEraseProbes: List<SchoolProbeItem> = defaultWriteEraseProbes(),
     val result: ProberResult = ProberResult(),
     val logs: List<ProberLogEntry> = emptyList()
 )
 
+private fun defaultReadSchools(): List<SchoolProbeItem> = listOf(
+    SchoolProbeItem(
+        id = "direct_read",
+        title = "1. مدرسة القراءة المباشرة (Direct Read)",
+        subtitle = "اختبار الأوامر (0x11, 0x03, 0x18, 0x74, 0xBA, 0xFF) لقراءة 16 بايت"
+    ),
+    SchoolProbeItem(
+        id = "checksum_1b",
+        title = "2. مدرسة السحب عبر بصمة بايت واحد (1-Byte Checksum)",
+        subtitle = "اختبار أمر 0xB0 على 1 بايت ثم 2 بايت بدون لمس الفلاش"
+    ),
+    SchoolProbeItem(
+        id = "verify_0x13",
+        title = "3. مدرسة التحقق التدريجي (Verify Probe 0x13)",
+        subtitle = "اختبار استجابة المعالج لأمر التحقق 0x13 على صفحة فارغة"
+    ),
+    SchoolProbeItem(
+        id = "signature_window",
+        title = "4. مدرسة قراءة نافذة السجلات والتوقيع (Signature/Window Read)",
+        subtitle = "اختبار أوامر التوقيع والسجلات (0xC0, 0xC5, 0x01, 0x02)"
+    ),
+    SchoolProbeItem(
+        id = "ram_stub",
+        title = "5. مدرسة حقن الكود في الرام (RAM Stub Injection)",
+        subtitle = "اختبار عنوان RAM مؤقت فقط دون لمس عناوين الفلاش"
+    )
+)
+
+private fun defaultWriteEraseProbes(): List<SchoolProbeItem> = listOf(
+    SchoolProbeItem(
+        id = "write_cmd_probe",
+        title = "1. اكتشاف أمر الكتابة (Write Command Probe)",
+        subtitle = "فحص ترويسة الأوامر (0x40, 0x31, 0x41, 0x50) بدون بيانات كتابة"
+    ),
+    SchoolProbeItem(
+        id = "erase_cmd_probe",
+        title = "2. اكتشاف أمر المسح (Erase Command Probe)",
+        subtitle = "فحص ترويسة الأوامر (0x20, 0x22, 0x43, 0x44) بدون عنوان بلوك للتنفيذ"
+    ),
+    SchoolProbeItem(
+        id = "blank_check_probe",
+        title = "3. اكتشاف فحص الفراغ (Blank Check Probe)",
+        subtitle = "فحص أوامر التأكد من خلو الذاكرة (0x30, 0x32, 0xD0) الآمنة 100%"
+    )
+)
+
 /**
  * Isolated Admin Protocol Auto-Prober Engine.
- * Zero shared mutable state with the production programmer service or protocol engines.
+ * Zero shared state with the production programmer service or existing protocol engines.
  */
 class ProberEngine(context: Context) {
 
@@ -130,38 +214,48 @@ class ProberEngine(context: Context) {
         private const val ACK_STM32 = 0x79
         private const val NACK_STM32 = 0x1F
 
-        private val NEC_ERROR_STATUS_CODES = setOf(
-            0x04, // Command Error
-            0x05, // Parameter Error
-            0x07, // Checksum Error
-            0x0F, // Verify Error
-            0x10, // Protect Error
-            0x15, // NACK
-            0x1A, // Erase Error
-            0x1B, // Blank Check / Checksum State Error
-            0x1C, // Verify Mismatch
-            0x1F  // STM32 NACK
+        private const val STS_CMD_ERROR = 0x04
+        private const val STS_PARAM_ERROR = 0x05
+        private const val STS_CHECKSUM_ERROR = 0x07
+        private const val STS_VERIFY_ERROR = 0x0F
+        private const val STS_PROTECT_ERROR = 0x10
+        private const val STS_NACK = 0x15
+        private const val STS_BLANK_CHECK_ERROR = 0x1B
+        private const val STS_VERIFY_ERROR_1C = 0x1C
+
+        private val NEC_HARD_REJECT_CODES = setOf(
+            STS_CMD_ERROR,
+            STS_PARAM_ERROR,
+            STS_CHECKSUM_ERROR,
+            STS_VERIFY_ERROR,
+            STS_PROTECT_ERROR,
+            STS_NACK,
+            0x1A,
+            STS_BLANK_CHECK_ERROR,
+            STS_VERIFY_ERROR_1C,
+            NACK_STM32
         )
 
-        // Forbidden destructive commands in Stage 2 safe probing
-        private val FORBIDDEN_STAGE2_COMMANDS = setOf(0x20, 0x22)
+        private const val DATA_SHEET_REMINDER =
+            "⚠️ تذكير فني إلزامي: يجب مطابقة حجم الصفحة (Page Size) وحجم البلوك (Block Size) من الداتا شيت (Datasheet) الخاصة بالمعالج قبل تنفيذ أي تنزيل فعلي."
     }
 
     private enum class DetectedFraming(val label: String) {
         NEC_STX_ETX("NEC / Renesas 78K0 (STX/ETX)"),
         STM32_ACK("STM32 USART Bootloader (0x79 ACK)"),
         RENESAS_RAW("Renesas R8C / RL78 Status Framing"),
-        CUSTOM_RAW("إطار خام / مخصص (Raw UART)")
+        CUSTOM_RAW("إطار خام / UART مخصص")
     }
 
     private data class SyncLockResult(
         val baudRate: Int,
         val polarityName: String,
+        val invertedPolarity: Boolean,
+        val useResetToggle: Boolean,
         val syncPulseHex: String,
         val framing: DetectedFraming,
         val firstReplyHex: String,
-        val echoLoopbackDetected: Boolean,
-        val signatureText: String = ""
+        val echoLoopbackDetected: Boolean
     )
 
     private val appContext = context.applicationContext
@@ -196,7 +290,6 @@ class ProberEngine(context: Context) {
     private val claimedInterfaces = mutableListOf<UsbInterface>()
     private val usbSessionLock = Any()
 
-    private val rxLock = Any()
     private val rxQueue = ArrayDeque<Byte>(8192)
     @Volatile
     private var readerJob: Job? = null
@@ -248,21 +341,18 @@ class ProberEngine(context: Context) {
 
     fun requestUsbPermissionIfNeeded() {
         scope.launch {
-            val mgr = usbManager
-            if (mgr == null) {
+            val mgr = usbManager ?: run {
                 appendLog(ProberLogDirection.ERROR, "نظام USB Host غير مدعوم على هذا الهاتف.")
                 return@launch
             }
-            val devices = mgr.deviceList.values.toList()
-            val dev = pickBestSerialDevice(devices)
-            if (dev == null) {
+            val dev = pickBestSerialDevice(mgr.deviceList.values.toList()) ?: run {
                 refreshUsbStatus()
                 appendLog(ProberLogDirection.WARN, "لم يتم العثور على أي محول USB UART متصل.")
                 return@launch
             }
             if (mgr.hasPermission(dev)) {
                 refreshUsbStatus()
-                appendLog(ProberLogDirection.SUCCESS, "صلاحية USB ممنوحة بالفعل للمحول: ${dev.productName ?: dev.deviceName}")
+                appendLog(ProberLogDirection.SUCCESS, "صلاحية USB ممنوحة بالفعل: ${dev.productName ?: dev.deviceName}")
                 return@launch
             }
             appendLog(ProberLogDirection.INFO, "جاري طلب صلاحية USB للمحول (${dev.productName ?: dev.deviceName})...")
@@ -276,26 +366,34 @@ class ProberEngine(context: Context) {
         }
     }
 
-    fun startSafeProbe() {
+    /**
+     * Full Safe Auto-Probe:
+     * 1) Silent Handshake
+     * 2) All 5 Safe Read Extraction Schools
+     * 3) All 3 Safe Write/Erase/BlankCheck Command Probes (header-only, zero flash modification)
+     */
+    fun startSafeComprehensiveProbe() {
         if (activeProbeJob?.isActive == true) return
         val family = _state.value.selectedFamily
         activeProbeJob = scope.launch {
             _state.value = _state.value.copy(
                 isProbing = true,
-                stageLabel = "المرحلة 1: فحص وتهيئة منفذ USB...",
+                stageLabel = "1) خطوة التمهيد الصامتة (Silent Handshake)...",
+                readSchools = defaultReadSchools(),
+                writeEraseProbes = defaultWriteEraseProbes(),
                 result = ProberResult(
                     kind = ProberOutcomeKind.RUNNING,
-                    headline = "جاري الفحص المتدرج الآمن...",
-                    detail = "يتم اختبار التزامن ثم مدارس السحب غير التدميرية بالتتابع."
+                    headline = "جاري الفحص الآمن الشامل...",
+                    detail = "1) التمهيد الصامت -> 2) مدارس السحب الـ 5 -> 3) أوامر الكتابة والمسح الآمنة."
                 )
             )
-            appendLog(ProberLogDirection.INFO, "══ بدء جلسة الاكتشاف الآمن (${family.labelAr}) ══")
+            appendLog(ProberLogDirection.INFO, "══ بدء الفحص الآمن الشامل (${family.labelAr}) ══")
 
             try {
                 if (!openUsbSession()) {
                     _state.value = _state.value.copy(
                         isProbing = false,
-                        stageLabel = "فشل الاتصال بمنفذ USB",
+                        stageLabel = "فشل فتح منفذ USB",
                         result = ProberResult(
                             kind = ProberOutcomeKind.ERROR,
                             headline = "تعذر فتح منفذ USB OTG",
@@ -305,18 +403,17 @@ class ProberEngine(context: Context) {
                     return@launch
                 }
 
-                // STAGE 1: Handshake & Sync
-                _state.value = _state.value.copy(stageLabel = "المرحلة 1: اختبار النبضات والتزامن (Sync)...")
-                val sync = performStage1Handshake(family)
+                // 1. SILENT HANDSHAKE
+                val sync = performSilentHandshake(family)
                 if (sync == null) {
-                    appendLog(ProberLogDirection.WARN, "انتهت المرحلة 1 بدون استجابة تزامن صالحة من المعالج.")
+                    appendLog(ProberLogDirection.WARN, "انتهى التمهيد الصامت بدون استجابة ACK صالحة من المعالج.")
                     _state.value = _state.value.copy(
                         isProbing = false,
-                        stageLabel = "لم يستجب المعالج",
+                        stageLabel = "لم يستجب المعالج للتمهيد الصامت",
                         result = ProberResult(
                             kind = ProberOutcomeKind.NO_SYNC,
                             headline = "لم يستجب المعالج لنبضات التزامن",
-                            detail = "تأكد من توصيل TX/RX وخط FLMD0/BOOT0 والريسيت، أو اختر العائلة المتوقعة يدوياً وأعد الفحص."
+                            detail = "تأكد من توصيل TX/RX و FLMD0/BOOT0 والريسيت بشكل سليم، أو حدد العائلة يدوياً."
                         )
                     )
                     return@launch
@@ -324,61 +421,112 @@ class ProberEngine(context: Context) {
 
                 appendLog(
                     ProberLogDirection.SUCCESS,
-                    "نجح التزامن: Baud=${sync.baudRate} | Polarity=${sync.polarityName} | Framing=${sync.framing.label}"
+                    "تم التمهيد الصامت بنجاح: ${sync.baudRate} bps | ${sync.framing.label} | ${sync.polarityName}"
                 )
 
-                // STAGE 2: Non-destructive Safe Schools (Stop immediately on first win)
-                _state.value = _state.value.copy(stageLabel = "المرحلة 2: اختبار القراءة المباشرة (16B)...")
-                val school1Result = testSchool1DirectRead(sync)
-                if (school1Result != null) {
-                    _state.value = _state.value.copy(
-                        isProbing = false,
-                        stageLabel = "تم اكتشاف طريقة السحب بنجاح",
-                        result = school1Result
-                    )
-                    return@launch
+                // 2. SECTION 1: ALL 5 SAFE READ EXTRACTION SCHOOLS
+                _state.value = _state.value.copy(stageLabel = "2) فحص مدارس السحب الآمنة (5 مدارس)...")
+
+                val s1 = probeSchool1DirectRead(sync)
+                updateReadSchool(s1)
+
+                resyncLight(sync)
+                val s2 = probeSchool2Checksum1B(sync)
+                updateReadSchool(s2)
+
+                resyncLight(sync)
+                val s3 = probeSchool3Verify0x13(sync)
+                updateReadSchool(s3)
+
+                resyncLight(sync)
+                val s4 = probeSchool4SignatureWindow(sync)
+                updateReadSchool(s4)
+
+                resyncLight(sync)
+                val s5 = probeSchool5RamStub(sync)
+                updateReadSchool(s5)
+
+                // 3. SECTION 2: SAFE WRITE / ERASE / BLANK CHECK PROTOCOL PROBES
+                _state.value = _state.value.copy(stageLabel = "3) فحص أوامر الكتابة والمسح الآمنة (Header-Only)...")
+
+                resyncLight(sync)
+                val wProbe = probeSafeWriteCommandHeader(sync)
+                updateWriteEraseProbe(wProbe)
+
+                resyncLight(sync)
+                val eProbe = probeSafeEraseCommandHeader(sync)
+                updateWriteEraseProbe(eProbe)
+
+                resyncLight(sync)
+                val bProbe = probeSafeBlankCheck(sync)
+                updateWriteEraseProbe(bProbe)
+
+                val currentRead = _state.value.readSchools
+                val passedReads = currentRead.filter { it.status == ProbeCheckStatus.PASSED }
+                val winningRead = if (passedReads.isNotEmpty()) {
+                    passedReads.joinToString(" + ") { "${it.title.substringAfter(". ")} ${it.commandHex}" }
+                } else {
+                    "مقفل (Locked Bootloader — لم تنجح أي مدرسة سحب آمنة)"
                 }
 
-                _state.value = _state.value.copy(stageLabel = "المرحلة 2: اختبار السحب عبر فرق البصمة (0xB0)...")
-                val school2Result = testSchool2ChecksumDifferential(sync)
-                if (school2Result != null) {
-                    _state.value = _state.value.copy(
-                        isProbing = false,
-                        stageLabel = "تم اكتشاف طريقة السحب بنجاح",
-                        result = school2Result
-                    )
-                    return@launch
+                val sigText = s4.takeIf { it.status == ProbeCheckStatus.PASSED }?.detail ?: ""
+                val sampleHex = passedReads.firstOrNull()?.detail?.take(120) ?: sync.firstReplyHex
+
+                val outcomeKind = if (passedReads.isEmpty()) {
+                    ProberOutcomeKind.LOCKED_BOOTLOADER
+                } else {
+                    ProberOutcomeKind.COMPLETED
                 }
 
-                _state.value = _state.value.copy(stageLabel = "المرحلة 2: فحص قابلية حقن كود في الرام (RAM Stub)...")
-                val school3Result = testSchool3RamStubCheck(sync)
-                if (school3Result != null) {
-                    _state.value = _state.value.copy(
-                        isProbing = false,
-                        stageLabel = "تم اكتشاف طريقة السحب بنجاح",
-                        result = school3Result
-                    )
-                    return@launch
+                val headline = if (passedReads.isNotEmpty()) {
+                    "اكتمل الاكتشاف الآمن: نجاح ${passedReads.size}/5 للسحب"
+                } else {
+                    "المعالج متصل ولكنه محمي ضد السحب الآمن (Locked Bootloader)"
                 }
 
-                // STAGE 3: Locked Bootloader Alert (safe stop — no flash modification)
-                val lockedMsg = "المعالج متصل ولكنه محمي ضد القراءة المباشرة (Locked Bootloader). يتطلب مدرسة متقدمة (مثل تصفير واستعادة بلوك الحماية Block-0 أو كود ID). لم يتم لمس ذاكرة المعالج حفاظاً على سلامتها."
-                appendLog(ProberLogDirection.WARN, lockedMsg)
+                val writeSummary = if (wProbe.status == ProbeCheckStatus.PASSED) {
+                    "أمر الكتابة المدعوم: ${wProbe.commandHex}"
+                } else {
+                    "أمر الكتابة: غير مدعوم / محمي"
+                }
+                val eraseSummary = if (eProbe.status == ProbeCheckStatus.PASSED) {
+                    "أمر المسح المدعوم: ${eProbe.commandHex}"
+                } else {
+                    "أمر المسح: غير مدعوم / محمي"
+                }
+                val blankSummary = if (bProbe.status == ProbeCheckStatus.PASSED) {
+                    "فحص الفراغ: ${bProbe.commandHex}"
+                } else {
+                    "فحص الفراغ: غير متاح"
+                }
+
+                val detailText = buildString {
+                    appendLine("• السحب: $winningRead")
+                    appendLine("• $writeSummary")
+                    appendLine("• $eraseSummary")
+                    appendLine("• $blankSummary")
+                    append(DATA_SHEET_REMINDER)
+                }
+
                 _state.value = _state.value.copy(
                     isProbing = false,
-                    stageLabel = "المعالج متصل ولكنه محمي (Locked)",
+                    stageLabel = "اكتمل الفحص الآمن بنجاح",
                     result = ProberResult(
-                        kind = ProberOutcomeKind.LOCKED_BOOTLOADER,
-                        headline = "المعالج محمي ضد القراءة المباشرة (Locked Bootloader)",
-                        detail = lockedMsg,
-                        schoolName = "Locked Bootloader — يتطلب مدرسة متقدمة",
-                        commandHex = sync.syncPulseHex,
+                        kind = outcomeKind,
+                        headline = headline,
+                        detail = detailText,
                         baudRate = sync.baudRate,
                         framingType = sync.framing.label,
-                        detectedChipSignature = sync.signatureText,
-                        sampleRxHex = sync.firstReplyHex
+                        polaritySummary = sync.polarityName,
+                        detectedSignature = sigText,
+                        winningReadMethod = winningRead,
+                        supportedWriteCmd = if (wProbe.status == ProbeCheckStatus.PASSED) wProbe.commandHex else "غير مكتشف ❌",
+                        supportedEraseCmd = if (eProbe.status == ProbeCheckStatus.PASSED) eProbe.commandHex else "غير مكتشف ❌",
+                        supportedBlankCheckCmd = if (bProbe.status == ProbeCheckStatus.PASSED) bProbe.commandHex else "غير مكتشف ❌",
+                        sampleRxHex = sampleHex
                     )
                 )
+                appendLog(ProberLogDirection.SUCCESS, "══ اكتمل الفحص الشامل بدون أي تعديل على الفلاش ══")
             } catch (_: CancellationException) {
                 appendLog(ProberLogDirection.WARN, "تم إيقاف الفحص فوراً بناءً على طلب المشرف.")
                 _state.value = _state.value.copy(
@@ -387,17 +535,17 @@ class ProberEngine(context: Context) {
                     result = ProberResult(
                         kind = ProberOutcomeKind.STOPPED,
                         headline = "تم إيقاف الفحص فوراً",
-                        detail = "تم تحرير منفذ USB وإلغاء جميع الأوامر الجارية بأمان."
+                        detail = "تم تحرير منفذ USB وإيقاف جميع الحزم بأمان."
                     )
                 )
             } catch (t: Throwable) {
-                appendLog(ProberLogDirection.ERROR, "خطأ غير متوقع أثناء الفحص: ${t.message ?: t::class.java.simpleName}")
+                appendLog(ProberLogDirection.ERROR, "خطأ غير متوقع: ${t.message ?: t::class.java.simpleName}")
                 _state.value = _state.value.copy(
                     isProbing = false,
-                    stageLabel = "خطأ أثناء الفحص",
+                    stageLabel = "حدث خطأ أثناء الفحص",
                     result = ProberResult(
                         kind = ProberOutcomeKind.ERROR,
-                        headline = "حدث خطأ أثناء الفحص",
+                        headline = "فشل الفحص بسبب خطأ تقني",
                         detail = t.message ?: t::class.java.simpleName
                     )
                 )
@@ -408,151 +556,89 @@ class ProberEngine(context: Context) {
     }
 
     /**
-     * Triggered ONLY after double-confirmation dialogs in UI for test boards with backup.
+     * Section 4: Dangerous / Modification Schools — strictly manual & gated by double confirmation UI.
      */
-    fun startAdvancedDiagnosticProbe() {
+    fun executeDangerousSchoolManual(school: DangerousSchoolType) {
         if (activeProbeJob?.isActive == true) return
         val family = _state.value.selectedFamily
         activeProbeJob = scope.launch {
             _state.value = _state.value.copy(
                 isProbing = true,
-                stageLabel = "اختبار المدارس المتقدمة (فحص الحماية و Block-0)...",
+                stageLabel = "تجربة يدوية محفوفة بالمخاطر: ${school.title}",
                 result = ProberResult(
                     kind = ProberOutcomeKind.RUNNING,
-                    headline = "جاري فحص المدارس المتقدمة...",
-                    detail = "فحص حالة الأقفال الأمنية، فحص خلو Block-0 (0x32)، واختبار مصادقة ID."
+                    headline = "جاري تنفيذ: ${school.title}",
+                    detail = school.warningText
                 )
             )
-            appendLog(ProberLogDirection.WARN, "══ بدء فحص المدارس المتقدمة (بتأكيد مزدوج من المشرف) ══")
+            appendLog(ProberLogDirection.WARN, "⚠️ بدء التجربة اليدوية بتأكيد مزدوج: ${school.title}")
 
             try {
                 if (!openUsbSession()) {
                     _state.value = _state.value.copy(
                         isProbing = false,
-                        stageLabel = "فشل الاتصال بمنفذ USB",
+                        stageLabel = "فشل فتح منفذ USB",
                         result = ProberResult(
                             kind = ProberOutcomeKind.ERROR,
                             headline = "تعذر فتح منفذ USB OTG",
-                            detail = "أعد توصيل المبرمجة وتأكد من الصلاحية."
+                            detail = "تأكد من توصيل المبرمجة ومنح الصلاحية."
                         )
                     )
                     return@launch
                 }
 
-                val sync = performStage1Handshake(family)
+                val sync = performSilentHandshake(family)
                 if (sync == null) {
                     _state.value = _state.value.copy(
                         isProbing = false,
-                        stageLabel = "فشل التزامن المتقدم",
+                        stageLabel = "فشل التزامن في التجربة اليدوية",
                         result = ProberResult(
                             kind = ProberOutcomeKind.NO_SYNC,
-                            headline = "تعذر تزامن المعالج للفحص المتقدم",
-                            detail = "لم يرد المعالج على نبضات التزامن."
+                            headline = "لم يستجب المعالج في التجربة اليدوية",
+                            detail = "تعذر تزامن المعالج قبل تنفيذ ${school.title}."
                         )
                     )
                     return@launch
                 }
 
-                val findings = mutableListOf<String>()
-                var recommendedCmd = "--"
-
-                if (sync.framing == DetectedFraming.NEC_STX_ETX || family == ProberTargetFamily.NEC_78K0) {
-                    // 1. Blank Check 0x32 on Block 0 (0x000000..0x0003FF)
-                    val blankCmd = buildNecCommandFrame(0x32, byteArrayOf(0x00, 0x00, 0x00, 0x00, 0x03, 0xFF.toByte()))
-                    val blankRx = transceiveAndLog(blankCmd, expectedMax = 12, timeoutMs = 450, label = "NEC BlankCheck Block-0 [0x32]")
-                    val sts = parseNecStatus(blankRx)
-                    when (sts) {
-                        0x06 -> {
-                            findings.add("• Block-0 فارغ (Blank / Erased 0xFF) — جاهز للبرمجة مباشرة.")
-                            recommendedCmd = "0x32 [Blank]"
-                        }
-                        0x1B -> {
-                            findings.add("• Block-0 مبرمج وغير فارغ (0x1B Not Blank) — مناسب لمدرسة تصفير واستعادة Block-0 عبر فرق البصمة (0xB0 + 0x40) ثم استرداد البلوك.")
-                            recommendedCmd = "0xB0 + 0x40 (Block-0 Zeroing)"
-                        }
-                        0x10 -> {
-                            findings.add("• رُصدت حماية قراءة/كتابة (0x10 ERR_PROTECT) — يتطلب ضبط Security Flag أو مسح كلي حسب صلاحية البوت لودر.")
-                            recommendedCmd = "0xA0 / 0x20 [Protected]"
-                        }
-                        else -> findings.add("• رد فحص Blank Check (0x32): ${formatByte(sts)}")
-                    }
-
-                    // 2. Check Checksum Read (0xB0) on Block 0 & Full 32KB range
-                    val b0CsCmd = buildNecCommandFrame(0xB0, byteArrayOf(0x00, 0x00, 0x00, 0x00, 0x03, 0xFF.toByte()))
-                    val b0CsRx = transceiveAndLog(b0CsCmd, expectedMax = 16, timeoutMs = 450, label = "NEC Checksum Block-0 [0xB0]")
-                    if (parseNecStatus(b0CsRx) == 0x06) {
-                        val b0Data = transceiveWaitReply(expectedMax = 12, timeoutMs = 450, label = "RX Block-0 Checksum Payload")
-                        findings.add("• أمر البصمة 0xB0 مدعوم على Block-0 (الرد: ${toHex(b0Data)}).")
-                    }
-                } else if (sync.framing == DetectedFraming.STM32_ACK) {
-                    // STM32 Get Command (0x00) & Get ID (0x02) & Readout Unprotect diagnostic note
-                    val getCmd = byteArrayOf(0x00, 0xFF.toByte())
-                    val getRx = transceiveAndLog(getCmd, expectedMax = 24, timeoutMs = 450, label = "STM32 Get Supported Commands [0x00]")
-                    if (getRx.any { (it.toInt() and 0xFF) == ACK_STM32 }) {
-                        findings.add("• استجاب البوت لودر لقائمة الأوامر المدعومة [0x00]: ${toHex(getRx)}")
-                        recommendedCmd = "0x00 -> ${toHex(getRx.take(6).toByteArray())}"
-                    } else {
-                        findings.add("• المعالج في وضع حماية القراءة RDP Level 1 (يرفض 0x11 بـ 0x1F) — يتطلب Readout Unprotect (0x92) مع مسح كامل الذاكرة.")
-                        recommendedCmd = "0x92 (Readout Unprotect)"
-                    }
-                } else {
-                    // Renesas R8C / RL78 Status Register 0x70 + Default ID Probe (FFx7)
-                    val srRx = transceiveAndLog(byteArrayOf(0x70), expectedMax = 6, timeoutMs = 350, label = "R8C Read Status [0x70]")
-                    if (srRx.isNotEmpty()) {
-                        findings.add("• سجل الحالة SRD (0x70): ${toHex(srRx)}")
-                    }
-                    val ffId = byteArrayOf(
-                        0xF5.toByte(), 0xFF.toByte(), 0xDF.toByte(), 0x00, 0x07,
-                        0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte()
-                    )
-                    transceiveAndLog(ffId, expectedMax = 8, timeoutMs = 350, label = "R8C Default ID Probe (FFx7) [0xF5]")
-                    val srAfter = transceiveAndLog(byteArrayOf(0x70), expectedMax = 6, timeoutMs = 350, label = "R8C Post-ID Status [0x70]")
-                    val unlocked = srAfter.size >= 2 && ((srAfter[1].toInt() and 0x0C) != 0)
-                    if (unlocked) {
-                        findings.add("• تم فك قفل ID بنجاح بالكود الافتراضي (FF..FF)! المعالج يقبل القراءة المباشرة عبر 0xFF.")
-                        recommendedCmd = "0xF5 (FFx7) + 0xFF"
-                    } else {
-                        findings.add("• ID Code غير افتراضي (مقفل بكلمة سر في الفلاش 0xFFDF..0xFFFF) — يتطلب معرفة كود ID المكون من 7 بايت.")
-                        recommendedCmd = "0xF5 (Custom 7-Byte ID)"
-                    }
+                val reportDetail = when (school) {
+                    DangerousSchoolType.BLOCK0_ZEROING -> runManualBlock0ZeroingCheck(sync)
+                    DangerousSchoolType.PARTIAL_BIT_OVERWRITE -> runManualPartialBitOverwriteCheck(sync)
+                    DangerousSchoolType.SECURITY_AUTO_ERASE -> runManualSecurityAutoEraseCheck(sync)
                 }
 
-                val summary = findings.joinToString("\n").ifBlank { "لم تتوفر استجابة إضافية من السجلات المتقدمة." }
-                appendLog(ProberLogDirection.SUCCESS, "اكتمل التشخيص المتقدم:\n$summary")
+                appendLog(ProberLogDirection.WARN, "نتيجة التجربة اليدوية:\n$reportDetail")
                 _state.value = _state.value.copy(
                     isProbing = false,
-                    stageLabel = "اكتمل التشخيص المتقدم",
+                    stageLabel = "انتهت التجربة اليدوية",
                     result = ProberResult(
-                        kind = ProberOutcomeKind.ADVANCED_DIAGNOSTIC,
-                        headline = "تقرير التشخيص المتقدم للمدرسة المناسبة",
-                        detail = summary,
-                        schoolName = "تشخيص المدرسة المتقدمة",
-                        commandHex = recommendedCmd,
+                        kind = ProberOutcomeKind.DANGEROUS_MANUAL_RESULT,
+                        headline = "نتيجة التجربة اليدوية: ${school.title}",
+                        detail = "$reportDetail\n\n$DATA_SHEET_REMINDER",
                         baudRate = sync.baudRate,
                         framingType = sync.framing.label,
-                        detectedChipSignature = sync.signatureText,
-                        sampleRxHex = sync.firstReplyHex
+                        polaritySummary = sync.polarityName
                     )
                 )
             } catch (_: CancellationException) {
-                appendLog(ProberLogDirection.WARN, "تم إيقاف الفحص المتقدم فوراً.")
+                appendLog(ProberLogDirection.WARN, "تم إيقاف التجربة اليدوية فوراً.")
                 _state.value = _state.value.copy(
                     isProbing = false,
                     stageLabel = "تم الإيقاف الفوري",
                     result = ProberResult(
                         kind = ProberOutcomeKind.STOPPED,
-                        headline = "تم إيقاف الفحص المتقدم",
-                        detail = "تم إلغاء الفحص وإغلاق الاتصال بأمان."
+                        headline = "تم إيقاف التجربة اليدوية",
+                        detail = "تم فصل المنفذ فوراً."
                     )
                 )
             } catch (t: Throwable) {
-                appendLog(ProberLogDirection.ERROR, "خطأ في الفحص المتقدم: ${t.message ?: t::class.java.simpleName}")
+                appendLog(ProberLogDirection.ERROR, "خطأ في التجربة اليدوية: ${t.message}")
                 _state.value = _state.value.copy(
                     isProbing = false,
-                    stageLabel = "خطأ في الفحص المتقدم",
+                    stageLabel = "خطأ في التجربة اليدوية",
                     result = ProberResult(
                         kind = ProberOutcomeKind.ERROR,
-                        headline = "فشل الفحص المتقدم",
+                        headline = "فشل التجربة اليدوية",
                         detail = t.message ?: t::class.java.simpleName
                     )
                 )
@@ -574,28 +660,62 @@ class ProberEngine(context: Context) {
                 result = ProberResult(
                     kind = ProberOutcomeKind.STOPPED,
                     headline = "تم إيقاف الفحص فوراً",
-                    detail = "تم قطع الإرسال والاستقبال وتحرير منفذ USB."
+                    detail = "تم قطع الاتصال وتحرير منفذ USB."
                 )
             )
         }
     }
 
+    /**
+     * Section 5: Structured Technical Report for copying & sharing.
+     */
     fun buildTechnicalReport(): String {
         val s = _state.value
         return buildString {
-            appendLine("=== تقرير مختبر المشرفين: مكتشف البروتوكول التلقائي ===")
+            appendLine("══════════════════════════════════════")
+            appendLine("التقرير الفني — مختبر المشرفين (مكتشف البروتوكول)")
+            appendLine("══════════════════════════════════════")
             appendLine("التاريخ: ${SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())}")
-            appendLine("المبرمجة المتصلة: ${s.usbStatus.adapterName} (${s.usbStatus.chipModel}) [${s.usbStatus.vidPidHex}]")
+            appendLine("المبرمجة: ${s.usbStatus.adapterName} (${s.usbStatus.chipModel}) [${s.usbStatus.vidPidHex}]")
             appendLine("العائلة المختارة: ${s.selectedFamily.labelAr}")
-            appendLine("النتيجة: ${s.result.headline}")
-            if (s.result.schoolName.isNotBlank()) appendLine("المدرسة: ${s.result.schoolName}")
-            if (s.result.commandHex.isNotBlank()) appendLine("الأمر الناجح: ${s.result.commandHex}")
-            if (s.result.baudRate != null) appendLine("السرعة (Baud): ${s.result.baudRate}")
-            if (s.result.framingType.isNotBlank()) appendLine("تنسيق الإطار: ${s.result.framingType}")
-            if (s.result.detectedChipSignature.isNotBlank()) appendLine("توقيع الشريحة (Signature): ${s.result.detectedChipSignature}")
-            if (s.result.sampleRxHex.isNotBlank()) appendLine("عينة الاستجابة (RX): ${s.result.sampleRxHex}")
-            appendLine("التفاصيل: ${s.result.detail}")
-            appendLine("--- آخر سجل الحزم (${s.logs.size}) ---")
+            appendLine("سرعة الاتصال المكتشفة: ${s.result.baudRate?.let { "$it bps" } ?: "--"}")
+            appendLine("نوع الإطار المكتشف: ${s.result.framingType}")
+            appendLine("قطبية خطوط التحكم: ${s.result.polaritySummary}")
+            if (s.result.detectedSignature.isNotBlank()) {
+                appendLine("توقيع الشريحة: ${s.result.detectedSignature}")
+            }
+            appendLine("")
+            appendLine("── 1) حالة مدارس السحب الآمنة ──")
+            s.readSchools.forEach { item ->
+                val mark = when (item.status) {
+                    ProbeCheckStatus.PASSED -> "✅ نجحت"
+                    ProbeCheckStatus.FAILED -> "❌ فشلت"
+                    ProbeCheckStatus.RUNNING -> "⏳ جاري"
+                    ProbeCheckStatus.PENDING -> "• لم يُفحص"
+                }
+                appendLine("$mark | ${item.title} [${item.commandHex}]")
+                if (item.detail.isNotBlank()) appendLine("   ↳ ${item.detail}")
+            }
+            appendLine("الخلاصة (السحب): ${s.result.winningReadMethod}")
+            appendLine("")
+            appendLine("── 2) أوامر الكتابة والمسح الآمنة ──")
+            s.writeEraseProbes.forEach { item ->
+                val mark = when (item.status) {
+                    ProbeCheckStatus.PASSED -> "✅ مدعوم"
+                    ProbeCheckStatus.FAILED -> "❌ غير مدعوم"
+                    ProbeCheckStatus.RUNNING -> "⏳ جاري"
+                    ProbeCheckStatus.PENDING -> "• لم يُفحص"
+                }
+                appendLine("$mark | ${item.title} [${item.commandHex}]")
+                if (item.detail.isNotBlank()) appendLine("   ↳ ${item.detail}")
+            }
+            appendLine("أمر الكتابة المكتشف: ${s.result.supportedWriteCmd}")
+            appendLine("أمر المسح المكتشف: ${s.result.supportedEraseCmd}")
+            appendLine("أمر فحص الفراغ: ${s.result.supportedBlankCheckCmd}")
+            appendLine("")
+            appendLine(DATA_SHEET_REMINDER)
+            appendLine("")
+            appendLine("── آخر سجل حزم TX/RX (${s.logs.size}) ──")
             s.logs.takeLast(80).forEach { entry ->
                 appendLine("[${entry.timestamp}] [${entry.direction.name}] ${entry.message}")
             }
@@ -610,9 +730,9 @@ class ProberEngine(context: Context) {
         usbDetachReceiver = null
     }
 
-    // ==================== STAGE 1: HANDSHAKE & SYNC ====================
+    // ==================== 1. SILENT HANDSHAKE ====================
 
-    private suspend fun performStage1Handshake(family: ProberTargetFamily): SyncLockResult? {
+    private suspend fun performSilentHandshake(family: ProberTargetFamily): SyncLockResult? {
         val bauds = when (family) {
             ProberTargetFamily.NEC_78K0 -> listOf(9600, 19200, 38400, 115200)
             ProberTargetFamily.STM32_UART -> listOf(115200, 38400, 19200, 9600)
@@ -629,8 +749,8 @@ class ProberEngine(context: Context) {
         val pulses: List<Pair<String, ByteArray>> = when (family) {
             ProberTargetFamily.NEC_78K0 -> listOf(
                 "0x00 (NEC Reset Sync)" to byteArrayOf(0x00, 0x00),
-                "0x01 0x01 0x00 FF 03 (NEC Frame Reset)" to buildNecCommandFrame(0x00),
-                "0x55 (Baud Sync)" to byteArrayOf(0x55)
+                "NEC Frame Reset [0x00]" to buildNecCommandFrame(0x00),
+                "0x55" to byteArrayOf(0x55)
             )
             ProberTargetFamily.STM32_UART -> listOf(
                 "0x7F (STM32 Sync)" to byteArrayOf(0x7F),
@@ -639,7 +759,7 @@ class ProberEngine(context: Context) {
             )
             ProberTargetFamily.RENESAS_R8C_RL78 -> listOf(
                 "0x00 (R8C/RL78 Sync)" to byteArrayOf(0x00),
-                "0xB0 (R8C/78K0R Baud)" to byteArrayOf(0xB0.toByte()),
+                "0xB0" to byteArrayOf(0xB0.toByte()),
                 "0x55" to byteArrayOf(0x55),
                 "0xA0" to byteArrayOf(0xA0.toByte())
             )
@@ -654,11 +774,11 @@ class ProberEngine(context: Context) {
         for (baud in bauds) {
             currentCoroutineContext().ensureActive()
             configureUart(baud)
-            appendLog(ProberLogDirection.INFO, "── اختبار سرعة $baud bps ──")
+            appendLog(ProberLogDirection.INFO, "── تمهيد صامت: سرعة $baud bps ──")
 
-            for ((polLabel, inverted, doResetToggle) in polarities) {
+            for ((polLabel, inverted, doReset) in polarities) {
                 currentCoroutineContext().ensureActive()
-                if (doResetToggle) {
+                if (doReset) {
                     pulseResetSequence(inverted)
                 } else {
                     setControlLines(dtr = false, rts = false)
@@ -671,80 +791,65 @@ class ProberEngine(context: Context) {
                     val rx = transceiveAndLog(
                         txBytes = pulseBytes,
                         expectedMax = 24,
-                        timeoutMs = 240,
-                        label = "Sync [$pulseName @ $baud | $polLabel]"
+                        timeoutMs = 220,
+                        label = "SilentSync [$pulseName @ $baud | $polLabel]"
                     )
-
                     if (rx.isEmpty()) continue
 
-                    // Check if reply is pure TX loopback echo from a single-wire 1N4148 diode
-                    val isPureEcho = rx.contentEquals(pulseBytes)
-                    if (isPureEcho) {
+                    if (rx.contentEquals(pulseBytes)) {
                         echoLoopbackObserved = true
-                        appendLog(ProberLogDirection.INFO, "ملاحظة: رُصد صدى سلك واحد (Single-Wire Echo) — محاولة إرسال إطار Reset لفحص استجابة المعالج خلف الصدى...")
-                        // Send NEC Reset frame and see if extra bytes follow echo
                         val necReset = buildNecCommandFrame(0x00)
-                        val combined = transceiveRawWithEchoStrip(necReset, expectedExtra = 8, timeoutMs = 280, label = "NEC Reset Frame خلف الصدى")
-                        if (combined.isNotEmpty()) {
-                            val framing = classifyFraming(combined, pulseBytes)
-                            val sig = if (framing == DetectedFraming.NEC_STX_ETX) probeOptionalSignature() else ""
+                        val genuine = transceiveWithEchoCancel(necReset, expectedExtra = 8, timeoutMs = 260, label = "NEC Reset خلف الصدى")
+                        if (genuine.isNotEmpty()) {
                             return SyncLockResult(
                                 baudRate = baud,
                                 polarityName = "$polLabel + Single-Wire Echo",
+                                invertedPolarity = inverted,
+                                useResetToggle = doReset,
                                 syncPulseHex = "0x00 -> NEC Reset",
-                                framing = framing,
-                                firstReplyHex = toHex(combined),
-                                echoLoopbackDetected = true,
-                                signatureText = sig
+                                framing = classifyFraming(genuine, pulseBytes),
+                                firstReplyHex = toHex(genuine),
+                                echoLoopbackDetected = true
                             )
                         }
                         continue
                     }
 
-                    // If echo prefix matches pulseBytes, strip it
-                    val genuineReply = if (rx.size > pulseBytes.size && rx.copyOfRange(0, pulseBytes.size).contentEquals(pulseBytes)) {
-                        echoLoopbackObserved = true
-                        rx.copyOfRange(pulseBytes.size, rx.size)
-                    } else {
-                        rx
-                    }
+                    val genuine = stripEchoPrefix(pulseBytes, rx)
+                    if (genuine.isEmpty()) continue
 
-                    if (genuineReply.isEmpty()) continue
-
-                    // If pulse was 0x00 and no NEC frame yet, check if NEC Reset frame gets 02 01 06 F9 03
-                    val pulseFirst = pulseBytes[0].toInt() and 0xFF
-                    if (pulseFirst == 0x00 && genuineReply.none { (it.toInt() and 0xFF) == STX }) {
-                        delay(25)
-                        val necAck = transceiveAndLog(
+                    val p0 = pulseBytes[0].toInt() and 0xFF
+                    if (p0 == 0x00 && genuine.none { (it.toInt() and 0xFF) == STX }) {
+                        delay(20)
+                        val necAck = transceiveAutoEcho(
                             buildNecCommandFrame(0x00),
                             expectedMax = 16,
-                            timeoutMs = 300,
-                            label = "NEC Frame Reset Check [0x00]"
+                            timeoutMs = 280,
+                            label = "NEC Reset Frame [0x00]"
                         )
                         if (necAck.any { (it.toInt() and 0xFF) == STX }) {
-                            val sig = probeOptionalSignature()
                             return SyncLockResult(
                                 baudRate = baud,
                                 polarityName = polLabel,
+                                invertedPolarity = inverted,
+                                useResetToggle = doReset,
                                 syncPulseHex = "0x00 + Frame Reset",
                                 framing = DetectedFraming.NEC_STX_ETX,
                                 firstReplyHex = toHex(necAck),
-                                echoLoopbackDetected = echoLoopbackObserved,
-                                signatureText = sig
+                                echoLoopbackDetected = echoLoopbackObserved
                             )
                         }
                     }
 
-                    val framing = classifyFraming(genuineReply, pulseBytes)
-                    val sig = if (framing == DetectedFraming.NEC_STX_ETX) probeOptionalSignature() else ""
                     return SyncLockResult(
                         baudRate = baud,
                         polarityName = polLabel,
+                        invertedPolarity = inverted,
+                        useResetToggle = doReset,
                         syncPulseHex = toHex(pulseBytes),
-                        framing = framing,
-                        firstReplyHex = toHex(genuineReply),
-                        echoLoopbackDetected = echoLoopbackObserved,
-                        signatureText = sig
+                        framing = classifyFraming(genuine, pulseBytes),
+                        firstReplyHex = toHex(genuine),
+                        echoLoopbackDetected = echoLoopbackObserved
                     )
                 }
             }
@@ -752,236 +857,674 @@ class ProberEngine(context: Context) {
         return null
     }
 
-    private suspend fun probeOptionalSignature(): String {
-        val sigCmd = buildNecCommandFrame(0xC0)
-        val rx = transceiveAndLog(sigCmd, expectedMax = 48, timeoutMs = 400, label = "NEC Silicon Signature [0xC0]")
-        if (rx.isEmpty()) return ""
-        val extra = if (parseNecStatus(rx) == 0x06 && !rx.drop(4).any { (it.toInt() and 0xFF) == STX }) {
-            transceiveWaitReply(expectedMax = 48, timeoutMs = 400, label = "RX Silicon Signature Payload")
+    private suspend fun resyncLight(sync: SyncLockResult) {
+        currentCoroutineContext().ensureActive()
+        if (sync.framing == DetectedFraming.NEC_STX_ETX) {
+            transceiveAutoEcho(buildNecCommandFrame(0x00), expectedMax = 12, timeoutMs = 200, label = "Light Resync [0x00]")
         } else {
-            ByteArray(0)
+            delay(20)
+            flushRx()
         }
-        val combined = rx + extra
-        val ascii = combined.filter { it in 32..126 }.map { it.toInt().toChar() }.joinToString("")
-        return if (ascii.isNotBlank()) "$ascii (${toHex(combined.take(20).toByteArray())})" else toHex(combined.take(20).toByteArray())
     }
 
-    // ==================== STAGE 2: SAFE NON-DESTRUCTIVE SCHOOLS ====================
+    // ==================== 2. SECTION 1: 5 SAFE READ SCHOOLS ====================
 
-    private suspend fun testSchool1DirectRead(sync: SyncLockResult): ProberResult? {
-        appendLog(ProberLogDirection.INFO, "── المدرسة 1: اختبار القراءة المباشرة لأول 16 بايت (0x000000) ──")
-        val readCommands = listOf(0x11, 0x03, 0x18, 0x74, 0xBA, 0xFF)
+    private suspend fun probeSchool1DirectRead(sync: SyncLockResult): SchoolProbeItem {
+        markReadSchoolRunning("direct_read")
+        appendLog(ProberLogDirection.INFO, "── فحص 1: القراءة المباشرة (0x11, 0x03, 0x18, 0x74, 0xBA, 0xFF) ──")
+        val cmds = listOf(0x11, 0x03, 0x18, 0x74, 0xBA, 0xFF)
 
         if (sync.framing == DetectedFraming.STM32_ACK) {
-            // STM32 Read Memory [0x11, 0xEE] -> 0x79 -> Addr 0x08000000 + CS -> 0x79 -> Len-1 (0x0F, 0xF0) -> 0x79 + 16B
-            val cmd = byteArrayOf(0x11, 0xEE.toByte())
-            val ack1 = transceiveAndLog(cmd, expectedMax = 4, timeoutMs = 300, label = "STM32 Read Cmd [0x11]")
+            val ack1 = transceiveAutoEcho(byteArrayOf(0x11, 0xEE.toByte()), expectedMax = 4, timeoutMs = 280, label = "STM32 Read [0x11]")
             if (ack1.any { (it.toInt() and 0xFF) == ACK_STM32 }) {
-                val addr = byteArrayOf(0x08, 0x00, 0x00, 0x00, 0x08)
-                val ack2 = transceiveAndLog(addr, expectedMax = 4, timeoutMs = 300, label = "STM32 Read Addr 0x08000000")
+                val ack2 = transceiveAutoEcho(byteArrayOf(0x08, 0x00, 0x00, 0x00, 0x08), expectedMax = 4, timeoutMs = 280, label = "STM32 Addr 0x08000000")
                 if (ack2.any { (it.toInt() and 0xFF) == ACK_STM32 }) {
-                    val lenFrame = byteArrayOf(0x0F, 0xF0.toByte())
-                    val dataRx = transceiveAndLog(lenFrame, expectedMax = 24, timeoutMs = 450, label = "STM32 Read 16B [0x0F]")
-                    if (dataRx.size >= 17 && (dataRx[0].toInt() and 0xFF) == ACK_STM32) {
-                        val payload = dataRx.copyOfRange(1, 17)
-                        val msg = "المدرسة الناجحة: القراءة المباشرة (Direct Read) - الأمر [0x11] - السرعة [${sync.baudRate}]"
-                        appendLog(ProberLogDirection.SUCCESS, "$msg | RX=${toHex(payload)}")
-                        return ProberResult(
-                            kind = ProberOutcomeKind.SUCCESS_SCHOOL,
-                            headline = msg,
-                            detail = "تمت قراءة أول 16 بايت من الفلاش مباشرة بدون أي تعديل على الذاكرة.",
-                            schoolName = "القراءة المباشرة (Direct Read)",
-                            commandHex = "[0x11]",
-                            baudRate = sync.baudRate,
-                            framingType = sync.framing.label,
-                            detectedChipSignature = sync.signatureText,
-                            sampleRxHex = toHex(payload)
+                    val data = transceiveAutoEcho(byteArrayOf(0x0F, 0xF0.toByte()), expectedMax = 24, timeoutMs = 420, label = "STM32 Read 16B")
+                    if (data.size >= 17 && (data[0].toInt() and 0xFF) == ACK_STM32) {
+                        val slice = data.copyOfRange(1, 17)
+                        return SchoolProbeItem(
+                            id = "direct_read",
+                            title = "1. مدرسة القراءة المباشرة (Direct Read)",
+                            subtitle = "نجحت قراءة أول 16 بايت مباشرة",
+                            status = ProbeCheckStatus.PASSED,
+                            commandHex = "0x11",
+                            detail = "16B: ${toHex(slice)}"
                         )
                     }
                 }
             }
-            return null
-        }
-
-        for (cmd in readCommands) {
-            currentCoroutineContext().ensureActive()
-            assertSafeStage2Command(cmd, addressHint = 0x000000)
-
-            val packetsToTry = when (sync.framing) {
-                DetectedFraming.NEC_STX_ETX -> listOf(
-                    "NEC 6-Arg [0x%02X]".format(cmd) to buildNecCommandFrame(
-                        cmd,
-                        byteArrayOf(0x00, 0x00, 0x00, 0x00, 0x00, 0x0F)
-                    ),
-                    "NEC 4-Arg [0x%02X]".format(cmd) to buildNecCommandFrame(
-                        cmd,
-                        byteArrayOf(0x00, 0x00, 0x00, 0x10)
-                    )
-                )
-                DetectedFraming.RENESAS_RAW -> listOf(
-                    "Renesas Page Read [0x%02X]".format(cmd) to byteArrayOf(cmd.toByte(), 0x00, 0x00, 0x10),
-                    "Renesas 24-bit Read [0x%02X]".format(cmd) to byteArrayOf(cmd.toByte(), 0x00, 0x00, 0x00, 0x10)
-                )
-                DetectedFraming.CUSTOM_RAW -> listOf(
-                    "Raw Read [0x%02X]".format(cmd) to byteArrayOf(cmd.toByte(), 0x00, 0x00, 0x00, 0x10),
-                    "NEC Framed [0x%02X]".format(cmd) to buildNecCommandFrame(
-                        cmd,
-                        byteArrayOf(0x00, 0x00, 0x00, 0x00, 0x00, 0x0F)
-                    )
-                )
-                else -> emptyList()
-            }
-
-            for ((pktLabel, pkt) in packetsToTry) {
-                currentCoroutineContext().ensureActive()
-                val rx = transceiveAndLog(pkt, expectedMax = 32, timeoutMs = 380, label = pktLabel)
-                if (rx.isEmpty()) continue
-
-                val extracted = extractReal16ByteReadPayload(rx, sync.framing)
-                if (extracted != null) {
-                    val cmdHex = "[0x%02X]".format(cmd)
-                    val msg = "المدرسة الناجحة: القراءة المباشرة (Direct Read) - الأمر $cmdHex - السرعة [${sync.baudRate}]"
-                    appendLog(ProberLogDirection.SUCCESS, "$msg | 16B=${toHex(extracted)}")
-                    return ProberResult(
-                        kind = ProberOutcomeKind.SUCCESS_SCHOOL,
-                        headline = msg,
-                        detail = "نجح المعالج في إرجاع أول 16 بايت من العنوان 0x000000 بأمان تام دون لمس الفلاش.",
-                        schoolName = "القراءة المباشرة (Direct Read)",
-                        commandHex = cmdHex,
-                        baudRate = sync.baudRate,
-                        framingType = sync.framing.label,
-                        detectedChipSignature = sync.signatureText,
-                        sampleRxHex = toHex(extracted)
-                    )
-                }
-            }
-        }
-        return null
-    }
-
-    private suspend fun testSchool2ChecksumDifferential(sync: SyncLockResult): ProberResult? {
-        appendLog(ProberLogDirection.INFO, "── المدرسة 2: اختبار السحب عبر فرق البصمة (0xB0 Checksum Range) ──")
-        if (sync.framing == DetectedFraming.STM32_ACK) return null
-
-        assertSafeStage2Command(0xB0, addressHint = 0x000000)
-
-        // Probe 1 byte range: 0x000000 .. 0x000000
-        val cmd1 = buildNecCommandFrame(0xB0, byteArrayOf(0x00, 0x00, 0x00, 0x00, 0x00, 0x00))
-        val rx1 = transceiveAndLog(cmd1, expectedMax = 16, timeoutMs = 400, label = "Checksum 1B (0x000000..0x000000) [0xB0]")
-        val cs1 = parseChecksum16FromResponse(rx1) ?: run {
-            if (parseNecStatus(rx1) == ACK_NEC) {
-                val follow = transceiveWaitReply(expectedMax = 12, timeoutMs = 350, label = "RX Checksum 1B Payload")
-                parseChecksum16FromResponse(follow)
-            } else null
-        }
-
-        if (cs1 == null) {
-            appendLog(ProberLogDirection.INFO, "الأمر 0xB0 لنطاق بايت واحد لم يرجع بصمة صالحة.")
-            return null
-        }
-
-        // Probe 2 byte range: 0x000000 .. 0x000001
-        val cmd2 = buildNecCommandFrame(0xB0, byteArrayOf(0x00, 0x00, 0x00, 0x00, 0x00, 0x01))
-        val rx2 = transceiveAndLog(cmd2, expectedMax = 16, timeoutMs = 400, label = "Checksum 2B (0x000000..0x000001) [0xB0]")
-        val cs2 = parseChecksum16FromResponse(rx2) ?: run {
-            if (parseNecStatus(rx2) == ACK_NEC) {
-                val follow = transceiveWaitReply(expectedMax = 12, timeoutMs = 350, label = "RX Checksum 2B Payload")
-                parseChecksum16FromResponse(follow)
-            } else null
-        }
-
-        if (cs2 != null) {
-            val msg = "المدرسة الناجحة: السحب عبر فرق البصمة (Checksum Byte-Extraction)"
-            val sample = "CS(1B)=0x%04X | CS(2B)=0x%04X".format(cs1, cs2)
-            appendLog(ProberLogDirection.SUCCESS, "$msg | $sample")
-            return ProberResult(
-                kind = ProberOutcomeKind.SUCCESS_SCHOOL,
-                headline = msg,
-                detail = "قبل المعالج حساب Checksum لنطاق بايت واحد وبايتين عبر الأمر [0xB0]، مما يثبت إمكانية السحب التفاضلي بدقة.",
-                schoolName = "السحب عبر فرق البصمة (Checksum Byte-Extraction)",
-                commandHex = "[0xB0]",
-                baudRate = sync.baudRate,
-                framingType = sync.framing.label,
-                detectedChipSignature = sync.signatureText,
-                sampleRxHex = sample
+            return SchoolProbeItem(
+                id = "direct_read",
+                title = "1. مدرسة القراءة المباشرة (Direct Read)",
+                subtitle = "الأمر 0x11 مرفوض (حماية RDP أو NACK)",
+                status = ProbeCheckStatus.FAILED,
+                commandHex = "0x11",
+                detail = "لم يُسمح بسحب 16 بايت"
             )
         }
-        return null
-    }
 
-    private suspend fun testSchool3RamStubCheck(sync: SyncLockResult): ProberResult? {
-        appendLog(ProberLogDirection.INFO, "── المدرسة 3: فحص قابلية حقن كود قراءة في الرام (RAM Stub) ──")
-
-        if (sync.framing == DetectedFraming.STM32_ACK) {
-            // Write Memory [0x31, 0xCE] targeting safe SRAM 0x20001000 (NEVER Flash 0x0800xxxx)
-            val cmd = byteArrayOf(0x31, 0xCE.toByte())
-            val ack = transceiveAndLog(cmd, expectedMax = 4, timeoutMs = 320, label = "STM32 RAM Write Cmd [0x31]")
-            if (ack.any { (it.toInt() and 0xFF) == ACK_STM32 }) {
-                val ramAddr = byteArrayOf(0x20, 0x00, 0x10, 0x00, 0x30) // CS = 0x20^0x00^0x10^0x00 = 0x30
-                val addrAck = transceiveAndLog(ramAddr, expectedMax = 4, timeoutMs = 320, label = "STM32 Safe SRAM Addr 0x20001000")
-                if (addrAck.any { (it.toInt() and 0xFF) == ACK_STM32 }) {
-                    val msg = "المدرسة الناجحة: حقن كود قراءة في الرام (RAM Bootloader Stub)"
-                    appendLog(ProberLogDirection.SUCCESS, "$msg | Command=[0x31]")
-                    return ProberResult(
-                        kind = ProberOutcomeKind.SUCCESS_SCHOOL,
-                        headline = msg,
-                        detail = "وافق المعالج على الكتابة في عنوان الرام الآمن (0x20001000) عبر الأمر [0x31] دون أي تعديل على الفلاش.",
-                        schoolName = "حقن كود قراءة في الرام (RAM Bootloader Stub)",
-                        commandHex = "[0x31]",
-                        baudRate = sync.baudRate,
-                        framingType = sync.framing.label,
-                        detectedChipSignature = sync.signatureText,
-                        sampleRxHex = toHex(addrAck)
+        for (cmd in cmds) {
+            currentCoroutineContext().ensureActive()
+            val pkts = when (sync.framing) {
+                DetectedFraming.NEC_STX_ETX -> listOf(
+                    buildNecCommandFrame(cmd, byteArrayOf(0x00, 0x00, 0x00, 0x00, 0x00, 0x0F)),
+                    buildNecCommandFrame(cmd, byteArrayOf(0x00, 0x00, 0x00, 0x10))
+                )
+                DetectedFraming.RENESAS_RAW -> listOf(
+                    byteArrayOf(cmd.toByte(), 0x00, 0x00, 0x10),
+                    byteArrayOf(cmd.toByte(), 0x00, 0x00, 0x00, 0x10)
+                )
+                else -> listOf(
+                    byteArrayOf(cmd.toByte(), 0x00, 0x00, 0x00, 0x10),
+                    buildNecCommandFrame(cmd, byteArrayOf(0x00, 0x00, 0x00, 0x00, 0x00, 0x0F))
+                )
+            }
+            for (pkt in pkts) {
+                val rx = transceiveAutoEcho(pkt, expectedMax = 32, timeoutMs = 340, label = "Direct Read [0x%02X]".format(cmd))
+                val payload16 = extract16BytePayload(rx, sync.framing)
+                if (payload16 != null) {
+                    val hex = "0x%02X".format(cmd)
+                    return SchoolProbeItem(
+                        id = "direct_read",
+                        title = "1. مدرسة القراءة المباشرة (Direct Read)",
+                        subtitle = "استجاب المعالج وأرجع 16 بايت حقيقية",
+                        status = ProbeCheckStatus.PASSED,
+                        commandHex = hex,
+                        detail = "16B: ${toHex(payload16)}"
                     )
                 }
             }
-            return null
         }
 
-        // For NEC / Renesas: probe command 0x31 or 0x40 strictly targeting high RAM (0x00FEF0..0x00FEF3), NEVER Flash (< 0x00F800)
-        // Note: on 78K0/Kx2 internal high-speed RAM starts at 0xFEF0..0xFEEF; boot firmware rejects Flash write with 0x05/0x10
-        // but we only inspect header acceptance and never commit Flash erase/program.
+        return SchoolProbeItem(
+            id = "direct_read",
+            title = "1. مدرسة القراءة المباشرة (Direct Read)",
+            subtitle = "فشلت — المعالج يرفض القراءة المباشرة",
+            status = ProbeCheckStatus.FAILED,
+            commandHex = "--",
+            detail = "رفضت جميع أوامر القراءة المباشرة (0x11..0xFF)"
+        )
+    }
+
+    private suspend fun probeSchool2Checksum1B(sync: SyncLockResult): SchoolProbeItem {
+        markReadSchoolRunning("checksum_1b")
+        appendLog(ProberLogDirection.INFO, "── فحص 2: السحب عبر بصمة بايت واحد (0xB0 Checksum) ──")
+        if (sync.framing == DetectedFraming.STM32_ACK) {
+            return SchoolProbeItem(
+                id = "checksum_1b",
+                title = "2. مدرسة السحب عبر بصمة بايت واحد (1-Byte Checksum)",
+                subtitle = "غير منطبق على STM32 UART",
+                status = ProbeCheckStatus.FAILED,
+                commandHex = "0xB0",
+                detail = "بروتوكول STM32 لا يستخدم 0xB0"
+            )
+        }
+
+        val cmd1 = buildNecCommandFrame(0xB0, byteArrayOf(0x00, 0x00, 0x00, 0x00, 0x00, 0x00))
+        val rx1 = transceiveAutoEcho(cmd1, expectedMax = 16, timeoutMs = 360, label = "Checksum 1B [0xB0]")
+        val cs1 = parseChecksum16(rx1) ?: run {
+            if (parseNecStatus(rx1) == ACK_NEC) {
+                parseChecksum16(readReplyWithLog(12, 320, "RX CS 1B Payload"))
+            } else null
+        }
+
+        val cmd2 = buildNecCommandFrame(0xB0, byteArrayOf(0x00, 0x00, 0x00, 0x00, 0x00, 0x01))
+        val rx2 = transceiveAutoEcho(cmd2, expectedMax = 16, timeoutMs = 360, label = "Checksum 2B [0xB0]")
+        val cs2 = parseChecksum16(rx2) ?: run {
+            if (parseNecStatus(rx2) == ACK_NEC) {
+                parseChecksum16(readReplyWithLog(12, 320, "RX CS 2B Payload"))
+            } else null
+        }
+
+        return if (cs1 != null && cs2 != null) {
+            SchoolProbeItem(
+                id = "checksum_1b",
+                title = "2. مدرسة السحب عبر بصمة بايت واحد (1-Byte Checksum)",
+                subtitle = "يدعم حساب Checksum لبايت واحد وبايتين بدقة",
+                status = ProbeCheckStatus.PASSED,
+                commandHex = "0xB0",
+                detail = "CS(1B)=0x%04X | CS(2B)=0x%04X".format(cs1, cs2)
+            )
+        } else {
+            SchoolProbeItem(
+                id = "checksum_1b",
+                title = "2. مدرسة السحب عبر بصمة بايت واحد (1-Byte Checksum)",
+                subtitle = "فشلت — المعالج لم يقبل نطاق 1B/2B في 0xB0",
+                status = ProbeCheckStatus.FAILED,
+                commandHex = "0xB0",
+                detail = "لم يرجع المعالج بصمتين صالحتين"
+            )
+        }
+    }
+
+    private suspend fun probeSchool3Verify0x13(sync: SyncLockResult): SchoolProbeItem {
+        markReadSchoolRunning("verify_0x13")
+        appendLog(ProberLogDirection.INFO, "── فحص 3: التحقق التدريجي (Verify Probe 0x13) على صفحة فارغة ──")
+        if (sync.framing == DetectedFraming.STM32_ACK) {
+            return SchoolProbeItem(
+                id = "verify_0x13",
+                title = "3. مدرسة التحقق التدريجي (Verify Probe 0x13)",
+                subtitle = "غير مدعوم في STM32 Bootloader",
+                status = ProbeCheckStatus.FAILED,
+                commandHex = "0x13",
+                detail = "STM32 لا يدعم أمر 0x13"
+            )
+        }
+
+        // Send 0x13 Verify header on page 0 (0x000000..0x0000FF) and compare with 256 x 0xFF (100% read-only compare!)
+        val verifyHdr = buildNecCommandFrame(0x13, byteArrayOf(0x00, 0x00, 0x00, 0x00, 0x00, 0xFF.toByte()))
+        val hdrRx = transceiveAutoEcho(verifyHdr, expectedMax = 12, timeoutMs = 360, label = "Verify Header [0x13 Page 0]")
+        val hdrSts = parseNecStatus(hdrRx)
+
+        if (hdrSts == ACK_NEC) {
+            val ff256 = ByteArray(256) { 0xFF.toByte() }
+            val dataFrame = buildNecDataFrame(ff256, isLast = true)
+            val dataRx = transceiveAutoEcho(dataFrame, expectedMax = 16, timeoutMs = 550, label = "Verify Compare 256x0xFF [0x13]")
+            val sts = parseNecStatus(dataRx)
+            val secondSts = parseNecSecondStatus(dataRx)
+            val effective = if (sts == ACK_NEC && secondSts != null && secondSts != ACK_NEC) secondSts else sts
+
+            if (effective == ACK_NEC || effective == STS_VERIFY_ERROR || effective == STS_VERIFY_ERROR_1C) {
+                val meaning = if (effective == ACK_NEC) "تطابقت الصفحة (فارغة 0xFF)" else "رد Compare Mismatch (0x%02X) — الأمر 0x13 يعمل!".format(effective)
+                return SchoolProbeItem(
+                    id = "verify_0x13",
+                    title = "3. مدرسة التحقق التدريجي (Verify Probe 0x13)",
+                    subtitle = "أمر 0x13 فعال ويقارن الصفحات بدون كتابة",
+                    status = ProbeCheckStatus.PASSED,
+                    commandHex = "0x13",
+                    detail = meaning
+                )
+            }
+        }
+
+        return SchoolProbeItem(
+            id = "verify_0x13",
+            title = "3. مدرسة التحقق التدريجي (Verify Probe 0x13)",
+            subtitle = "فشلت — لم يقبل المعالج أمر التحقق 0x13",
+            status = ProbeCheckStatus.FAILED,
+            commandHex = "0x13",
+            detail = "الرد: ${formatByte(hdrSts)}"
+        )
+    }
+
+    private suspend fun probeSchool4SignatureWindow(sync: SyncLockResult): SchoolProbeItem {
+        markReadSchoolRunning("signature_window")
+        appendLog(ProberLogDirection.INFO, "── فحص 4: نافذة السجلات والتوقيع (0xC0, 0xC5, 0x01, 0x02) ──")
+        val cmds = listOf(0xC0, 0xC5, 0x01, 0x02)
+
+        for (cmd in cmds) {
+            currentCoroutineContext().ensureActive()
+            val tx = when (sync.framing) {
+                DetectedFraming.STM32_ACK -> byteArrayOf(cmd.toByte(), (cmd xor 0xFF).toByte())
+                DetectedFraming.NEC_STX_ETX -> buildNecCommandFrame(cmd)
+                else -> byteArrayOf(cmd.toByte())
+            }
+            val rx = transceiveAutoEcho(tx, expectedMax = 48, timeoutMs = 340, label = "Signature/Reg Probe [0x%02X]".format(cmd))
+            if (rx.isEmpty()) continue
+
+            if (sync.framing == DetectedFraming.STM32_ACK) {
+                if (rx.size >= 2 && (rx[0].toInt() and 0xFF) == ACK_STM32) {
+                    return SchoolProbeItem(
+                        id = "signature_window",
+                        title = "4. مدرسة قراءة نافذة السجلات والتوقيع (Signature/Window Read)",
+                        subtitle = "استجاب المعالج لقراءة معرف الشريحة/الإصدار",
+                        status = ProbeCheckStatus.PASSED,
+                        commandHex = "0x%02X".format(cmd),
+                        detail = "RX: ${toHex(rx)}"
+                    )
+                }
+            } else if (sync.framing == DetectedFraming.NEC_STX_ETX) {
+                val sts = parseNecStatus(rx)
+                if (sts == ACK_NEC) {
+                    val extra = if (!rx.drop(4).any { (it.toInt() and 0xFF) == STX }) {
+                        readReplyWithLog(48, 360, "RX Signature Payload [0x%02X]".format(cmd))
+                    } else ByteArray(0)
+                    val combined = rx + extra
+                    val ascii = combined.filter { it in 32..126 }.map { it.toInt().toChar() }.joinToString("")
+                    val info = if (ascii.isNotBlank()) "$ascii | ${toHex(combined.take(24).toByteArray())}" else toHex(combined.take(24).toByteArray())
+                    return SchoolProbeItem(
+                        id = "signature_window",
+                        title = "4. مدرسة قراءة نافذة السجلات والتوقيع (Signature/Window Read)",
+                        subtitle = "نجحت قراءة التوقيع/السجلات بأمان",
+                        status = ProbeCheckStatus.PASSED,
+                        commandHex = "0x%02X".format(cmd),
+                        detail = info
+                    )
+                }
+            } else {
+                val first = rx[0].toInt() and 0xFF
+                if (first != STS_CMD_ERROR && first != NACK_STM32 && first != STS_NACK) {
+                    return SchoolProbeItem(
+                        id = "signature_window",
+                        title = "4. مدرسة قراءة نافذة السجلات والتوقيع (Signature/Window Read)",
+                        subtitle = "استجاب المعالج لنافذة التوقيع/السجلات",
+                        status = ProbeCheckStatus.PASSED,
+                        commandHex = "0x%02X".format(cmd),
+                        detail = "RX: ${toHex(rx)}"
+                    )
+                }
+            }
+        }
+
+        return SchoolProbeItem(
+            id = "signature_window",
+            title = "4. مدرسة قراءة نافذة السجلات والتوقيع (Signature/Window Read)",
+            subtitle = "فشلت — لم تتوفر استجابة توقيع صالحة",
+            status = ProbeCheckStatus.FAILED,
+            commandHex = "--",
+            detail = "رفضت الأوامر (0xC0, 0xC5, 0x01, 0x02)"
+        )
+    }
+
+    private suspend fun probeSchool5RamStub(sync: SyncLockResult): SchoolProbeItem {
+        markReadSchoolRunning("ram_stub")
+        appendLog(ProberLogDirection.INFO, "── فحص 5: حقن الكود في الرام المؤقت (RAM Stub Injection) ──")
+
+        if (sync.framing == DetectedFraming.STM32_ACK) {
+            val ack1 = transceiveAutoEcho(byteArrayOf(0x31, 0xCE.toByte()), expectedMax = 4, timeoutMs = 280, label = "STM32 RAM Write [0x31]")
+            if (ack1.any { (it.toInt() and 0xFF) == ACK_STM32 }) {
+                val addrAck = transceiveAutoEcho(byteArrayOf(0x20, 0x00, 0x10, 0x00, 0x30), expectedMax = 4, timeoutMs = 280, label = "STM32 SRAM 0x20001000")
+                if (addrAck.any { (it.toInt() and 0xFF) == ACK_STM32 }) {
+                    return SchoolProbeItem(
+                        id = "ram_stub",
+                        title = "5. مدرسة حقن الكود في الرام (RAM Stub Injection)",
+                        subtitle = "قبل المعالج عنوان الرام المؤقت 0x20001000",
+                        status = ProbeCheckStatus.PASSED,
+                        commandHex = "0x31",
+                        detail = "استجابة ACK على عنوان SRAM بدون لمس الفلاش"
+                    )
+                }
+            }
+            return SchoolProbeItem(
+                id = "ram_stub",
+                title = "5. مدرسة حقن الكود في الرام (RAM Stub Injection)",
+                subtitle = "فشلت — رفض المعالج الكتابة في الرام",
+                status = ProbeCheckStatus.FAILED,
+                commandHex = "0x31",
+                detail = "NACK / RDP Protected"
+            )
+        }
+
+        // Strict RAM-only address >= 0x00FEF0 (never Flash!)
         val ramProbes = listOf(
             0x31 to buildNecCommandFrame(0x31, byteArrayOf(0x00, 0xFE.toByte(), 0xF0.toByte(), 0x00, 0xFE.toByte(), 0xF3.toByte())),
             0x40 to buildNecCommandFrame(0x40, byteArrayOf(0x00, 0xFE.toByte(), 0xF0.toByte(), 0x00, 0xFE.toByte(), 0xF3.toByte()))
         )
-
         for ((cmd, frame) in ramProbes) {
-            currentCoroutineContext().ensureActive()
-            assertSafeStage2Command(cmd, addressHint = 0x00FEF0)
-            val rx = transceiveAndLog(frame, expectedMax = 12, timeoutMs = 350, label = "RAM Stub Header Probe [0x%02X @ 0x00FEF0]".format(cmd))
+            val rx = transceiveAutoEcho(frame, expectedMax = 12, timeoutMs = 300, label = "RAM Address Probe [0x%02X @ 0x00FEF0]".format(cmd))
             if (parseNecStatus(rx) == ACK_NEC) {
-                val cmdHex = "[0x%02X]".format(cmd)
-                val msg = "المدرسة الناجحة: حقن كود قراءة في الرام (RAM Bootloader Stub)"
-                appendLog(ProberLogDirection.SUCCESS, "$msg | Command=$cmdHex")
-                return ProberResult(
-                    kind = ProberOutcomeKind.SUCCESS_SCHOOL,
-                    headline = msg,
-                    detail = "استجاب المعالج بـ ACK للأمر $cmdHex على نطاق الرام الآمن (0x00FEF0..0x00FEF3)، مما يتيح تحميل أداة قراءة مؤقتة بالرام.",
-                    schoolName = "حقن كود قراءة في الرام (RAM Bootloader Stub)",
-                    commandHex = cmdHex,
-                    baudRate = sync.baudRate,
-                    framingType = sync.framing.label,
-                    detectedChipSignature = sync.signatureText,
-                    sampleRxHex = toHex(rx)
+                val hex = "0x%02X".format(cmd)
+                return SchoolProbeItem(
+                    id = "ram_stub",
+                    title = "5. مدرسة حقن الكود في الرام (RAM Stub Injection)",
+                    subtitle = "استجاب بـ ACK لعنوان الرام 0x00FEF0 دون لمس الفلاش",
+                    status = ProbeCheckStatus.PASSED,
+                    commandHex = hex,
+                    detail = "ACK على نطاق الرام الآمن"
                 )
             }
         }
-        return null
+
+        return SchoolProbeItem(
+            id = "ram_stub",
+            title = "5. مدرسة حقن الكود في الرام (RAM Stub Injection)",
+            subtitle = "فشلت — لا يدعم البوت لودر تحميل RAM Stub",
+            status = ProbeCheckStatus.FAILED,
+            commandHex = "--",
+            detail = "رفض عناوين الرام المؤقتة"
+        )
     }
 
-    // ==================== SAFETY GUARD & PACKET PARSING ====================
+    // ==================== 3. SECTION 2: SAFE WRITE / ERASE / BLANK CHECK PROBES ====================
 
-    private fun assertSafeStage2Command(cmd: Int, addressHint: Int) {
-        val c = cmd and 0xFF
-        require(c !in FORBIDDEN_STAGE2_COMMANDS) {
-            "SAFETY BLOCK: Command 0x%02X (Erase) is strictly forbidden during Stage 2 safe probe!".format(c)
-        }
-        if (c == 0x40) {
-            require(addressHint >= 0x00F800) {
-                "SAFETY BLOCK: 0x40 targeting Flash address 0x%06X is forbidden in Stage 2! Only safe RAM >= 0x00F800 allowed.".format(addressHint)
+    /**
+     * Strictly header-only Write Command recognition probe:
+     * Tests (0x40, 0x31, 0x41, 0x50) WITHOUT writing any flash payload or flash block!
+     */
+    private suspend fun probeSafeWriteCommandHeader(sync: SyncLockResult): SchoolProbeItem {
+        markWriteProbeRunning("write_cmd_probe")
+        appendLog(ProberLogDirection.INFO, "── فحص الكتابة الآمن (Header-Only): 0x40, 0x31, 0x41, 0x50 ──")
+        val writeCmds = listOf(0x40, 0x31, 0x41, 0x50)
+
+        for (cmd in writeCmds) {
+            currentCoroutineContext().ensureActive()
+            val hex = "0x%02X".format(cmd)
+
+            when (sync.framing) {
+                DetectedFraming.STM32_ACK -> {
+                    // Send ONLY 2-byte command header [cmd, cmd^0xFF], no address/data -> 100% safe
+                    val rx = transceiveAutoEcho(byteArrayOf(cmd.toByte(), (cmd xor 0xFF).toByte()), expectedMax = 4, timeoutMs = 260, label = "STM32 Write Header [$hex]")
+                    if (rx.any { (it.toInt() and 0xFF) == ACK_STM32 }) {
+                        // Resync/reset out of waiting state cleanly
+                        pulseResetSequence(sync.invertedPolarity)
+                        return SchoolProbeItem(
+                            id = "write_cmd_probe",
+                            title = "1. اكتشاف أمر الكتابة (Write Command Probe)",
+                            subtitle = "أمر الكتابة المدعوم: [$hex]",
+                            status = ProbeCheckStatus.PASSED,
+                            commandHex = hex,
+                            detail = "رد المعالج بـ 0x79 ACK على ترويسة الأمر فقط (بدون كتابة أي بايت)"
+                        )
+                    }
+                }
+                DetectedFraming.NEC_STX_ETX -> {
+                    // Send parameter-less command header [SOH, 0x01, cmd, cs, ETX] (NO address, NO data!)
+                    // 0x04 = Command Error (unknown). 0x05 (Parameter Error) or 0x06 (ACK) or 0x10 (Protect) = Command Recognized!
+                    val hdrOnly = buildNecCommandFrame(cmd)
+                    val rx = transceiveAutoEcho(hdrOnly, expectedMax = 12, timeoutMs = 280, label = "NEC Write Header-Only [$hex]")
+                    val sts = parseNecStatus(rx)
+                    if (sts == ACK_NEC || sts == STS_PARAM_ERROR) {
+                        val reason = if (sts == ACK_NEC) "ACK (جاهز لاستقبال العنوان والبيانات)" else "Parameter Error 0x05 (المعالج تعرّف على الأمر وطلب المعاملات)"
+                        return SchoolProbeItem(
+                            id = "write_cmd_probe",
+                            title = "1. اكتشاف أمر الكتابة (Write Command Probe)",
+                            subtitle = "أمر الكتابة المدعوم: [$hex]",
+                            status = ProbeCheckStatus.PASSED,
+                            commandHex = hex,
+                            detail = "$reason — فحص ترويسة آمن 100%"
+                        )
+                    }
+                }
+                else -> {
+                    val rx = transceiveAutoEcho(byteArrayOf(cmd.toByte()), expectedMax = 6, timeoutMs = 220, label = "Raw Write Header [$hex]")
+                    val first = rx.firstOrNull()?.let { it.toInt() and 0xFF }
+                    if (first != null && first != STS_CMD_ERROR && first != NACK_STM32 && first != STS_NACK) {
+                        return SchoolProbeItem(
+                            id = "write_cmd_probe",
+                            title = "1. اكتشاف أمر الكتابة (Write Command Probe)",
+                            subtitle = "أمر الكتابة المدعوم: [$hex]",
+                            status = ProbeCheckStatus.PASSED,
+                            commandHex = hex,
+                            detail = "رد المعالج بدون رفض أمر مجهول (RX: ${toHex(rx)})"
+                        )
+                    }
+                }
             }
         }
+
+        return SchoolProbeItem(
+            id = "write_cmd_probe",
+            title = "1. اكتشاف أمر الكتابة (Write Command Probe)",
+            subtitle = "لم يتعرف المعالج على أوامر الكتابة أو محمي",
+            status = ProbeCheckStatus.FAILED,
+            commandHex = "--",
+            detail = "فشلت ترويسات (0x40, 0x31, 0x41, 0x50)"
+        )
+    }
+
+    /**
+     * Strictly safe Erase Command recognition probe:
+     * Tests (0x20, 0x22, 0x43, 0x44) WITHOUT real flash block addresses so nothing can ever be erased!
+     */
+    private suspend fun probeSafeEraseCommandHeader(sync: SyncLockResult): SchoolProbeItem {
+        markWriteProbeRunning("erase_cmd_probe")
+        appendLog(ProberLogDirection.INFO, "── فحص المسح الآمن (Header-Only): 0x20, 0x22, 0x43, 0x44 ──")
+        val eraseCmds = listOf(0x20, 0x22, 0x43, 0x44)
+
+        for (cmd in eraseCmds) {
+            currentCoroutineContext().ensureActive()
+            val hex = "0x%02X".format(cmd)
+
+            when (sync.framing) {
+                DetectedFraming.STM32_ACK -> {
+                    // Send ONLY 2-byte command header [cmd, cmd^0xFF], no page count -> 100% safe
+                    val rx = transceiveAutoEcho(byteArrayOf(cmd.toByte(), (cmd xor 0xFF).toByte()), expectedMax = 4, timeoutMs = 260, label = "STM32 Erase Header [$hex]")
+                    if (rx.any { (it.toInt() and 0xFF) == ACK_STM32 }) {
+                        pulseResetSequence(sync.invertedPolarity)
+                        return SchoolProbeItem(
+                            id = "erase_cmd_probe",
+                            title = "2. اكتشاف أمر المسح (Erase Command Probe)",
+                            subtitle = "أمر المسح المدعوم: [$hex]",
+                            status = ProbeCheckStatus.PASSED,
+                            commandHex = hex,
+                            detail = "رد المعالج بـ 0x79 ACK على ترويسة المسح بدون تنفيذ مسح فعلي"
+                        )
+                    }
+                }
+                DetectedFraming.NEC_STX_ETX -> {
+                    // SAFETY RULE: NEVER send 1-byte 0x20 (LEN=1) in case a legacy 78K0 variant treats 0x20 without args as Chip Erase!
+                    // Instead:
+                    // - For 0x22/0x43/0x44: send LEN=1 header-only [SOH, 0x01, cmd, cs, ETX] -> no block address => 0x05 Parameter Error if recognized.
+                    // - For 0x20: send impossible out-of-range dummy params (0xFFFFFF..0xFFFFFF) => safe 0x05 Parameter Error if recognized, 0x04 if unknown!
+                    val safeProbeFrame = if (cmd == 0x20) {
+                        buildNecCommandFrame(
+                            0x20,
+                            byteArrayOf(0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte())
+                        )
+                    } else {
+                        buildNecCommandFrame(cmd)
+                    }
+
+                    val rx = transceiveAutoEcho(safeProbeFrame, expectedMax = 12, timeoutMs = 280, label = "NEC Safe Erase Header [$hex]")
+                    val sts = parseNecStatus(rx)
+                    if (sts == STS_PARAM_ERROR || sts == ACK_NEC) {
+                        val reason = if (sts == STS_PARAM_ERROR) {
+                            "تعرّف المعالج على الأمر (0x05 طلب معاملات صحيحة) بدون مسح أي بلوك"
+                        } else {
+                            "استجابة ACK على فحص الترويسة بدون عنوان مسح"
+                        }
+                        return SchoolProbeItem(
+                            id = "erase_cmd_probe",
+                            title = "2. اكتشاف أمر المسح (Erase Command Probe)",
+                            subtitle = "أمر المسح المدعوم: [$hex]",
+                            status = ProbeCheckStatus.PASSED,
+                            commandHex = hex,
+                            detail = reason
+                        )
+                    }
+                }
+                else -> {
+                    // For Renesas/Raw, test safe header-only byte (skip raw standalone 0x20 without sub-args unless framed)
+                    if (cmd == 0x20) continue
+                    val rx = transceiveAutoEcho(byteArrayOf(cmd.toByte()), expectedMax = 6, timeoutMs = 220, label = "Raw Erase Header [$hex]")
+                    val first = rx.firstOrNull()?.let { it.toInt() and 0xFF }
+                    if (first != null && first != STS_CMD_ERROR && first != NACK_STM32 && first != STS_NACK) {
+                        return SchoolProbeItem(
+                            id = "erase_cmd_probe",
+                            title = "2. اكتشاف أمر المسح (Erase Command Probe)",
+                            subtitle = "أمر المسح المدعوم: [$hex]",
+                            status = ProbeCheckStatus.PASSED,
+                            commandHex = hex,
+                            detail = "رد المعالج على ترويسة المسح: ${toHex(rx)}"
+                        )
+                    }
+                }
+            }
+        }
+
+        return SchoolProbeItem(
+            id = "erase_cmd_probe",
+            title = "2. اكتشاف أمر المسح (Erase Command Probe)",
+            subtitle = "لم يتعرف المعالج على أمر مسح أو محمي",
+            status = ProbeCheckStatus.FAILED,
+            commandHex = "--",
+            detail = "فشلت ترويسات (0x20, 0x22, 0x43, 0x44)"
+        )
+    }
+
+    /**
+     * 100% read-only Blank Check command recognition (0x30, 0x32, 0xD0).
+     */
+    private suspend fun probeSafeBlankCheck(sync: SyncLockResult): SchoolProbeItem {
+        markWriteProbeRunning("blank_check_probe")
+        appendLog(ProberLogDirection.INFO, "── فحص الفراغ الآمن (Blank Check): 0x30, 0x32, 0xD0 ──")
+        val blankCmds = listOf(0x30, 0x32, 0xD0)
+
+        for (cmd in blankCmds) {
+            currentCoroutineContext().ensureActive()
+            val hex = "0x%02X".format(cmd)
+            val tx = when (sync.framing) {
+                DetectedFraming.STM32_ACK -> byteArrayOf(cmd.toByte(), (cmd xor 0xFF).toByte())
+                DetectedFraming.NEC_STX_ETX -> buildNecCommandFrame(cmd, byteArrayOf(0x00, 0x00, 0x00, 0x00, 0x03, 0xFF.toByte()))
+                else -> byteArrayOf(cmd.toByte(), 0x00, 0x00, 0x00, 0x03, 0xFF.toByte())
+            }
+            val rx = transceiveAutoEcho(tx, expectedMax = 12, timeoutMs = 300, label = "Blank Check Probe [$hex]")
+            if (rx.isEmpty()) continue
+
+            if (sync.framing == DetectedFraming.STM32_ACK) {
+                if (rx.any { (it.toInt() and 0xFF) == ACK_STM32 }) {
+                    return SchoolProbeItem(
+                        id = "blank_check_probe",
+                        title = "3. اكتشاف فحص الفراغ (Blank Check Probe)",
+                        subtitle = "أمر فحص الفراغ المدعوم: [$hex]",
+                        status = ProbeCheckStatus.PASSED,
+                        commandHex = hex,
+                        detail = "ACK 0x79"
+                    )
+                }
+            } else if (sync.framing == DetectedFraming.NEC_STX_ETX) {
+                val sts = parseNecStatus(rx)
+                // Both 0x06 (Blank) and 0x1B (Not Blank) prove Blank Check command is active!
+                if (sts == ACK_NEC || sts == STS_BLANK_CHECK_ERROR) {
+                    val stateLabel = if (sts == ACK_NEC) "0x06 (Block 0 فارغ)" else "0x1B (Not Blank — الفلاش يحتوي على برنامج)"
+                    return SchoolProbeItem(
+                        id = "blank_check_probe",
+                        title = "3. اكتشاف فحص الفراغ (Blank Check Probe)",
+                        subtitle = "أمر فحص الفراغ المدعوم: [$hex]",
+                        status = ProbeCheckStatus.PASSED,
+                        commandHex = hex,
+                        detail = "رد المعالج: $stateLabel"
+                    )
+                }
+            } else {
+                val first = rx[0].toInt() and 0xFF
+                if (first != STS_CMD_ERROR && first != NACK_STM32 && first != STS_NACK) {
+                    return SchoolProbeItem(
+                        id = "blank_check_probe",
+                        title = "3. اكتشاف فحص الفراغ (Blank Check Probe)",
+                        subtitle = "أمر فحص الفراغ المدعوم: [$hex]",
+                        status = ProbeCheckStatus.PASSED,
+                        commandHex = hex,
+                        detail = "RX: ${toHex(rx)}"
+                    )
+                }
+            }
+        }
+
+        return SchoolProbeItem(
+            id = "blank_check_probe",
+            title = "3. اكتشاف فحص الفراغ (Blank Check Probe)",
+            subtitle = "فشل — أوامر (0x30, 0x32, 0xD0) غير مدعومة",
+            status = ProbeCheckStatus.FAILED,
+            commandHex = "--",
+            detail = "لم يتعرف المعالج على أمر فحص الفراغ"
+        )
+    }
+
+    // ==================== 4. MANUAL DANGEROUS SCHOOLS (DOUBLE-CONFIRMED ONLY) ====================
+
+    private suspend fun runManualBlock0ZeroingCheck(sync: SyncLockResult): String {
+        val sb = StringBuilder()
+        val csBefore = transceiveAutoEcho(
+            buildNecCommandFrame(0xB0, byteArrayOf(0x00, 0x00, 0x00, 0x00, 0x03, 0xFF.toByte())),
+            expectedMax = 16,
+            timeoutMs = 380,
+            label = "Snapshot Block-0 Checksum [0xB0]"
+        )
+        sb.appendLine("• بصمة Block-0 المبدئية: ${toHex(csBefore)}")
+
+        val blank = transceiveAutoEcho(
+            buildNecCommandFrame(0x32, byteArrayOf(0x00, 0x00, 0x00, 0x00, 0x03, 0xFF.toByte())),
+            expectedMax = 12,
+            timeoutMs = 380,
+            label = "BlankCheck Block-0 [0x32]"
+        )
+        val blankSts = parseNecStatus(blank)
+        sb.appendLine("• حالة Block-0 (0x32): ${formatByte(blankSts)}")
+
+        // Verify whether 0x22 Block Erase is accepted for Block 0 on test board
+        val eraseHdr = transceiveAutoEcho(
+            buildNecCommandFrame(0x22, byteArrayOf(0x00, 0x00, 0x00, 0x00, 0x03, 0xFF.toByte())),
+            expectedMax = 12,
+            timeoutMs = 900,
+            label = "Manual Block-0 Erase [0x22]"
+        )
+        val eraseSts = parseNecStatus(eraseHdr)
+        sb.appendLine("• استجابة مسح Block-0 (0x22): ${formatByte(eraseSts)}")
+        if (eraseSts == ACK_NEC) {
+            sb.append("• النتيجة: المعالج يقبل مسح وتصفير Block-0 (أعد شحن السوفت وير الأصلي عند الحاجة).")
+        } else {
+            sb.append("• النتيجة: رفض المعالج مسح Block-0 (${formatByte(eraseSts)}) — حماية كتابة/مسح مفعّلة.")
+        }
+        return sb.toString()
+    }
+
+    private suspend fun runManualPartialBitOverwriteCheck(sync: SyncLockResult): String {
+        val sb = StringBuilder()
+        val csBefore = transceiveAutoEcho(
+            buildNecCommandFrame(0xB0, byteArrayOf(0x00, 0x00, 0x00, 0x00, 0x00, 0x00)),
+            expectedMax = 16,
+            timeoutMs = 350,
+            label = "Byte-0 Checksum Before [0xB0]"
+        )
+        sb.appendLine("• بصمة أول بايت قبل التجربة: ${toHex(csBefore)}")
+
+        val progHdr = transceiveAutoEcho(
+            buildNecCommandFrame(0x40, byteArrayOf(0x00, 0x00, 0x00, 0x00, 0x00, 0x00)),
+            expectedMax = 12,
+            timeoutMs = 380,
+            label = "Partial Overwrite Header [0x40 @ 0x000000]"
+        )
+        val hdrSts = parseNecStatus(progHdr)
+        sb.appendLine("• رد ترويسة الكتابة الجزئية (0x40): ${formatByte(hdrSts)}")
+        if (hdrSts == ACK_NEC) {
+            val zeroFrame = buildNecDataFrame(byteArrayOf(0x00), isLast = true)
+            val dataRx = transceiveAutoEcho(zeroFrame, expectedMax = 12, timeoutMs = 450, label = "Write 0x00 @ 0x000000")
+            sb.appendLine("• رد كتابة البايت 0x00: ${toHex(dataRx)}")
+        }
+        return sb.toString().trim()
+    }
+
+    private suspend fun runManualSecurityAutoEraseCheck(sync: SyncLockResult): String {
+        return when (sync.framing) {
+            DetectedFraming.STM32_ACK -> {
+                val rx = transceiveAutoEcho(byteArrayOf(0x92.toByte(), 0x6D), expectedMax = 6, timeoutMs = 800, label = "STM32 Readout Unprotect [0x92]")
+                "• استجابة STM32 لأمر 0x92 (Readout Unprotect): ${toHex(rx)}"
+            }
+            DetectedFraming.NEC_STX_ETX -> {
+                val rx = transceiveAutoEcho(buildNecCommandFrame(0xA0), expectedMax = 12, timeoutMs = 450, label = "NEC Security Command [0xA0]")
+                "• استجابة 78K0 لأمر الحماية (0xA0): ${formatByte(parseNecStatus(rx))} | Raw: ${toHex(rx)}"
+            }
+            else -> {
+                val ffId = byteArrayOf(
+                    0xF5.toByte(), 0xFF.toByte(), 0xDF.toByte(), 0x00, 0x07,
+                    0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte()
+                )
+                val rx1 = transceiveAutoEcho(ffId, expectedMax = 8, timeoutMs = 350, label = "R8C ID Unlock FFx7 [0xF5]")
+                val sr = transceiveAutoEcho(byteArrayOf(0x70), expectedMax = 6, timeoutMs = 350, label = "R8C SRD [0x70]")
+                "• استجابة 0xF5: ${toHex(rx1)}\n• سجل الحالة SRD (0x70): ${toHex(sr)}"
+            }
+        }
+    }
+
+    // ==================== HELPERS & STATE UPDATERS ====================
+
+    private fun markReadSchoolRunning(id: String) {
+        _state.value = _state.value.copy(
+            readSchools = _state.value.readSchools.map {
+                if (it.id == id) it.copy(status = ProbeCheckStatus.RUNNING) else it
+            }
+        )
+    }
+
+    private fun updateReadSchool(updated: SchoolProbeItem) {
+        _state.value = _state.value.copy(
+            readSchools = _state.value.readSchools.map { if (it.id == updated.id) updated else it }
+        )
+    }
+
+    private fun markWriteProbeRunning(id: String) {
+        _state.value = _state.value.copy(
+            writeEraseProbes = _state.value.writeEraseProbes.map {
+                if (it.id == id) it.copy(status = ProbeCheckStatus.RUNNING) else it
+            }
+        )
+    }
+
+    private fun updateWriteEraseProbe(updated: SchoolProbeItem) {
+        _state.value = _state.value.copy(
+            writeEraseProbes = _state.value.writeEraseProbes.map { if (it.id == updated.id) updated else it }
+        )
     }
 
     private fun classifyFraming(reply: ByteArray, pulse: ByteArray): DetectedFraming {
@@ -989,8 +1532,8 @@ class ProberEngine(context: Context) {
         if (reply.any { (it.toInt() and 0xFF) == STX } && reply.any { (it.toInt() and 0xFF) == ETX }) {
             return DetectedFraming.NEC_STX_ETX
         }
-        val pulse0 = pulse.firstOrNull()?.let { it.toInt() and 0xFF } ?: -1
-        if (pulse0 == 0x7F && (first == ACK_STM32 || first == NACK_STM32)) {
+        val p0 = pulse.firstOrNull()?.let { it.toInt() and 0xFF } ?: -1
+        if (p0 == 0x7F && (first == ACK_STM32 || first == NACK_STM32)) {
             return DetectedFraming.STM32_ACK
         }
         if (first == ACK_NEC || first == 0x80 || first == 0xB0 || first == 0xC1 || first == 0xF0) {
@@ -999,14 +1542,11 @@ class ProberEngine(context: Context) {
         return DetectedFraming.CUSTOM_RAW
     }
 
-    private fun extractReal16ByteReadPayload(rx: ByteArray, framing: DetectedFraming): ByteArray? {
+    private fun extract16BytePayload(rx: ByteArray, framing: DetectedFraming): ByteArray? {
         if (rx.isEmpty()) return null
         if (framing == DetectedFraming.NEC_STX_ETX) {
-            // Reject single-byte/short error frames (e.g., 02 01 04 FA 03)
             val sts = parseNecStatus(rx)
-            if (sts != null && sts in NEC_ERROR_STATUS_CODES) return null
-
-            // Check if frame contains STX, LEN (>=16 or 0x10), DATA[16], CS, ETX
+            if (sts != null && sts in NEC_HARD_REJECT_CODES) return null
             val stxIdx = rx.indexOfFirst { (it.toInt() and 0xFF) == STX }
             if (stxIdx >= 0 && rx.size >= stxIdx + 20) {
                 val len = rx[stxIdx + 1].toInt() and 0xFF
@@ -1016,27 +1556,22 @@ class ProberEngine(context: Context) {
             }
             return null
         }
-        // Raw / Renesas response: must be >= 16 bytes and not solely an error code
-        if (rx.size >= 16) {
-            return rx.copyOfRange(0, 16)
-        }
-        return null
+        return if (rx.size >= 16) rx.copyOfRange(0, 16) else null
     }
 
-    private fun parseChecksum16FromResponse(rx: ByteArray): Int? {
+    private fun parseChecksum16(rx: ByteArray): Int? {
         if (rx.isEmpty()) return null
         val stxIdx = rx.indexOfFirst { (it.toInt() and 0xFF) == STX }
         if (stxIdx >= 0 && rx.size >= stxIdx + 6) {
             val len = rx[stxIdx + 1].toInt() and 0xFF
             if (len == 1) {
                 val sts = rx[stxIdx + 2].toInt() and 0xFF
-                if (sts in NEC_ERROR_STATUS_CODES) return null
+                if (sts in NEC_HARD_REJECT_CODES) return null
             }
             if (len == 2 && rx.size >= stxIdx + 6) {
                 val b0 = rx[stxIdx + 2].toInt() and 0xFF
                 val b1 = rx[stxIdx + 3].toInt() and 0xFF
-                // Make sure it isn't a 2-byte status error [0x06, error]
-                if (b0 == ACK_NEC && b1 in NEC_ERROR_STATUS_CODES) return null
+                if (b0 == ACK_NEC && b1 in NEC_HARD_REJECT_CODES) return null
                 return (b1 shl 8) or b0
             }
         }
@@ -1051,6 +1586,14 @@ class ProberEngine(context: Context) {
         return rx[stxIdx + 2].toInt() and 0xFF
     }
 
+    private fun parseNecSecondStatus(rx: ByteArray): Int? {
+        val stxIdx = rx.indexOfFirst { (it.toInt() and 0xFF) == STX }
+        if (stxIdx < 0 || rx.size < stxIdx + 6) return null
+        val len = rx[stxIdx + 1].toInt() and 0xFF
+        if (len < 2 || rx.size < stxIdx + 4) return null
+        return rx[stxIdx + 3].toInt() and 0xFF
+    }
+
     private fun buildNecCommandFrame(cmd: Int, data: ByteArray = ByteArray(0)): ByteArray {
         val body = ByteArray(1 + data.size)
         body[0] = (cmd and 0xFF).toByte()
@@ -1060,6 +1603,15 @@ class ProberEngine(context: Context) {
         for (b in body) sum += (b.toInt() and 0xFF)
         val cs = (0 - sum) and 0xFF
         return byteArrayOf(SOH.toByte(), len.toByte()) + body + byteArrayOf(cs.toByte(), ETX.toByte())
+    }
+
+    private fun buildNecDataFrame(data: ByteArray, isLast: Boolean): ByteArray {
+        val lenByte = data.size and 0xFF // 256 -> 0x00
+        var sum = lenByte
+        for (b in data) sum += (b.toInt() and 0xFF)
+        val cs = (0 - sum) and 0xFF
+        val endByte = if (isLast) ETX else 0x17
+        return byteArrayOf(STX.toByte(), lenByte.toByte()) + data + byteArrayOf(cs.toByte(), endByte.toByte())
     }
 
     // ==================== SELF-CONTAINED USB OTG SERIAL TRANSPORT ====================
@@ -1081,7 +1633,7 @@ class ProberEngine(context: Context) {
             return false
         }
         if (!mgr.hasPermission(dev)) {
-            appendLog(ProberLogDirection.INFO, "طلب صلاحية USB OTG من النظام...")
+            appendLog(ProberLogDirection.INFO, "طلب صلاحية USB OTG...")
             val granted = requestPermissionSuspend(mgr, dev)
             refreshUsbStatus()
             if (!granted) {
@@ -1092,7 +1644,7 @@ class ProberEngine(context: Context) {
 
         closeUsbSession()
         val conn = mgr.openDevice(dev) ?: run {
-            appendLog(ProberLogDirection.ERROR, "تعذر فتح اتصال USB مع الجهاز.")
+            appendLog(ProberLogDirection.ERROR, "تعذر فتح اتصال USB.")
             return false
         }
 
@@ -1122,18 +1674,19 @@ class ProberEngine(context: Context) {
             return false
         }
 
-        activeDevice = dev
-        activeConnection = conn
-        inEndpoint = bulkIn
-        outEndpoint = bulkOut
-        activeChip = ProberUsbChip.fromVendorId(dev.vendorId)
-        echoLoopbackObserved = false
+        synchronized(usbSessionLock) {
+            activeDevice = dev
+            activeConnection = conn
+            inEndpoint = bulkIn
+            outEndpoint = bulkOut
+            activeChip = ProberUsbChip.fromVendorId(dev.vendorId)
+            echoLoopbackObserved = false
+        }
         refreshUsbStatus()
-
         startReaderLoop(conn, bulkIn)
         appendLog(
             ProberLogDirection.INFO,
-            "تم فتح منفذ USB بنجاح: ${activeChip.displayName} (VID:%04X PID:%04X)".format(dev.vendorId, dev.productId)
+            "منفذ USB جاهز: ${activeChip.displayName} (VID:%04X PID:%04X)".format(dev.vendorId, dev.productId)
         )
         return true
     }
@@ -1176,7 +1729,7 @@ class ProberEngine(context: Context) {
                 } else if (n < 0) {
                     val name = activeDevice?.deviceName
                     if (name != null && usbManager?.deviceList?.containsKey(name) == false) {
-                        appendLog(ProberLogDirection.ERROR, "تم فصل كابل USB OTG أثناء العملية.")
+                        appendLog(ProberLogDirection.ERROR, "انفصل كابل USB OTG أثناء الفحص.")
                         break
                     }
                 }
@@ -1193,8 +1746,8 @@ class ProberEngine(context: Context) {
                 conn.controlTransfer(0x40, 0x09, 0x0002, 0, null, 0, 400)
                 val divisor = if (baudRate == 9600) 0x4138 else (3_000_000 / baudRate.coerceAtLeast(300))
                 conn.controlTransfer(0x40, 0x03, divisor, 0, null, 0, 400)
-                conn.controlTransfer(0x40, 0x04, 0x0008, 0, null, 0, 400) // 8N1
-                conn.controlTransfer(0x40, 0x02, 0x0000, 0, null, 0, 400) // Flow OFF
+                conn.controlTransfer(0x40, 0x04, 0x0008, 0, null, 0, 400)
+                conn.controlTransfer(0x40, 0x02, 0x0000, 0, null, 0, 400)
             }
             ProberUsbChip.CP2102 -> {
                 val idx = controlInterfaceIndex
@@ -1269,13 +1822,35 @@ class ProberEngine(context: Context) {
         val resetLow = !inverted
         val resetHigh = inverted
         setControlLines(dtr = flmd0High, rts = resetLow)
-        delay(65)
+        delay(60)
         setControlLines(dtr = flmd0High, rts = resetHigh)
-        delay(110)
+        delay(100)
     }
 
     private fun flushRx() {
         synchronized(rxQueue) { rxQueue.clear() }
+    }
+
+    private suspend fun transceiveAutoEcho(
+        txBytes: ByteArray,
+        expectedMax: Int,
+        timeoutMs: Int,
+        label: String
+    ): ByteArray {
+        return if (echoLoopbackObserved) {
+            transceiveWithEchoCancel(txBytes, expectedExtra = expectedMax, timeoutMs = timeoutMs, label = label)
+        } else {
+            val rx = transceiveAndLog(txBytes, expectedMax = expectedMax, timeoutMs = timeoutMs, label = label)
+            stripEchoPrefix(txBytes, rx)
+        }
+    }
+
+    private fun stripEchoPrefix(txBytes: ByteArray, rx: ByteArray): ByteArray {
+        if (rx.size >= txBytes.size && txBytes.isNotEmpty() && rx.copyOfRange(0, txBytes.size).contentEquals(txBytes)) {
+            echoLoopbackObserved = true
+            return if (rx.size > txBytes.size) rx.copyOfRange(txBytes.size, rx.size) else ByteArray(0)
+        }
+        return rx
     }
 
     private suspend fun transceiveAndLog(
@@ -1286,7 +1861,8 @@ class ProberEngine(context: Context) {
     ): ByteArray {
         currentCoroutineContext().ensureActive()
         flushRx()
-        appendLog(ProberLogDirection.TX, "$label -> ${toHex(txBytes)}")
+        val preview = if (txBytes.size > 24) "${toHex(txBytes.copyOfRange(0, 12))} ... (${txBytes.size}B)" else toHex(txBytes)
+        appendLog(ProberLogDirection.TX, "$label -> $preview")
         val err = writeBytes(txBytes)
         if (err != null) {
             appendLog(ProberLogDirection.ERROR, "TX Error: $err")
@@ -1294,14 +1870,14 @@ class ProberEngine(context: Context) {
         }
         val rx = readRx(expectedMax = expectedMax, timeoutMs = timeoutMs)
         if (rx.isEmpty()) {
-            appendLog(ProberLogDirection.RX, "(لا توجد استجابة / ${timeoutMs}ms)")
+            appendLog(ProberLogDirection.RX, "(Timeout ${timeoutMs}ms)")
         } else {
             appendLog(ProberLogDirection.RX, toHex(rx))
         }
         return rx
     }
 
-    private suspend fun transceiveRawWithEchoStrip(
+    private suspend fun transceiveWithEchoCancel(
         txBytes: ByteArray,
         expectedExtra: Int,
         timeoutMs: Int,
@@ -1309,23 +1885,25 @@ class ProberEngine(context: Context) {
     ): ByteArray {
         currentCoroutineContext().ensureActive()
         flushRx()
-        appendLog(ProberLogDirection.TX, "$label -> ${toHex(txBytes)}")
+        val preview = if (txBytes.size > 24) "${toHex(txBytes.copyOfRange(0, 12))} ... (${txBytes.size}B)" else toHex(txBytes)
+        appendLog(ProberLogDirection.TX, "$label -> $preview")
         val err = writeBytes(txBytes)
         if (err != null) {
             appendLog(ProberLogDirection.ERROR, "TX Error: $err")
             return ByteArray(0)
         }
-        val raw = readRx(expectedMax = txBytes.size + expectedExtra, timeoutMs = timeoutMs)
-        if (raw.size > txBytes.size && raw.copyOfRange(0, txBytes.size).contentEquals(txBytes)) {
-            val clean = raw.copyOfRange(txBytes.size, raw.size)
-            appendLog(ProberLogDirection.RX, "(بدون صدى) ${toHex(clean)}")
-            return clean
+        val wireWait = ((txBytes.size * 11_000L) / currentBaud.coerceAtLeast(300)).toInt() + timeoutMs
+        val raw = readRx(expectedMax = txBytes.size + expectedExtra, timeoutMs = wireWait)
+        val clean = stripEchoPrefix(txBytes, raw)
+        if (clean.isEmpty()) {
+            appendLog(ProberLogDirection.RX, "(بدون رد خلف الصدى)")
+        } else {
+            appendLog(ProberLogDirection.RX, toHex(clean))
         }
-        if (raw.isNotEmpty()) appendLog(ProberLogDirection.RX, toHex(raw))
-        return raw
+        return clean
     }
 
-    private suspend fun transceiveWaitReply(expectedMax: Int, timeoutMs: Int, label: String): ByteArray {
+    private suspend fun readReplyWithLog(expectedMax: Int, timeoutMs: Int, label: String): ByteArray {
         val rx = readRx(expectedMax = expectedMax, timeoutMs = timeoutMs)
         if (rx.isNotEmpty()) {
             appendLog(ProberLogDirection.RX, "$label -> ${toHex(rx)}")

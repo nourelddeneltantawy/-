@@ -3,6 +3,7 @@ package com.example.adminlab
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.Intent
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
@@ -31,16 +32,20 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Cancel
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.ErrorOutline
+import androidx.compose.material.icons.filled.HourglassTop
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Science
 import androidx.compose.material.icons.filled.Security
+import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Usb
 import androidx.compose.material.icons.filled.Warning
@@ -96,7 +101,8 @@ fun ProtocolProberScreen(
     val uiState by engine.state.collectAsState()
 
     var showFamilyDropdown by remember { mutableStateOf(false) }
-    var advancedConfirmStep by remember { mutableIntStateOf(0) } // 0=hidden, 1=first warning, 2=final confirm
+    var pendingDangerousSchool by remember { mutableStateOf<DangerousSchoolType?>(null) }
+    var dangerousConfirmStep by remember { mutableIntStateOf(0) } // 0=hidden, 1=step1, 2=step2
     val logListState = rememberLazyListState()
 
     BackHandler {
@@ -125,20 +131,15 @@ fun ProtocolProberScreen(
             TopAppBar(
                 title = {
                     Column {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            Text(
-                                text = "مختبر المشرفين: مكتشف البروتوكول",
-                                fontSize = 16.sp,
-                                fontWeight = FontWeight.Bold,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
                         Text(
-                            text = "تجريبي ومعزول 100% عن المبرمجة الأساسية",
+                            text = "مختبر المشرفين: مكتشف البروتوكول",
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = "فحص السحب والكتابة والمسح الآمن (معزول 100%)",
                             fontSize = 11.sp,
                             color = Color(0xFFF59E0B),
                             fontWeight = FontWeight.Medium
@@ -172,7 +173,7 @@ fun ProtocolProberScreen(
                         ) {
                             Icon(
                                 imageVector = Icons.Default.Science,
-                                contentDescription = "مختبر تجريبي",
+                                contentDescription = "مختبر المشرفين",
                                 tint = Color(0xFFD97706),
                                 modifier = Modifier.size(14.dp)
                             )
@@ -201,12 +202,12 @@ fun ProtocolProberScreen(
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .widthIn(max = 680.dp)
+                    .widthIn(max = 700.dp)
                     .verticalScroll(rememberScrollState())
                     .padding(horizontal = 16.dp, vertical = 12.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                // 1. TOP USB STATUS CARD
+                // USB Status Card
                 UsbStatusHeaderCard(
                     status = uiState.usbStatus,
                     isProbing = uiState.isProbing,
@@ -222,7 +223,7 @@ fun ProtocolProberScreen(
                     }
                 )
 
-                // 2. EXPECTED MCU FAMILY SELECTOR (DROPDOWN)
+                // MCU Family Quick Selector
                 Card(
                     shape = RoundedCornerShape(16.dp),
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)),
@@ -292,14 +293,14 @@ fun ProtocolProberScreen(
                     }
                 }
 
-                // 3. PRIMARY START / STOP CONTROLS
+                // Start / Immediate Stop Controls
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Button(
-                        onClick = { engine.startSafeProbe() },
+                        onClick = { engine.startSafeComprehensiveProbe() },
                         enabled = !uiState.isProbing,
                         shape = RoundedCornerShape(14.dp),
                         colors = ButtonDefaults.buttonColors(
@@ -318,23 +319,11 @@ fun ProtocolProberScreen(
                                 color = Color.White
                             )
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text(
-                                text = "جاري الفحص الآمن...",
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 14.sp
-                            )
+                            Text("جاري الفحص الشامل...", fontWeight = FontWeight.Bold, fontSize = 14.sp)
                         } else {
-                            Icon(
-                                imageVector = Icons.Default.PlayArrow,
-                                contentDescription = null,
-                                modifier = Modifier.size(20.dp)
-                            )
+                            Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(20.dp))
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text(
-                                text = "بدء الفحص الآمن واكتشاف طريقة السحب",
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 13.sp
-                            )
+                            Text("بدء الفحص الآمن الشامل", fontWeight = FontWeight.Bold, fontSize = 14.sp)
                         }
                     }
 
@@ -352,21 +341,13 @@ fun ProtocolProberScreen(
                             .heightIn(min = 54.dp)
                             .testTag("stop_probe_button")
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.Stop,
-                            contentDescription = "إيقاف فوري",
-                            modifier = Modifier.size(18.dp)
-                        )
+                        Icon(Icons.Default.Stop, contentDescription = "إيقاف فوري", modifier = Modifier.size(18.dp))
                         Spacer(modifier = Modifier.width(4.dp))
-                        Text(
-                            text = "إيقاف فوري",
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 13.sp
-                        )
+                        Text("إيقاف فوري", fontWeight = FontWeight.Bold, fontSize = 13.sp)
                     }
                 }
 
-                // Current stage indicator pill
+                // Current Stage Pill
                 Surface(
                     shape = RoundedCornerShape(10.dp),
                     color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
@@ -381,8 +362,8 @@ fun ProtocolProberScreen(
                     )
                 }
 
-                // 4. BOLD RESULT CARD
-                ProberResultCard(
+                // SECTION 5: FINAL TECHNICAL REPORT CARD (Copy & Share)
+                FinalTechnicalReportCard(
                     result = uiState.result,
                     hasLogs = uiState.logs.isNotEmpty(),
                     onCopyReport = {
@@ -391,14 +372,38 @@ fun ProtocolProberScreen(
                         clipboard?.setPrimaryClip(ClipData.newPlainText("AdminProtocolProberReport", report))
                         Toast.makeText(context, "تم نسخ التقرير الفني بنجاح", Toast.LENGTH_SHORT).show()
                     },
-                    showAdvancedButton = !uiState.isProbing && (
-                        uiState.result.kind == ProberOutcomeKind.LOCKED_BOOTLOADER ||
-                            uiState.result.kind == ProberOutcomeKind.ADVANCED_DIAGNOSTIC
-                        ),
-                    onRequestAdvancedProbe = { advancedConfirmStep = 1 }
+                    onShareReport = {
+                        val report = engine.buildTechnicalReport()
+                        val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                            type = "text/plain"
+                            putExtra(Intent.EXTRA_SUBJECT, "التقرير الفني لمكتشف البروتوكول")
+                            putExtra(Intent.EXTRA_TEXT, report)
+                        }
+                        context.startActivity(Intent.createChooser(shareIntent, "مشاركة التقرير الفني"))
+                    }
                 )
 
-                // 5. LIVE HEX LOG CONSOLE
+                // SECTION 1: 5 SAFE READ EXTRACTION SCHOOLS
+                ProbeSectionCard(
+                    title = "القسم الأول: مدارس السحب الآمنة (Safe Read Schools)",
+                    subtitle = "تُختبر تلقائياً بالترتيب مع تجاهل الصدى — آمنة 100% ولا تعدل الفلاش",
+                    accentColor = Color(0xFF0284C7),
+                    items = uiState.readSchools,
+                    badgeSuccessLabel = "✅ نجحت",
+                    badgeFailLabel = "❌ فشلت"
+                )
+
+                // SECTION 2: SAFE WRITE / ERASE / BLANK CHECK PROTOCOL PROBER
+                ProbeSectionCard(
+                    title = "القسم الثاني: مكتشف أوامر الكتابة والمسح الآمن",
+                    subtitle = "فحص ترويسة الأمر فقط (Header-Only) — ممنوع إرسال بيانات كتابة أو عنوان مسح",
+                    accentColor = Color(0xFF0D9488),
+                    items = uiState.writeEraseProbes,
+                    badgeSuccessLabel = "✅ مدعوم",
+                    badgeFailLabel = "❌ غير مدعوم"
+                )
+
+                // LIVE HEX LOG CONSOLE
                 Card(
                     shape = RoundedCornerShape(16.dp),
                     colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
@@ -437,7 +442,7 @@ fun ProtocolProberScreen(
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(250.dp)
+                                .height(220.dp)
                                 .background(Color(0xFF020617), RoundedCornerShape(10.dp))
                                 .padding(8.dp)
                         ) {
@@ -447,7 +452,7 @@ fun ProtocolProberScreen(
                                     contentAlignment = Alignment.Center
                                 ) {
                                     Text(
-                                        text = "اضغط «بدء الفحص الآمن» لمشاهدة حزم TX / RX لحظياً...",
+                                        text = "اضغط «بدء الفحص الآمن الشامل» لمشاهدة حزم TX / RX لحظياً...",
                                         fontSize = 12.sp,
                                         color = Color(0xFF64748B)
                                     )
@@ -482,74 +487,96 @@ fun ProtocolProberScreen(
                     }
                 }
 
-                Spacer(modifier = Modifier.height(12.dp))
+                // SECTION 4: DANGEROUS / MODIFICATION SCHOOLS (LOCKED WITH RED WARNING)
+                DangerousSchoolsSectionCard(
+                    isProbing = uiState.isProbing,
+                    onRequestManualRun = { school ->
+                        pendingDangerousSchool = school
+                        dangerousConfirmStep = 1
+                    }
+                )
+
+                Spacer(modifier = Modifier.height(16.dp))
             }
         }
     }
 
-    // DOUBLE CONFIRMATION FLOW FOR ADVANCED LOCKED-CHIP DIAGNOSTICS
-    if (advancedConfirmStep == 1) {
+    // DOUBLE CONFIRMATION DIALOG FOR EACH DANGEROUS SCHOOL
+    val selectedDanger = pendingDangerousSchool
+    if (selectedDanger != null && dangerousConfirmStep == 1) {
         AlertDialog(
-            onDismissRequest = { advancedConfirmStep = 0 },
+            onDismissRequest = {
+                dangerousConfirmStep = 0
+                pendingDangerousSchool = null
+            },
             icon = {
                 Icon(
                     imageVector = Icons.Default.Warning,
                     contentDescription = null,
-                    tint = Color(0xFFF59E0B),
-                    modifier = Modifier.size(32.dp)
+                    tint = Color(0xFFDC2626),
+                    modifier = Modifier.size(34.dp)
                 )
             },
             title = {
                 Text(
-                    text = "تنبيه أمان — الخطوة 1 من 2",
+                    text = "تحذير خطر (الخطوة 1 من 2)",
                     fontWeight = FontWeight.Bold,
+                    color = Color(0xFFDC2626),
                     fontSize = 17.sp
                 )
             },
             text = {
                 Text(
-                    text = "اختبار المدارس المتقدمة يرسل أوامر فحص الحماية (Blank Check / Security Status / ID Probe) للمعالجات المقفلة.\n\nيجب استخدامه فقط على بوردات التجارب أو عند توفر نسخة احتياطية كاملة من السوفت وير.",
+                    text = "${selectedDanger.title}\n\n${selectedDanger.warningText}\n\nلا تشغّل هذه التجربة اليدوية إلا على بوردة تجارب أو بوجود نسخة احتياطية كاملة.",
                     fontSize = 13.sp,
                     lineHeight = 20.sp
                 )
             },
             confirmButton = {
                 Button(
-                    onClick = { advancedConfirmStep = 2 },
+                    onClick = { dangerousConfirmStep = 2 },
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD97706)),
-                    modifier = Modifier.testTag("advanced_confirm_step1_button")
+                    modifier = Modifier.testTag("danger_confirm_step1")
                 ) {
                     Text("متابعة للتأكيد النهائي")
                 }
             },
             dismissButton = {
-                TextButton(onClick = { advancedConfirmStep = 0 }) {
+                TextButton(
+                    onClick = {
+                        dangerousConfirmStep = 0
+                        pendingDangerousSchool = null
+                    }
+                ) {
                     Text("إلغاء")
                 }
             }
         )
-    } else if (advancedConfirmStep == 2) {
+    } else if (selectedDanger != null && dangerousConfirmStep == 2) {
         AlertDialog(
-            onDismissRequest = { advancedConfirmStep = 0 },
+            onDismissRequest = {
+                dangerousConfirmStep = 0
+                pendingDangerousSchool = null
+            },
             icon = {
                 Icon(
                     imageVector = Icons.Default.Security,
                     contentDescription = null,
                     tint = Color(0xFFDC2626),
-                    modifier = Modifier.size(32.dp)
+                    modifier = Modifier.size(34.dp)
                 )
             },
             title = {
                 Text(
-                    text = "تأكيد أخير — الخطوة 2 من 2",
+                    text = "تأكيد نهائي على مسؤوليتك (2 من 2)",
                     fontWeight = FontWeight.Bold,
-                    fontSize = 17.sp,
-                    color = Color(0xFFDC2626)
+                    color = Color(0xFFDC2626),
+                    fontSize = 16.sp
                 )
             },
             text = {
                 Text(
-                    text = "هل تؤكد وجود نسخة احتياطية وأنك تريد تشغيل فحص المدارس المتقدمة على المعالج المتصل الآن؟",
+                    text = "هل تؤكد رغبتك في تنفيذ «${selectedDanger.title}» يدوياً على مسؤوليتك الكاملة؟",
                     fontSize = 13.sp,
                     lineHeight = 20.sp
                 )
@@ -557,17 +584,24 @@ fun ProtocolProberScreen(
             confirmButton = {
                 Button(
                     onClick = {
-                        advancedConfirmStep = 0
-                        engine.startAdvancedDiagnosticProbe()
+                        val target = selectedDanger
+                        dangerousConfirmStep = 0
+                        pendingDangerousSchool = null
+                        engine.executeDangerousSchoolManual(target)
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626)),
-                    modifier = Modifier.testTag("advanced_confirm_step2_button")
+                    modifier = Modifier.testTag("danger_confirm_step2")
                 ) {
-                    Text("نعم، أؤكد — ابدأ الفحص المتقدم")
+                    Text("نعم، نفّذ على مسؤوليتي")
                 }
             },
             dismissButton = {
-                TextButton(onClick = { advancedConfirmStep = 0 }) {
+                TextButton(
+                    onClick = {
+                        dangerousConfirmStep = 0
+                        pendingDangerousSchool = null
+                    }
+                ) {
                     Text("تراجع")
                 }
             }
@@ -653,32 +687,24 @@ private fun UsbStatusHeaderCard(
                     .heightIn(min = 48.dp)
                     .testTag("prober_usb_refresh_button")
             ) {
-                Icon(
-                    imageVector = Icons.Default.Refresh,
-                    contentDescription = "تحديث حالة USB",
-                    modifier = Modifier.size(16.dp)
-                )
+                Icon(Icons.Default.Refresh, contentDescription = "تحديث حالة USB", modifier = Modifier.size(16.dp))
                 Spacer(modifier = Modifier.width(4.dp))
-                Text(
-                    text = if (status.isConnected && !status.hasPermission) "صلاحية" else "تحديث",
-                    fontSize = 12.sp
-                )
+                Text(if (status.isConnected && !status.hasPermission) "صلاحية" else "تحديث", fontSize = 12.sp)
             }
         }
     }
 }
 
 @Composable
-private fun ProberResultCard(
+private fun FinalTechnicalReportCard(
     result: ProberResult,
     hasLogs: Boolean,
     onCopyReport: () -> Unit,
-    showAdvancedButton: Boolean,
-    onRequestAdvancedProbe: () -> Unit
+    onShareReport: () -> Unit
 ) {
     val (bg, border, icon, tint) = when (result.kind) {
-        ProberOutcomeKind.SUCCESS_SCHOOL -> Quad(
-            Color(0xFF10B981).copy(alpha = 0.12f),
+        ProberOutcomeKind.COMPLETED -> Quad(
+            Color(0xFF10B981).copy(alpha = 0.11f),
             Color(0xFF10B981),
             Icons.Default.CheckCircle,
             Color(0xFF059669)
@@ -689,11 +715,11 @@ private fun ProberResultCard(
             Icons.Default.Lock,
             Color(0xFFB45309)
         )
-        ProberOutcomeKind.ADVANCED_DIAGNOSTIC -> Quad(
-            Color(0xFF0284C7).copy(alpha = 0.10f),
-            Color(0xFF0284C7),
-            Icons.Default.Science,
-            Color(0xFF0369A1)
+        ProberOutcomeKind.DANGEROUS_MANUAL_RESULT -> Quad(
+            Color(0xFFDC2626).copy(alpha = 0.10f),
+            Color(0xFFDC2626),
+            Icons.Default.Warning,
+            Color(0xFFDC2626)
         )
         ProberOutcomeKind.ERROR, ProberOutcomeKind.NO_SYNC -> Quad(
             Color(0xFFEF4444).copy(alpha = 0.10f),
@@ -704,7 +730,7 @@ private fun ProberResultCard(
         else -> Quad(
             MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
             MaterialTheme.colorScheme.outlineVariant,
-            Icons.Default.Science,
+            Icons.Default.Shield,
             MaterialTheme.colorScheme.primary
         )
     }
@@ -725,14 +751,9 @@ private fun ProberResultCard(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                Icon(
-                    imageVector = icon,
-                    contentDescription = null,
-                    tint = tint,
-                    modifier = Modifier.size(26.dp)
-                )
+                Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(26.dp))
                 Text(
-                    text = result.headline.ifBlank { "نتيجة الاكتشاف التلقائي" },
+                    text = result.headline.ifBlank { "بطاقة التقرير الفني النهائي" },
                     fontSize = 15.sp,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.onSurface
@@ -741,17 +762,17 @@ private fun ProberResultCard(
 
             Text(
                 text = result.detail.ifBlank {
-                    "سيبدأ الفحص الآمن بالتزامن (Baud + DTR/RTS)، ثم يختبر القراءة المباشرة (16B)، ثم بصمة Checksum (0xB0)، ثم حقن الرام، ويتوقف تلقائياً عند أول نجاح دون مسح أو كتابة على الفلاش."
+                    "يجمع هذا التقرير سرعة الاتصال ونوع الإطار، مدارس السحب الناجحة (أو حالة القفل)، وأوامر الكتابة والمسح المكتشفة مع تذكير مطابقة Page Size من الداتا شيت."
                 },
-                fontSize = 13.sp,
-                lineHeight = 20.sp,
+                fontSize = 12.sp,
+                lineHeight = 19.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
 
-            if (result.baudRate != null || result.commandHex != "--") {
+            if (result.baudRate != null) {
                 Surface(
-                    shape = RoundedCornerShape(10.dp),
-                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.85f),
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f),
                     border = BorderStroke(1.dp, border.copy(alpha = 0.35f)),
                     modifier = Modifier.fillMaxWidth()
                 ) {
@@ -759,28 +780,27 @@ private fun ProberResultCard(
                         modifier = Modifier.padding(10.dp),
                         verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        if (result.schoolName.isNotBlank()) {
-                            Text("المدرسة: ${result.schoolName}", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                        }
                         Text(
-                            text = "الأمر (Hex): ${result.commandHex}   |   السرعة: ${result.baudRate ?: "--"} bps",
+                            text = "السرعة: ${result.baudRate} bps  |  الإطار: ${result.framingType}",
                             fontSize = 12.sp,
-                            fontFamily = FontFamily.Monospace,
-                            fontWeight = FontWeight.SemiBold,
+                            fontWeight = FontWeight.Bold,
                             color = tint
                         )
-                        if (result.framingType.isNotBlank() && result.framingType != "--") {
-                            Text("تنسيق الإطار: ${result.framingType}", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        if (result.winningReadMethod.isNotBlank() && result.winningReadMethod != "--") {
+                            Text("السحب: ${result.winningReadMethod}", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
                         }
-                        if (result.detectedChipSignature.isNotBlank()) {
-                            Text("التوقيع: ${result.detectedChipSignature}", fontSize = 11.sp, fontFamily = FontFamily.Monospace)
-                        }
-                        if (result.sampleRxHex.isNotBlank()) {
+                        Text(
+                            text = "الكتابة: ${result.supportedWriteCmd}  |  المسح: ${result.supportedEraseCmd}  |  الفراغ: ${result.supportedBlankCheckCmd}",
+                            fontSize = 11.sp,
+                            fontFamily = FontFamily.Monospace,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        if (result.detectedSignature.isNotBlank()) {
                             Text(
-                                text = "عينة RX: ${result.sampleRxHex}",
+                                text = "التوقيع: ${result.detectedSignature}",
                                 fontSize = 11.sp,
                                 fontFamily = FontFamily.Monospace,
-                                color = MaterialTheme.colorScheme.onSurface
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
                     }
@@ -796,44 +816,266 @@ private fun ProberResultCard(
                     enabled = hasLogs || result.headline.isNotBlank(),
                     shape = RoundedCornerShape(12.dp),
                     modifier = Modifier
+                        .weight(1f)
                         .heightIn(min = 48.dp)
                         .testTag("copy_report_button")
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.ContentCopy,
-                        contentDescription = "نسخ التقرير الفني",
-                        modifier = Modifier.size(16.dp)
-                    )
+                    Icon(Icons.Default.ContentCopy, contentDescription = "نسخ التقرير الفني", modifier = Modifier.size(16.dp))
                     Spacer(modifier = Modifier.width(6.dp))
-                    Text("نسخ التقرير الفني", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                    Text("نسخ التقرير الفني", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                }
+
+                OutlinedButton(
+                    onClick = onShareReport,
+                    enabled = hasLogs || result.headline.isNotBlank(),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier
+                        .heightIn(min = 48.dp)
+                        .testTag("share_report_button")
+                ) {
+                    Icon(Icons.Default.Share, contentDescription = "مشاركة التقرير", modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("مشاركة", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ProbeSectionCard(
+    title: String,
+    subtitle: String,
+    accentColor: Color,
+    items: List<SchoolProbeItem>,
+    badgeSuccessLabel: String,
+    badgeFailLabel: String
+) {
+    Card(
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.2.dp, accentColor.copy(alpha = 0.45f)),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(
+            modifier = Modifier.padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Column {
+                Text(
+                    text = title,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = accentColor
+                )
+                Text(
+                    text = subtitle,
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
+            items.forEach { item ->
+                val (statusBg, statusColor, statusLabel, statusIcon) = when (item.status) {
+                    ProbeCheckStatus.PASSED -> Quad(
+                        Color(0xFF10B981).copy(alpha = 0.14f),
+                        Color(0xFF059669),
+                        badgeSuccessLabel,
+                        Icons.Default.CheckCircle
+                    )
+                    ProbeCheckStatus.FAILED -> Quad(
+                        Color(0xFFEF4444).copy(alpha = 0.12f),
+                        Color(0xFFDC2626),
+                        badgeFailLabel,
+                        Icons.Default.Cancel
+                    )
+                    ProbeCheckStatus.RUNNING -> Quad(
+                        Color(0xFF0284C7).copy(alpha = 0.14f),
+                        Color(0xFF0284C7),
+                        "جاري الفحص",
+                        Icons.Default.HourglassTop
+                    )
+                    ProbeCheckStatus.PENDING -> Quad(
+                        MaterialTheme.colorScheme.surfaceVariant,
+                        MaterialTheme.colorScheme.onSurfaceVariant,
+                        "بانتظار الفحص",
+                        Icons.Default.Shield
+                    )
+                }
+
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier.padding(10.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = item.title,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = statusBg
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = statusIcon,
+                                        contentDescription = statusLabel,
+                                        tint = statusColor,
+                                        modifier = Modifier.size(13.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text(
+                                        text = statusLabel,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = statusColor
+                                    )
+                                }
+                            }
+                        }
+
+                        Text(
+                            text = item.subtitle,
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+
+                        if (item.commandHex != "--" || item.detail.isNotBlank()) {
+                            Text(
+                                text = buildString {
+                                    if (item.commandHex != "--") append("الأمر: [${item.commandHex}] ")
+                                    if (item.detail.isNotBlank()) append("• ${item.detail}")
+                                },
+                                fontSize = 11.sp,
+                                fontFamily = FontFamily.Monospace,
+                                fontWeight = FontWeight.SemiBold,
+                                color = statusColor
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DangerousSchoolsSectionCard(
+    isProbing: Boolean,
+    onRequestManualRun: (DangerousSchoolType) -> Unit
+) {
+    Card(
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFFDC2626).copy(alpha = 0.08f)),
+        border = BorderStroke(1.5.dp, Color(0xFFDC2626)),
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("dangerous_schools_section")
+    ) {
+        Column(
+            modifier = Modifier.padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Warning,
+                    contentDescription = "تحذير خطير",
+                    tint = Color(0xFFDC2626),
+                    modifier = Modifier.size(22.dp)
+                )
+                Column {
+                    Text(
+                        text = "القسم الثالث: المدارس الخطرة / التعديلية ⚠️",
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFFDC2626)
+                    )
+                    Text(
+                        text = "مغلقة بقفل أمان ولا تعمل تلقائياً — تشغيل يدوي بتأكيد مزدوج فقط",
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
             }
 
-            if (showAdvancedButton) {
-                HorizontalDivider(color = border.copy(alpha = 0.3f))
-                Button(
-                    onClick = onRequestAdvancedProbe,
+            DangerousSchoolType.entries.forEach { school ->
+                Surface(
                     shape = RoundedCornerShape(12.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = Color(0xFFD97706),
-                        contentColor = Color.White
-                    ),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(min = 50.dp)
-                        .testTag("advanced_probe_button")
+                    color = MaterialTheme.colorScheme.surface,
+                    border = BorderStroke(1.dp, Color(0xFFEF4444).copy(alpha = 0.5f)),
+                    modifier = Modifier.fillMaxWidth()
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.Lock,
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = "اختبار المدارس المتقدمة (يتطلب وجود نسخة احتياطية)",
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Bold
-                    )
+                    Column(
+                        modifier = Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Default.Lock,
+                                contentDescription = "مقفل بأمان",
+                                tint = Color(0xFFDC2626),
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "⚠️ ${school.title}",
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFFB91C1C)
+                            )
+                        }
+                        Text(
+                            text = school.warningText,
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            lineHeight = 18.sp
+                        )
+                        OutlinedButton(
+                            onClick = { onRequestManualRun(school) },
+                            enabled = !isProbing,
+                            shape = RoundedCornerShape(10.dp),
+                            border = BorderStroke(1.dp, Color(0xFFDC2626)),
+                            colors = ButtonDefaults.outlinedButtonColors(
+                                contentColor = Color(0xFFDC2626)
+                            ),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 48.dp)
+                                .testTag("manual_danger_${school.name.lowercase()}")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Security,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "تجربة يدوية (على مسؤوليتي)",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
                 }
             }
         }
