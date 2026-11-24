@@ -100,6 +100,7 @@ import com.example.data.BottomNavManager
 import com.example.ui.components.AdminBottomNavDialog
 import androidx.compose.material.icons.filled.Forum
 import com.example.ui.components.TechnicianGroupChatView
+import com.example.adminlab.ProtocolProberScreen
 
 enum class Screen {
     DASHBOARD,
@@ -122,6 +123,7 @@ enum class Screen {
     COMMUNITY_HUB,
     MARKETPLACE,
     COMMUNITY_GROUP,
+    ADMIN_PROTOCOL_PROBER,
     AUTH
 }
 
@@ -810,6 +812,11 @@ fun AppContent(
                             onCheckForUpdates = { handleManualUpdateCheck() },
                             onPublishUpdate = { showAdminPublishDialog = true },
                             onManageBottomNav = { showAdminBottomNavDialog = true },
+                            onOpenAdminProber = {
+                                if (isAdmin) {
+                                    navigateTo(Screen.ADMIN_PROTOCOL_PROBER)
+                                }
+                            },
                             onManageAdmins = {
                                 if (isSuperAdmin) {
                                     navigateTo(Screen.MANAGE_ADMINS)
@@ -1293,6 +1300,19 @@ fun AppContent(
                                 selectTab(Screen.COMMUNITY_HUB)
                             }
                         )
+                    }
+
+                    Screen.ADMIN_PROTOCOL_PROBER -> {
+                        if (!isAdmin) {
+                            navigateBack()
+                        } else {
+                            BackHandler {
+                                navigateBack()
+                            }
+                            ProtocolProberScreen(
+                                onBackClick = { navigateBack() }
+                            )
+                        }
                     }
 
                     Screen.AUTH -> {
