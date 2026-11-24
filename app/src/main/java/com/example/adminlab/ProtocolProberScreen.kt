@@ -4,8 +4,12 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
+import android.provider.OpenableColumns
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -34,19 +38,20 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Cancel
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.DeleteSweep
-import androidx.compose.material.icons.filled.ErrorOutline
+import androidx.compose.material.icons.filled.DoneAll
 import androidx.compose.material.icons.filled.HourglassTop
 import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Restore
 import androidx.compose.material.icons.filled.Science
-import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material.icons.filled.Usb
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
@@ -74,7 +79,6 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -101,9 +105,26 @@ fun ProtocolProberScreen(
     val uiState by engine.state.collectAsState()
 
     var showFamilyDropdown by remember { mutableStateOf(false) }
-    var pendingDangerousSchool by remember { mutableStateOf<DangerousSchoolType?>(null) }
-    var dangerousConfirmStep by remember { mutableIntStateOf(0) } // 0=hidden, 1=step1, 2=step2
+    var pendingRestoreFile by remember { mutableStateOf<Pair<String, ByteArray>?>(null) }
     val logListState = rememberLazyListState()
+
+    val firmwarePicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            try {
+                val fileName = resolveUriDisplayName(context, uri)
+                val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                if (bytes != null && bytes.isNotEmpty()) {
+                    pendingRestoreFile = fileName to bytes
+                } else {
+                    Toast.makeText(context, "تعذر قراءة ملف السوفت وير المختار", Toast.LENGTH_SHORT).show()
+                }
+            } catch (t: Throwable) {
+                Toast.makeText(context, "خطأ في فتح الملف: ${t.message}", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
 
     BackHandler {
         engine.stopImmediately()
@@ -132,14 +153,14 @@ fun ProtocolProberScreen(
                 title = {
                     Column {
                         Text(
-                            text = "مختبر المشرفين: مكتشف البروتوكول",
-                            fontSize = 16.sp,
+                            text = "مختبر المشرفين: مكتشف البروتوكول التلقائي",
+                            fontSize = 15.sp,
                             fontWeight = FontWeight.Bold,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
                         Text(
-                            text = "فحص السحب والكتابة والمسح الآمن (معزول 100%)",
+                            text = "فحص متسلسل آمن + بوابة Hot-Swap + Blueprint",
                             fontSize = 11.sp,
                             color = Color(0xFFF59E0B),
                             fontWeight = FontWeight.Medium
@@ -154,10 +175,7 @@ fun ProtocolProberScreen(
                         },
                         modifier = Modifier.testTag("prober_back_button")
                     ) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = "العودة"
-                        )
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "العودة")
                     }
                 },
                 actions = {
@@ -171,25 +189,13 @@ fun ProtocolProberScreen(
                             verticalAlignment = Alignment.CenterVertically,
                             modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                         ) {
-                            Icon(
-                                imageVector = Icons.Default.Science,
-                                contentDescription = "مختبر المشرفين",
-                                tint = Color(0xFFD97706),
-                                modifier = Modifier.size(14.dp)
-                            )
+                            Icon(Icons.Default.Science, contentDescription = null, tint = Color(0xFFD97706), modifier = Modifier.size(14.dp))
                             Spacer(modifier = Modifier.width(4.dp))
-                            Text(
-                                text = "مشرف",
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = Color(0xFFD97706)
-                            )
+                            Text("مشرف", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color(0xFFD97706))
                         }
                     }
                 },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surface
-                )
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface)
             )
         }
     ) { innerPadding ->
@@ -202,7 +208,7 @@ fun ProtocolProberScreen(
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .widthIn(max = 700.dp)
+                    .widthIn(max = 720.dp)
                     .verticalScroll(rememberScrollState())
                     .padding(horizontal = 16.dp, vertical = 12.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
@@ -210,20 +216,20 @@ fun ProtocolProberScreen(
                 // USB Status Card
                 UsbStatusHeaderCard(
                     status = uiState.usbStatus,
-                    isProbing = uiState.isProbing,
+                    isBusy = uiState.isBusy,
                     onRefreshOrGrant = {
                         val refreshed = engine.refreshUsbStatus()
                         if (refreshed.isConnected && !refreshed.hasPermission) {
-                            engine.requestUsbPermissionIfNeeded()
+                            engine.requestUsbPermission()
                         } else if (!refreshed.isConnected) {
-                            Toast.makeText(context, "تأكد من توصيل محول USB OTG بالهاتف", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, "تأكد من توصيل محول USB OTG", Toast.LENGTH_SHORT).show()
                         } else {
-                            Toast.makeText(context, "المبرمجة متصلة وجاهزة للفحص", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, "المبرمجة متصلة وجاهزة", Toast.LENGTH_SHORT).show()
                         }
                     }
                 )
 
-                // MCU Family Quick Selector
+                // Family Selector Dropdown
                 Card(
                     shape = RoundedCornerShape(16.dp),
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)),
@@ -232,10 +238,7 @@ fun ProtocolProberScreen(
                     Column(modifier = Modifier.padding(14.dp)) {
                         Text(
                             text = "عائلة المعالج المتوقعة",
-                            style = MaterialTheme.typography.labelLarge.copy(
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.onSurface
-                            )
+                            style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold)
                         )
                         Spacer(modifier = Modifier.height(8.dp))
                         Box {
@@ -247,7 +250,7 @@ fun ProtocolProberScreen(
                                     .fillMaxWidth()
                                     .heightIn(min = 48.dp)
                                     .clip(RoundedCornerShape(12.dp))
-                                    .clickable(enabled = !uiState.isProbing) { showFamilyDropdown = true }
+                                    .clickable(enabled = !uiState.isBusy) { showFamilyDropdown = true }
                                     .testTag("prober_family_dropdown")
                             ) {
                                 Row(
@@ -257,23 +260,11 @@ fun ProtocolProberScreen(
                                     horizontalArrangement = Arrangement.SpaceBetween,
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Text(
-                                        text = uiState.selectedFamily.labelAr,
-                                        fontSize = 14.sp,
-                                        fontWeight = FontWeight.SemiBold,
-                                        color = MaterialTheme.colorScheme.onSurface
-                                    )
-                                    Icon(
-                                        imageVector = Icons.Default.KeyboardArrowDown,
-                                        contentDescription = "اختيار العائلة",
-                                        tint = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
+                                    Text(uiState.selectedFamily.labelAr, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                                    Icon(Icons.Default.KeyboardArrowDown, contentDescription = "اختيار العائلة")
                                 }
                             }
-                            DropdownMenu(
-                                expanded = showFamilyDropdown,
-                                onDismissRequest = { showFamilyDropdown = false }
-                            ) {
+                            DropdownMenu(expanded = showFamilyDropdown, onDismissRequest = { showFamilyDropdown = false }) {
                                 ProberTargetFamily.entries.forEach { family ->
                                     DropdownMenuItem(
                                         text = {
@@ -293,15 +284,15 @@ fun ProtocolProberScreen(
                     }
                 }
 
-                // Start / Immediate Stop Controls
+                // 1. PRIMARY ACTION BUTTON + STOP BUTTON
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Button(
-                        onClick = { engine.startSafeComprehensiveProbe() },
-                        enabled = !uiState.isProbing,
+                        onClick = { engine.startFullSafeProtocolScan() },
+                        enabled = !uiState.isBusy,
                         shape = RoundedCornerShape(14.dp),
                         colors = ButtonDefaults.buttonColors(
                             containerColor = Color(0xFF0284C7),
@@ -309,27 +300,27 @@ fun ProtocolProberScreen(
                         ),
                         modifier = Modifier
                             .weight(1f)
-                            .heightIn(min = 54.dp)
-                            .testTag("start_safe_probe_button")
+                            .heightIn(min = 56.dp)
+                            .testTag("start_full_scan_button")
                     ) {
-                        if (uiState.isProbing) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(18.dp),
-                                strokeWidth = 2.dp,
-                                color = Color.White
-                            )
+                        if (uiState.isBusy) {
+                            CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp, color = Color.White)
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text("جاري الفحص الشامل...", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                            Text("جاري الفحص الشامل...", fontWeight = FontWeight.Bold, fontSize = 13.sp)
                         } else {
                             Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(20.dp))
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text("بدء الفحص الآمن الشامل", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                            Text(
+                                text = "بدء الفحص الشامل واستخراج البروتوكول",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp
+                            )
                         }
                     }
 
                     Button(
                         onClick = { engine.stopImmediately() },
-                        enabled = uiState.isProbing,
+                        enabled = uiState.isBusy,
                         shape = RoundedCornerShape(14.dp),
                         colors = ButtonDefaults.buttonColors(
                             containerColor = Color(0xFFDC2626),
@@ -338,70 +329,58 @@ fun ProtocolProberScreen(
                             disabledContentColor = MaterialTheme.colorScheme.onSurfaceVariant
                         ),
                         modifier = Modifier
-                            .heightIn(min = 54.dp)
+                            .heightIn(min = 56.dp)
                             .testTag("stop_probe_button")
                     ) {
-                        Icon(Icons.Default.Stop, contentDescription = "إيقاف فوري", modifier = Modifier.size(18.dp))
+                        Icon(Icons.Default.Stop, contentDescription = "إيقاف", modifier = Modifier.size(18.dp))
                         Spacer(modifier = Modifier.width(4.dp))
-                        Text("إيقاف فوري", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                        Text("إيقاف", fontWeight = FontWeight.Bold, fontSize = 13.sp)
                     }
                 }
 
-                // Current Stage Pill
+                // Current Stage Banner
                 Surface(
                     shape = RoundedCornerShape(10.dp),
                     color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text(
-                        text = "الحالة: ${uiState.stageLabel}",
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                    Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                        Text(
+                            text = uiState.stageBanner,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        if (uiState.restoreProgressText.isNotBlank()) {
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                text = uiState.restoreProgressText,
+                                fontSize = 11.sp,
+                                color = Color(0xFF059669),
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+                }
+
+                // STAGE 5: SAFETY GATE / HOT-SWAP / EMERGENCY RESTORE CARD
+                if (uiState.isWaitingAtSafetyGate) {
+                    Stage5HotSwapSafetyGateCard(
+                        phase = uiState.phase,
+                        onBeginHotSwap = { engine.enterHotSwapStandby() },
+                        onResumeAfterReconnect = {
+                            engine.refreshUsbStatus()
+                            engine.resumeAdvancedAfterHotSwap()
+                        },
+                        onEmergencyRestoreClick = {
+                            firmwarePicker.launch(arrayOf("*/*"))
+                        },
+                        onFinishSafeOnly = { engine.finishWithSafeResultsOnly() }
                     )
                 }
 
-                // SECTION 5: FINAL TECHNICAL REPORT CARD (Copy & Share)
-                FinalTechnicalReportCard(
-                    result = uiState.result,
-                    hasLogs = uiState.logs.isNotEmpty(),
-                    onCopyReport = {
-                        val report = engine.buildTechnicalReport()
-                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
-                        clipboard?.setPrimaryClip(ClipData.newPlainText("AdminProtocolProberReport", report))
-                        Toast.makeText(context, "تم نسخ التقرير الفني بنجاح", Toast.LENGTH_SHORT).show()
-                    },
-                    onShareReport = {
-                        val report = engine.buildTechnicalReport()
-                        val shareIntent = Intent(Intent.ACTION_SEND).apply {
-                            type = "text/plain"
-                            putExtra(Intent.EXTRA_SUBJECT, "التقرير الفني لمكتشف البروتوكول")
-                            putExtra(Intent.EXTRA_TEXT, report)
-                        }
-                        context.startActivity(Intent.createChooser(shareIntent, "مشاركة التقرير الفني"))
-                    }
-                )
-
-                // SECTION 1: 5 SAFE READ EXTRACTION SCHOOLS
-                ProbeSectionCard(
-                    title = "القسم الأول: مدارس السحب الآمنة (Safe Read Schools)",
-                    subtitle = "تُختبر تلقائياً بالترتيب مع تجاهل الصدى — آمنة 100% ولا تعدل الفلاش",
-                    accentColor = Color(0xFF0284C7),
-                    items = uiState.readSchools,
-                    badgeSuccessLabel = "✅ نجحت",
-                    badgeFailLabel = "❌ فشلت"
-                )
-
-                // SECTION 2: SAFE WRITE / ERASE / BLANK CHECK PROTOCOL PROBER
-                ProbeSectionCard(
-                    title = "القسم الثاني: مكتشف أوامر الكتابة والمسح الآمن",
-                    subtitle = "فحص ترويسة الأمر فقط (Header-Only) — ممنوع إرسال بيانات كتابة أو عنوان مسح",
-                    accentColor = Color(0xFF0D9488),
-                    items = uiState.writeEraseProbes,
-                    badgeSuccessLabel = "✅ مدعوم",
-                    badgeFailLabel = "❌ غير مدعوم"
-                )
+                // LIVE STEP-BY-STEP CHECKLIST
+                LiveChecklistCard(items = uiState.checklist)
 
                 // LIVE HEX LOG CONSOLE
                 Card(
@@ -423,15 +402,10 @@ fun ProtocolProberScreen(
                             )
                             TextButton(
                                 onClick = { engine.clearLogs() },
-                                enabled = !uiState.isProbing && uiState.logs.isNotEmpty(),
+                                enabled = !uiState.isBusy && uiState.logs.isNotEmpty(),
                                 modifier = Modifier.testTag("prober_clear_logs_button")
                             ) {
-                                Icon(
-                                    imageVector = Icons.Default.DeleteSweep,
-                                    contentDescription = "مسح السجل",
-                                    tint = Color(0xFF94A3B8),
-                                    modifier = Modifier.size(16.dp)
-                                )
+                                Icon(Icons.Default.DeleteSweep, contentDescription = "مسح", tint = Color(0xFF94A3B8), modifier = Modifier.size(16.dp))
                                 Spacer(modifier = Modifier.width(4.dp))
                                 Text("مسح", fontSize = 12.sp, color = Color(0xFF94A3B8))
                             }
@@ -442,17 +416,14 @@ fun ProtocolProberScreen(
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(220.dp)
+                                .height(200.dp)
                                 .background(Color(0xFF020617), RoundedCornerShape(10.dp))
                                 .padding(8.dp)
                         ) {
                             if (uiState.logs.isEmpty()) {
-                                Box(
-                                    modifier = Modifier.fillMaxSize(),
-                                    contentAlignment = Alignment.Center
-                                ) {
+                                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                                     Text(
-                                        text = "اضغط «بدء الفحص الآمن الشامل» لمشاهدة حزم TX / RX لحظياً...",
+                                        text = "اضغط «بدء الفحص الشامل واستخراج البروتوكول» لمتابعة الحزم لحظياً...",
                                         fontSize = 12.sp,
                                         color = Color(0xFF64748B)
                                     )
@@ -487,12 +458,22 @@ fun ProtocolProberScreen(
                     }
                 }
 
-                // SECTION 4: DANGEROUS / MODIFICATION SCHOOLS (LOCKED WITH RED WARNING)
-                DangerousSchoolsSectionCard(
-                    isProbing = uiState.isProbing,
-                    onRequestManualRun = { school ->
-                        pendingDangerousSchool = school
-                        dangerousConfirmStep = 1
+                // 4. BOTTOM CARD: AI-READY PROTOCOL BLUEPRINT
+                AiReadyBlueprintCard(
+                    blueprintText = uiState.blueprintText,
+                    summary = uiState.blueprintSummary,
+                    onCopyBlueprint = {
+                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                        clipboard?.setPrimaryClip(ClipData.newPlainText("AiReadyProtocolBlueprint", uiState.blueprintText))
+                        Toast.makeText(context, "تم نسخ البروتوكول الكامل (AI-Ready Blueprint) بنجاح", Toast.LENGTH_SHORT).show()
+                    },
+                    onShareBlueprint = {
+                        val intent = Intent(Intent.ACTION_SEND).apply {
+                            type = "text/plain"
+                            putExtra(Intent.EXTRA_SUBJECT, "AI-Ready Protocol Blueprint")
+                            putExtra(Intent.EXTRA_TEXT, uiState.blueprintText)
+                        }
+                        context.startActivity(Intent.createChooser(intent, "مشاركة البروتوكول الكامل"))
                     }
                 )
 
@@ -501,82 +482,16 @@ fun ProtocolProberScreen(
         }
     }
 
-    // DOUBLE CONFIRMATION DIALOG FOR EACH DANGEROUS SCHOOL
-    val selectedDanger = pendingDangerousSchool
-    if (selectedDanger != null && dangerousConfirmStep == 1) {
+    // Emergency Flash Restore confirmation dialog after file selection
+    val restorePair = pendingRestoreFile
+    if (restorePair != null) {
         AlertDialog(
-            onDismissRequest = {
-                dangerousConfirmStep = 0
-                pendingDangerousSchool = null
-            },
-            icon = {
-                Icon(
-                    imageVector = Icons.Default.Warning,
-                    contentDescription = null,
-                    tint = Color(0xFFDC2626),
-                    modifier = Modifier.size(34.dp)
-                )
-            },
-            title = {
-                Text(
-                    text = "تحذير خطر (الخطوة 1 من 2)",
-                    fontWeight = FontWeight.Bold,
-                    color = Color(0xFFDC2626),
-                    fontSize = 17.sp
-                )
-            },
+            onDismissRequest = { pendingRestoreFile = null },
+            icon = { Icon(Icons.Default.Restore, contentDescription = null, tint = Color(0xFFDC2626), modifier = Modifier.size(32.dp)) },
+            title = { Text("تأكيد استعادة السوفت وير الأصلي", fontWeight = FontWeight.Bold, fontSize = 17.sp) },
             text = {
                 Text(
-                    text = "${selectedDanger.title}\n\n${selectedDanger.warningText}\n\nلا تشغّل هذه التجربة اليدوية إلا على بوردة تجارب أو بوجود نسخة احتياطية كاملة.",
-                    fontSize = 13.sp,
-                    lineHeight = 20.sp
-                )
-            },
-            confirmButton = {
-                Button(
-                    onClick = { dangerousConfirmStep = 2 },
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD97706)),
-                    modifier = Modifier.testTag("danger_confirm_step1")
-                ) {
-                    Text("متابعة للتأكيد النهائي")
-                }
-            },
-            dismissButton = {
-                TextButton(
-                    onClick = {
-                        dangerousConfirmStep = 0
-                        pendingDangerousSchool = null
-                    }
-                ) {
-                    Text("إلغاء")
-                }
-            }
-        )
-    } else if (selectedDanger != null && dangerousConfirmStep == 2) {
-        AlertDialog(
-            onDismissRequest = {
-                dangerousConfirmStep = 0
-                pendingDangerousSchool = null
-            },
-            icon = {
-                Icon(
-                    imageVector = Icons.Default.Security,
-                    contentDescription = null,
-                    tint = Color(0xFFDC2626),
-                    modifier = Modifier.size(34.dp)
-                )
-            },
-            title = {
-                Text(
-                    text = "تأكيد نهائي على مسؤوليتك (2 من 2)",
-                    fontWeight = FontWeight.Bold,
-                    color = Color(0xFFDC2626),
-                    fontSize = 16.sp
-                )
-            },
-            text = {
-                Text(
-                    text = "هل تؤكد رغبتك في تنفيذ «${selectedDanger.title}» يدوياً على مسؤوليتك الكاملة؟",
+                    text = "الملف المختار: ${restorePair.first}\nالحجم: ${restorePair.second.size} بايت\n\nسيتم مسح وبرمجة المعالج المتصل فوراً بهذا الملف. تأكد من توصيل الكابل بإحكام.",
                     fontSize = 13.sp,
                     lineHeight = 20.sp
                 )
@@ -584,26 +499,18 @@ fun ProtocolProberScreen(
             confirmButton = {
                 Button(
                     onClick = {
-                        val target = selectedDanger
-                        dangerousConfirmStep = 0
-                        pendingDangerousSchool = null
-                        engine.executeDangerousSchoolManual(target)
+                        val pair = restorePair
+                        pendingRestoreFile = null
+                        engine.emergencyRestoreFirmware(pair.first, pair.second)
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626)),
-                    modifier = Modifier.testTag("danger_confirm_step2")
+                    modifier = Modifier.testTag("confirm_emergency_restore_button")
                 ) {
-                    Text("نعم، نفّذ على مسؤوليتي")
+                    Text("بدء الاستعادة الفورية")
                 }
             },
             dismissButton = {
-                TextButton(
-                    onClick = {
-                        dangerousConfirmStep = 0
-                        pendingDangerousSchool = null
-                    }
-                ) {
-                    Text("تراجع")
-                }
+                TextButton(onClick = { pendingRestoreFile = null }) { Text("إلغاء") }
             }
         )
     }
@@ -612,7 +519,7 @@ fun ProtocolProberScreen(
 @Composable
 private fun UsbStatusHeaderCard(
     status: ProberUsbStatus,
-    isProbing: Boolean,
+    isBusy: Boolean,
     onRefreshOrGrant: () -> Unit
 ) {
     val accent = when {
@@ -620,7 +527,6 @@ private fun UsbStatusHeaderCard(
         status.isConnected -> Color(0xFFF59E0B)
         else -> Color(0xFF64748B)
     }
-
     Card(
         shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(containerColor = accent.copy(alpha = 0.08f)),
@@ -633,43 +539,20 @@ private fun UsbStatusHeaderCard(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.weight(1f)
-            ) {
-                Surface(
-                    shape = CircleShape,
-                    color = accent.copy(alpha = 0.18f),
-                    modifier = Modifier.size(44.dp)
-                ) {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                Surface(shape = CircleShape, color = accent.copy(alpha = 0.18f), modifier = Modifier.size(44.dp)) {
                     Box(contentAlignment = Alignment.Center) {
-                        Icon(
-                            imageVector = Icons.Default.Usb,
-                            contentDescription = "حالة USB",
-                            tint = accent,
-                            modifier = Modifier.size(24.dp)
-                        )
+                        Icon(Icons.Default.Usb, contentDescription = "USB", tint = accent, modifier = Modifier.size(24.dp))
                     }
                 }
                 Spacer(modifier = Modifier.width(12.dp))
                 Column {
-                    Text(
-                        text = status.adapterName,
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    Text(
-                        text = "${status.chipModel} • ${status.vidPidHex}",
-                        fontSize = 11.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                    Text(status.adapterName, fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text("${status.chipModel} • ${status.vidPidHex}", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Text(
                         text = when {
-                            status.isConnected && status.hasPermission -> "USB متصل وجاهز (الصلاحية ممنوحة)"
-                            status.isConnected -> "متصل — اضغط لمنح صلاحية USB"
+                            status.isConnected && status.hasPermission -> "USB متصل وجاهز"
+                            status.isConnected -> "متصل — اضغط لمنح الصلاحية"
                             else -> "قم بتوصيل محول USB-TTL عبر OTG"
                         },
                         fontSize = 11.sp,
@@ -678,16 +561,15 @@ private fun UsbStatusHeaderCard(
                     )
                 }
             }
-
             OutlinedButton(
                 onClick = onRefreshOrGrant,
-                enabled = !isProbing,
+                enabled = !isBusy,
                 shape = RoundedCornerShape(10.dp),
                 modifier = Modifier
                     .heightIn(min = 48.dp)
                     .testTag("prober_usb_refresh_button")
             ) {
-                Icon(Icons.Default.Refresh, contentDescription = "تحديث حالة USB", modifier = Modifier.size(16.dp))
+                Icon(Icons.Default.Refresh, contentDescription = "تحديث", modifier = Modifier.size(16.dp))
                 Spacer(modifier = Modifier.width(4.dp))
                 Text(if (status.isConnected && !status.hasPermission) "صلاحية" else "تحديث", fontSize = 12.sp)
             }
@@ -696,277 +578,67 @@ private fun UsbStatusHeaderCard(
 }
 
 @Composable
-private fun FinalTechnicalReportCard(
-    result: ProberResult,
-    hasLogs: Boolean,
-    onCopyReport: () -> Unit,
-    onShareReport: () -> Unit
-) {
-    val (bg, border, icon, tint) = when (result.kind) {
-        ProberOutcomeKind.COMPLETED -> Quad(
-            Color(0xFF10B981).copy(alpha = 0.11f),
-            Color(0xFF10B981),
-            Icons.Default.CheckCircle,
-            Color(0xFF059669)
-        )
-        ProberOutcomeKind.LOCKED_BOOTLOADER -> Quad(
-            Color(0xFFF59E0B).copy(alpha = 0.14f),
-            Color(0xFFD97706),
-            Icons.Default.Lock,
-            Color(0xFFB45309)
-        )
-        ProberOutcomeKind.DANGEROUS_MANUAL_RESULT -> Quad(
-            Color(0xFFDC2626).copy(alpha = 0.10f),
-            Color(0xFFDC2626),
-            Icons.Default.Warning,
-            Color(0xFFDC2626)
-        )
-        ProberOutcomeKind.ERROR, ProberOutcomeKind.NO_SYNC -> Quad(
-            Color(0xFFEF4444).copy(alpha = 0.10f),
-            Color(0xFFDC2626),
-            Icons.Default.ErrorOutline,
-            Color(0xFFDC2626)
-        )
-        else -> Quad(
-            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-            MaterialTheme.colorScheme.outlineVariant,
-            Icons.Default.Shield,
-            MaterialTheme.colorScheme.primary
-        )
-    }
-
-    Card(
-        shape = RoundedCornerShape(18.dp),
-        colors = CardDefaults.cardColors(containerColor = bg),
-        border = BorderStroke(1.5.dp, border),
-        modifier = Modifier
-            .fillMaxWidth()
-            .testTag("prober_result_card")
-    ) {
-        Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(26.dp))
-                Text(
-                    text = result.headline.ifBlank { "بطاقة التقرير الفني النهائي" },
-                    fontSize = 15.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-            }
-
-            Text(
-                text = result.detail.ifBlank {
-                    "يجمع هذا التقرير سرعة الاتصال ونوع الإطار، مدارس السحب الناجحة (أو حالة القفل)، وأوامر الكتابة والمسح المكتشفة مع تذكير مطابقة Page Size من الداتا شيت."
-                },
-                fontSize = 12.sp,
-                lineHeight = 19.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-
-            if (result.baudRate != null) {
-                Surface(
-                    shape = RoundedCornerShape(12.dp),
-                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f),
-                    border = BorderStroke(1.dp, border.copy(alpha = 0.35f)),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(
-                        modifier = Modifier.padding(10.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        Text(
-                            text = "السرعة: ${result.baudRate} bps  |  الإطار: ${result.framingType}",
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = tint
-                        )
-                        if (result.winningReadMethod.isNotBlank() && result.winningReadMethod != "--") {
-                            Text("السحب: ${result.winningReadMethod}", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
-                        }
-                        Text(
-                            text = "الكتابة: ${result.supportedWriteCmd}  |  المسح: ${result.supportedEraseCmd}  |  الفراغ: ${result.supportedBlankCheckCmd}",
-                            fontSize = 11.sp,
-                            fontFamily = FontFamily.Monospace,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                        if (result.detectedSignature.isNotBlank()) {
-                            Text(
-                                text = "التوقيع: ${result.detectedSignature}",
-                                fontSize = 11.sp,
-                                fontFamily = FontFamily.Monospace,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
-                }
-            }
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                OutlinedButton(
-                    onClick = onCopyReport,
-                    enabled = hasLogs || result.headline.isNotBlank(),
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier
-                        .weight(1f)
-                        .heightIn(min = 48.dp)
-                        .testTag("copy_report_button")
-                ) {
-                    Icon(Icons.Default.ContentCopy, contentDescription = "نسخ التقرير الفني", modifier = Modifier.size(16.dp))
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("نسخ التقرير الفني", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-                }
-
-                OutlinedButton(
-                    onClick = onShareReport,
-                    enabled = hasLogs || result.headline.isNotBlank(),
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier
-                        .heightIn(min = 48.dp)
-                        .testTag("share_report_button")
-                ) {
-                    Icon(Icons.Default.Share, contentDescription = "مشاركة التقرير", modifier = Modifier.size(16.dp))
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text("مشاركة", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun ProbeSectionCard(
-    title: String,
-    subtitle: String,
-    accentColor: Color,
-    items: List<SchoolProbeItem>,
-    badgeSuccessLabel: String,
-    badgeFailLabel: String
-) {
+private fun LiveChecklistCard(items: List<ChecklistStepItem>) {
     Card(
         shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        border = BorderStroke(1.2.dp, accentColor.copy(alpha = 0.45f)),
-        modifier = Modifier.fillMaxWidth()
+        border = BorderStroke(1.2.dp, MaterialTheme.colorScheme.outlineVariant),
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("live_checklist_card")
     ) {
         Column(
             modifier = Modifier.padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Column {
-                Text(
-                    text = title,
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = accentColor
-                )
-                Text(
-                    text = subtitle,
-                    fontSize = 11.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
+            Text(
+                text = "قائمة الفحص الحية (Live Step-by-Step Checklist)",
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.primary
+            )
 
-            items.forEach { item ->
-                val (statusBg, statusColor, statusLabel, statusIcon) = when (item.status) {
-                    ProbeCheckStatus.PASSED -> Quad(
-                        Color(0xFF10B981).copy(alpha = 0.14f),
-                        Color(0xFF059669),
-                        badgeSuccessLabel,
-                        Icons.Default.CheckCircle
-                    )
-                    ProbeCheckStatus.FAILED -> Quad(
-                        Color(0xFFEF4444).copy(alpha = 0.12f),
-                        Color(0xFFDC2626),
-                        badgeFailLabel,
-                        Icons.Default.Cancel
-                    )
-                    ProbeCheckStatus.RUNNING -> Quad(
-                        Color(0xFF0284C7).copy(alpha = 0.14f),
-                        Color(0xFF0284C7),
-                        "جاري الفحص",
-                        Icons.Default.HourglassTop
-                    )
-                    ProbeCheckStatus.PENDING -> Quad(
-                        MaterialTheme.colorScheme.surfaceVariant,
-                        MaterialTheme.colorScheme.onSurfaceVariant,
-                        "بانتظار الفحص",
-                        Icons.Default.Shield
-                    )
+            items.forEach { step ->
+                val (bg, fg, icon) = when (step.status) {
+                    ChecklistStepStatus.PENDING -> Triple(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f), MaterialTheme.colorScheme.onSurfaceVariant, Icons.Default.Shield)
+                    ChecklistStepStatus.RUNNING -> Triple(Color(0xFF0284C7).copy(alpha = 0.12f), Color(0xFF0284C7), Icons.Default.HourglassTop)
+                    ChecklistStepStatus.PASSED -> Triple(Color(0xFF10B981).copy(alpha = 0.12f), Color(0xFF059669), Icons.Default.CheckCircle)
+                    ChecklistStepStatus.FAILED -> Triple(Color(0xFFEF4444).copy(alpha = 0.10f), Color(0xFFDC2626), Icons.Default.Cancel)
+                    ChecklistStepStatus.AWAITING_SAFETY -> Triple(Color(0xFFF59E0B).copy(alpha = 0.15f), Color(0xFFD97706), Icons.Default.Warning)
                 }
 
                 Surface(
                     shape = RoundedCornerShape(12.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f)),
+                    color = bg,
+                    border = BorderStroke(1.dp, fg.copy(alpha = 0.35f)),
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Column(
-                        modifier = Modifier.padding(10.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
+                    Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Text(
-                                text = item.title,
+                                text = "${step.stageTag}: ${step.title}",
                                 fontSize = 12.sp,
                                 fontWeight = FontWeight.Bold,
                                 color = MaterialTheme.colorScheme.onSurface,
                                 modifier = Modifier.weight(1f)
                             )
                             Spacer(modifier = Modifier.width(6.dp))
-                            Surface(
-                                shape = RoundedCornerShape(8.dp),
-                                color = statusBg
-                            ) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                                ) {
-                                    Icon(
-                                        imageVector = statusIcon,
-                                        contentDescription = statusLabel,
-                                        tint = statusColor,
-                                        modifier = Modifier.size(13.dp)
-                                    )
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                    Text(
-                                        text = statusLabel,
-                                        fontSize = 11.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = statusColor
-                                    )
-                                }
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(icon, contentDescription = step.status.badgeText, tint = fg, modifier = Modifier.size(14.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(step.status.badgeText, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = fg)
                             }
                         }
-
-                        Text(
-                            text = item.subtitle,
-                            fontSize = 11.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-
-                        if (item.commandHex != "--" || item.detail.isNotBlank()) {
+                        if (step.detail.isNotBlank()) {
                             Text(
-                                text = buildString {
-                                    if (item.commandHex != "--") append("الأمر: [${item.commandHex}] ")
-                                    if (item.detail.isNotBlank()) append("• ${item.detail}")
-                                },
+                                text = step.detail,
                                 fontSize = 11.sp,
                                 fontFamily = FontFamily.Monospace,
-                                fontWeight = FontWeight.SemiBold,
-                                color = statusColor
+                                color = fg
                             )
                         }
                     }
@@ -977,109 +649,223 @@ private fun ProbeSectionCard(
 }
 
 @Composable
-private fun DangerousSchoolsSectionCard(
-    isProbing: Boolean,
-    onRequestManualRun: (DangerousSchoolType) -> Unit
+private fun Stage5HotSwapSafetyGateCard(
+    phase: ProberStagePhase,
+    onBeginHotSwap: () -> Unit,
+    onResumeAfterReconnect: () -> Unit,
+    onEmergencyRestoreClick: () -> Unit,
+    onFinishSafeOnly: () -> Unit
 ) {
+    val isInHotSwapStandby = phase == ProberStagePhase.HOT_SWAP_DISCONNECTED_READY
+
     Card(
         shape = RoundedCornerShape(18.dp),
-        colors = CardDefaults.cardColors(containerColor = Color(0xFFDC2626).copy(alpha = 0.08f)),
-        border = BorderStroke(1.5.dp, Color(0xFFDC2626)),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFFDC2626).copy(alpha = 0.10f)),
+        border = BorderStroke(2.dp, Color(0xFFDC2626)),
         modifier = Modifier
             .fillMaxWidth()
-            .testTag("dangerous_schools_section")
+            .testTag("stage5_safety_gate_card")
     ) {
         Column(
-            modifier = Modifier.padding(14.dp),
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Icon(Icons.Default.Warning, contentDescription = "تحذير أمان", tint = Color(0xFFDC2626), modifier = Modifier.size(28.dp))
+                Text(
+                    text = "بوابة الأمان — المرحلة 5 (المعالج مقفول)",
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color(0xFFB91C1C)
+                )
+            }
+
+            Text(
+                text = "⚠️ تحذير أمان: الخطوة القادمة ستستخدم مدارس تعدّل في بيانات المعالج (مثل تصفير بلوك الحماية) وقد تؤدي لتلف السوفت وير إذا انقطع الاتصال. يمكنك الآن فصل المبرمجة والكارتة بأمان دون ضياع نتائج الفحص السابقة.",
+                fontSize = 13.sp,
+                lineHeight = 20.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+
+            if (!isInHotSwapStandby) {
+                Button(
+                    onClick = onBeginHotSwap,
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD97706), contentColor = Color.White),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 50.dp)
+                        .testTag("hot_swap_button")
+                ) {
+                    Icon(Icons.Default.SwapHoriz, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("فصل وتبديل الكارتة ثم الاستكمال (Hot-Swap & Resume)", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                }
+            } else {
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = Color(0xFFF59E0B).copy(alpha = 0.2f),
+                    border = BorderStroke(1.dp, Color(0xFFD97706)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = "وضع التبديل نشط: تم تحرير USB بأمان. بدّل الكارتة الآن ووصل كارتة التجارب ثم اضغط الزر بالأسفل.",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFF92400E),
+                        modifier = Modifier.padding(10.dp)
+                    )
+                }
+                Button(
+                    onClick = onResumeAfterReconnect,
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF059669), contentColor = Color.White),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 52.dp)
+                        .testTag("resume_after_hotswap_button")
+                ) {
+                    Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("أعدت التوصيل — استكمل المدارس المتقدمة", fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                }
+            }
+
+            Button(
+                onClick = onEmergencyRestoreClick,
+                shape = RoundedCornerShape(12.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626), contentColor = Color.White),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 50.dp)
+                    .testTag("emergency_flash_restore_button")
+            ) {
+                Icon(Icons.Default.Restore, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(modifier = Modifier.width(6.dp))
+                Text("استعادة السوفت وير الأصلي (Emergency Flash Restore)", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+            }
+
+            OutlinedButton(
+                onClick = onFinishSafeOnly,
+                shape = RoundedCornerShape(12.dp),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 48.dp)
+                    .testTag("finish_safe_only_button")
+            ) {
+                Icon(Icons.Default.DoneAll, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(modifier = Modifier.width(6.dp))
+                Text("إنهاء الفحص والاكتفاء بالنتائج الآمنة", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+            }
+        }
+    }
+}
+
+@Composable
+private fun AiReadyBlueprintCard(
+    blueprintText: String,
+    summary: ProberBlueprintSummary,
+    onCopyBlueprint: () -> Unit,
+    onShareBlueprint: () -> Unit
+) {
+    val hasBlueprint = blueprintText.isNotBlank()
+    Card(
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.5.dp, if (hasBlueprint) Color(0xFF10B981) else MaterialTheme.colorScheme.outlineVariant),
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("ai_ready_blueprint_card")
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Warning,
-                    contentDescription = "تحذير خطير",
-                    tint = Color(0xFFDC2626),
-                    modifier = Modifier.size(22.dp)
-                )
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Icon(Icons.Default.Code, contentDescription = null, tint = Color(0xFF059669), modifier = Modifier.size(22.dp))
                 Column {
                     Text(
-                        text = "القسم الثالث: المدارس الخطرة / التعديلية ⚠️",
+                        text = "البروتوكول النهائي الكامل (AI-Ready Protocol Blueprint)",
                         fontSize = 14.sp,
                         fontWeight = FontWeight.Bold,
-                        color = Color(0xFFDC2626)
+                        color = MaterialTheme.colorScheme.onSurface
                     )
                     Text(
-                        text = "مغلقة بقفل أمان ولا تعمل تلقائياً — تشغيل يدوي بتأكيد مزدوج فقط",
+                        text = if (hasBlueprint) {
+                            "Baud=${summary.baudRate ?: "--"} | Page=${summary.pageSizeBytes ?: "--"}B | Block=${summary.blockSizeBytes ?: "--"}B | Cmds=${summary.discoveredCommands.size}"
+                        } else {
+                            "يتم توليده تلقائياً بالصيغة التقنية المنظمة فور بدء الفحص"
+                        },
                         fontSize = 11.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
 
-            DangerousSchoolType.entries.forEach { school ->
-                Surface(
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 120.dp, max = 260.dp)
+                    .background(Color(0xFF0F172A), RoundedCornerShape(12.dp))
+                    .verticalScroll(rememberScrollState())
+                    .padding(10.dp)
+            ) {
+                Text(
+                    text = if (hasBlueprint) blueprintText else "{\n  \"status\": \"اضغط بدء الفحص الشامل لتوليد ملف البروتوكول الكامل\"\n}",
+                    fontSize = 11.sp,
+                    fontFamily = FontFamily.Monospace,
+                    color = Color(0xFF34D399),
+                    lineHeight = 15.sp
+                )
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Button(
+                    onClick = onCopyBlueprint,
+                    enabled = hasBlueprint,
                     shape = RoundedCornerShape(12.dp),
-                    color = MaterialTheme.colorScheme.surface,
-                    border = BorderStroke(1.dp, Color(0xFFEF4444).copy(alpha = 0.5f)),
-                    modifier = Modifier.fillMaxWidth()
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF059669), contentColor = Color.White),
+                    modifier = Modifier
+                        .weight(1f)
+                        .heightIn(min = 52.dp)
+                        .testTag("copy_full_blueprint_button")
                 ) {
-                    Column(
-                        modifier = Modifier.padding(12.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                imageVector = Icons.Default.Lock,
-                                contentDescription = "مقفل بأمان",
-                                tint = Color(0xFFDC2626),
-                                modifier = Modifier.size(16.dp)
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(
-                                text = "⚠️ ${school.title}",
-                                fontSize = 13.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = Color(0xFFB91C1C)
-                            )
-                        }
-                        Text(
-                            text = school.warningText,
-                            fontSize = 12.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            lineHeight = 18.sp
-                        )
-                        OutlinedButton(
-                            onClick = { onRequestManualRun(school) },
-                            enabled = !isProbing,
-                            shape = RoundedCornerShape(10.dp),
-                            border = BorderStroke(1.dp, Color(0xFFDC2626)),
-                            colors = ButtonDefaults.outlinedButtonColors(
-                                contentColor = Color(0xFFDC2626)
-                            ),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .heightIn(min = 48.dp)
-                                .testTag("manual_danger_${school.name.lowercase()}")
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Security,
-                                contentDescription = null,
-                                modifier = Modifier.size(16.dp)
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(
-                                text = "تجربة يدوية (على مسؤوليتي)",
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
-                    }
+                    Icon(Icons.Default.ContentCopy, contentDescription = "نسخ البروتوكول الكامل", modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("نسخ البروتوكول الكامل", fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                }
+
+                OutlinedButton(
+                    onClick = onShareBlueprint,
+                    enabled = hasBlueprint,
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier
+                        .heightIn(min = 52.dp)
+                        .testTag("share_blueprint_button")
+                ) {
+                    Icon(Icons.Default.Share, contentDescription = "مشاركة", modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("مشاركة", fontSize = 12.sp, fontWeight = FontWeight.Bold)
                 }
             }
         }
     }
 }
 
-private data class Quad<A, B, C, D>(val first: A, val second: B, val third: C, val fourth: D)
+private fun resolveUriDisplayName(context: Context, uri: Uri): String {
+    var name = "firmware.bin"
+    try {
+        context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+            val idx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+            if (idx >= 0 && cursor.moveToFirst()) {
+                name = cursor.getString(idx) ?: name
+            }
+        }
+    } catch (_: Throwable) {}
+    return name
+}
