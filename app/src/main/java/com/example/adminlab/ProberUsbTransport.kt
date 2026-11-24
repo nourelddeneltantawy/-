@@ -222,7 +222,7 @@ class ProberUsbTransport(
         }
     }
 
-    fun configureUart(baudRate: Int) {
+    fun configureUart(baudRate: Int, evenParity: Boolean = false) {
         currentBaudRate = baudRate
         val conn = activeConnection ?: return
         when (activeChip) {
@@ -239,7 +239,8 @@ class ProberUsbTransport(
                     else -> (3_000_000 / baudRate.coerceAtLeast(300))
                 }
                 conn.controlTransfer(0x40, 0x03, divisor, 0, null, 0, 500) // Set baud divisor
-                conn.controlTransfer(0x40, 0x04, 0x0008, 0, null, 0, 500) // 8N1
+                // 8 data bits (0x0008), Parity: None (0x0000) or Even (0x0200)
+                conn.controlTransfer(0x40, 0x04, if (evenParity) 0x0208 else 0x0008, 0, null, 0, 500)
                 conn.controlTransfer(0x40, 0x02, 0x0000, 0, null, 0, 500) // Flow control OFF
             }
             ProberUsbChip.CP2102 -> {
@@ -256,7 +257,8 @@ class ProberUsbTransport(
                     val div = (3686400 / baudRate.coerceAtLeast(300)) and 0xFFFF
                     conn.controlTransfer(0x41, 0x01, div, idx, null, 0, 500)
                 }
-                conn.controlTransfer(0x41, 0x03, 0x0800, idx, null, 0, 500)
+                // 8 data bits (0x0800), Parity: None (0x0000) or Even (0x0020)
+                conn.controlTransfer(0x41, 0x03, if (evenParity) 0x0820 else 0x0800, idx, null, 0, 500)
                 conn.controlTransfer(0x41, 0x12, 0x000F, idx, null, 0, 500)
             }
             ProberUsbChip.CH340G -> {
@@ -272,7 +274,8 @@ class ProberUsbTransport(
                 val regB = (factor.toInt() and 0xFF)
                 conn.controlTransfer(0x40, 0x9A, 0x1312, regA, null, 0, 400)
                 conn.controlTransfer(0x40, 0x9A, 0x0F2C, regB, null, 0, 400)
-                conn.controlTransfer(0x40, 0x9A, 0x2518, 0x00C3, null, 0, 400)
+                // LCR: 0xC3 (8N1) or 0xDB (8E1: bit3 PARITY_EN + bit4 EVEN_PARITY)
+                conn.controlTransfer(0x40, 0x9A, 0x2518, if (evenParity) 0x00DB else 0x00C3, null, 0, 400)
                 conn.controlTransfer(0x40, 0x9A, 0x2727, 0x0000, null, 0, 400)
             }
             else -> {
@@ -281,7 +284,9 @@ class ProberUsbTransport(
                     ((baudRate ushr 8) and 0xFF).toByte(),
                     ((baudRate ushr 16) and 0xFF).toByte(),
                     ((baudRate ushr 24) and 0xFF).toByte(),
-                    0x00, 0x00, 0x08
+                    0x00,
+                    if (evenParity) 0x02 else 0x00,
+                    0x08
                 )
                 conn.controlTransfer(0x21, 0x20, 0, controlInterfaceIndex, lineCoding, lineCoding.size, 400)
                 conn.controlTransfer(0x21, 0x22, 0x0003, controlInterfaceIndex, null, 0, 400)

@@ -12,9 +12,11 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -37,8 +39,10 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.DeleteSweep
+import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.HourglassTop
 import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.MenuBook
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Science
@@ -79,6 +83,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
@@ -87,6 +92,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.DialogProperties
+import androidx.core.content.FileProvider
+import java.io.File
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -135,10 +142,12 @@ fun ProtocolProberScreen(
                             overflow = TextOverflow.Ellipsis
                         )
                         Text(
-                            text = "استخراج البروتوكول الديناميكي للعائلة + بوابة تحذير المرحلة 5",
+                            text = "فاحص عالمي لأي شركة ومعالج • مصفوفة كريستالات • 3 بطاقات تصدير",
                             fontSize = 11.sp,
                             color = Color(0xFFF59E0B),
-                            fontWeight = FontWeight.Medium
+                            fontWeight = FontWeight.Medium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                     }
                 },
@@ -183,9 +192,9 @@ fun ProtocolProberScreen(
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .widthIn(max = 720.dp)
+                    .widthIn(max = 840.dp)
                     .verticalScroll(rememberScrollState())
-                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                    .padding(horizontal = 14.dp, vertical = 12.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 // USB Status Card
@@ -212,7 +221,7 @@ fun ProtocolProberScreen(
                 ) {
                     Column(modifier = Modifier.padding(14.dp)) {
                         Text(
-                            text = "عائلة المعالج المتوقعة",
+                            text = "نطاق الاكتشاف أو العائلة المستهدفة",
                             style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold)
                         )
                         Spacer(modifier = Modifier.height(8.dp))
@@ -235,7 +244,7 @@ fun ProtocolProberScreen(
                                     horizontalArrangement = Arrangement.SpaceBetween,
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Text(uiState.selectedFamily.labelAr, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                                    Text(uiState.selectedFamily.labelAr, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
                                     Icon(Icons.Default.KeyboardArrowDown, contentDescription = "اختيار العائلة")
                                 }
                             }
@@ -281,7 +290,7 @@ fun ProtocolProberScreen(
                         if (uiState.isBusy) {
                             CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp, color = Color.White)
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text("جاري الفحص الشامل...", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                            Text("جاري الفحص العالمي...", fontWeight = FontWeight.Bold, fontSize = 13.sp)
                         } else {
                             Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(20.dp))
                             Spacer(modifier = Modifier.width(6.dp))
@@ -388,7 +397,7 @@ fun ProtocolProberScreen(
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(210.dp)
+                                .height(200.dp)
                                 .background(Color(0xFF020617), RoundedCornerShape(10.dp))
                                 .padding(8.dp)
                         ) {
@@ -433,23 +442,98 @@ fun ProtocolProberScreen(
                 // LIVE STEP-BY-STEP CHECKLIST
                 LiveChecklistCard(items = uiState.checklist)
 
-                // BOTTOM CARD: DYNAMIC FAMILY PROTOCOL BLUEPRINT
-                AiReadyBlueprintCard(
-                    blueprintText = uiState.blueprintText,
-                    summary = uiState.blueprintSummary,
-                    onCopyBlueprint = {
-                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
-                        clipboard?.setPrimaryClip(ClipData.newPlainText("DynamicFamilyProtocolBlueprint", uiState.blueprintText))
-                        Toast.makeText(context, "تم نسخ البروتوكول الكامل (Dynamic Blueprint) بنجاح", Toast.LENGTH_SHORT).show()
+                // ==================== 3-CARD BOTTOM RESULTS SECTION ====================
+                val summary = uiState.blueprintSummary
+                val readText = uiState.readBlueprintText
+                val writeText = uiState.writeBlueprintText
+                val guideText = uiState.humanGuideText
+                val guideJsonText = uiState.humanGuideJsonText
+
+                // TOP ROW: 2 SIDE-BY-SIDE CARDS (Read Blueprint on Right, Write/Erase/Verify on Left in RTL)
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(IntrinsicSize.Max),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    // Right Card: Read Blueprint
+                    ProtocolExportCard(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxHeight()
+                            .testTag("read_blueprint_card"),
+                        icon = Icons.Default.Code,
+                        accentColor = Color(0xFF0284C7),
+                        title = "بروتوكول القراءة والسحب (Read Blueprint)",
+                        subtitle = if (readText.isNotBlank()) {
+                            "${summary.baudRate ?: "--"} ${summary.parityMode} • ${summary.flashEndAddressHex}"
+                        } else {
+                            "يتم توليده تلقائياً عند الفحص"
+                        },
+                        contentText = readText.ifBlank { "{\n  \"status\": \"بانتظار الفحص لاستخراج بروتوكول القراءة...\"\n}" },
+                        hasContent = readText.isNotBlank(),
+                        isMonospace = true,
+                        bodyHeightDp = 210,
+                        copyTestTag = "copy_read_blueprint_button",
+                        shareJsonTestTag = "share_read_json_button",
+                        shareTxtTestTag = "share_read_txt_button",
+                        onCopy = { copyToClipboard(context, "ReadProtocolBlueprint", readText, "تم نسخ بروتوكول القراءة والسحب") },
+                        onShareJson = { shareExportFile(context, "read_protocol.json", "application/json", readText) },
+                        onShareTxt = { shareExportFile(context, "read_protocol.txt", "text/plain", readText) }
+                    )
+
+                    // Left Card: Write / Erase / Verify Blueprint
+                    ProtocolExportCard(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxHeight()
+                            .testTag("write_blueprint_card"),
+                        icon = Icons.Default.Description,
+                        accentColor = Color(0xFF059669),
+                        title = "بروتوكول الكتابة والمسح والتحقق (Write / Erase / Verify)",
+                        subtitle = if (writeText.isNotBlank()) {
+                            "Osc: ${summary.detectedCrystalMhz} • EraseWait: ${summary.timingMap.eraseWriteBusyWaitMs}ms"
+                        } else {
+                            "يتم توليده تلقائياً عند الفحص"
+                        },
+                        contentText = writeText.ifBlank { "{\n  \"status\": \"بانتظار الفحص لاستخراج بروتوكول الكتابة والمسح...\"\n}" },
+                        hasContent = writeText.isNotBlank(),
+                        isMonospace = true,
+                        bodyHeightDp = 210,
+                        copyTestTag = "copy_write_blueprint_button",
+                        shareJsonTestTag = "share_write_json_button",
+                        shareTxtTestTag = "share_write_txt_button",
+                        onCopy = { copyToClipboard(context, "WriteEraseVerifyBlueprint", writeText, "تم نسخ بروتوكول الكتابة والمسح والتحقق") },
+                        onShareJson = { shareExportFile(context, "write_protocol.json", "application/json", writeText) },
+                        onShareTxt = { shareExportFile(context, "write_protocol.txt", "text/plain", writeText) }
+                    )
+                }
+
+                // BOTTOM ROW: FULL-WIDTH HUMAN TRANSLATION & MCU IDENTITY CARD
+                ProtocolExportCard(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("human_guide_card"),
+                    icon = Icons.Default.MenuBook,
+                    accentColor = Color(0xFFD97706),
+                    title = "الترجمة البشرية للبروتوكول ومعلومات المعالج الشاملة",
+                    subtitle = if (guideText.isNotBlank()) {
+                        "${summary.manufacturerGuess} • ${summary.inferredModel}"
+                    } else {
+                        "بطاقة هوية البروسيسور + شرح خطوات السحب والكتابة والملاحظات الهندسية"
                     },
-                    onShareBlueprint = {
-                        val intent = Intent(Intent.ACTION_SEND).apply {
-                            type = "text/plain"
-                            putExtra(Intent.EXTRA_SUBJECT, "Dynamic Family Protocol Blueprint")
-                            putExtra(Intent.EXTRA_TEXT, uiState.blueprintText)
-                        }
-                        context.startActivity(Intent.createChooser(intent, "مشاركة البروتوكول الكامل"))
-                    }
+                    contentText = guideText.ifBlank {
+                        "سيظهر هنا التقرير البشري المفصل فور بدء الفحص:\n• بطاقة هوية البروسيسور والشركة والموديل\n• شرح خطوات السحب خطوة بخطوة\n• شرح خطوات الكتابة والمسح والتحقق\n• الملاحظات الهندسية وأكواد الأخطاء"
+                    },
+                    hasContent = guideText.isNotBlank(),
+                    isMonospace = false,
+                    bodyHeightDp = 300,
+                    copyTestTag = "copy_human_guide_button",
+                    shareJsonTestTag = "share_guide_json_button",
+                    shareTxtTestTag = "share_guide_txt_button",
+                    onCopy = { copyToClipboard(context, "McuHumanGuide", guideText, "تم نسخ الترجمة البشرية للبروتوكول") },
+                    onShareJson = { shareExportFile(context, "mcu_guide.json", "application/json", guideJsonText.ifBlank { guideText }) },
+                    onShareTxt = { shareExportFile(context, "mcu_guide.txt", "text/plain", guideText) }
                 )
 
                 Spacer(modifier = Modifier.height(16.dp))
@@ -533,6 +617,133 @@ fun ProtocolProberScreen(
                 }
             }
         )
+    }
+}
+
+@Composable
+private fun ProtocolExportCard(
+    modifier: Modifier,
+    icon: ImageVector,
+    accentColor: Color,
+    title: String,
+    subtitle: String,
+    contentText: String,
+    hasContent: Boolean,
+    isMonospace: Boolean,
+    bodyHeightDp: Int,
+    copyTestTag: String,
+    shareJsonTestTag: String,
+    shareTxtTestTag: String,
+    onCopy: () -> Unit,
+    onShareJson: () -> Unit,
+    onShareTxt: () -> Unit
+) {
+    Card(
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.4.dp, if (hasContent) accentColor.copy(alpha = 0.7f) else MaterialTheme.colorScheme.outlineVariant),
+        modifier = modifier
+    ) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Icon(icon, contentDescription = null, tint = accentColor, modifier = Modifier.size(20.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = title,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        lineHeight = 16.sp
+                    )
+                    Text(
+                        text = subtitle,
+                        fontSize = 10.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+
+            // 3 Action Buttons in Header Bar: Copy | Share .JSON | Share .TXT
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                OutlinedButton(
+                    onClick = onCopy,
+                    enabled = hasContent,
+                    shape = RoundedCornerShape(8.dp),
+                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp),
+                    modifier = Modifier
+                        .weight(1f)
+                        .heightIn(min = 48.dp)
+                        .testTag(copyTestTag)
+                ) {
+                    Icon(Icons.Default.ContentCopy, contentDescription = "نسخ النص", modifier = Modifier.size(14.dp))
+                    Spacer(modifier = Modifier.width(3.dp))
+                    Text("نسخ", fontSize = 10.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+                }
+
+                OutlinedButton(
+                    onClick = onShareJson,
+                    enabled = hasContent,
+                    shape = RoundedCornerShape(8.dp),
+                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp),
+                    modifier = Modifier
+                        .weight(1f)
+                        .heightIn(min = 48.dp)
+                        .testTag(shareJsonTestTag)
+                ) {
+                    Icon(Icons.Default.Share, contentDescription = "مشاركة كملف JSON", tint = accentColor, modifier = Modifier.size(14.dp))
+                    Spacer(modifier = Modifier.width(3.dp))
+                    Text("JSON", fontSize = 10.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+                }
+
+                OutlinedButton(
+                    onClick = onShareTxt,
+                    enabled = hasContent,
+                    shape = RoundedCornerShape(8.dp),
+                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp),
+                    modifier = Modifier
+                        .weight(1f)
+                        .heightIn(min = 48.dp)
+                        .testTag(shareTxtTestTag)
+                ) {
+                    Icon(Icons.Default.Share, contentDescription = "مشاركة كملف TXT", tint = accentColor, modifier = Modifier.size(14.dp))
+                    Spacer(modifier = Modifier.width(3.dp))
+                    Text("TXT", fontSize = 10.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+                }
+            }
+
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(bodyHeightDp.dp)
+                    .background(
+                        color = if (isMonospace) Color(0xFF0F172A) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                        shape = RoundedCornerShape(10.dp)
+                    )
+                    .verticalScroll(rememberScrollState())
+                    .padding(10.dp)
+            ) {
+                Text(
+                    text = contentText,
+                    fontSize = if (isMonospace) 10.sp else 12.sp,
+                    fontFamily = if (isMonospace) FontFamily.Monospace else FontFamily.Default,
+                    color = if (isMonospace) Color(0xFF34D399) else MaterialTheme.colorScheme.onSurface,
+                    lineHeight = if (isMonospace) 14.sp else 18.sp
+                )
+            }
+        }
     }
 }
 
@@ -669,96 +880,27 @@ private fun LiveChecklistCard(items: List<ChecklistStepItem>) {
     }
 }
 
-@Composable
-private fun AiReadyBlueprintCard(
-    blueprintText: String,
-    summary: ProberBlueprintSummary,
-    onCopyBlueprint: () -> Unit,
-    onShareBlueprint: () -> Unit
-) {
-    val hasBlueprint = blueprintText.isNotBlank()
-    Card(
-        shape = RoundedCornerShape(18.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        border = BorderStroke(1.5.dp, if (hasBlueprint) Color(0xFF10B981) else MaterialTheme.colorScheme.outlineVariant),
-        modifier = Modifier
-            .fillMaxWidth()
-            .testTag("ai_ready_blueprint_card")
-    ) {
-        Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Icon(Icons.Default.Code, contentDescription = null, tint = Color(0xFF059669), modifier = Modifier.size(22.dp))
-                Column {
-                    Text(
-                        text = "البروتوكول الديناميكي الكامل للعائلة (Dynamic Family Blueprint)",
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
-                    Text(
-                        text = if (hasBlueprint) {
-                            "Baud=${summary.supportedBaudRates.ifEmpty { listOfNotNull(summary.baudRate) }.joinToString("/")} | End=${summary.flashEndAddressHex} | STX=${summary.supportedStxPageSizes} | Cmds=${summary.discoveredCommands.size}"
-                        } else {
-                            "يتم توليده تلقائياً بالصيغة الهندسية المنظمة فور بدء الفحص"
-                        },
-                        fontSize = 11.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
+private fun copyToClipboard(context: Context, label: String, text: String, toastMsg: String) {
+    if (text.isBlank()) return
+    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+    clipboard?.setPrimaryClip(ClipData.newPlainText(label, text))
+    Toast.makeText(context, toastMsg, Toast.LENGTH_SHORT).show()
+}
 
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(min = 120.dp, max = 280.dp)
-                    .background(Color(0xFF0F172A), RoundedCornerShape(12.dp))
-                    .verticalScroll(rememberScrollState())
-                    .padding(10.dp)
-            ) {
-                Text(
-                    text = if (hasBlueprint) blueprintText else "{\n  \"status\": \"اضغط بدء الفحص الشامل لتوليد البروتوكول الديناميكي للعائلة\"\n}",
-                    fontSize = 11.sp,
-                    fontFamily = FontFamily.Monospace,
-                    color = Color(0xFF34D399),
-                    lineHeight = 15.sp
-                )
-            }
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Button(
-                    onClick = onCopyBlueprint,
-                    enabled = hasBlueprint,
-                    shape = RoundedCornerShape(12.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF059669), contentColor = Color.White),
-                    modifier = Modifier
-                        .weight(1f)
-                        .heightIn(min = 52.dp)
-                        .testTag("copy_full_blueprint_button")
-                ) {
-                    Icon(Icons.Default.ContentCopy, contentDescription = "نسخ البروتوكول الكامل", modifier = Modifier.size(18.dp))
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("نسخ البروتوكول الكامل", fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                }
-
-                OutlinedButton(
-                    onClick = onShareBlueprint,
-                    enabled = hasBlueprint,
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier
-                        .heightIn(min = 52.dp)
-                        .testTag("share_blueprint_button")
-                ) {
-                    Icon(Icons.Default.Share, contentDescription = "مشاركة", modifier = Modifier.size(18.dp))
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text("مشاركة", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                }
-            }
+private fun shareExportFile(context: Context, fileName: String, mimeType: String, content: String) {
+    if (content.isBlank()) return
+    try {
+        val outFile = File(context.cacheDir, fileName)
+        outFile.writeText(content, Charsets.UTF_8)
+        val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", outFile)
+        val intent = Intent(Intent.ACTION_SEND).apply {
+            type = mimeType
+            putExtra(Intent.EXTRA_STREAM, uri)
+            putExtra(Intent.EXTRA_SUBJECT, fileName)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
+        context.startActivity(Intent.createChooser(intent, "مشاركة الملف: $fileName"))
+    } catch (t: Throwable) {
+        Toast.makeText(context, "تعذر مشاركة الملف: ${t.message}", Toast.LENGTH_SHORT).show()
     }
 }
