@@ -217,8 +217,8 @@ class ProberUsbTransport(
         try {
             if (activeConnection != null) {
                 if (activeChip == ProberUsbChip.USBDM) {
-                    // Turn target VDD off gently (CMD_USBDM_SET_VDD = 0x06, OFF = 0x00) before releasing USBDM
-                    writeBytesRaw(byteArrayOf(0x03, 0x06, 0x00))
+                    // Turn target VDD off gently (USBDM V4.x CMD_USBDM_SET_VDD = 0x02, OFF = 0x00) before releasing USBDM
+                    writeBytesRaw(byteArrayOf(0x03, 0x02, 0x00))
                 } else {
                     setControlLines(dtr = false, rts = false)
                 }

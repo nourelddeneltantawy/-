@@ -107,6 +107,10 @@ class ProberEngine(context: Context) {
     @Volatile
     private var detectedUsbdmCaps: String = ""
     @Volatile
+    private var detectedUsbdmCapsCmd: Int = 0x0C
+    @Volatile
+    private var detectedUsbdmReadCmd: Int = 0x21
+    @Volatile
     private var detectedUsbdmSpeedHz: Int = 0
     @Volatile
     private var detectedUsbdmSyncBytes: String = ""
@@ -280,11 +284,16 @@ class ProberEngine(context: Context) {
                     delay(40)
                     transport.flushRx()
                 } else {
-                    transport.usbdmTransceive(byteArrayOf(0x03, 0x06, 0x02), 8, 250, "USBDM Bypass SET_VDD 5V [03 06 02]")
+                    transport.usbdmTransceive(byteArrayOf(0x02, 0x0C), 32, 250, "USBDM Bypass GET_CAPABILITIES [02 0C]")
+                    transport.usbdmTransceive(byteArrayOf(0x03, 0x02, 0x02), 8, 250, "USBDM Bypass SET_VDD 5V [03 02 02]")
                     delay(100)
-                    transport.usbdmTransceive(byteArrayOf(0x03, 0x02, 0x00), 8, 250, "USBDM Bypass SET_TARGET HCS08 [03 02 00]")
-                    transport.usbdmTransceive(byteArrayOf(0x02, 0x0F), 8, 250, "USBDM Bypass CONNECT [02 0F]")
-                    transport.usbdmTransceive(byteArrayOf(0x02, 0x10), 8, 250, "USBDM Bypass SYNC [02 10]")
+                    transport.usbdmTransceive(byteArrayOf(0x03, 0x01, 0x00), 8, 250, "USBDM Bypass SET_TARGET HCS08 [03 01 00]")
+                    val bypassConn = transport.usbdmTransceive(byteArrayOf(0x02, 0x0F), 12, 300, "USBDM Bypass CONNECT [02 0F]")
+                    if (bypassConn.isEmpty() || (bypassConn[0].toInt() and 0xFF) != 0x00) {
+                        transport.usbdmTransceive(byteArrayOf(0x03, 0x03, 0x01), 8, 250, "USBDM Bypass Internal Power [03 03 01]")
+                        delay(100)
+                        transport.usbdmTransceive(byteArrayOf(0x02, 0x0F), 12, 300, "USBDM Bypass CONNECT Retry [02 0F]")
+                    }
                     transport.usbdmTransceive(byteArrayOf(0x02, 0x14), 8, 250, "USBDM Bypass HALT [02 14]")
                 }
 
@@ -592,106 +601,148 @@ class ProberEngine(context: Context) {
     private suspend fun tryUsbdmHandshake(): SyncLock? {
         currentCoroutineContext().ensureActive()
         detectedUsbdmCaps = ""
+        detectedUsbdmCapsCmd = 0x0C
+        detectedUsbdmReadCmd = 0x21
         detectedUsbdmSpeedHz = 0
         detectedUsbdmSyncBytes = ""
         detectedSdidHex = ""
         detectedFreescaleModel = ""
-        appendLog(ProberLogDirection.INFO, "── تم اكتشاف مبرمجة USBDM (VID:16D0 PID:0567): بدء البروتوكول القياسي (USB Bulk) ──")
+        appendLog(ProberLogDirection.INFO, "── تم اكتشاف مبرمجة USBDM V4.x (VID:16D0 PID:0567): بدء التسلسل الرسمي (USB Bulk) ──")
         val t0 = System.currentTimeMillis()
 
-        // 1. CMD_USBDM_GET_CAPABILITIES ([0x02, 0x01])
-        var caps = transport.usbdmTransceive(byteArrayOf(0x02, 0x01), 32, 400, "USBDM GET_CAPABILITIES [02 01]")
-        if (caps.isEmpty()) {
-            caps = transport.usbdmControlIn(0x01, 0, 0, 16)
-            if (caps.isNotEmpty()) appendLog(ProberLogDirection.RX, "USBDM Control Caps: ${caps.toHexStr()}")
+        // 1. CMD_USBDM_GET_CAPABILITIES = 0x0C (fallback 0x00, 0x0E)
+        var caps = ByteArray(0)
+        for (capsCmd in listOf(0x0C, 0x00, 0x0E)) {
+            val rx = transport.usbdmTransceive(
+                byteArrayOf(0x02, capsCmd.toByte()),
+                32, 400, "USBDM GET_CAPABILITIES [02 %02X]".format(capsCmd)
+            )
+            appendLog(
+                ProberLogDirection.INFO,
+                "رد GET_CAPABILITIES (0x%02X): %s".format(capsCmd, rx.toHexStr().ifBlank { "بدون رد" })
+            )
+            if (rx.isNotEmpty() && (rx[0].toInt() and 0xFF) == 0x00) {
+                caps = rx
+                detectedUsbdmCapsCmd = capsCmd
+                break
+            }
+            if (caps.isEmpty() && rx.isNotEmpty()) {
+                caps = rx
+                detectedUsbdmCapsCmd = capsCmd
+            }
         }
         if (caps.isEmpty()) {
-            appendLog(ProberLogDirection.ERROR, "❌ لم تستجب USBDM لأمر GET_CAPABILITIES.")
+            caps = transport.usbdmControlIn(0x0C, 0, 0, 16)
+            if (caps.isNotEmpty()) appendLog(ProberLogDirection.RX, "USBDM Control Caps [0x0C]: ${caps.toHexStr()}")
+        }
+        if (caps.isEmpty()) {
+            appendLog(ProberLogDirection.ERROR, "❌ لم تستجب USBDM لأوامر GET_CAPABILITIES (0x0C / 0x00 / 0x0E).")
             return null
         }
         detectedUsbdmCaps = caps.toHexStr()
-        appendLog(ProberLogDirection.SUCCESS, "✅ استجابة USBDM Capabilities: $detectedUsbdmCaps")
+        appendLog(ProberLogDirection.SUCCESS, "✅ قدرات وإصدار USBDM [0x%02X]: $detectedUsbdmCaps".format(detectedUsbdmCapsCmd))
 
-        // 2. CMD_USBDM_SET_VDD = 0x06 ([0x03, 0x06, 0x02] = 5V, wait for 0x00 + 100ms stabilization)
-        val vddRx = transport.usbdmTransceive(byteArrayOf(0x03, 0x06, 0x02), 8, 350, "USBDM SET_VDD 5V [03 06 02]")
+        // 2. CMD_USBDM_SET_VDD = 0x02 ([0x03, 0x02, 0x02] = 5V) + 100ms stabilization
+        val vddRx = transport.usbdmTransceive(byteArrayOf(0x03, 0x02, 0x02), 8, 350, "USBDM SET_VDD 5V [03 02 02]")
         val vddOk = vddRx.isNotEmpty() && (vddRx[0].toInt() and 0xFF) == 0x00
-        if (vddOk) {
-            appendLog(ProberLogDirection.SUCCESS, "✅ تغذية الكارتة 5V عبر CMD_USBDM_SET_VDD (0x06) -> BDM_RC_OK (0x00)")
-        } else {
-            appendLog(ProberLogDirection.WARN, "⚠️ رد CMD_USBDM_SET_VDD (0x06): ${vddRx.toHexStr().ifBlank { "Timeout" }}")
-        }
+        appendLog(
+            if (vddOk) ProberLogDirection.SUCCESS else ProberLogDirection.WARN,
+            "${if (vddOk) "✅" else "⚠️"} رد CMD_USBDM_SET_VDD 5V (0x02): ${vddRx.toHexStr().ifBlank { "Timeout" }}"
+        )
         delay(100)
 
-        // 3. CMD_USBDM_SET_TARGET_TYPE = 0x02 ([0x03, 0x02, 0x00] = T_HCS08)
-        val tgtRx = transport.usbdmTransceive(byteArrayOf(0x03, 0x02, 0x00), 8, 350, "USBDM SET_TARGET_TYPE HCS08 [03 02 00]")
+        // 3. CMD_USBDM_SET_TARGET_TYPE = 0x01 ([0x03, 0x01, 0x00] = T_HCS08)
+        val tgtRx = transport.usbdmTransceive(byteArrayOf(0x03, 0x01, 0x00), 8, 350, "USBDM SET_TARGET_TYPE HCS08 [03 01 00]")
         val tgtOk = tgtRx.isNotEmpty() && (tgtRx[0].toInt() and 0xFF) == 0x00
-        if (tgtOk) {
-            appendLog(ProberLogDirection.SUCCESS, "✅ تهيئة معالج HCS08 (BKGD/RESET) عبر CMD_USBDM_SET_TARGET_TYPE (0x02) -> 0x00")
-        } else {
-            appendLog(ProberLogDirection.WARN, "⚠️ رد CMD_USBDM_SET_TARGET_TYPE (0x02): ${tgtRx.toHexStr().ifBlank { "Timeout" }}")
-        }
-
-        // 4. CMD_USBDM_CONNECT = 0x0F then CMD_USBDM_SYNC = 0x10
-        val connRx = transport.usbdmTransceive(byteArrayOf(0x02, 0x0F), 12, 450, "USBDM CONNECT [02 0F]")
-        var syncRx = transport.usbdmTransceive(byteArrayOf(0x02, 0x10), 12, 450, "USBDM SYNC [02 10]")
-        val connOk = connRx.isNotEmpty() && (connRx[0].toInt() and 0xFF) == 0x00
-        var syncOk = syncRx.isNotEmpty() && (syncRx[0].toInt() and 0xFF) == 0x00
-        if (connOk && !syncOk) {
-            delay(40)
-            syncRx = transport.usbdmTransceive(byteArrayOf(0x02, 0x10), 12, 450, "USBDM SYNC Retry [02 10]")
-            syncOk = syncRx.isNotEmpty() && (syncRx[0].toInt() and 0xFF) == 0x00
-        }
-
-        if (!connOk && !syncOk) {
-            val rxHint = syncRx.toHexStr().ifBlank { connRx.toHexStr() }.ifBlank { "Timeout" }
-            appendLog(ProberLogDirection.WARN, "⚠️ USBDM جاهزة لكن لا يوجد تزامن BDM ($rxHint) — تأكد من توصيل BKGD/RESET/VDD على الكارتة.")
+        appendLog(
+            if (tgtOk) ProberLogDirection.SUCCESS else ProberLogDirection.WARN,
+            "${if (tgtOk) "✅" else "⚠️"} رد CMD_USBDM_SET_TARGET_TYPE HCS08 (0x01): ${tgtRx.toHexStr().ifBlank { "Timeout" }}"
+        )
+        if (!tgtOk) {
+            appendLog(ProberLogDirection.ERROR, "❌ فشل اختيار نوع المعالج HCS08 (0x01) — الرد: ${tgtRx.toHexStr().ifBlank { "Timeout" }}")
             return null
         }
 
-        if (syncOk && syncRx.size >= 3) {
-            val b1 = syncRx[1].toInt() and 0xFF
-            val b2 = syncRx[2].toInt() and 0xFF
-            val syncVal = (b1 shl 8) or b2
-            detectedUsbdmSyncBytes = "%02X %02X".format(b1, b2)
-            if (syncVal > 0) detectedUsbdmSpeedHz = syncVal * 1000
+        // 4. CMD_USBDM_CONNECT = 0x0F (with internal power [0x03, 0x03, 0x01] fallback if 0x0F fails)
+        var connRx = transport.usbdmTransceive(byteArrayOf(0x02, 0x0F), 12, 450, "USBDM CONNECT [02 0F]")
+        var connOk = connRx.isNotEmpty() && (connRx[0].toInt() and 0xFF) == 0x00
+        appendLog(
+            if (connOk) ProberLogDirection.SUCCESS else ProberLogDirection.WARN,
+            "${if (connOk) "✅" else "⚠️"} رد CMD_USBDM_CONNECT (0x0F): ${connRx.toHexStr().ifBlank { "Timeout" }}"
+        )
+        if (!connOk) {
+            appendLog(ProberLogDirection.INFO, "تفعيل التغذية الداخلية عبر [03 03 01] ثم إعادة إرسال CONNECT [02 0F]...")
+            val pwrRx = transport.usbdmTransceive(byteArrayOf(0x03, 0x03, 0x01), 8, 350, "USBDM Internal Power [03 03 01]")
+            appendLog(ProberLogDirection.INFO, "رد التغذية الداخلية [03 03 01]: ${pwrRx.toHexStr().ifBlank { "Timeout" }}")
+            delay(100)
+            connRx = transport.usbdmTransceive(byteArrayOf(0x02, 0x0F), 12, 450, "USBDM CONNECT Retry [02 0F]")
+            connOk = connRx.isNotEmpty() && (connRx[0].toInt() and 0xFF) == 0x00
             appendLog(
-                ProberLogDirection.SUCCESS,
-                "✅ تزامن BDM SYNC (0x10) نجح! سرعة/تردد الهدف [reply[1], reply[2]] = $detectedUsbdmSyncBytes ($syncVal)"
+                if (connOk) ProberLogDirection.SUCCESS else ProberLogDirection.WARN,
+                "${if (connOk) "✅" else "⚠️"} رد CONNECT بعد التغذية الداخلية (0x0F): ${connRx.toHexStr().ifBlank { "Timeout" }}"
             )
         }
-
-        // 5. CMD_USBDM_TARGET_HALT = 0x14 + Read SDIDH/SDIDL (0x1806) via CMD_USBDM_READ_MEM = 0x21
-        val haltRx = transport.usbdmTransceive(byteArrayOf(0x02, 0x14), 8, 350, "USBDM TARGET_HALT [02 14]")
-        if (haltRx.isNotEmpty() && (haltRx[0].toInt() and 0xFF) == 0x00) {
-            appendLog(ProberLogDirection.SUCCESS, "✅ إيقاف المعالج عبر CMD_USBDM_TARGET_HALT (0x14) -> 0x00")
+        if (!connOk) {
+            val rxHint = connRx.toHexStr().ifBlank { "Timeout" }
+            appendLog(ProberLogDirection.WARN, "⚠️ USBDM جاهزة لكن فشل CONNECT [0x0F] ($rxHint) — تأكد من توصيل BKGD/RESET/VDD على الكارتة.")
+            return null
         }
+        appendLog(ProberLogDirection.SUCCESS, "✅ تم تزامن السلك الواحد (BKGD) مع معالج HCS08 بنجاح عبر CONNECT (0x0F) -> 0x00!")
 
-        val sdidRx = transport.usbdmTransceive(
+        // 5. CMD_USBDM_TARGET_HALT = 0x14 + Read SDIDH/SDIDL (0x1806) via CMD_USBDM_READ_MEM = 0x21 (or scan 0x1E..0x24)
+        val haltRx = transport.usbdmTransceive(byteArrayOf(0x02, 0x14), 8, 350, "USBDM TARGET_HALT [02 14]")
+        val haltOk = haltRx.isNotEmpty() && (haltRx[0].toInt() and 0xFF) == 0x00
+        appendLog(
+            if (haltOk) ProberLogDirection.SUCCESS else ProberLogDirection.WARN,
+            "${if (haltOk) "✅" else "⚠️"} رد CMD_USBDM_TARGET_HALT (0x14): ${haltRx.toHexStr().ifBlank { "Timeout" }}"
+        )
+
+        var sdidRx = transport.usbdmTransceive(
             byteArrayOf(0x08, 0x21, 0x01, 0x02, 0x00, 0x00, 0x18, 0x06),
             16, 400, "USBDM READ_MEM SDIDH/L [0x21 @ 0x1806]"
         )
+        appendLog(ProberLogDirection.INFO, "رد READ_MEM (0x21 @ 0x1806): ${sdidRx.toHexStr().ifBlank { "Timeout" }}")
+
+        if (sdidRx.size < 3 || (sdidRx[0].toInt() and 0xFF) != 0x00) {
+            for (readCmd in listOf(0x1E, 0x1F, 0x20, 0x22, 0x23, 0x24)) {
+                val probeRx = transport.usbdmTransceive(
+                    byteArrayOf(0x08, readCmd.toByte(), 0x01, 0x02, 0x00, 0x00, 0x18, 0x06),
+                    16, 350, "USBDM Probe READ_MEM [0x%02X @ 0x1806]".format(readCmd)
+                )
+                appendLog(
+                    ProberLogDirection.INFO,
+                    "مسح أمر القراءة 0x%02X -> %s".format(readCmd, probeRx.toHexStr().ifBlank { "Timeout" })
+                )
+                if (probeRx.size >= 3 && (probeRx[0].toInt() and 0xFF) == 0x00) {
+                    detectedUsbdmReadCmd = readCmd
+                    sdidRx = probeRx
+                    appendLog(ProberLogDirection.SUCCESS, "✅ تم اكتشاف أمر القراءة المطابق للفيرموير: 0x%02X".format(readCmd))
+                    break
+                }
+            }
+        } else {
+            detectedUsbdmReadCmd = 0x21
+        }
+
         if (sdidRx.size >= 3 && (sdidRx[0].toInt() and 0xFF) == 0x00) {
             val sdid16 = ((sdidRx[1].toInt() and 0xFF) shl 8) or (sdidRx[2].toInt() and 0xFF)
             detectedSdidHex = "0x%04X".format(sdid16)
             val modelName = lookupHcs08ModelBySdid(sdid16)
             detectedFreescaleModel = "Freescale / NXP HCS08 — $modelName (SDID=$detectedSdidHex)"
-            appendLog(ProberLogDirection.SUCCESS, "✅ قراءة هوية Freescale / NXP HCS08: SDIDH/L=$detectedSdidHex -> $detectedFreescaleModel")
+            appendLog(ProberLogDirection.SUCCESS, "✅ هوية المعالج (Freescale / NXP HCS08): SDIDH/L=$detectedSdidHex -> $detectedFreescaleModel")
         }
 
         val dt = (System.currentTimeMillis() - t0).toInt().coerceAtLeast(10)
-        val speedNote = when {
-            detectedUsbdmSyncBytes.isNotBlank() -> "SYNC=$detectedUsbdmSyncBytes (${detectedUsbdmSpeedHz / 1000} kHz)"
-            detectedUsbdmSpeedHz > 0 -> "${detectedUsbdmSpeedHz / 1000} kHz BDM Bus"
-            else -> "Auto BDM Bus"
-        }
+        val capsHex = "0x%02X".format(detectedUsbdmCapsCmd)
+        val readCmdHex = "0x%02X".format(detectedUsbdmReadCmd)
         return SyncLock(
-            baudRate = if (detectedUsbdmSpeedHz > 0) detectedUsbdmSpeedHz else 1_500_000,
+            baudRate = 1_500_000,
             evenParity = false,
             parityMode = "USB Bulk Native (EP1/EP2)",
-            wakeUpPatternUsed = "USBDM Standard HCS08 BDM ($speedNote)",
-            flmd0PinState = "USBDM VDD=+5V (0x06) • BKGD Native",
+            wakeUpPatternUsed = "USBDM V4.x HCS08 BKGD Auto-Sync (CONNECT 0x0F)",
+            flmd0PinState = "USBDM VDD=+5V (0x02) • BKGD Native",
             resetPinIdleState = "HIGH (+5V) via USBDM RESET",
-            resetPinPulsePolarity = "USBDM Hardware BKGD/RESET Sync (0x0F/0x10/0x14)",
+            resetPinPulsePolarity = "USBDM Hardware BKGD/RESET Sync (0x0F/0x14)",
             dtrPolarity = "USBDM Native USB Bulk",
             rtsPolarity = "USBDM Hardware RESET",
             inverted = false,
@@ -699,9 +750,9 @@ class ProberEngine(context: Context) {
             resetPulseMs = 50,
             postResetDelayMs = 100,
             syncByteGapMs = 5,
-            syncPulseHex = "02 01 -> 03 06 02 -> 03 02 00 -> 02 0F -> 02 10 -> 02 14",
+            syncPulseHex = "$capsHex -> 03 02 02 -> 03 01 00 -> 02 0F -> 02 14 -> READ($readCmdHex)",
             framing = DetectedFraming.USBDM_BDM,
-            firstReplyHex = (sdidRx.takeIf { it.isNotEmpty() } ?: syncRx).toHexStr(),
+            firstReplyHex = (sdidRx.takeIf { it.isNotEmpty() } ?: connRx).toHexStr(),
             latencySampleMs = dt
         )
     }
@@ -1093,10 +1144,19 @@ class ProberEngine(context: Context) {
         if (sync.framing == DetectedFraming.USBDM_BDM) {
             if (detectedSdidHex.isBlank()) {
                 transport.usbdmTransceive(byteArrayOf(0x02, 0x14), 8, 300, "Auto-ID USBDM HALT [02 14]")
-                val sdidRx = transport.usbdmTransceive(
-                    byteArrayOf(0x08, 0x21, 0x01, 0x02, 0x00, 0x00, 0x18, 0x06),
-                    16, 350, "Auto-ID USBDM SDID [0x21 @ 0x1806]"
-                )
+                var sdidRx = ByteArray(0)
+                val readCandidates = (listOf(detectedUsbdmReadCmd) + (0x1E..0x24).toList()).distinct()
+                for (readCmd in readCandidates) {
+                    val rx = transport.usbdmTransceive(
+                        byteArrayOf(0x08, readCmd.toByte(), 0x01, 0x02, 0x00, 0x00, 0x18, 0x06),
+                        16, 350, "Auto-ID USBDM SDID [0x%02X @ 0x1806]".format(readCmd)
+                    )
+                    if (rx.size >= 3 && (rx[0].toInt() and 0xFF) == 0x00) {
+                        detectedUsbdmReadCmd = readCmd
+                        sdidRx = rx
+                        break
+                    }
+                }
                 if (sdidRx.size >= 3 && (sdidRx[0].toInt() and 0xFF) == 0x00) {
                     val sdid16 = ((sdidRx[1].toInt() and 0xFF) shl 8) or (sdidRx[2].toInt() and 0xFF)
                     detectedSdidHex = "0x%04X".format(sdid16)
@@ -1106,11 +1166,12 @@ class ProberEngine(context: Context) {
             val model = detectedFreescaleModel.ifBlank { "Freescale / NXP HCS08 Target" }
             val sig = buildString {
                 if (detectedSdidHex.isNotBlank()) append("SDIDH/L=$detectedSdidHex")
-                if (detectedUsbdmSyncBytes.isNotBlank()) append(" | SYNC=$detectedUsbdmSyncBytes")
                 if (detectedUsbdmCaps.isNotBlank()) append(" | USBDM Caps=$detectedUsbdmCaps")
             }.ifBlank { sync.firstReplyHex }
+            val capsHex = "0x%02X".format(detectedUsbdmCapsCmd)
+            val readHex = "0x%02X".format(detectedUsbdmReadCmd)
             return UniversalIdCapture(
-                autoIdRule = "USBDM GET_CAPABILITIES (0x01) -> SET_VDD 5V (0x06) -> SET_TARGET HCS08 (0x02) -> CONNECT (0x0F) + SYNC (0x10) -> TARGET_HALT (0x14) -> READ_MEM 0x21 (0x1806..0x1807)",
+                autoIdRule = "USBDM V4.x GET_CAPABILITIES ($capsHex) -> SET_VDD 5V (0x02) -> SET_TARGET HCS08 (0x01) -> CONNECT (0x0F) -> TARGET_HALT (0x14) -> READ_MEM $readHex (0x1806..0x1807)",
                 manufacturerGuess = "Freescale / NXP Semiconductors",
                 inferredModel = model,
                 rawSignatureSummary = sig,
@@ -1251,25 +1312,26 @@ class ProberEngine(context: Context) {
         }
 
         if (sync.framing == DetectedFraming.USBDM_BDM) {
+            val readCmd = detectedUsbdmReadCmd
             transport.usbdmTransceive(byteArrayOf(0x02, 0x14), 8, 250, "USBDM HALT before Direct Read [02 14]", logTxRx = false)
             for (addr in listOf(0xC000, 0x8000, 0xE000)) {
                 val read16 = transport.usbdmTransceive(
                     byteArrayOf(
-                        0x08, 0x21, 0x01, 0x10,
+                        0x08, readCmd.toByte(), 0x01, 0x10,
                         0x00, 0x00, ((addr ushr 8) and 0xFF).toByte(), (addr and 0xFF).toByte()
                     ),
-                    32, 350, "USBDM Direct Read [0x21 @ 0x%04X..0x%04X]".format(addr, addr + 15)
+                    32, 350, "USBDM Direct Read [0x%02X @ 0x%04X..0x%04X]".format(readCmd, addr, addr + 15)
                 )
                 if (read16.size >= 17 && (read16[0].toInt() and 0xFF) == 0x00) {
                     val payload = read16.copyOfRange(1, 17)
                     return updateAndReturn(
                         "stage2_direct_read",
                         ChecklistStepStatus.PASSED,
-                        "USBDM READ_MEM [0x21 @ 0x%04X] -> ${payload.toHexStr()}".format(addr)
+                        "USBDM READ_MEM [0x%02X @ 0x%04X] -> ${payload.toHexStr()}".format(readCmd, addr)
                     )
                 }
             }
-            return updateAndReturn("stage2_direct_read", ChecklistStepStatus.FAILED, "USBDM READ_MEM (0x21) مرفوض (الرقاقة محمية FSEC Secured)")
+            return updateAndReturn("stage2_direct_read", ChecklistStepStatus.FAILED, "USBDM READ_MEM (0x%02X) مرفوض (الرقاقة محمية FSEC Secured)".format(readCmd))
         }
 
         if (sync.framing == DetectedFraming.FREESCALE_SINGLE_WIRE_BDM) {
@@ -1463,9 +1525,10 @@ class ProberEngine(context: Context) {
     private suspend fun testRamStubInjection(sync: SyncLock): ChecklistStepItem {
         updateStep("stage2_ram_stub", ChecklistStepStatus.RUNNING, "اختبار عنوان RAM مؤقت دون لمس الفلاش...")
         if (sync.framing == DetectedFraming.USBDM_BDM) {
+            val readCmd = detectedUsbdmReadCmd
             val ramRx = transport.usbdmTransceive(
-                byteArrayOf(0x08, 0x21, 0x01, 0x04, 0x00, 0x00, 0x00, 0x80.toByte()),
-                12, 300, "USBDM RAM Access [0x21 @ 0x0080]"
+                byteArrayOf(0x08, readCmd.toByte(), 0x01, 0x04, 0x00, 0x00, 0x00, 0x80.toByte()),
+                12, 300, "USBDM RAM Access [0x%02X @ 0x0080]".format(readCmd)
             )
             return if (ramRx.size >= 5 && (ramRx[0].toInt() and 0xFF) == 0x00) {
                 updateAndReturn("stage2_ram_stub", ChecklistStepStatus.PASSED, "USBDM RAM 0x0080 مفتوح -> ${ramRx.copyOfRange(1, 5).toHexStr()}")
@@ -1510,13 +1573,15 @@ class ProberEngine(context: Context) {
             if (isNativeUsbdm) {
                 val stsRx = transport.usbdmTransceive(byteArrayOf(0x02, 0x0D), 8, 250, "USBDM GET_BDM_STATUS [02 0D]")
                 val stsHex = if (stsRx.isNotEmpty()) "0x%02X".format(stsRx[0].toInt() and 0xFF) else "0x00"
-                discovered.add(DiscoveredCommandEntry("0x01", 0x01, stsHex, 0, "USBDM Get Capabilities", true))
-                discovered.add(DiscoveredCommandEntry("0x06", 0x06, "0x00", 1, "USBDM Set Target VDD (5V=0x02)", true))
-                discovered.add(DiscoveredCommandEntry("0x02", 0x02, "0x00", 1, "USBDM Set Target Type (HCS08=0x00)", true))
-                discovered.add(DiscoveredCommandEntry("0x0F", 0x0F, "0x00", 0, "USBDM Connect", true))
-                discovered.add(DiscoveredCommandEntry("0x10", 0x10, "0x00", 0, "USBDM BDM Sync", true))
+                val capsHex = "0x%02X".format(detectedUsbdmCapsCmd)
+                val readHex = "0x%02X".format(detectedUsbdmReadCmd)
+                discovered.add(DiscoveredCommandEntry(capsHex, detectedUsbdmCapsCmd, stsHex, 0, "USBDM Get Capabilities", true))
+                discovered.add(DiscoveredCommandEntry("0x02", 0x02, "0x00", 1, "USBDM Set Target VDD (5V=0x02)", true))
+                discovered.add(DiscoveredCommandEntry("0x01", 0x01, "0x00", 1, "USBDM Set Target Type (HCS08=0x00)", true))
+                discovered.add(DiscoveredCommandEntry("0x03", 0x03, "0x00", 1, "USBDM Internal Target Power Control", true))
+                discovered.add(DiscoveredCommandEntry("0x0F", 0x0F, "0x00", 0, "USBDM Connect & BKGD Auto-Sync", true))
                 discovered.add(DiscoveredCommandEntry("0x14", 0x14, "0x00", 0, "USBDM Target Halt", true))
-                discovered.add(DiscoveredCommandEntry("0x21", 0x21, "0x00", 6, "USBDM Read Memory (SDID/Flash)", true))
+                discovered.add(DiscoveredCommandEntry(readHex, detectedUsbdmReadCmd, "0x00", 6, "USBDM Read Memory (SDID/Flash)", true))
                 discovered.add(DiscoveredCommandEntry("0x20", 0x20, "0x00", 6, "USBDM Write Memory (FCMD/RAM)", false))
             } else {
                 discovered.add(DiscoveredCommandEntry("0xFE", 0xFE, "SYNC", 0, "Single-Wire BDM Sync (1.5Mbps)", true))
@@ -2036,20 +2101,16 @@ class ProberEngine(context: Context) {
             }
         } else if (sync.framing == DetectedFraming.USBDM_BDM || sync.framing == DetectedFraming.FREESCALE_SINGLE_WIRE_BDM) {
             val isUsbdm = (sync.framing == DetectedFraming.USBDM_BDM)
-            flashRule = "HCS08 SDIDH/SDIDL (0x1806..0x1807 via READ_MEM 0x21) -> $detectedSdidHex (${base.inferredModel}); HCS08 Flash via FCMD 0x41 (Mass Erase) / 0x20 (Byte Program)"
+            val readHex = "0x%02X".format(detectedUsbdmReadCmd)
+            flashRule = "HCS08 SDIDH/SDIDL (0x1806..0x1807 via READ_MEM $readHex) -> $detectedSdidHex (${base.inferredModel}); HCS08 Flash via FCMD 0x41 (Mass Erase) / 0x20 (Byte Program)"
             oscRule = if (isUsbdm) {
-                val speedDesc = if (detectedUsbdmSpeedHz > 0) "${detectedUsbdmSpeedHz / 1000} kHz" else "Auto"
-                "USBDM CONNECT [0x0F] + SYNC [0x10] auto-measured BDM bus clock (SYNC=$detectedUsbdmSyncBytes -> $speedDesc)."
+                "USBDM V4.x CONNECT [0x0F] auto-synced BKGD bus + TARGET_HALT [0x14] (READ_MEM=$readHex)."
             } else {
                 "Single-Wire BDM auto-timed at 1,500,000 bps (8N1) on BKGD."
             }
-            detectedCrystal = if (isUsbdm) {
-                if (detectedUsbdmSyncBytes.isNotBlank()) "SYNC=$detectedUsbdmSyncBytes (${detectedUsbdmSpeedHz / 1000} kHz)"
-                else if (detectedUsbdmSpeedHz > 0) "${detectedUsbdmSpeedHz / 1000} kHz BDM Bus"
-                else "USBDM Auto BDM"
-            } else "1.5 Mbps BDM Sync"
-            winningOscText = if (isUsbdm) "USBDM Sync [0x10]" else "1.5 Mbps BKGD Sync"
-            baudRule = if (isUsbdm) "Native USBDM USB Bulk (EP1 OUT / EP2 IN)" else "FT232 Single-Wire BDM locked at 1,500,000 bps (8N1)"
+            detectedCrystal = if (isUsbdm) "USBDM V4.x Auto BKGD Sync [0x0F]" else "1.5 Mbps BDM Sync"
+            winningOscText = if (isUsbdm) "USBDM CONNECT [0x0F]" else "1.5 Mbps BKGD Sync"
+            baudRule = if (isUsbdm) "Native USBDM V4.x USB Bulk (EP1 OUT / EP2 IN)" else "FT232 Single-Wire BDM locked at 1,500,000 bps (8N1)"
             flashEndHex = when {
                 "60" in base.inferredModel -> "0x00FFFF (60 KB HCS08)"
                 "32" in base.inferredModel -> "0x00FFFF (32 KB HCS08)"
@@ -2867,6 +2928,7 @@ class ProberEngine(context: Context) {
         length: Int
     ): PageReadOutcome {
         if (sync.framing == DetectedFraming.USBDM_BDM) {
+            val readCmd = detectedUsbdmReadCmd
             transport.usbdmTransceive(byteArrayOf(0x02, 0x14), 8, 250, "Stage6 USBDM HALT [02 14]", logTxRx = false)
             val out = java.io.ByteArrayOutputStream()
             var offset = 0
@@ -2876,21 +2938,21 @@ class ProberEngine(context: Context) {
                 val chunkLen = min(32, length - offset)
                 val addr = startAddr + offset
                 val pkt = byteArrayOf(
-                    0x08, 0x21, 0x01, chunkLen.toByte(),
+                    0x08, readCmd.toByte(), 0x01, chunkLen.toByte(),
                     ((addr ushr 24) and 0xFF).toByte(),
                     ((addr ushr 16) and 0xFF).toByte(),
                     ((addr ushr 8) and 0xFF).toByte(),
                     (addr and 0xFF).toByte()
                 )
                 lastCmd = pkt
-                val rx = transport.usbdmTransceive(pkt, chunkLen + 8, 350, "Stage6 USBDM READ_MEM [0x21 @ 0x%04X +%d]".format(addr, chunkLen), logTxRx = false)
+                val rx = transport.usbdmTransceive(pkt, chunkLen + 8, 350, "Stage6 USBDM READ_MEM [0x%02X @ 0x%04X +%d]".format(readCmd, addr, chunkLen), logTxRx = false)
                 if (rx.size < chunkLen + 1 || (rx[0].toInt() and 0xFF) != 0x00) {
-                    return PageReadOutcome(null, "USBDM READ_MEM (0x21) Failed at 0x%04X".format(addr), pkt)
+                    return PageReadOutcome(null, "USBDM READ_MEM (0x%02X) Failed at 0x%04X".format(readCmd, addr), pkt)
                 }
                 out.write(rx, 1, chunkLen)
                 offset += chunkLen
             }
-            return PageReadOutcome(out.toByteArray(), "USBDM READ_MEM (0x21 @ 0x%04X)".format(startAddr), lastCmd)
+            return PageReadOutcome(out.toByteArray(), "USBDM READ_MEM (0x%02X @ 0x%04X)".format(readCmd, startAddr), lastCmd)
         }
 
         if (sync.framing == DetectedFraming.FREESCALE_SINGLE_WIRE_BDM) {
@@ -3340,10 +3402,14 @@ class ProberEngine(context: Context) {
             "🔄 استعادة التزامن التلقائية (Auto Re-Sync): $reason"
         )
         if (sync.framing == DetectedFraming.USBDM_BDM) {
-            transport.usbdmTransceive(byteArrayOf(0x02, 0x0F), 8, 250, "USBDM Reconnect [02 0F]", logTxRx = false)
-            val sy = transport.usbdmTransceive(byteArrayOf(0x02, 0x10), 8, 250, "USBDM Re-Sync [02 10]", logTxRx = false)
+            var cn = transport.usbdmTransceive(byteArrayOf(0x02, 0x0F), 8, 250, "USBDM Reconnect [02 0F]", logTxRx = false)
+            if (cn.isEmpty() || (cn[0].toInt() and 0xFF) != 0x00) {
+                transport.usbdmTransceive(byteArrayOf(0x03, 0x03, 0x01), 8, 200, "USBDM Internal Power [03 03 01]", logTxRx = false)
+                delay(100)
+                cn = transport.usbdmTransceive(byteArrayOf(0x02, 0x0F), 8, 250, "USBDM Reconnect Retry [02 0F]", logTxRx = false)
+            }
             transport.usbdmTransceive(byteArrayOf(0x02, 0x14), 8, 250, "USBDM Re-Halt [02 14]", logTxRx = false)
-            return sy.isNotEmpty() && (sy[0].toInt() and 0xFF) == 0x00
+            return cn.isNotEmpty() && (cn[0].toInt() and 0xFF) == 0x00
         }
         transport.configureUart(sync.baudRate, evenParity = sync.evenParity)
         if (sync.useResetToggle) {
