@@ -209,7 +209,11 @@ data class ProberBlueprintSummary(
     val timingMap: TimingMapMs = TimingMapMs(),
     val discoveredCommands: List<DiscoveredCommandEntry> = emptyList(),
     val stage5Results: List<Stage5StepResult> = emptyList(),
-    val advancedSchoolsNotes: String = ""
+    val advancedSchoolsNotes: String = "",
+    val liveReadProofPassed: Boolean = false,
+    val liveReadProofMode: String = "--",
+    val liveReadProofStatus: String = "لم يُختبر بعد",
+    val liveReadProofFirst32Hex: String = "--"
 )
 
 data class ProberUiState(
@@ -243,7 +247,8 @@ fun defaultChecklist(): List<ChecklistStepItem> = listOf(
     ChecklistStepItem("stage2_ram_stub", "المرحلة 2.5", "مدرسة حقن الكود في الرام (RAM Stub في عنوان مؤقت آمن)"),
     ChecklistStepItem("stage3_cmd_sweep", "المرحلة 3", "المسح الجراحي الشامل للأوامر 0x00..0xFF وأطوال المعاملات LEN 0..8"),
     ChecklistStepItem("stage4_timing_bounds", "المرحلة 4", "مصفوفة الكريستالات 0x90 + حدود الفلاش 8KB..512KB + تبديل السرعة + STX + 6 أزمنة"),
-    ChecklistStepItem("stage5_safety_gate", "المرحلة 5", "بوابة الأمان التفاعلية (تصفير Block 0، الكتابة الجزئية، والمسح الكلي 0x20)")
+    ChecklistStepItem("stage5_safety_gate", "المرحلة 5", "بوابة الأمان التفاعلية (تصفير Block 0، الكتابة الجزئية، والمسح الكلي 0x20)"),
+    ChecklistStepItem("stage6_live_read_proof", "المرحلة 6", "إثبات صحة السحب الفعلي (Universal Live Read Proof — عينة مليئة أو فارغة 0xFF)")
 )
 
 private fun jsonEsc(v: String): String = v
@@ -362,6 +367,18 @@ fun formatReadBlueprintJson(state: ProberUiState): String {
             val comma = if (idx < readWorkflow.lastIndex) "," else ""
             appendLine("    \"${jsonEsc(step)}\"$comma")
         }
+        appendLine("  ],")
+        appendLine("  \"universalLiveReadProof\": {")
+        appendLine("    \"passed\": ${s.liveReadProofPassed},")
+        appendLine("    \"mode\": \"${jsonEsc(s.liveReadProofMode)}\",")
+        appendLine("    \"statusReport\": \"${jsonEsc(s.liveReadProofStatus)}\",")
+        appendLine("    \"first32BytesHex\": \"${jsonEsc(s.liveReadProofFirst32Hex)}\"")
+        appendLine("  },")
+        appendLine("  \"antiDummyValidationRules\": [")
+        appendLine("    \"Reject any extracted firmware file immediately if >= 99% of bytes are 0x00 or 0xFF unless it passes a genuine on-chip Verify command inside the MCU.\",")
+        appendLine("    \"Verify extracted RX payload bytes never match TX command frame bytes (strict UART diode-echo rejection).\",")
+        appendLine("    \"Validate Verify/Compare commands with two vectors: unmodified extracted bytes MUST return ACK, and 1-byte mutated bytes MUST return Mismatch/Verify Error.\",")
+        appendLine("    \"On blank (0xFF) test chips, execute Write-Read closed-loop proof using [55 AA 12 34 56 78 9A BC DE F0 11 22 33 44 55 66] at (End_Addr - PageSize + 1) and confirm 100% read-back equality.\"")
         appendLine("  ]")
         appendLine("}")
     }
@@ -441,6 +458,16 @@ fun formatWriteBlueprintJson(state: ProberUiState): String {
             val comma = if (idx < writeWorkflow.lastIndex) "," else ""
             appendLine("    \"${jsonEsc(step)}\"$comma")
         }
+        appendLine("  ],")
+        appendLine("  \"universalLiveReadProof\": {")
+        appendLine("    \"passed\": ${s.liveReadProofPassed},")
+        appendLine("    \"mode\": \"${jsonEsc(s.liveReadProofMode)}\",")
+        appendLine("    \"statusReport\": \"${jsonEsc(s.liveReadProofStatus)}\",")
+        appendLine("    \"first32BytesHex\": \"${jsonEsc(s.liveReadProofFirst32Hex)}\"")
+        appendLine("  },")
+        appendLine("  \"antiDummyValidationRules\": [")
+        appendLine("    \"Reject any extracted firmware file if >= 99% of bytes are 0x00 or 0xFF without passing an internal MCU Verify check.\",")
+        appendLine("    \"Require exact match for Verify ACK and Mismatch error on 1-byte mutation.\"")
         appendLine("  ]")
         appendLine("}")
     }
@@ -522,6 +549,20 @@ fun formatHumanGuideText(state: ProberUiState): String {
         appendLine("• نصيحة التوصيل: تأكد من توصيل GND المشترك، ومقاومة/دايود الفصل عند دمج TX/RX على سلك واحد (Single-Wire) أو توصيل منفصل عند UART الثنائي.")
         appendLine("• جدول الأوامر المكتشفة (${s.discoveredCommands.size} أمر):")
         appendLine(extraCmds)
+        appendLine()
+
+        appendLine("══════════════════════════════════════════════")
+        appendLine("5️⃣ إثبات صحة السحب الفعلي وقواعد رفض الملفات الوهمية (Stage 6)")
+        appendLine("══════════════════════════════════════════════")
+        appendLine("• نتيجة الإثبات: ${s.liveReadProofStatus}")
+        appendLine("• آلية الفحص: ${s.liveReadProofMode}")
+        if (s.liveReadProofFirst32Hex != "--" && s.liveReadProofFirst32Hex.isNotBlank()) {
+            appendLine("• أول 32 بايت مسحوبة (Hex): ${s.liveReadProofFirst32Hex}")
+        }
+        appendLine("• قواعد منع السحب الوهمي (antiDummyValidationRules):")
+        appendLine("  1. رفض أي ملف سوفت وير مسحوب فوراً إذا كانت نسبة 0xFF أو 0x00 تبلغ >= 99% دون اجتياز اختبار Verify الحقيقي داخل المعالج.")
+        appendLine("  2. رفض أي بايتات مطابقة لإطار الإرسال (Echo Rejection).")
+        appendLine("  3. للشرائح الفارغة 0xFF: التحقق بحلقة مغلقة (كتابة البصمة 55 AA 12 34 56 78 9A BC DE F0 11 22 33 44 55 66 في آخر صفحة ثم استرجاعها 100%).")
     }
 }
 
@@ -555,6 +596,16 @@ fun formatHumanGuideJson(state: ProberUiState): String {
         appendLine("    \"baudSwitchDelayMs\": ${tm.baudSwitchDelayMs},")
         appendLine("    \"eraseWriteBusyWaitMs\": ${tm.eraseWriteBusyWaitMs}")
         appendLine("  },")
+        appendLine("  \"universalLiveReadProof\": {")
+        appendLine("    \"passed\": ${s.liveReadProofPassed},")
+        appendLine("    \"mode\": \"${jsonEsc(s.liveReadProofMode)}\",")
+        appendLine("    \"statusReport\": \"${jsonEsc(s.liveReadProofStatus)}\",")
+        appendLine("    \"first32BytesHex\": \"${jsonEsc(s.liveReadProofFirst32Hex)}\"")
+        appendLine("  },")
+        appendLine("  \"antiDummyValidationRules\": [")
+        appendLine("    \"Reject any extracted firmware file immediately if >= 99% of bytes are 0x00 or 0xFF unless it passes an on-chip Verify command inside the MCU.\",")
+        appendLine("    \"Confirm extracted RX payload is not TX diode echo.\"")
+        appendLine("  ],")
         appendLine("  \"fullArabicGuide\": \"${jsonEsc(guideText)}\"")
         appendLine("}")
     }
@@ -571,7 +622,7 @@ fun formatAiReadyBlueprintJson(state: ProberUiState): String {
 
     return buildString {
         appendLine("{")
-        appendLine("  \"blueprintVersion\": \"admin-lab-universal-v5\",")
+        appendLine("  \"blueprintVersion\": \"admin-lab-universal-v6\",")
         appendLine("  \"generatedAt\": \"$now\",")
         appendLine("  \"adapter\": \"${jsonEsc(state.usbStatus.adapterName)} (${jsonEsc(state.usbStatus.vidPidHex)})\",")
         appendLine("  \"manufacturer\": \"${jsonEsc(s.manufacturerGuess)}\",")
@@ -583,6 +634,16 @@ fun formatAiReadyBlueprintJson(state: ProberUiState): String {
         appendLine("  \"framing\": \"${jsonEsc(framing?.label ?: "--")}\",")
         appendLine("  \"winningOscillatorPayload\": \"${jsonEsc(s.winningOscillatorPayload)}\",")
         appendLine("  \"eraseWriteBusyWaitMs\": ${tm.eraseWriteBusyWaitMs},")
+        appendLine("  \"universalLiveReadProof\": {")
+        appendLine("    \"passed\": ${s.liveReadProofPassed},")
+        appendLine("    \"mode\": \"${jsonEsc(s.liveReadProofMode)}\",")
+        appendLine("    \"statusReport\": \"${jsonEsc(s.liveReadProofStatus)}\",")
+        appendLine("    \"first32BytesHex\": \"${jsonEsc(s.liveReadProofFirst32Hex)}\"")
+        appendLine("  },")
+        appendLine("  \"antiDummyValidationRules\": [")
+        appendLine("    \"Reject any extracted firmware file immediately if >= 99% of bytes are 0x00 or 0xFF unless it passes a genuine on-chip Verify command inside the MCU.\",")
+        appendLine("    \"Verify RX bytes are not TX Echo and validate Verify ACK + 1-byte mutation Mismatch.\"")
+        appendLine("  ],")
         appendLine("  \"exactDynamicReadWorkflow\": [${readWorkflow.joinToString(", ") { "\"${jsonEsc(it)}\"" }}],")
         appendLine("  \"exactDynamicWriteWorkflow\": [${writeWorkflow.joinToString(", ") { "\"${jsonEsc(it)}\"" }}]")
         appendLine("}")

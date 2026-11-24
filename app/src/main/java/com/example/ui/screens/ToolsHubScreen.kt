@@ -51,6 +51,7 @@ import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.People
 import androidx.compose.material.icons.filled.PrecisionManufacturing
 import androidx.compose.material.icons.filled.Receipt
+import androidx.compose.material.icons.filled.Science
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
@@ -94,6 +95,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.example.R
+import com.example.data.HubCategoryManager
 import com.example.data.ToolsCategoryManager
 import com.example.data.model.HubCategoryCustomization
 import com.example.data.repository.AdminRepository
@@ -122,6 +124,7 @@ fun resolveToolIcon(iconName: String, fallback: ImageVector): ImageVector {
         "electric", "كهرباء", "باور" -> Icons.Default.ElectricBolt
         "hub", "تجميع", "مخطط" -> Icons.Default.Hub
         "manufacturing", "صناعي", "بوردات" -> Icons.Default.PrecisionManufacturing
+        "science", "مختبر", "بروتوكول", "فحص" -> Icons.Default.Science
         "grid", "قائمة", "أداة" -> Icons.Default.GridView
         else -> fallback
     }
@@ -137,6 +140,7 @@ fun ToolsHubScreen(
     onNavigateToHarnesses: () -> Unit,
     onNavigateToDiagnostics: (String) -> Unit,
     onNavigateToAiStudio: () -> Unit,
+    onNavigateToProtocolProber: () -> Unit = {},
     onNavigateToProfile: () -> Unit = {},
     onAuthClick: () -> Unit = {},
     modifier: Modifier = Modifier
@@ -145,6 +149,7 @@ fun ToolsHubScreen(
     val isSuperAdmin = !userEmail.isNullOrBlank() && AdminRepository.isSuperAdminEmail(userEmail)
 
     val customizations by ToolsCategoryManager.customizations.collectAsState()
+    val hubCustomizations by HubCategoryManager.customizations.collectAsState()
     val categoryOrder by ToolsCategoryManager.categoryOrder.collectAsState()
     val jobsList by JobRecordRepository.jobs.collectAsState()
     val jobsCount = jobsList.size
@@ -256,7 +261,7 @@ fun ToolsHubScreen(
         return
     }
 
-    // Built-in Default Tool Items: Job Log + Customers Directory
+    // Built-in Default Tool Items: Job Log + Admin Protocol Prober (globally controlled by Admin)
     val defaultItems = remember(jobsCount) {
         listOf(
             ToolGridItem(
@@ -267,8 +272,26 @@ fun ToolsHubScreen(
                 iconTint = Color(0xFF0284C7),
                 circleBackground = Color(0xFFE0F2FE),
                 onClick = onNavigateToJobLog
+            ),
+            ToolGridItem(
+                id = "admin_protocol_prober",
+                defaultTitle = "مختبر فحص البروتوكولات",
+                defaultSubtitle = "مكتشف البروتوكول التلقائي وإثبات السحب",
+                defaultIcon = Icons.Default.Science,
+                iconTint = Color(0xFFD97706),
+                circleBackground = Color(0xFFFEF3C7),
+                onClick = onNavigateToProtocolProber
             )
         )
+    }
+
+    val effectiveCustomizations = remember(customizations, hubCustomizations) {
+        val globalProberCust = hubCustomizations["admin_protocol_prober"]
+        if (globalProberCust != null) {
+            customizations + ("admin_protocol_prober" to globalProberCust)
+        } else {
+            customizations
+        }
     }
 
     // Combine default items with any custom added categories
@@ -297,12 +320,12 @@ fun ToolsHubScreen(
     }
 
     // Sort items by categoryOrder and filter hidden items for regular users
-    val orderedItems = remember(allItems, categoryOrder, customizations, isAdmin) {
+    val orderedItems = remember(allItems, categoryOrder, effectiveCustomizations, isAdmin) {
         val visibleItems = if (isAdmin) {
             allItems
         } else {
             allItems.filter { item ->
-                val cust = customizations[item.id]
+                val cust = effectiveCustomizations[item.id]
                 cust?.isHidden != true
             }
         }
@@ -527,14 +550,18 @@ fun ToolsHubScreen(
                 modifier = Modifier.fillMaxSize()
             ) {
                 items(items = orderedItems, key = { it.id }) { item ->
-                    val cust = customizations[item.id]
+                    val cust = effectiveCustomizations[item.id]
 
                     val finalTitle = cust?.customTitle?.takeIf { it.isNotBlank() } ?: item.defaultTitle
                     val finalSubtitle = cust?.customSubtitle?.takeIf { it.isNotBlank() } ?: item.defaultSubtitle
                     val finalImageUrl = cust?.customImageUrl ?: ""
                     val finalIcon = resolveToolIcon(cust?.customIconName ?: "", item.defaultIcon)
 
-                    val isCategoryLocked = cust?.isLocked == true
+                    val isCategoryLocked = if (item.id == "admin_protocol_prober") {
+                        cust?.isLocked ?: true
+                    } else {
+                        cust?.isLocked == true
+                    }
                     val isCategoryHidden = cust?.isHidden == true
 
                     Box(modifier = Modifier.fillMaxWidth()) {
@@ -644,7 +671,11 @@ fun ToolsHubScreen(
                                 ToolCategoryLockSwitch(
                                     isLocked = isCategoryLocked,
                                     onToggle = {
-                                        ToolsCategoryManager.toggleCategoryLock(context, item.id)
+                                        if (item.id == "admin_protocol_prober") {
+                                            HubCategoryManager.setCategoryLock(context, item.id, !isCategoryLocked)
+                                        } else {
+                                            ToolsCategoryManager.toggleCategoryLock(context, item.id)
+                                        }
                                     }
                                 )
 
@@ -656,7 +687,11 @@ fun ToolsHubScreen(
                                         .size(26.dp)
                                         .clip(CircleShape)
                                         .clickable {
-                                            ToolsCategoryManager.toggleCategoryVisibility(context, item.id)
+                                            if (item.id == "admin_protocol_prober") {
+                                                HubCategoryManager.setCategoryVisibility(context, item.id, !isCategoryHidden)
+                                            } else {
+                                                ToolsCategoryManager.toggleCategoryVisibility(context, item.id)
+                                            }
                                             val state = if (!isCategoryHidden) "إخفاء" else "إظهار"
                                             Toast.makeText(context, "تم $state القائمة ${item.defaultTitle} عن المستخدمين بنجاح", Toast.LENGTH_SHORT).show()
                                         }
@@ -876,7 +911,8 @@ fun ToolsHubScreen(
     // Admin Edit Category Dialog
     if (isAdmin && editingCategoryId != null) {
         val selectedCat = allItems.find { it.id == editingCategoryId } ?: allItems.first()
-        val currentCust = customizations[selectedCat.id] ?: HubCategoryCustomization(id = selectedCat.id)
+        val currentCust = effectiveCustomizations[selectedCat.id]
+            ?: HubCategoryCustomization(id = selectedCat.id, isLocked = selectedCat.id == "admin_protocol_prober")
 
         EditToolCategoryDialog(
             categories = allItems,
@@ -885,20 +921,38 @@ fun ToolsHubScreen(
             onSelectCategory = { newId -> editingCategoryId = newId },
             onDismiss = { editingCategoryId = null },
             onSave = { updatedTitle, updatedSubtitle, updatedImageUrl, updatedIconName, updatedIsHidden ->
-                ToolsCategoryManager.updateCategory(
-                    context = context,
-                    categoryId = selectedCat.id,
-                    title = updatedTitle,
-                    subtitle = updatedSubtitle,
-                    imageUrl = updatedImageUrl,
-                    iconName = updatedIconName
-                )
-                ToolsCategoryManager.setCategoryVisibility(context, selectedCat.id, updatedIsHidden) { success ->
-                    Toast.makeText(
-                        context,
-                        if (success) "تم حفظ وتحديث قائمة الأدوات بنجاح!" else "تم الحفظ محلياً",
-                        Toast.LENGTH_SHORT
-                    ).show()
+                if (selectedCat.id == "admin_protocol_prober") {
+                    HubCategoryManager.updateCategory(
+                        context = context,
+                        id = selectedCat.id,
+                        customTitle = updatedTitle,
+                        customSubtitle = updatedSubtitle,
+                        customImageUrl = updatedImageUrl,
+                        customIconName = updatedIconName
+                    )
+                    HubCategoryManager.setCategoryVisibility(context, selectedCat.id, updatedIsHidden) { success ->
+                        Toast.makeText(
+                            context,
+                            if (success) "تم حفظ وتحديث الأداة للجميع بنجاح!" else "تم الحفظ محلياً",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    }
+                } else {
+                    ToolsCategoryManager.updateCategory(
+                        context = context,
+                        categoryId = selectedCat.id,
+                        title = updatedTitle,
+                        subtitle = updatedSubtitle,
+                        imageUrl = updatedImageUrl,
+                        iconName = updatedIconName
+                    )
+                    ToolsCategoryManager.setCategoryVisibility(context, selectedCat.id, updatedIsHidden) { success ->
+                        Toast.makeText(
+                            context,
+                            if (success) "تم حفظ وتحديث قائمة الأدوات بنجاح!" else "تم الحفظ محلياً",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    }
                 }
                 editingCategoryId = null
             },
@@ -911,8 +965,14 @@ fun ToolsHubScreen(
                 }
             } else null,
             onReset = {
-                ToolsCategoryManager.resetCategory(context, selectedCat.id) {
-                    Toast.makeText(context, "تمت استعادة الإعدادات الافتراضية للقائمة", Toast.LENGTH_SHORT).show()
+                if (selectedCat.id == "admin_protocol_prober") {
+                    HubCategoryManager.resetCategory(context, selectedCat.id) {
+                        Toast.makeText(context, "تمت استعادة الإعدادات الافتراضية للأداة", Toast.LENGTH_SHORT).show()
+                    }
+                } else {
+                    ToolsCategoryManager.resetCategory(context, selectedCat.id) {
+                        Toast.makeText(context, "تمت استعادة الإعدادات الافتراضية للقائمة", Toast.LENGTH_SHORT).show()
+                    }
                 }
                 editingCategoryId = null
             }
@@ -930,7 +990,7 @@ fun ToolsHubScreen(
         }
         ReorderToolCategoriesDialog(
             categories = currentOrderList,
-            customizations = customizations,
+            customizations = effectiveCustomizations,
             onMove = { catId, delta ->
                 ToolsCategoryManager.moveCategory(context, catId, delta, currentOrderList.map { it.id }) { success ->
                     if (success) {
@@ -1166,6 +1226,7 @@ fun EditToolCategoryDialog(
 
     val iconOptions = listOf(
         "receipt" to Icons.Default.Receipt,
+        "science" to Icons.Default.Science,
         "share" to Icons.Default.Share,
         "warning" to Icons.Default.Warning,
         "ai" to Icons.Default.AutoAwesome,

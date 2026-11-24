@@ -59,7 +59,6 @@ import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.PrecisionManufacturing
 import androidx.compose.material.icons.filled.RestartAlt
-import androidx.compose.material.icons.filled.Science
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material.icons.filled.Tune
@@ -160,7 +159,6 @@ fun DashboardHubScreen(
     onPublishUpdate: () -> Unit = {},
     onManageAdmins: () -> Unit,
     onManageBottomNav: () -> Unit = {},
-    onOpenAdminProber: () -> Unit = {},
     onAuthClick: () -> Unit,
     onNavigateToProfile: () -> Unit = {},
     modifier: Modifier = Modifier
@@ -354,43 +352,6 @@ fun DashboardHubScreen(
                                 imageVector = if (isGuest) Icons.AutoMirrored.Filled.Login else Icons.AutoMirrored.Filled.Logout,
                                 contentDescription = if (isGuest) "تسجيل الدخول" else "تسجيل الخروج",
                                 tint = Color.White
-                            )
-                        }
-                    }
-                }
-
-                if (isAdmin) {
-                    Spacer(modifier = Modifier.height(10.dp))
-                    Surface(
-                        shape = RoundedCornerShape(14.dp),
-                        color = Color(0xFFF59E0B),
-                        border = androidx.compose.foundation.BorderStroke(1.2.dp, Color(0xFFFEF3C7)),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(min = 48.dp)
-                            .clip(RoundedCornerShape(14.dp))
-                            .clickable { onOpenAdminProber() }
-                            .testTag("admin_protocol_prober_entry_button")
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 14.dp, vertical = 10.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.Center
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Science,
-                                contentDescription = "مختبر المشرفين (تجريبي)",
-                                tint = Color(0xFF1E293B),
-                                modifier = Modifier.size(18.dp)
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(
-                                text = "مختبر المشرفين (تجريبي)",
-                                color = Color(0xFF1E293B),
-                                fontSize = 13.sp,
-                                fontWeight = FontWeight.Bold
                             )
                         }
                     }

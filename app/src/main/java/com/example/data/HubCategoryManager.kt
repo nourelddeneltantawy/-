@@ -213,6 +213,23 @@ object HubCategoryManager {
         syncToFirestore(appContext, current, _categoryOrder.value, onComplete)
     }
 
+    fun setCategoryLock(
+        context: Context,
+        id: String,
+        isLocked: Boolean,
+        onComplete: ((Boolean) -> Unit)? = null
+    ) {
+        val appContext = context.applicationContext ?: context
+        val current = _customizations.value.toMutableMap()
+        val existing = current[id] ?: HubCategoryCustomization(id = id)
+        val updated = existing.copy(isLocked = isLocked)
+        current[id] = updated
+        _customizations.value = current
+        saveToPrefs(appContext, current, _categoryOrder.value)
+
+        syncToFirestore(appContext, current, _categoryOrder.value, onComplete)
+    }
+
     fun toggleCategoryVisibility(
         context: Context,
         id: String,

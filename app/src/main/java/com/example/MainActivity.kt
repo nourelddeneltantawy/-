@@ -48,6 +48,7 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.data.HubCategoryManager
 import com.example.data.model.AppliancePart
 import com.example.data.model.Harness
 import com.example.data.model.Motor
@@ -812,11 +813,6 @@ fun AppContent(
                             onCheckForUpdates = { handleManualUpdateCheck() },
                             onPublishUpdate = { showAdminPublishDialog = true },
                             onManageBottomNav = { showAdminBottomNavDialog = true },
-                            onOpenAdminProber = {
-                                if (isAdmin) {
-                                    navigateTo(Screen.ADMIN_PROTOCOL_PROBER)
-                                }
-                            },
                             onManageAdmins = {
                                 if (isSuperAdmin) {
                                     navigateTo(Screen.MANAGE_ADMINS)
@@ -1078,6 +1074,7 @@ fun AppContent(
                                 navigateTo(Screen.DIAGNOSTICS)
                             },
                             onNavigateToAiStudio = { navigateTo(Screen.AI_STUDIO) },
+                            onNavigateToProtocolProber = { navigateTo(Screen.ADMIN_PROTOCOL_PROBER) },
                             onNavigateToProfile = onOpenWelcomeProfile,
                             onAuthClick = { navigateTo(Screen.AUTH) }
                         )
@@ -1303,7 +1300,11 @@ fun AppContent(
                     }
 
                     Screen.ADMIN_PROTOCOL_PROBER -> {
-                        if (!isAdmin) {
+                        val proberCust = HubCategoryManager.customizations.collectAsState().value["admin_protocol_prober"]
+                        val isProberLocked = proberCust?.isLocked ?: true
+                        val isProberHidden = proberCust?.isHidden == true
+                        val canOpenProber = isAdmin || (!isProberLocked && !isProberHidden && !isGuest)
+                        if (!canOpenProber) {
                             navigateBack()
                         } else {
                             BackHandler {

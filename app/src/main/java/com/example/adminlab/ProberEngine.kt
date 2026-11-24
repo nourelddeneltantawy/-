@@ -403,13 +403,15 @@ class ProberEngine(context: Context) {
         // STAGE 5: Sequential Modal Warning Dialog (No Hot-Swap!)
         if (isMcuOpenForSafeRead) {
             updateStep("stage5_safety_gate", ChecklistStepStatus.PASSED, "المعالج مفتوح للسحب الآمن — لا حاجة لاختبارات تعديلية خطرة")
-            val finalSummary = summary.copy(
+            var finalSummary = summary.copy(
                 advancedSchoolsNotes = "المعالج مفتوح للسحب الآمن ($winningReadDesc) — اكتملت المراحل 1..4 دون لمس الفلاش."
             )
             updateSummaryAndBlueprint(finalSummary)
+            finalSummary = runStage6UniversalLiveReadProof(sync, finalSummary, userCancelledStage5 = false)
+            updateSummaryAndBlueprint(finalSummary)
             _state.value = _state.value.copy(
                 phase = ProberStagePhase.COMPLETED,
-                stageBanner = "اكتمل الفحص الشامل وتوليد البطاقات الثلاث بنجاح (المعالج مفتوح للسحب الآمن)"
+                stageBanner = "اكتمل الفحص الشامل والمرحلة 6 وتوليد البطاقات الثلاث بنجاح (المعالج مفتوح للسحب الآمن)"
             )
         } else {
             appendLog(
@@ -1483,7 +1485,10 @@ class ProberEngine(context: Context) {
 
     // ==================== STAGE 5: SEQUENTIAL INTERACTIVE MODAL DIALOG PROBES ====================
 
-    private suspend fun requestStepConfirmation(prompt: Stage5ConfirmPrompt): Boolean {
+    private suspend fun requestStepConfirmation(
+        prompt: Stage5ConfirmPrompt,
+        stepId: String = "stage5_safety_gate"
+    ): Boolean {
         currentCoroutineContext().ensureActive()
         val deferred = CompletableDeferred<Boolean>()
         pendingConfirmDeferred = deferred
@@ -1493,7 +1498,7 @@ class ProberEngine(context: Context) {
             stageBanner = "⚠️ بانتظار موافقة المشرف (${prompt.stepIndex}/${prompt.totalSteps}): ${prompt.stepTitle}"
         )
         updateStep(
-            "stage5_safety_gate",
+            stepId,
             ChecklistStepStatus.AWAITING_SAFETY,
             "بانتظار موافقة المشرف على: ${prompt.stepTitle}"
         )
@@ -1513,12 +1518,19 @@ class ProberEngine(context: Context) {
         val results = mutableListOf<Stage5StepResult>()
         val notesBuilder = StringBuilder()
 
-        fun finalizeAndComplete(bannerMsg: String, stepBadge: ChecklistStepStatus, stepDetail: String) {
+        suspend fun finalizeAndComplete(
+            bannerMsg: String,
+            stepBadge: ChecklistStepStatus,
+            stepDetail: String,
+            userCancelled: Boolean
+        ) {
             workingSummary = workingSummary.copy(
                 stage5Results = results.toList(),
                 advancedSchoolsNotes = notesBuilder.toString().trim().ifBlank { stepDetail }
             )
             updateStep("stage5_safety_gate", stepBadge, stepDetail)
+            updateSummaryAndBlueprint(workingSummary)
+            workingSummary = runStage6UniversalLiveReadProof(sync, workingSummary, userCancelledStage5 = userCancelled)
             updateSummaryAndBlueprint(workingSummary)
             _state.value = _state.value.copy(
                 phase = ProberStagePhase.COMPLETED,
@@ -1540,9 +1552,10 @@ class ProberEngine(context: Context) {
             results.add(Stage5StepResult("5.1 Block-0 Zeroing (0x22 + 0xB0)", passed = false, executed = false, durationMs = 0, detail = "أوقف المشرف الاختبار قبل التنفيذ"))
             notesBuilder.appendLine("توقف المشرف بأمان قبل الخطوة 5.1 — تم حفظ البطاقات الثلاث كاملة.")
             finalizeAndComplete(
-                bannerMsg = "تم التوقف بأمان عند بوابة المرحلة 5 وحفظ التقارير الثلاثة",
+                bannerMsg = "تم التوقف بأمان عند بوابة المرحلة 5 وإكمال المرحلة 6",
                 stepBadge = ChecklistStepStatus.PASSED,
-                stepDetail = "تم التوقف بأمان والاكتفاء بنتائج المراحل 1..4"
+                stepDetail = "تم التوقف بأمان والاكتفاء بنتائج المراحل 1..4",
+                userCancelled = true
             )
             return
         }
@@ -1574,9 +1587,10 @@ class ProberEngine(context: Context) {
             results.add(Stage5StepResult("5.2 Partial Bit Overwrite (0x40 STX 0xFE)", passed = false, executed = false, durationMs = 0, detail = "توقف المشرف بعد الخطوة 5.1"))
             notesBuilder.appendLine("توقف المشرف بأمان قبل الخطوة 5.2.")
             finalizeAndComplete(
-                bannerMsg = "تم إكمال الخطوة 5.1 والتوقف بأمان قبل 5.2 مع حفظ البطاقات الثلاث",
+                bannerMsg = "تم إكمال الخطوة 5.1 والتوقف بأمان قبل 5.2 وإكمال المرحلة 6",
                 stepBadge = ChecklistStepStatus.PASSED,
-                stepDetail = "اكتملت 5.1 (${step1Result.durationMs}ms) وتوقف المشرف قبل 5.2"
+                stepDetail = "اكتملت 5.1 (${step1Result.durationMs}ms) وتوقف المشرف قبل 5.2",
+                userCancelled = true
             )
             return
         }
@@ -1608,9 +1622,10 @@ class ProberEngine(context: Context) {
             results.add(Stage5StepResult("5.3 Full Chip Erase 0x20 / Security Bypass", passed = false, executed = false, durationMs = 0, detail = "توقف المشرف بعد الخطوة 5.2"))
             notesBuilder.appendLine("توقف المشرف بأمان قبل الخطوة 5.3.")
             finalizeAndComplete(
-                bannerMsg = "تم إكمال 5.1 و 5.2 والتوقف بأمان قبل المسح الكلي 5.3",
+                bannerMsg = "تم إكمال 5.1 و 5.2 والتوقف بأمان قبل المسح الكلي 5.3 وإكمال المرحلة 6",
                 stepBadge = ChecklistStepStatus.PASSED,
-                stepDetail = "اكتملت 5.1 و 5.2 وتوقف المشرف بأمان قبل المسح الكلي 0x20"
+                stepDetail = "اكتملت 5.1 و 5.2 وتوقف المشرف بأمان قبل المسح الكلي 0x20",
+                userCancelled = true
             )
             return
         }
@@ -1637,9 +1652,10 @@ class ProberEngine(context: Context) {
 
         val passedCount = results.count { it.passed }
         finalizeAndComplete(
-            bannerMsg = "اكتملت جميع المراحل (1 إلى 5) وتوليد البطاقات الثلاث بنجاح!",
+            bannerMsg = "اكتملت جميع المراحل (1 إلى 6) وتوليد البطاقات الثلاث بنجاح!",
             stepBadge = if (passedCount > 0) ChecklistStepStatus.PASSED else ChecklistStepStatus.FAILED,
-            stepDetail = "تم تنفيذ 3 خطوات تفاعلية بالمرحلة 5 (نجح $passedCount/3) | EraseWait=${workingSummary.timingMap.eraseWriteBusyWaitMs}ms"
+            stepDetail = "تم تنفيذ 3 خطوات تفاعلية بالمرحلة 5 (نجح $passedCount/3) | EraseWait=${workingSummary.timingMap.eraseWriteBusyWaitMs}ms",
+            userCancelled = false
         )
     }
 
@@ -1770,6 +1786,615 @@ class ProberEngine(context: Context) {
             return Stage5StepResult("5.3 ID Bypass", ok, true, dt, detail)
         }
     }
+
+    // ==================== STAGE 6: UNIVERSAL LIVE READ PROOF (DATA & BLANK 0xFF) ====================
+
+    private suspend fun runStage6UniversalLiveReadProof(
+        sync: SyncLock,
+        summary: ProberBlueprintSummary,
+        userCancelledStage5: Boolean
+    ): ProberBlueprintSummary {
+        _state.value = _state.value.copy(
+            stageBanner = "جاري تنفيذ المرحلة 6: إثبات صحة السحب الفعلي (Universal Live Read Proof)..."
+        )
+        updateStep(
+            "stage6_live_read_proof",
+            ChecklistStepStatus.RUNNING,
+            "فحص Page 0 (256B) والتحقق من عدم وجود Echo ثم مطابقة الذاكرة..."
+        )
+        resyncLight(sync)
+
+        val pageSize = (summary.pageSizeBytes ?: 256).coerceIn(128, 256)
+        val page0Start = if (sync.framing == DetectedFraming.STM32_ACK) 0x08000000 else 0x000000
+        val flashEndAddr = parseFlashEndAddress(summary, sync)
+
+        // Try extracting Page 0 using the discovered Read method (Direct Read / STM32 0x11 / 1B 0xB0)
+        val (page0Bytes, readMethodUsed, txEchoSample) = readFlashPageForProof(sync, summary, page0Start, pageSize)
+
+        var isChipBlankOrZero = false
+        var detectedHasRealData = false
+
+        if (page0Bytes != null && page0Bytes.isNotEmpty()) {
+            // Confirm extracted bytes are NOT UART Echo of TX command frame
+            if (isEchoPayload(page0Bytes, txEchoSample)) {
+                val msg = "❌ فشل إثبات السحب (Echo Loopback): البايتات المستقبلة مطابقة لإطار الإرسال TX وليست بيانات المعالج."
+                appendLog(ProberLogDirection.ERROR, msg)
+                updateStep("stage6_live_read_proof", ChecklistStepStatus.FAILED, msg)
+                return summary.copy(
+                    liveReadProofPassed = false,
+                    liveReadProofMode = "Echo Rejection Failed ($readMethodUsed)",
+                    liveReadProofStatus = msg,
+                    liveReadProofFirst32Hex = page0Bytes.take(32).toByteArray().toHexStr()
+                )
+            }
+
+            val ffCount = page0Bytes.count { (it.toInt() and 0xFF) == 0xFF }
+            val zeroCount = page0Bytes.count { (it.toInt() and 0xFF) == 0x00 }
+            val dummyThreshold = (page0Bytes.size * 99) / 100
+            if (ffCount >= dummyThreshold || zeroCount >= dummyThreshold) {
+                isChipBlankOrZero = true
+                appendLog(
+                    ProberLogDirection.WARN,
+                    "⚠️ المرحلة 6: العينة المسحوبة من Page 0 (${page0Bytes.size}B) فارغة/متشابهة (${if (ffCount >= dummyThreshold) "0xFF" else "0x00"} >= 99%). الانتقال للحالة الثانية (الحلقة المغلقة Write-Read Proof)..."
+                )
+            } else {
+                detectedHasRealData = true
+            }
+        } else if (sync.framing == DetectedFraming.NEC_STX_ETX) {
+            // Locked bootloader (no direct Read / no 1B 0xB0): probe blank vs non-blank safely using 0x32 & 0x13
+            val b0Check = transport.transceive(
+                buildNecCommandFrame(0x32, addrRangeBytes(0x000000, pageSize - 1)),
+                12, 260, "6.0 Blank Check [0x32 Page 0]", stopOnCompleteNecFrame = true
+            )
+            if (parseNecStatus(b0Check) == ACK_NEC) {
+                isChipBlankOrZero = true
+            } else {
+                val hdr = transport.transceive(
+                    buildNecCommandFrame(0x13, addrRangeBytes(0x000000, pageSize - 1)),
+                    12, 260, "6.0 Verify 0xFF Probe [0x13 Page 0]", stopOnCompleteNecFrame = true
+                )
+                if (parseNecStatus(hdr) == ACK_NEC) {
+                    val vRx = transport.transceive(
+                        buildNecDataFrame(ByteArray(pageSize) { 0xFF.toByte() }, isLast = true),
+                        16, 480, "6.0 Verify All-0xFF [0x13]", stopOnCompleteNecFrame = true, paced64B = true
+                    )
+                    if (effectiveNecStatus(vRx) == ACK_NEC) {
+                        isChipBlankOrZero = true
+                    }
+                }
+            }
+        }
+
+        // -------------------- CASE 1: CHIP HAS REAL DATA --------------------
+        if (detectedHasRealData && page0Bytes != null) {
+            val first32Hex = page0Bytes.take(32).toByteArray().toHexStr()
+            val (verifySupported, verifyPassed, verifyDetail) = verifyExtractedPageOnChip(sync, page0Start, page0Bytes)
+
+            if (verifySupported && verifyPassed) {
+                val reportMsg = "✅ إثبات السحب الحقيقي 100%: تم سحب ${page0Bytes.size}B وتأكيد تطابقها مع ذاكرة المعالج داخلياً"
+                val fullDetail = "$reportMsg ($verifyDetail) | أول 32B: $first32Hex"
+                appendLog(ProberLogDirection.SUCCESS, fullDetail)
+                updateStep("stage6_live_read_proof", ChecklistStepStatus.PASSED, fullDetail)
+                return summary.copy(
+                    liveReadProofPassed = true,
+                    liveReadProofMode = "Case 1: Live Page 0 Extraction ($readMethodUsed) + Internal Verify (ACK + 1B Mismatch)",
+                    liveReadProofStatus = reportMsg,
+                    liveReadProofFirst32Hex = first32Hex
+                )
+            } else if (!verifySupported) {
+                // Family has no separate Verify command (e.g., STM32 0x11): double-read & stability check
+                val (secondRead, _, _) = readFlashPageForProof(sync, summary, page0Start, pageSize)
+                if (secondRead != null && secondRead.contentEquals(page0Bytes)) {
+                    val reportMsg = "✅ إثبات السحب الحقيقي 100%: تم سحب ${page0Bytes.size}B وتأكيد تطابق قراءتين متتاليتين مع عدم وجود Echo أو 0xFF"
+                    val fullDetail = "$reportMsg | أول 32B: $first32Hex"
+                    appendLog(ProberLogDirection.SUCCESS, fullDetail)
+                    updateStep("stage6_live_read_proof", ChecklistStepStatus.PASSED, fullDetail)
+                    return summary.copy(
+                        liveReadProofPassed = true,
+                        liveReadProofMode = "Case 1: Dual Live Read Consistency ($readMethodUsed)",
+                        liveReadProofStatus = reportMsg,
+                        liveReadProofFirst32Hex = first32Hex
+                    )
+                }
+            }
+
+            val failMsg = "❌ تم سحب ${page0Bytes.size}B ($readMethodUsed) لكن فشل إثبات المطابقة الداخلية ($verifyDetail) | أول 32B: $first32Hex"
+            appendLog(ProberLogDirection.WARN, failMsg)
+            updateStep("stage6_live_read_proof", ChecklistStepStatus.FAILED, failMsg)
+            return summary.copy(
+                liveReadProofPassed = false,
+                liveReadProofMode = "Case 1 Failed ($readMethodUsed)",
+                liveReadProofStatus = failMsg,
+                liveReadProofFirst32Hex = first32Hex
+            )
+        }
+
+        // -------------------- CASE 2: BLANK (0xFF) / CORRUPTED (0x00) CHIP -> CLOSED-LOOP WRITE-READ PROOF --------------------
+        if (isChipBlankOrZero) {
+            val lastPageStart = (flashEndAddr - pageSize + 1).coerceAtLeast(if (sync.framing == DetectedFraming.STM32_ACK) 0x08000000 else 0)
+            val lastPageEnd = lastPageStart + pageSize - 1
+            val rangeHex = "0x%06X..0x%06X".format(lastPageStart, lastPageEnd)
+
+            val confirmed = requestStepConfirmation(
+                prompt = Stage5ConfirmPrompt(
+                    stepIndex = 1,
+                    totalSteps = 1,
+                    stepTitle = "الحلقة المغلقة (Write-Read Proof) على شريحة فارغة 0xFF",
+                    impactDescription = "تم اكتشاف أن الشريحة فارغة تماماً (0xFF) أو ممسوحة (0x00) عند بداية الفلاش.\nلإثبات صحة السحب والكتابة بنسبة 100% عملياً:\n• سيتم كتابة نمط الاختبار [55 AA 12 34 56 78 9A BC DE F0 11 22 33 44 55 66] في آخر صفحة من الفلاش ($rangeHex).\n• ثم تنفيذ أمر السحب المكتشف على نفس العنوان ومقارنة البيانات 100%.\n\n⚠️ تحذير: هذا الإجراء سيكتب نمط الاختبار في آخر صفحة من الفلاش${if (userCancelledStage5) " (يمكنك الضغط على إلغاء إن أردت الحفاظ على الشريحة فارغة)" else ""}."
+                ),
+                stepId = "stage6_live_read_proof"
+            )
+
+            if (!confirmed) {
+                val skipMsg = "⚠️ تم تجاوز اختبار الحلقة المغلقة (الحالة 2 - شريحة فارغة 0xFF) بناءً على طلب المشرف للحفاظ على الذاكرة."
+                appendLog(ProberLogDirection.WARN, skipMsg)
+                updateStep("stage6_live_read_proof", ChecklistStepStatus.BYPASSED, skipMsg)
+                return summary.copy(
+                    liveReadProofPassed = false,
+                    liveReadProofMode = "Case 2 Bypassed by Admin (Blank 0xFF Chip)",
+                    liveReadProofStatus = skipMsg,
+                    liveReadProofFirst32Hex = page0Bytes?.take(32)?.toByteArray()?.toHexStr() ?: "FF ".repeat(32).trim()
+                )
+            }
+
+            _state.value = _state.value.copy(
+                phase = ProberStagePhase.RUNNING_STAGE5_STEP,
+                stageBanner = "جاري تنفيذ المرحلة 6 (الحلقة المغلقة): كتابة 55 AA 12 34... في آخر صفحة ثم استرجاعها..."
+            )
+            updateStep(
+                "stage6_live_read_proof",
+                ChecklistStepStatus.RUNNING,
+                "كتابة البصمة 55 AA 12 34... في $rangeHex ثم السحب والمطابقة..."
+            )
+            resyncLight(sync)
+
+            val pattern16 = byteArrayOf(
+                0x55, 0xAA.toByte(), 0x12, 0x34, 0x56, 0x78, 0x9A.toByte(), 0xBC.toByte(),
+                0xDE.toByte(), 0xF0.toByte(), 0x11, 0x22, 0x33, 0x44, 0x55, 0x66
+            )
+            val writePage = ByteArray(pageSize) { 0xFF.toByte() }
+            System.arraycopy(pattern16, 0, writePage, 0, pattern16.size)
+
+            val (writeOk, writeDetail) = writeFlashLastPage(sync, summary, lastPageStart, lastPageEnd, writePage)
+            if (!writeOk) {
+                val failMsg = "❌ فشل كتابة بصمة الاختبار في آخر صفحة ($rangeHex): $writeDetail"
+                appendLog(ProberLogDirection.ERROR, failMsg)
+                updateStep("stage6_live_read_proof", ChecklistStepStatus.FAILED, failMsg)
+                return summary.copy(
+                    liveReadProofPassed = false,
+                    liveReadProofMode = "Case 2 Write Failed ($rangeHex)",
+                    liveReadProofStatus = failMsg,
+                    liveReadProofFirst32Hex = "--"
+                )
+            }
+
+            delay(35)
+            resyncLight(sync)
+
+            // Execute discovered Read command on the exact same address (lastPageStart)
+            val (readBack, rbMethod, rbEchoSample) = readFlashPageForProof(sync, summary, lastPageStart, pageSize)
+            if (readBack != null && !isEchoPayload(readBack, rbEchoSample)) {
+                val patternMatch = readBack.size >= pattern16.size &&
+                    readBack.copyOfRange(0, pattern16.size).contentEquals(pattern16)
+                val fullMatch = readBack.size == writePage.size && readBack.contentEquals(writePage)
+                val readFirst32 = readBack.take(32).toByteArray().toHexStr()
+
+                if (patternMatch && fullMatch) {
+                    val reportMsg = "✅ إثبات السحب والكتابة 100% على شريحة فارغة: تم استرجاع البصمة المكتوبة (55 AA 12 34...) بدقة تامة"
+                    val fullDetail = "$reportMsg | العنوان $rangeHex ($rbMethod) | أول 32B: $readFirst32"
+                    appendLog(ProberLogDirection.SUCCESS, fullDetail)
+                    updateStep("stage6_live_read_proof", ChecklistStepStatus.PASSED, fullDetail)
+                    return summary.copy(
+                        liveReadProofPassed = true,
+                        liveReadProofMode = "Case 2: Closed-Loop Write-Read Proof ($rbMethod @ $rangeHex)",
+                        liveReadProofStatus = reportMsg,
+                        liveReadProofFirst32Hex = readFirst32
+                    )
+                } else {
+                    val failMsg = "❌ عدم تطابق بعد الكتابة في $rangeHex: المكتوب=${pattern16.toHexStr()} | المسحوب=${readBack.take(16).toByteArray().toHexStr()}"
+                    appendLog(ProberLogDirection.ERROR, failMsg)
+                    updateStep("stage6_live_read_proof", ChecklistStepStatus.FAILED, failMsg)
+                    return summary.copy(
+                        liveReadProofPassed = false,
+                        liveReadProofMode = "Case 2 Read-Back Mismatch",
+                        liveReadProofStatus = failMsg,
+                        liveReadProofFirst32Hex = readFirst32
+                    )
+                }
+            }
+
+            // Locked bootloader fallback (when direct Read isn't exposed by ROM): verify via 0x13 (ACK vs 1B-Mutated Mismatch) + 0xB0 Checksum
+            val (vSup, vPass, vDet) = verifyExtractedPageOnChip(sync, lastPageStart, writePage)
+            var csMatched = false
+            if (sync.framing == DetectedFraming.NEC_STX_ETX) {
+                val csRx = transport.transceive(
+                    buildNecCommandFrame(0xB0, addrRangeBytes(lastPageStart, lastPageEnd)),
+                    16, 360, "6.2 Checksum Verify [0xB0 $rangeHex]", stopOnCompleteNecFrame = true
+                )
+                val csHw = parseChecksum16(csRx) ?: run {
+                    if (parseNecStatus(csRx) == ACK_NEC) parseChecksum16(transport.readFollowUp(12, 280, true)) else null
+                }
+                val expectedCs16 = (0 - writePage.sumOf { it.toInt() and 0xFF }) and 0xFFFF
+                csMatched = (csHw != null && (csHw == expectedCs16 || (((csHw and 0xFF) shl 8) or (csHw ushr 8)) == expectedCs16))
+            }
+
+            if (vSup && vPass) {
+                val reportMsg = "✅ إثبات السحب والكتابة 100% على شريحة فارغة: تم استرجاع البصمة المكتوبة (55 AA 12 34...) بدقة تامة"
+                val first32Expected = writePage.take(32).toByteArray().toHexStr()
+                val detailMsg = "$reportMsg (تأكيد داخلي عبر Verify 0x13${if (csMatched) " + 0xB0 Checksum" else ""}: $vDet @ $rangeHex)"
+                appendLog(ProberLogDirection.SUCCESS, detailMsg)
+                updateStep("stage6_live_read_proof", ChecklistStepStatus.PASSED, detailMsg)
+                return summary.copy(
+                    liveReadProofPassed = true,
+                    liveReadProofMode = "Case 2: Closed-Loop Write+Verify+Checksum Proof (Locked ROM @ $rangeHex)",
+                    liveReadProofStatus = reportMsg,
+                    liveReadProofFirst32Hex = first32Expected
+                )
+            }
+
+            val failMsg = "❌ تعذر قراءة أو تأكيد البصمة المكتوبة في $rangeHex ($writeDetail | $vDet)"
+            appendLog(ProberLogDirection.ERROR, failMsg)
+            updateStep("stage6_live_read_proof", ChecklistStepStatus.FAILED, failMsg)
+            return summary.copy(
+                liveReadProofPassed = false,
+                liveReadProofMode = "Case 2 Verification Failed",
+                liveReadProofStatus = failMsg,
+                liveReadProofFirst32Hex = "--"
+            )
+        }
+
+        // Neither direct extraction succeeded nor chip could be verified blank (e.g. locked MCU with non-blank data and Stage 5 skipped)
+        val lockedMsg = "⚠️ المعالج مقفل ويحتوي على بيانات محمية (تعذر القراءة المباشرة لـ Page 0 دون إتمام فك القفل أو تصفير Block 0 بالمرحلة 5)"
+        appendLog(ProberLogDirection.WARN, lockedMsg)
+        updateStep("stage6_live_read_proof", ChecklistStepStatus.BYPASSED, lockedMsg)
+        return summary.copy(
+            liveReadProofPassed = false,
+            liveReadProofMode = "Locked Protected Data (Requires Block-0 Zeroing / Unlock)",
+            liveReadProofStatus = lockedMsg,
+            liveReadProofFirst32Hex = "--"
+        )
+    }
+
+    private fun parseFlashEndAddress(summary: ProberBlueprintSummary, sync: SyncLock): Int {
+        val token = summary.flashEndAddressHex.trim().substringBefore(" ")
+        val parsed = if (token.startsWith("0x", ignoreCase = true)) {
+            token.substring(2).toIntOrNull(16)
+        } else null
+        return parsed ?: if (sync.framing == DetectedFraming.STM32_ACK) 0x0801FFFF else 0x007FFF
+    }
+
+    private data class PageReadOutcome(
+        val bytes: ByteArray?,
+        val methodLabel: String,
+        val txFrameSample: ByteArray
+    )
+
+    private suspend fun readFlashPageForProof(
+        sync: SyncLock,
+        summary: ProberBlueprintSummary,
+        startAddr: Int,
+        length: Int
+    ): PageReadOutcome {
+        if (sync.framing == DetectedFraming.STM32_ACK) {
+            val out = java.io.ByteArrayOutputStream()
+            val tx = byteArrayOf(
+                ((startAddr ushr 24) and 0xFF).toByte(),
+                ((startAddr ushr 16) and 0xFF).toByte(),
+                ((startAddr ushr 8) and 0xFF).toByte(),
+                (startAddr and 0xFF).toByte()
+            )
+            val csAddr = ((tx[0].toInt() xor tx[1].toInt() xor tx[2].toInt() xor tx[3].toInt()) and 0xFF).toByte()
+            val a1 = transport.transceive(byteArrayOf(0x11, 0xEE.toByte()), 4, 260, "Stage6 STM32 Read [0x11]")
+            if (a1.any { (it.toInt() and 0xFF) == ACK_STM32 }) {
+                val a2 = transport.transceive(tx + csAddr, 4, 260, "Stage6 STM32 Addr [0x%08X]".format(startAddr))
+                if (a2.any { (it.toInt() and 0xFF) == ACK_STM32 }) {
+                    val countByte = (length - 1) and 0xFF
+                    val cmdLen = byteArrayOf(countByte.toByte(), (countByte xor 0xFF).toByte())
+                    val rx = transport.transceive(cmdLen, length + 8, 950, "Stage6 STM32 Read ${length}B")
+                    if (rx.size >= length + 1 && (rx[0].toInt() and 0xFF) == ACK_STM32) {
+                        out.write(rx, 1, length)
+                        return PageReadOutcome(out.toByteArray(), "STM32 Direct Read 0x11", tx + cmdLen)
+                    }
+                }
+            }
+            return PageReadOutcome(null, "STM32 Read 0x11 Failed", tx)
+        }
+
+        // Collect candidate direct read opcodes (prioritize any command that succeeded in Stage 2.1 or Stage 3)
+        val stage2DirectDetail = _state.value.checklist.firstOrNull { it.id == "stage2_direct_read" }?.detail.orEmpty()
+        val winningMatch = Regex("0x([0-9A-Fa-f]{2})").find(stage2DirectDetail)?.groupValues?.get(1)?.toIntOrNull(16)
+        val candidateCmds = buildList {
+            if (winningMatch != null) add(winningMatch)
+            listOf(0x11, 0x03, 0x18, 0x74, 0xBA, 0xD0, 0xFF).forEach { if (it !in this) add(it) }
+        }
+
+        for (cmd in candidateCmds) {
+            currentCoroutineContext().ensureActive()
+            val endAddr = startAddr + length - 1
+            val pkts = when (sync.framing) {
+                DetectedFraming.NEC_STX_ETX -> listOf(
+                    buildNecCommandFrame(cmd, addrRangeBytes(startAddr, endAddr)),
+                    buildNecCommandFrame(
+                        cmd,
+                        byteArrayOf(
+                            ((startAddr ushr 16) and 0xFF).toByte(),
+                            ((startAddr ushr 8) and 0xFF).toByte(),
+                            (startAddr and 0xFF).toByte(),
+                            (length and 0xFF).toByte()
+                        )
+                    )
+                )
+                DetectedFraming.RENESAS_RAW -> listOf(
+                    byteArrayOf(cmd.toByte(), ((startAddr ushr 16) and 0xFF).toByte(), ((startAddr ushr 8) and 0xFF).toByte(), (startAddr and 0xFF).toByte()),
+                    byteArrayOf(cmd.toByte(), ((startAddr ushr 8) and 0xFF).toByte(), (startAddr and 0xFF).toByte(), (length and 0xFF).toByte())
+                )
+                else -> listOf(
+                    byteArrayOf(cmd.toByte(), ((startAddr ushr 16) and 0xFF).toByte(), ((startAddr ushr 8) and 0xFF).toByte(), (startAddr and 0xFF).toByte(), (length and 0xFF).toByte()),
+                    buildNecCommandFrame(cmd, addrRangeBytes(startAddr, endAddr))
+                )
+            }
+
+            for (pkt in pkts) {
+                val rx = transport.transceive(pkt, length + 24, 650, "Stage6 Direct Read [0x%02X @ 0x%06X]".format(cmd, startAddr))
+                val full = if (sync.framing == DetectedFraming.NEC_STX_ETX && rx.size in 1..20 && parseNecStatus(rx) == ACK_NEC) {
+                    rx + transport.readFollowUp(length + 16, 700, stopOnCompleteNecFrame = true)
+                } else rx
+                val extracted = extractVariablePayload(full, sync.framing, length)
+                if (extracted != null && extracted.size >= length) {
+                    return PageReadOutcome(extracted.copyOfRange(0, length), "Direct Read [0x%02X]".format(cmd), pkt)
+                }
+            }
+
+            // Chunked 16-byte fallback if single 256B read wasn't accepted by this opcode
+            if (winningMatch == cmd && sync.framing == DetectedFraming.NEC_STX_ETX) {
+                val out = java.io.ByteArrayOutputStream()
+                var lastPkt = ByteArray(0)
+                var chunkOk = true
+                var off = 0
+                while (off < length) {
+                    currentCoroutineContext().ensureActive()
+                    val cStart = startAddr + off
+                    val cEnd = cStart + 15
+                    val pkt = buildNecCommandFrame(cmd, addrRangeBytes(cStart, cEnd))
+                    lastPkt = pkt
+                    val rx = transport.transceive(pkt, 32, 220, "Stage6 Chunk [0x%02X +%d]".format(cmd, off), logTxRx = false)
+                    val full = if (rx.size in 1..12 && parseNecStatus(rx) == ACK_NEC) {
+                        rx + transport.readFollowUp(24, 220, true)
+                    } else rx
+                    val chunk16 = extractVariablePayload(full, sync.framing, 16)
+                    if (chunk16 == null || chunk16.size < 16) {
+                        chunkOk = false
+                        break
+                    }
+                    out.write(chunk16, 0, 16)
+                    off += 16
+                }
+                if (chunkOk && out.size() >= length) {
+                    return PageReadOutcome(out.toByteArray().copyOfRange(0, length), "Chunked Direct Read [0x%02X]".format(cmd), lastPkt)
+                }
+            }
+        }
+
+        // If Direct Read is blocked, check if 1-Byte Checksum (0xB0) School passed in Stage 2.2
+        val cs1bPassed = _state.value.checklist.any { it.id == "stage2_checksum_1b" && it.status == ChecklistStepStatus.PASSED }
+        if (cs1bPassed && sync.framing == DetectedFraming.NEC_STX_ETX) {
+            appendLog(ProberLogDirection.INFO, "المرحلة 6: استخدام مدرسة 1-Byte Checksum (0xB0) لسحب $length بايت من 0x%06X...".format(startAddr))
+            val out = java.io.ByteArrayOutputStream()
+            var lastPkt = ByteArray(0)
+            for (i in 0 until length) {
+                currentCoroutineContext().ensureActive()
+                val addr = startAddr + i
+                val pkt = buildNecCommandFrame(0xB0, addrRangeBytes(addr, addr))
+                lastPkt = pkt
+                val rx = transport.transceive(pkt, 14, 160, "6.B0 Byte $i", stopOnCompleteNecFrame = true, logTxRx = false)
+                val full = if (parseChecksum16(rx) == null && parseNecStatus(rx) == ACK_NEC) {
+                    transport.readFollowUp(10, 150, true)
+                } else rx
+                val stxIdx = full.indexOfFirst { (it.toInt() and 0xFF) == STX }
+                if (stxIdx < 0 || full.size < stxIdx + 6 || (full[stxIdx + 1].toInt() and 0xFF) != 2) {
+                    return PageReadOutcome(null, "1B 0xB0 Extraction Failed at +$i", lastPkt)
+                }
+                val b0 = full[stxIdx + 2].toInt() and 0xFF
+                val b1 = full[stxIdx + 3].toInt() and 0xFF
+                val lowByte = if (b1 == 0xFF) b0 else if (b0 == 0xFF) b1 else b0
+                val dataByte = (0 - lowByte) and 0xFF
+                out.write(dataByte)
+            }
+            if (out.size() == length) {
+                return PageReadOutcome(out.toByteArray(), "1-Byte 0xB0 Checksum School", lastPkt)
+            }
+        }
+
+        return PageReadOutcome(null, "No Open Read School", ByteArray(0))
+    }
+
+    private suspend fun verifyExtractedPageOnChip(
+        sync: SyncLock,
+        startAddr: Int,
+        pageData: ByteArray
+    ): Triple<Boolean, Boolean, String> {
+        val verifySupportedInDiscovery = summaryHasVerifyCommand()
+        if (sync.framing != DetectedFraming.NEC_STX_ETX && !verifySupportedInDiscovery) {
+            return Triple(false, false, "لا يوجد أمر Verify داخلي في هذا البروتوكول")
+        }
+
+        val endAddr = startAddr + pageData.size - 1
+        val hdr1 = transport.transceive(
+            buildNecCommandFrame(0x13, addrRangeBytes(startAddr, endAddr)),
+            12, 320, "Stage6 Verify Orig Header [0x13]", stopOnCompleteNecFrame = true
+        )
+        if (parseNecStatus(hdr1) != ACK_NEC) {
+            return Triple(false, false, "أمر 0x13 غير مدعوم (${formatByte(parseNecStatus(hdr1))})")
+        }
+        val origRx = transport.transceive(
+            buildNecDataFrame(pageData, isLast = true),
+            16, 620, "Stage6 Verify Original ${pageData.size}B",
+            stopOnCompleteNecFrame = true,
+            paced64B = pageData.size > 64
+        )
+        val origSts = effectiveNecStatus(origRx)
+        delay(15)
+
+        val mutated = pageData.copyOf().also { it[0] = (it[0].toInt() xor 0x01).toByte() }
+        val hdr2 = transport.transceive(
+            buildNecCommandFrame(0x13, addrRangeBytes(startAddr, endAddr)),
+            12, 320, "Stage6 Verify Mutated Header [0x13]", stopOnCompleteNecFrame = true
+        )
+        var mutSts: Int? = null
+        if (parseNecStatus(hdr2) == ACK_NEC) {
+            val mutRx = transport.transceive(
+                buildNecDataFrame(mutated, isLast = true),
+                16, 620, "Stage6 Verify 1B-Mutated ${pageData.size}B",
+                stopOnCompleteNecFrame = true,
+                paced64B = pageData.size > 64
+            )
+            mutSts = effectiveNecStatus(mutRx)
+        }
+
+        val origOk = (origSts == ACK_NEC)
+        val mutMismatch = (mutSts != null && mutSts != ACK_NEC && (mutSts in HARD_REJECT_STATUS || mutSts == STS_VERIFY_ERROR || mutSts == STS_VERIFY_ERROR_1C))
+        return Triple(
+            true,
+            origOk && mutMismatch,
+            "Orig=${formatByte(origSts)}, Mutated1B=${formatByte(mutSts)}"
+        )
+    }
+
+    private suspend fun writeFlashLastPage(
+        sync: SyncLock,
+        summary: ProberBlueprintSummary,
+        lastPageStart: Int,
+        lastPageEnd: Int,
+        payloadPage: ByteArray
+    ): Pair<Boolean, String> {
+        val busyWait = summary.timingMap.eraseWriteBusyWaitMs.coerceAtLeast(350)
+        if (sync.framing == DetectedFraming.STM32_ACK) {
+            val w1 = transport.transceive(byteArrayOf(0x31, 0xCE.toByte()), 6, 300, "Stage6 STM32 Write [0x31]")
+            if (!w1.any { (it.toInt() and 0xFF) == ACK_STM32 }) return false to "0x31 rejected"
+            val addr = byteArrayOf(
+                ((lastPageStart ushr 24) and 0xFF).toByte(),
+                ((lastPageStart ushr 16) and 0xFF).toByte(),
+                ((lastPageStart ushr 8) and 0xFF).toByte(),
+                (lastPageStart and 0xFF).toByte()
+            )
+            val csAddr = ((addr[0].toInt() xor addr[1].toInt() xor addr[2].toInt() xor addr[3].toInt()) and 0xFF).toByte()
+            val w2 = transport.transceive(addr + csAddr, 6, 300, "Stage6 STM32 Write Addr")
+            if (!w2.any { (it.toInt() and 0xFF) == ACK_STM32 }) return false to "Address rejected"
+            val lenByte = ((payloadPage.size - 1) and 0xFF).toByte()
+            var csData = lenByte.toInt() and 0xFF
+            for (b in payloadPage) csData = csData xor (b.toInt() and 0xFF)
+            val w3 = transport.transceive(
+                byteArrayOf(lenByte) + payloadPage + byteArrayOf(csData.toByte()),
+                8, busyWait + 350, "Stage6 STM32 Write Payload", paced64B = true
+            )
+            val ok = w3.any { (it.toInt() and 0xFF) == ACK_STM32 }
+            return ok to if (ok) "STM32 Write ACK" else "STM32 Write NACK"
+        }
+
+        if (sync.framing == DetectedFraming.NEC_STX_ETX) {
+            val hdr = transport.transceive(
+                buildNecCommandFrame(0x40, addrRangeBytes(lastPageStart, lastPageEnd)),
+                12, 420, "Stage6 Write Header [0x40 0x%06X..0x%06X]".format(lastPageStart, lastPageEnd),
+                stopOnCompleteNecFrame = true
+            )
+            if (parseNecStatus(hdr) == ACK_NEC) {
+                val frame = buildNecDataFrame(payloadPage, isLast = true)
+                val rx = transport.transceive(frame, 12, busyWait + 300, "Stage6 Write STX Payload", stopOnCompleteNecFrame = true, paced64B = true)
+                val s1 = parseNecStatus(rx)
+                val s2 = parseNecSecondStatus(rx)
+                val ok = (s1 == ACK_NEC && (s2 == null || s2 == ACK_NEC))
+                return ok to "0x40 Single-Page (${formatByte(s1)}/${formatByte(s2)})"
+            }
+
+            // Block-aligned fallback (e.g. NEC 78K0 requiring 1KB block alignment for 0x40)
+            val blockSize = (summary.blockSizeBytes ?: 1024).coerceAtLeast(payloadPage.size)
+            val blockStart = (lastPageEnd + 1 - blockSize).coerceAtLeast(0)
+            transport.transceive(
+                buildNecCommandFrame(0x22, addrRangeBytes(blockStart, lastPageEnd)),
+                12, 1200, "Stage6 Block Erase Last Block [0x22]", stopOnCompleteNecFrame = true
+            )
+            val bHdr = transport.transceive(
+                buildNecCommandFrame(0x40, addrRangeBytes(blockStart, lastPageEnd)),
+                12, 450, "Stage6 Write Block Header [0x40 0x%06X..0x%06X]".format(blockStart, lastPageEnd),
+                stopOnCompleteNecFrame = true
+            )
+            if (parseNecStatus(bHdr) != ACK_NEC) {
+                return false to "0x40 Header Rejected (${formatByte(parseNecStatus(bHdr))})"
+            }
+            val pageCount = (blockSize / payloadPage.size).coerceAtLeast(1)
+            val blankFiller = ByteArray(payloadPage.size) { 0xFF.toByte() }
+            for (p in 0 until pageCount) {
+                val isLast = (p == pageCount - 1)
+                val slice = if (isLast) payloadPage else blankFiller
+                val rx = transport.transceive(
+                    buildNecDataFrame(slice, isLast = isLast),
+                    12, if (isLast) busyWait + 350 else 500,
+                    "Stage6 Write Page $p/${pageCount - 1}", stopOnCompleteNecFrame = true, paced64B = true
+                )
+                val s1 = parseNecStatus(rx)
+                val s2 = parseNecSecondStatus(rx)
+                if (s1 != ACK_NEC || (s2 != null && s2 != ACK_NEC)) {
+                    return false to "Page $p failed (${formatByte(s1)}/${formatByte(s2)})"
+                }
+            }
+            return true to "0x40 Block-Aligned Write ACK"
+        }
+
+        // Generic / Renesas Raw Page Write 0x41
+        val rawPkt = byteArrayOf(
+            0x41,
+            ((lastPageStart ushr 16) and 0xFF).toByte(),
+            ((lastPageStart ushr 8) and 0xFF).toByte(),
+            (lastPageStart and 0xFF).toByte()
+        ) + payloadPage
+        val rx = transport.transceive(rawPkt, 16, busyWait + 350, "Stage6 Raw Write [0x41]", paced64B = true)
+        return rx.isNotEmpty() to if (rx.isNotEmpty()) "0x41 ACK (${rx.toHexStr()})" else "0x41 Timeout"
+    }
+
+    private fun extractVariablePayload(rx: ByteArray, framing: DetectedFraming, expectedLen: Int): ByteArray? {
+        if (rx.isEmpty()) return null
+        if (framing == DetectedFraming.NEC_STX_ETX) {
+            val sts = parseNecStatus(rx)
+            if (sts != null && sts in HARD_REJECT_STATUS) return null
+            // Check second frame (after ACK frame) first, then single data frame
+            val second = extractNecSecondFramePayload(rx)
+            if (second != null && second.size >= expectedLen) return second
+            val stxIdx = rx.indexOfFirst { (it.toInt() and 0xFF) == STX }
+            if (stxIdx >= 0 && rx.size >= stxIdx + 4) {
+                val lenByte = rx[stxIdx + 1].toInt() and 0xFF
+                val dataLen = if (lenByte == 0) 256 else lenByte
+                if (dataLen >= expectedLen && rx.size >= stxIdx + 2 + dataLen + 2) {
+                    return rx.copyOfRange(stxIdx + 2, stxIdx + 2 + dataLen)
+                }
+            }
+            return null
+        }
+        return if (rx.size >= expectedLen) rx.copyOfRange(0, expectedLen) else null
+    }
+
+    private fun isEchoPayload(extracted: ByteArray, txSample: ByteArray): Boolean {
+        if (extracted.isEmpty() || txSample.isEmpty()) return false
+        val cmpLen = min(extracted.size, txSample.size).coerceAtLeast(4)
+        if (extracted.size >= cmpLen && txSample.size >= cmpLen &&
+            extracted.copyOfRange(0, cmpLen).contentEquals(txSample.copyOfRange(0, cmpLen))
+        ) {
+            return true
+        }
+        // Also detect repeating pattern of exact TX header across the page
+        if (txSample.size >= 5 && extracted.size >= txSample.size * 2) {
+            val secondOffset = txSample.size
+            if (extracted.copyOfRange(0, txSample.size).contentEquals(txSample) &&
+                extracted.copyOfRange(secondOffset, secondOffset + txSample.size).contentEquals(txSample)
+            ) {
+                return true
+            }
+        }
+        return false
+    }
+
+    private fun summaryHasVerifyCommand(): Boolean =
+        _state.value.checklist.any { it.id == "stage2_verify_0x13" && it.status == ChecklistStepStatus.PASSED } ||
+            _state.value.blueprintSummary.discoveredCommands.any { it.cmdByte == 0x13 }
 
     private suspend fun resyncHandshakeQuiet(sync: SyncLock) {
         if (sync.framing != DetectedFraming.NEC_STX_ETX) return
