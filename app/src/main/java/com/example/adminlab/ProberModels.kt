@@ -315,7 +315,7 @@ private fun buildWorkflows(state: ProberUiState): Pair<List<String>, List<String
 
     if (framing == DetectedFraming.USBDM_BDM || framing == DetectedFraming.FREESCALE_SINGLE_WIRE_BDM) {
         val readWf = listOf(
-            "1. Adapter Setup: ${if (framing == DetectedFraming.USBDM_BDM) "Open USBDM USB Bulk (EP1 OUT / EP2 IN), CMD_USBDM_GET_CAPABILITIES [0x02,0x01], SET_VDD 5V, SET_TARGET HCS08, CONNECT + SYNC" else "Open FT232 at 1,500,000 bps (8N1) Single-Wire BKGD (TX+1kΩ+RX) and send BDM Sync (0xFE/0xC0)"}.",
+            "1. Adapter Setup: ${if (framing == DetectedFraming.USBDM_BDM) "Open USBDM USB Bulk (EP1 OUT / EP2 IN), GET_CAPABILITIES [0x01], SET_VDD 5V [0x06], SET_TARGET HCS08 [0x02], CONNECT [0x0F] + SYNC [0x10], HALT [0x14], READ_MEM [0x21]" else "Open FT232 at 1,500,000 bps (8N1) Single-Wire BKGD (TX+1kΩ+RX) and send BDM Sync (0xFE/0xC0)"}.",
             "2. Silicon Auto-ID: Read HCS08 SDIDH/SDIDL (0x1806..0x1807) -> ${s.inferredModel} (${s.chipSignature}).",
             if (!isLocked) {
                 "3. Safe BDM Memory Read: Read Flash up to ${s.flashEndAddressHex} via ${s.winningReadMethod} in ${s.pageSizeBytes ?: 256}B chunks."
