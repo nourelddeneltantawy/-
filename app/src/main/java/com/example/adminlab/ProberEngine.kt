@@ -75,7 +75,27 @@ class ProberEngine(context: Context) {
         val usbdmTargetArch: UsbdmTargetArch? = null,
         val flashBaseAddr: Int = 0x000000,
         val adapterInitPackets: List<String> = emptyList(),
-        val actualTargetCode: Int? = null
+        val actualTargetCode: Int? = null,
+        val swapDtrRtsRoles: Boolean = false,
+        val staticDtr: Boolean? = null,
+        val staticRts: Boolean? = null,
+        val physicalLevelTag: String = "",
+        val syncClkOnRts: Boolean? = null,
+        val syncModePinState: Boolean = false
+    )
+
+    private data class PhysicalPinProfile(
+        val name: String,
+        val flmd0State: String,
+        val resetIdleState: String,
+        val resetPulsePolarity: String,
+        val dtrDesc: String,
+        val rtsDesc: String,
+        val inverted: Boolean,
+        val useResetToggle: Boolean,
+        val swapDtrRtsRoles: Boolean = false,
+        val staticDtr: Boolean? = null,
+        val staticRts: Boolean? = null
     )
 
     private data class UniversalIdCapture(
@@ -230,10 +250,11 @@ class ProberEngine(context: Context) {
                     return@launch
                 }
                 lastSyncLock = sync
+                val levelBadge = if (sync.physicalLevelTag.isNotBlank()) " • ${sync.physicalLevelTag}" else ""
                 updateStep(
                     "stage1_handshake",
                     ChecklistStepStatus.PASSED,
-                    "${sync.baudRate} ${sync.parityMode} | ${sync.wakeUpPatternUsed} | ${sync.framing.label}"
+                    "${sync.baudRate} ${sync.parityMode} | ${sync.wakeUpPatternUsed} | ${sync.framing.label}$levelBadge"
                 )
 
                 executeStages2To5(sync)
@@ -417,9 +438,11 @@ class ProberEngine(context: Context) {
                     "SPI Read Signature [30 00 00..02]"
                 )
                 else -> listOf(
+                    "Physical Layer: ${sync.physicalLevelTag.ifBlank { "Universal UART Matrix" }}",
                     "Configure UART ${sync.baudRate} bps ${sync.parityMode}",
-                    "Pin Logic: FLMD0=${sync.flmd0PinState} | RESET=${sync.resetPinPulsePolarity}",
-                    "Wake Sequence: ${sync.syncPulseHex}"
+                    "Pin Mapping: FLMD0/MODE=${sync.flmd0PinState} | RESET/CLK=${sync.resetPinIdleState} (${sync.resetPinPulsePolarity})",
+                    "DTR=${sync.dtrPolarity} | RTS=${sync.rtsPolarity}",
+                    "Winning Wake Sequence: ${sync.syncPulseHex}"
                 )
             }
         }
@@ -429,10 +452,10 @@ class ProberEngine(context: Context) {
             usbTransportMode = when {
                 transport.isControlOnlySession -> "USB EP0 Control Transfers"
                 chip.isSpecializedProgrammer || chip == ProberUsbChip.UNKNOWN_USB -> "USB Raw Bulk/Interrupt (${sync.parityMode})"
-                else -> "USB-UART Serial (${sync.baudRate} bps ${sync.parityMode})"
+                else -> "USB-UART ${sync.physicalLevelTag.ifBlank { "Serial" }} (${sync.baudRate} bps ${sync.parityMode})"
             },
             usbEndpoints = "${transport.currentInterfaceInfo()} | ${transport.currentEndpointsSummary()}",
-            powerControlLogic = "${sync.flmd0PinState} | RESET=${sync.resetPinIdleState} (${sync.resetPinPulsePolarity})",
+            powerControlLogic = "${sync.physicalLevelTag.ifBlank { "UART" }} | ${sync.flmd0PinState} | ${sync.resetPinIdleState} (${sync.resetPinPulsePolarity})",
             initPacketSequence = packets
         )
     }
@@ -443,11 +466,11 @@ class ProberEngine(context: Context) {
         val initialAdapterSpec = buildAdapterInitSpec(sync)
         val initialAutoRule = AutoChipDetectionRule(
             targetFamilyDetected = sync.usbdmTargetArch?.archName ?: sync.framing.label,
-            identificationSequence = autoId.autoIdRule,
+            identificationSequence = "${sync.physicalLevelTag.ifBlank { "Universal" }} | ${autoId.autoIdRule}",
             idRegisterOrOpcode = autoId.idRegisterOrOpcode,
             rawSiliconIdHex = autoId.rawSiliconIdHex,
             dynamicFlashBoundaryFormula = "Pending Stage 4 Dynamic Probe (4KB..2MB)",
-            dynamicSpeedFormula = "${sync.baudRate} ${sync.parityMode}"
+            dynamicSpeedFormula = "${sync.baudRate} ${sync.parityMode} (${sync.dtrPolarity} / ${sync.rtsPolarity})"
         )
         var summary = ProberBlueprintSummary(
             baudRate = sync.baudRate,
@@ -819,7 +842,7 @@ class ProberEngine(context: Context) {
             }
         }
 
-        // 3. Read 16 bytes from Flash (0xC000, 0x8000, 0x1900)
+        // 3. Read 16 bytes from Flash (0xC000, 0x8000, 0xE000, 0xF000, 0x1900)
         var bestFlashCmd: Int? = null
         var bestFlashAddr: Long? = null
         var bestFlashBytes = ByteArray(0)
@@ -828,7 +851,7 @@ class ProberEngine(context: Context) {
         var fallbackFlashAddr: Long? = null
         var fallbackFlashBytes = ByteArray(0)
 
-        for (flashAddr in listOf(0xC000L, 0x8000L, 0x1900L)) {
+        for (flashAddr in listOf(0xC000L, 0x8000L, 0xE000L, 0xF000L, 0x1900L)) {
             for (cmd in listOf(0x21, 0x22)) {
                 val rx16 = transport.usbdmTransceive(
                     usbdmReadMemPacket(cmd, memSpace, 16, flashAddr),
@@ -1402,14 +1425,29 @@ class ProberEngine(context: Context) {
                 32, 350, "STK500v2 Sign-On [1B 01 00 01 0E 01 14]"
             )
             if (stkRx.isNotEmpty() && (stkRx[0].toInt() and 0xFF) == 0x1B) {
-                detectedAvrSigHex = stkRx.toHexStr()
+                // Attempt reading 3-byte AVR Device Signature via STK500v2 CMD_SPI_MULTI (0x1D)
+                val sigBytes = ByteArray(3) { 0xFF.toByte() }
+                var gotSig = false
+                for (i in 0..2) {
+                    val spiCmd = byteArrayOf(0x1D, 0x04, 0x04, 0x00, 0x30, 0x00, i.toByte(), 0x00)
+                    val cs = spiCmd.fold(0) { acc, b -> acc xor (b.toInt() and 0xFF) }.toByte()
+                    val spiRx = transport.rawPacketTransceive(
+                        byteArrayOf(0x1B, (i + 2).toByte(), 0x00, 0x08, 0x0E) + spiCmd + byteArrayOf(cs),
+                        24, 280, "STK500v2 AVR Signature Byte $i"
+                    )
+                    if (spiRx.size >= 11 && (spiRx[0].toInt() and 0xFF) == 0x1B) {
+                        sigBytes[i] = spiRx[spiRx.size - 3]
+                        gotSig = true
+                    }
+                }
+                detectedAvrSigHex = if (gotSig) sigBytes.toHexStr() else stkRx.toHexStr()
                 detectedRawIdHex = detectedAvrSigHex
-                packets.add("STK500v2 Sign-On -> $detectedAvrSigHex")
+                packets.add("STK500v2 Sign-On -> AVR Signature: $detectedAvrSigHex")
                 return SyncLock(
                     baudRate = 115200,
                     evenParity = false,
                     parityMode = "USB Bulk STK500v2 (${transport.currentEndpointsSummary()})",
-                    wakeUpPatternUsed = "Atmel STK500v2 Sign-On [0x1B]",
+                    wakeUpPatternUsed = "Atmel STK500v2 Sign-On [0x1B] + 3-Byte AVR Signature",
                     flmd0PinState = "ISP SPI Pins",
                     resetPinIdleState = "Atmel /RESET",
                     resetPinPulsePolarity = "STK500v2 Reset",
@@ -1420,12 +1458,13 @@ class ProberEngine(context: Context) {
                     resetPulseMs = 30,
                     postResetDelayMs = 40,
                     syncByteGapMs = 2,
-                    syncPulseHex = "1B 01 00 01 0E 01 14",
+                    syncPulseHex = "1B 01 00 01 0E 01 14 -> SPI [30 00 00..02]",
                     framing = DetectedFraming.AVR_ISP_USB,
                     firstReplyHex = detectedAvrSigHex,
                     latencySampleMs = (System.currentTimeMillis() - t0).toInt().coerceAtLeast(10),
                     flashBaseAddr = 0x000000,
-                    adapterInitPackets = packets
+                    adapterInitPackets = packets,
+                    physicalLevelTag = "USB Native: Atmel STK500v2 ISP"
                 )
             }
         }
@@ -1525,122 +1564,701 @@ class ProberEngine(context: Context) {
         )
     }
 
-    private suspend fun tryFreescaleSingleWireBdm1_5Mbps(): SyncLock? {
-        currentCoroutineContext().ensureActive()
-        appendLog(ProberLogDirection.INFO, "── اختبار Freescale / NXP HCS08 Single-Wire BDM على 1,500,000 bps (1.5 Mbps) ──")
-        transport.configureUart(1_500_000, evenParity = false)
-        detectedSdidHex = ""
-        detectedFreescaleModel = ""
+    private fun stripStrictEcho(txBytes: ByteArray, rawRx: ByteArray): ByteArray {
+        if (rawRx.isEmpty()) return ByteArray(0)
+        if (txBytes.isEmpty()) return rawRx
+        if (rawRx.contentEquals(txBytes)) {
+            transport.echoLoopbackObserved = true
+            return ByteArray(0)
+        }
+        var offset = 0
+        while (offset + txBytes.size <= rawRx.size &&
+            rawRx.copyOfRange(offset, offset + txBytes.size).contentEquals(txBytes)
+        ) {
+            transport.echoLoopbackObserved = true
+            offset += txBytes.size
+        }
+        val clean = if (offset > 0) rawRx.copyOfRange(offset, rawRx.size) else rawRx
+        if (clean.isEmpty()) return ByteArray(0)
+        if (txBytes.size >= 2 && clean.size < txBytes.size &&
+            txBytes.copyOfRange(txBytes.size - clean.size, txBytes.size).contentEquals(clean)
+        ) {
+            // Partial TX loopback echo (single-wire RX line overlap)
+            return ByteArray(0)
+        }
+        return clean
+    }
 
-        val configs = listOf(
-            Triple("Single-Wire BDM Active-Low (RTS=RESET)", false, true),
-            Triple("Single-Wire BDM Active-High", true, true),
-            Triple("Single-Wire BDM Direct 1.5Mbps", false, false)
+    private fun isMeaningfulGenericReply(
+        txBytes: ByteArray,
+        cleanRx: ByteArray,
+        allowSingleZeroOrFf: Boolean = false
+    ): Boolean {
+        if (cleanRx.isEmpty()) return false
+        if (cleanRx.contentEquals(txBytes)) return false
+        if (!allowSingleZeroOrFf && cleanRx.all { val b = it.toInt() and 0xFF; b == 0x00 || b == 0xFF }) {
+            return false
+        }
+        return true
+    }
+
+    private fun buildLevelAPinProfiles(): List<PhysicalPinProfile> = listOf(
+        PhysicalPinProfile(
+            name = "Active-Low (DTR=MODE/FLMD0, RTS=RESET)",
+            flmd0State = "HIGH via DTR=false (Active-Low)",
+            resetIdleState = "HIGH via RTS=false",
+            resetPulsePolarity = "Active-Low Pulse on RTS (70ms)",
+            dtrDesc = "DTR=MODE (Active-Low)",
+            rtsDesc = "RTS=RESET (Active-Low Pulse)",
+            inverted = false,
+            useResetToggle = true
+        ),
+        PhysicalPinProfile(
+            name = "Active-High (DTR=MODE/FLMD0, RTS=RESET)",
+            flmd0State = "HIGH via DTR=true (Active-High)",
+            resetIdleState = "HIGH via RTS=true",
+            resetPulsePolarity = "Active-High Pulse on RTS (70ms)",
+            dtrDesc = "DTR=MODE (Active-High)",
+            rtsDesc = "RTS=RESET (Active-High Pulse)",
+            inverted = true,
+            useResetToggle = true
+        ),
+        PhysicalPinProfile(
+            name = "Swapped Active-Low (RTS=MODE/FLMD0, DTR=RESET)",
+            flmd0State = "HIGH via RTS=false (Swapped)",
+            resetIdleState = "HIGH via DTR=false (Swapped)",
+            resetPulsePolarity = "Swapped Active-Low Pulse on DTR (70ms)",
+            dtrDesc = "DTR=RESET (Swapped Active-Low)",
+            rtsDesc = "RTS=MODE (Swapped)",
+            inverted = false,
+            useResetToggle = true,
+            swapDtrRtsRoles = true
+        ),
+        PhysicalPinProfile(
+            name = "Swapped Active-High (RTS=MODE/FLMD0, DTR=RESET)",
+            flmd0State = "HIGH via RTS=true (Swapped)",
+            resetIdleState = "HIGH via DTR=true (Swapped)",
+            resetPulsePolarity = "Swapped Active-High Pulse on DTR (70ms)",
+            dtrDesc = "DTR=RESET (Swapped Active-High)",
+            rtsDesc = "RTS=MODE (Swapped)",
+            inverted = true,
+            useResetToggle = true,
+            swapDtrRtsRoles = true
+        ),
+        PhysicalPinProfile(
+            name = "Static (DTR=LOW, RTS=LOW)",
+            flmd0State = "Static DTR=LOW, RTS=LOW",
+            resetIdleState = "Static (No Toggle)",
+            resetPulsePolarity = "Static (DTR=0, RTS=0)",
+            dtrDesc = "Static LOW",
+            rtsDesc = "Static LOW",
+            inverted = false,
+            useResetToggle = false,
+            staticDtr = false,
+            staticRts = false
+        ),
+        PhysicalPinProfile(
+            name = "Static (DTR=HIGH, RTS=LOW)",
+            flmd0State = "Static DTR=HIGH, RTS=LOW",
+            resetIdleState = "Static (No Toggle)",
+            resetPulsePolarity = "Static (DTR=1, RTS=0)",
+            dtrDesc = "Static HIGH",
+            rtsDesc = "Static LOW",
+            inverted = false,
+            useResetToggle = false,
+            staticDtr = true,
+            staticRts = false
+        ),
+        PhysicalPinProfile(
+            name = "Static (DTR=LOW, RTS=HIGH)",
+            flmd0State = "Static DTR=LOW, RTS=HIGH",
+            resetIdleState = "Static (No Toggle)",
+            resetPulsePolarity = "Static (DTR=0, RTS=1)",
+            dtrDesc = "Static LOW",
+            rtsDesc = "Static HIGH",
+            inverted = false,
+            useResetToggle = false,
+            staticDtr = false,
+            staticRts = true
+        ),
+        PhysicalPinProfile(
+            name = "Static (DTR=HIGH, RTS=HIGH)",
+            flmd0State = "Static DTR=HIGH, RTS=HIGH",
+            resetIdleState = "Static (No Toggle)",
+            resetPulsePolarity = "Static (DTR=1, RTS=1)",
+            dtrDesc = "Static HIGH",
+            rtsDesc = "Static HIGH",
+            inverted = true,
+            useResetToggle = false,
+            staticDtr = true,
+            staticRts = true
         )
-        for ((polDesc, inverted, doToggle) in configs) {
-            currentCoroutineContext().ensureActive()
-            if (doToggle) {
-                transport.pulseResetSequence(inverted, holdResetMs = 50L, settleMs = 40L)
-            } else {
-                transport.setControlLines(dtr = false, rts = false)
-                delay(25)
-            }
-            transport.flushRx()
-            val t0 = System.currentTimeMillis()
-            // Send BDM Sync pulses (0xFE / 0xC0) & read SDID (0x1806..0x1807)
-            val syncFe = transport.transceive(byteArrayOf(0xFE.toByte()), 12, 120, "Freescale BDM Sync [0xFE @ 1.5Mbps]")
-            val syncC0 = if (syncFe.isEmpty()) transport.transceive(byteArrayOf(0xC0.toByte()), 12, 120, "Freescale BDM Sync [0xC0 @ 1.5Mbps]") else syncFe
-            val sdidH = transport.transceive(byteArrayOf(0xE8.toByte(), 0x18, 0x06), 8, 120, "Freescale BDM Read SDIDH [0x1806]")
-            val sdidL = transport.transceive(byteArrayOf(0xE8.toByte(), 0x18, 0x07), 8, 120, "Freescale BDM Read SDIDL [0x1807]")
+    )
 
-            val validSdid = sdidH.any { it != 0x00.toByte() } || sdidL.any { it != 0x00.toByte() }
-            val validSync = syncC0.any { it != 0x00.toByte() && it != 0xFF.toByte() }
-            if (validSdid || validSync) {
-                val rawCombined = sdidH + sdidL
-                val combined = if (rawCombined.isNotEmpty()) rawCombined else syncC0
-                if (sdidH.isNotEmpty() && sdidL.isNotEmpty()) {
-                    val sdid16 = ((sdidH[0].toInt() and 0xFF) shl 8) or (sdidL[0].toInt() and 0xFF)
-                    detectedSdidHex = "0x%04X".format(sdid16)
-                    detectedFreescaleModel = lookupHcs08ModelBySdid(sdid16)
+    private suspend fun applyPinProfile(profile: PhysicalPinProfile) {
+        if (profile.staticDtr != null && profile.staticRts != null) {
+            transport.setControlLines(dtr = profile.staticDtr, rts = profile.staticRts)
+            delay(35)
+        } else if (profile.useResetToggle) {
+            if (!profile.swapDtrRtsRoles) {
+                transport.pulseResetSequence(profile.inverted, holdResetMs = 70L, settleMs = 70L)
+            } else {
+                val modeHigh = profile.inverted
+                val resetLow = !profile.inverted
+                val resetHigh = profile.inverted
+                transport.setControlLines(dtr = resetLow, rts = modeHigh)
+                delay(70L)
+                transport.setControlLines(dtr = resetHigh, rts = modeHigh)
+                delay(70L)
+            }
+        } else {
+            transport.setControlLines(dtr = profile.inverted, rts = profile.inverted)
+            delay(30)
+        }
+        transport.flushRx()
+    }
+
+    private suspend fun pulseSyncClockPin(clkOnRts: Boolean, cycles: Int = 8, halfPeriodMs: Long = 1L) {
+        for (i in 0 until cycles) {
+            currentCoroutineContext().ensureActive()
+            if (clkOnRts) transport.setRts(true) else transport.setDtr(true)
+            delay(halfPeriodMs)
+            if (clkOnRts) transport.setRts(false) else transport.setDtr(false)
+            delay(halfPeriodMs)
+        }
+    }
+
+    private suspend fun applySyncPinState(sync: SyncLock) {
+        val clkRts = sync.syncClkOnRts
+        if (clkRts != null) {
+            if (clkRts) {
+                transport.setControlLines(dtr = sync.syncModePinState, rts = false)
+            } else {
+                transport.setControlLines(dtr = false, rts = sync.syncModePinState)
+            }
+            delay(30)
+            pulseSyncClockPin(clkRts, cycles = 8, halfPeriodMs = 1L)
+            return
+        }
+        val profile = PhysicalPinProfile(
+            name = sync.dtrPolarity,
+            flmd0State = sync.flmd0PinState,
+            resetIdleState = sync.resetPinIdleState,
+            resetPulsePolarity = sync.resetPinPulsePolarity,
+            dtrDesc = sync.dtrPolarity,
+            rtsDesc = sync.rtsPolarity,
+            inverted = sync.inverted,
+            useResetToggle = sync.useResetToggle,
+            swapDtrRtsRoles = sync.swapDtrRtsRoles,
+            staticDtr = sync.staticDtr,
+            staticRts = sync.staticRts
+        )
+        applyPinProfile(profile)
+    }
+
+    /**
+     * Level A: Asynchronous UART Matrix
+     * Tests ALL DTR/RTS combinations (High/Low, +/- Reset, swapped, 4 static states)
+     * across 10 standard & high-speed bauds (4800..1500000) and both 8N1 / 8E1,
+     * with vendor signatures + all 8 global wake-up pulses (0x00,0xFF,0x55,0xAA,0x01,0x7F,0x80,'?').
+     */
+    private suspend fun runSerialLevelAAsyncMatrix(family: ProberTargetFamily): SyncLock? {
+        currentCoroutineContext().ensureActive()
+        appendLog(
+            ProberLogDirection.INFO,
+            "── المستوى A (Asynchronous UART Matrix): فحص شامل لجميع تركيبات DTR/RTS والسرعات (4800..1.5Mbps) و 8N1/8E1 ──"
+        )
+        val baudRates = when (family) {
+            ProberTargetFamily.STM32_UART -> listOf(115200, 57600, 38400, 19200, 9600, 230400, 500000, 1000000, 1500000, 4800)
+            ProberTargetFamily.NEC_78K0, ProberTargetFamily.RENESAS_R8C_RL78 -> listOf(9600, 115200, 19200, 38400, 57600, 4800, 230400, 500000, 1000000, 1500000)
+            else -> listOf(9600, 115200, 38400, 19200, 57600, 4800, 230400, 500000, 1000000, 1500000)
+        }
+        val parityOptions = when (family) {
+            ProberTargetFamily.STM32_UART -> listOf(true to "8E1", false to "8N1")
+            else -> listOf(false to "8N1", true to "8E1")
+        }
+        val pinProfiles = buildLevelAPinProfiles()
+        val necFrame = buildNecCommandFrame(0x00)
+        val globalWakePulses: List<Pair<String, ByteArray>> = listOf(
+            "Global Wake Pulse 0x00" to byteArrayOf(0x00),
+            "Global Wake Pulse 0xFF" to byteArrayOf(0xFF.toByte()),
+            "Global Wake Pulse 0x55 (Auto-Baud)" to byteArrayOf(0x55),
+            "Global Wake Pulse 0xAA" to byteArrayOf(0xAA.toByte()),
+            "Global Wake Pulse 0x01" to byteArrayOf(0x01),
+            "STM32 / Auto-Baud 0x7F" to byteArrayOf(0x7F),
+            "TI MSP430 / Sync 0x80" to byteArrayOf(0x80.toByte()),
+            "NXP ISP '?' (0x3F)" to byteArrayOf(0x3F)
+        )
+        val vendorSignatures: List<Pair<String, ByteArray>> = listOf(
+            "RL78 Single-Wire (0x3A)" to byteArrayOf(0x3A, 0x01, 0x00, 0xFF.toByte(), 0x03),
+            "TI MSP430 BSL (0x80 01 00)" to byteArrayOf(0x80.toByte(), 0x01, 0x00, 0x19, 0xE8.toByte(), 0x62),
+            "Infineon BSL (0x00 0x6C)" to byteArrayOf(0x00, 0x6C),
+            "AVR STK500 GET_SYNC (0x30 0x20)" to byteArrayOf(0x30, 0x20),
+            "Nuvoton / Holtek Sync (0xA5 0x5A)" to byteArrayOf(0xA5.toByte(), 0x5A),
+            "ESP ROM SLIP Sync" to byteArrayOf(
+                0xC0.toByte(), 0x00, 0x08, 0x24, 0x00, 0x00, 0x00, 0x00,
+                0x07, 0x07, 0x12, 0x20, 0x55, 0x55, 0xC0.toByte()
+            )
+        )
+
+        for (baud in baudRates) {
+            val probeTimeoutMs = if (baud <= 19200) 110 else 75
+            for ((evenParity, parityLabel) in parityOptions) {
+                currentCoroutineContext().ensureActive()
+                transport.configureUart(baud, evenParity = evenParity)
+                appendLog(ProberLogDirection.INFO, "── [Level A] فحص $baud bps ($parityLabel) على 8 تركيبات DTR/RTS ──")
+
+                for (profile in pinProfiles) {
+                    currentCoroutineContext().ensureActive()
+                    applyPinProfile(profile)
+
+                    // A1: NEC / Renesas 78K0 / RL78 Framed 0x00+0x00 -> SOH Reset (on standard <=115200 bauds first)
+                    if (baud <= 230400 && !evenParity) {
+                        val t0 = System.currentTimeMillis()
+                        transport.writeRawBytes(byteArrayOf(0x00))
+                        delay(10)
+                        transport.writeRawBytes(byteArrayOf(0x00))
+                        delay(35)
+                        transport.flushRx()
+                        val rxNec = stripStrictEcho(
+                            necFrame,
+                            transport.transceive(
+                                necFrame, 16, if (baud <= 19200) 180 else 110,
+                                "Level A NEC/RL78 [$baud $parityLabel | ${profile.name}]",
+                                stopOnCompleteNecFrame = true,
+                                logTxRx = false
+                            )
+                        )
+                        if (rxNec.any { (it.toInt() and 0xFF) == STX }) {
+                            appendLog(ProberLogDirection.SUCCESS, "✅ [Level A] تزامن NEC/RL78 @ $baud $parityLabel (${profile.name}): ${rxNec.toHexStr()}")
+                            return SyncLock(
+                                baudRate = baud,
+                                evenParity = evenParity,
+                                parityMode = parityLabel,
+                                wakeUpPatternUsed = "Level A: Framed NEC / Renesas 78K0 / RL78 (0x00+0x00 + SOH 0x00)",
+                                flmd0PinState = profile.flmd0State,
+                                resetPinIdleState = profile.resetIdleState,
+                                resetPinPulsePolarity = profile.resetPulsePolarity,
+                                dtrPolarity = profile.dtrDesc,
+                                rtsPolarity = profile.rtsDesc,
+                                inverted = profile.inverted,
+                                useResetToggle = profile.useResetToggle,
+                                resetPulseMs = if (profile.useResetToggle) 70 else 0,
+                                postResetDelayMs = if (profile.useResetToggle) 70 else 30,
+                                syncByteGapMs = 10,
+                                syncPulseHex = "0x00 (10ms) 0x00 + 01 01 00 FF 03",
+                                framing = DetectedFraming.NEC_STX_ETX,
+                                firstReplyHex = rxNec.toHexStr(),
+                                latencySampleMs = (System.currentTimeMillis() - t0).toInt().coerceAtLeast(10),
+                                swapDtrRtsRoles = profile.swapDtrRtsRoles,
+                                staticDtr = profile.staticDtr,
+                                staticRts = profile.staticRts,
+                                physicalLevelTag = "Level A: Async UART"
+                            )
+                        }
+                    }
+
+                    // A2: STM32 / TI / NXP / AVR / Global Wake Pulses (0x00, 0xFF, 0x55, 0xAA, 0x01, 0x7F, 0x80, '?')
+                    for ((pName, pBytes) in globalWakePulses) {
+                        currentCoroutineContext().ensureActive()
+                        val t0 = System.currentTimeMillis()
+                        val rawRx = transport.transceive(
+                            pBytes, 24, probeTimeoutMs,
+                            "Level A $pName [$baud $parityLabel]",
+                            logTxRx = false
+                        )
+                        val clean = stripStrictEcho(pBytes, rawRx)
+                        if (isMeaningfulGenericReply(pBytes, clean)) {
+                            val b0 = clean[0].toInt() and 0xFF
+                            if (pBytes[0] == 0x7F.toByte() && (b0 == ACK_STM32 || b0 == NACK_STM32)) {
+                                val idRx = stripStrictEcho(
+                                    byteArrayOf(0x02, 0xFD.toByte()),
+                                    transport.transceive(byteArrayOf(0x02, 0xFD.toByte()), 16, 180, "STM32 GetID [0x02 0xFD]")
+                                )
+                                val combinedHex = (clean + idRx).toHexStr()
+                                appendLog(ProberLogDirection.SUCCESS, "✅ [Level A] تزامن STM32 @ $baud $parityLabel (${profile.name}): $combinedHex")
+                                return SyncLock(
+                                    baudRate = baud,
+                                    evenParity = evenParity,
+                                    parityMode = parityLabel,
+                                    wakeUpPatternUsed = "Level A: $pName -> 0x02 0xFD",
+                                    flmd0PinState = profile.flmd0State,
+                                    resetPinIdleState = profile.resetIdleState,
+                                    resetPinPulsePolarity = profile.resetPulsePolarity,
+                                    dtrPolarity = profile.dtrDesc,
+                                    rtsPolarity = profile.rtsDesc,
+                                    inverted = profile.inverted,
+                                    useResetToggle = profile.useResetToggle,
+                                    resetPulseMs = if (profile.useResetToggle) 70 else 0,
+                                    postResetDelayMs = if (profile.useResetToggle) 70 else 30,
+                                    syncByteGapMs = 10,
+                                    syncPulseHex = "0x7F -> 0x02 0xFD",
+                                    framing = DetectedFraming.STM32_ACK,
+                                    firstReplyHex = combinedHex,
+                                    latencySampleMs = (System.currentTimeMillis() - t0).toInt().coerceAtLeast(10),
+                                    swapDtrRtsRoles = profile.swapDtrRtsRoles,
+                                    staticDtr = profile.staticDtr,
+                                    staticRts = profile.staticRts,
+                                    physicalLevelTag = "Level A: Async UART"
+                                )
+                            }
+                            appendLog(ProberLogDirection.SUCCESS, "✅ [Level A] استجابة $pName @ $baud $parityLabel (${profile.name}): ${clean.toHexStr()}")
+                            return SyncLock(
+                                baudRate = baud,
+                                evenParity = evenParity,
+                                parityMode = parityLabel,
+                                wakeUpPatternUsed = "Level A: $pName",
+                                flmd0PinState = profile.flmd0State,
+                                resetPinIdleState = profile.resetIdleState,
+                                resetPinPulsePolarity = profile.resetPulsePolarity,
+                                dtrPolarity = profile.dtrDesc,
+                                rtsPolarity = profile.rtsDesc,
+                                inverted = profile.inverted,
+                                useResetToggle = profile.useResetToggle,
+                                resetPulseMs = if (profile.useResetToggle) 70 else 0,
+                                postResetDelayMs = if (profile.useResetToggle) 70 else 30,
+                                syncByteGapMs = 10,
+                                syncPulseHex = pBytes.toHexStr(),
+                                framing = classifyFraming(clean, pBytes),
+                                firstReplyHex = clean.toHexStr(),
+                                latencySampleMs = (System.currentTimeMillis() - t0).toInt().coerceAtLeast(10),
+                                swapDtrRtsRoles = profile.swapDtrRtsRoles,
+                                staticDtr = profile.staticDtr,
+                                staticRts = profile.staticRts,
+                                physicalLevelTag = "Level A: Async UART"
+                            )
+                        }
+                    }
+
+                    // A3: Vendor Signatures (RL78 0x3A, TI MSP430, Infineon, AVR STK500, Nuvoton, ESP)
+                    for ((vName, vBytes) in vendorSignatures) {
+                        currentCoroutineContext().ensureActive()
+                        val t0 = System.currentTimeMillis()
+                        val rawRx = transport.transceive(vBytes, 24, probeTimeoutMs, "Level A $vName [$baud $parityLabel]", logTxRx = false)
+                        val clean = stripStrictEcho(vBytes, rawRx)
+                        if (isMeaningfulGenericReply(vBytes, clean)) {
+                            appendLog(ProberLogDirection.SUCCESS, "✅ [Level A] بصمة $vName @ $baud $parityLabel (${profile.name}): ${clean.toHexStr()}")
+                            return SyncLock(
+                                baudRate = baud,
+                                evenParity = evenParity,
+                                parityMode = parityLabel,
+                                wakeUpPatternUsed = "Level A: $vName",
+                                flmd0PinState = profile.flmd0State,
+                                resetPinIdleState = profile.resetIdleState,
+                                resetPinPulsePolarity = profile.resetPulsePolarity,
+                                dtrPolarity = profile.dtrDesc,
+                                rtsPolarity = profile.rtsDesc,
+                                inverted = profile.inverted,
+                                useResetToggle = profile.useResetToggle,
+                                resetPulseMs = if (profile.useResetToggle) 70 else 0,
+                                postResetDelayMs = if (profile.useResetToggle) 70 else 30,
+                                syncByteGapMs = 10,
+                                syncPulseHex = vBytes.toHexStr(),
+                                framing = classifyFraming(clean, vBytes),
+                                firstReplyHex = clean.toHexStr(),
+                                latencySampleMs = (System.currentTimeMillis() - t0).toInt().coerceAtLeast(10),
+                                swapDtrRtsRoles = profile.swapDtrRtsRoles,
+                                staticDtr = profile.staticDtr,
+                                staticRts = profile.staticRts,
+                                physicalLevelTag = "Level A: Async UART"
+                            )
+                        }
+                    }
+
+                    // A4: Renesas Direct R8C/M16C/H8/SH (16x 0x00 @ 15ms + 0xB0 / 0xFB)
+                    if (!evenParity && baud in listOf(9600, 19200, 38400, 57600, 115200)) {
+                        val t0 = System.currentTimeMillis()
+                        for (i in 0 until 16) {
+                            currentCoroutineContext().ensureActive()
+                            transport.writeRawBytes(byteArrayOf(0x00))
+                            delay(12)
+                        }
+                        transport.flushRx()
+                        val rxB0 = stripStrictEcho(byteArrayOf(0xB0.toByte()), transport.transceive(byteArrayOf(0xB0.toByte()), 16, 130, "Level A R8C 0xB0", logTxRx = false))
+                        val rxFB = if (!isMeaningfulGenericReply(byteArrayOf(0xB0.toByte()), rxB0)) {
+                            stripStrictEcho(byteArrayOf(0xFB.toByte()), transport.transceive(byteArrayOf(0xFB.toByte()), 24, 140, "Level A R8C 0xFB", logTxRx = false))
+                        } else ByteArray(0)
+                        val rxDirect = if (isMeaningfulGenericReply(byteArrayOf(0xB0.toByte()), rxB0)) rxB0 else rxFB
+                        val usedCmd = if (isMeaningfulGenericReply(byteArrayOf(0xB0.toByte()), rxB0)) byteArrayOf(0xB0.toByte()) else byteArrayOf(0xFB.toByte())
+                        if (isMeaningfulGenericReply(usedCmd, rxDirect)) {
+                            appendLog(ProberLogDirection.SUCCESS, "✅ [Level A] Renesas Direct @ $baud (${profile.name}): ${rxDirect.toHexStr()}")
+                            return SyncLock(
+                                baudRate = baud,
+                                evenParity = evenParity,
+                                parityMode = parityLabel,
+                                wakeUpPatternUsed = "Level A: Renesas Direct (16x 0x00 + ${usedCmd.toHexStr()})",
+                                flmd0PinState = profile.flmd0State,
+                                resetPinIdleState = profile.resetIdleState,
+                                resetPinPulsePolarity = profile.resetPulsePolarity,
+                                dtrPolarity = profile.dtrDesc,
+                                rtsPolarity = profile.rtsDesc,
+                                inverted = profile.inverted,
+                                useResetToggle = profile.useResetToggle,
+                                resetPulseMs = if (profile.useResetToggle) 70 else 0,
+                                postResetDelayMs = 20,
+                                syncByteGapMs = 12,
+                                syncPulseHex = "16x 0x00 + ${usedCmd.toHexStr()}",
+                                framing = DetectedFraming.RENESAS_RAW,
+                                firstReplyHex = rxDirect.toHexStr(),
+                                latencySampleMs = (System.currentTimeMillis() - t0).toInt().coerceAtLeast(15),
+                                swapDtrRtsRoles = profile.swapDtrRtsRoles,
+                                staticDtr = profile.staticDtr,
+                                staticRts = profile.staticRts,
+                                physicalLevelTag = "Level A: Async UART"
+                            )
+                        }
+                    }
                 }
-                appendLog(ProberLogDirection.SUCCESS, "✅ استجابة Freescale 1.5Mbps BDM: ${combined.toHexStr()}")
-                return SyncLock(
-                    baudRate = 1_500_000,
-                    evenParity = false,
-                    parityMode = "8N1 (1.5 Mbps Single-Wire)",
-                    wakeUpPatternUsed = "Freescale HCS08 FT232 Single-Wire BDM (0xFE/0xC0 @ 1.5Mbps)",
-                    flmd0PinState = "BKGD (TX+1kΩ+RX) @ 1,500,000 bps",
-                    resetPinIdleState = "HIGH (+5V) via RTS",
-                    resetPinPulsePolarity = polDesc,
-                    dtrPolarity = polDesc,
-                    rtsPolarity = polDesc,
-                    inverted = inverted,
-                    useResetToggle = doToggle,
-                    resetPulseMs = 50,
-                    postResetDelayMs = 40,
-                    syncByteGapMs = 2,
-                    syncPulseHex = "0xFE / 0xC0 + 0xE8 18 06",
-                    framing = DetectedFraming.FREESCALE_SINGLE_WIRE_BDM,
-                    firstReplyHex = combined.toHexStr(),
-                    latencySampleMs = (System.currentTimeMillis() - t0).toInt().coerceAtLeast(5)
-                )
             }
         }
         return null
     }
 
-    private suspend fun trySamsungIspHandshake(): SyncLock? {
+    /**
+     * Level B: Synchronous Clock + Data Matrix (Samsung S3F8/S3F9/S3P, PIC, Holtek, Elan, Sonix, etc.)
+     * Dynamically switches DTR/RTS roles so one generates SCLK clock pulses and the other acts as TEST/MODE
+     * (HIGH then LOW and vice-versa), sending SDAT queries (AA 55, 0x80, 0x01, 0x02, 0xC0, 0x9F, 0x55, 0x00)
+     * with Strict Echo Rejection to prevent TX/RX loopback false Chip IDs.
+     */
+    private suspend fun runSerialLevelBSyncClockDataMatrix(family: ProberTargetFamily): SyncLock? {
         currentCoroutineContext().ensureActive()
-        appendLog(ProberLogDirection.INFO, "── اختبار Samsung S3F8 / S3F9 / S3P ISP (9600 & 38400 bps) ──")
-        detectedSamsungIdHex = ""
-        val bauds = listOf(9600, 38400)
-        val pols = listOf(
-            Triple("Samsung Active-Low Reset (RTS)", false, true),
-            Triple("Samsung Active-High Reset", true, true),
-            Triple("Samsung Direct UART", false, false)
+        appendLog(
+            ProberLogDirection.INFO,
+            "── المستوى B (Synchronous Clock + Data Matrix): تبديل DTR/RTS كـ SCLK و TEST/MODE مع رفض الصدى الصارم ──"
         )
-        for (baud in bauds) {
+        detectedSamsungIdHex = ""
+
+        data class SyncRoleCfg(val desc: String, val clkOnRts: Boolean, val modePre: Boolean, val modePost: Boolean)
+        val syncRoles = listOf(
+            SyncRoleCfg("RTS=SCLK (Pulse) | DTR=TEST/MODE (HIGH->LOW)", clkOnRts = true, modePre = true, modePost = false),
+            SyncRoleCfg("RTS=SCLK (Pulse) | DTR=TEST/MODE (LOW->HIGH)", clkOnRts = true, modePre = false, modePost = true),
+            SyncRoleCfg("DTR=SCLK (Pulse) | RTS=TEST/MODE (HIGH->LOW)", clkOnRts = false, modePre = true, modePost = false),
+            SyncRoleCfg("DTR=SCLK (Pulse) | RTS=TEST/MODE (LOW->HIGH)", clkOnRts = false, modePre = false, modePost = true)
+        )
+        val syncQueries: List<Pair<String, ByteArray>> = listOf(
+            "Sync Query AA 55" to byteArrayOf(0xAA.toByte(), 0x55),
+            "Sync Query 0x80" to byteArrayOf(0x80.toByte()),
+            "Sync Query 0x01" to byteArrayOf(0x01),
+            "Sync Query 0x02" to byteArrayOf(0x02),
+            "Sync Query 0xC0" to byteArrayOf(0xC0.toByte()),
+            "Sync Query 0x9F" to byteArrayOf(0x9F.toByte()),
+            "Sync Query 0x55" to byteArrayOf(0x55),
+            "Sync Query 0x00" to byteArrayOf(0x00)
+        )
+
+        for (baud in listOf(9600, 38400, 115200, 19200)) {
             transport.configureUart(baud, evenParity = false)
-            for ((polDesc, inverted, doToggle) in pols) {
+            for (role in syncRoles) {
                 currentCoroutineContext().ensureActive()
-                if (doToggle) {
-                    transport.pulseResetSequence(inverted, holdResetMs = 80L, settleMs = 60L)
+                // Hold TEST/MODE in pre-state + generate pre-clock pulses, then switch MODE pin for sync entry
+                if (role.clkOnRts) {
+                    transport.setControlLines(dtr = role.modePre, rts = false)
                 } else {
-                    transport.setControlLines(dtr = false, rts = false)
-                    delay(30)
+                    transport.setControlLines(dtr = false, rts = role.modePre)
                 }
+                delay(35)
+                pulseSyncClockPin(role.clkOnRts, cycles = 8, halfPeriodMs = 1L)
+                if (role.clkOnRts) {
+                    transport.setControlLines(dtr = role.modePost, rts = false)
+                } else {
+                    transport.setControlLines(dtr = false, rts = role.modePost)
+                }
+                delay(35)
                 transport.flushRx()
-                val t0 = System.currentTimeMillis()
-                val r1 = transport.transceive(byteArrayOf(0xAA.toByte(), 0x55), 16, 180, "Samsung ISP Sync [AA 55 @ $baud]")
-                val r2 = if (r1.isEmpty()) transport.transceive(byteArrayOf(0x80.toByte()), 16, 180, "Samsung ISP Sync [80 @ $baud]") else r1
-                if (r2.isNotEmpty() && !r2.all { (it.toInt() and 0xFF) == 0xFF || (it.toInt() and 0xFF) == 0x00 }) {
-                    val id1 = transport.transceive(byteArrayOf(0x01), 16, 180, "Samsung ID Query [0x01]")
-                    val id2 = if (id1.isEmpty()) transport.transceive(byteArrayOf(0x02), 16, 180, "Samsung ID Query [0x02]") else id1
-                    val id3 = if (id2.isEmpty()) transport.transceive(byteArrayOf(0xC0.toByte()), 16, 180, "Samsung ID Query [0xC0]") else id2
-                    val idBytes = if (id3.isNotEmpty()) id3 else r2
-                    detectedSamsungIdHex = idBytes.toHexStr()
-                    appendLog(ProberLogDirection.SUCCESS, "✅ استجابة Samsung ISP @ $baud bps: ${idBytes.toHexStr()}")
+
+                for ((qName, qBytes) in syncQueries) {
+                    currentCoroutineContext().ensureActive()
+                    val t0 = System.currentTimeMillis()
+                    transport.flushRx()
+                    transport.writeRawBytes(qBytes)
+                    pulseSyncClockPin(role.clkOnRts, cycles = 12, halfPeriodMs = 1L)
+                    val rawRx = transport.drainAvailableRaw(waitMs = 70L)
+                    val clean = stripStrictEcho(qBytes, rawRx)
+                    if (isMeaningfulGenericReply(qBytes, clean)) {
+                        // Capture Chip ID follow-up using standard ID queries under the winning clock role
+                        val idFollowUp = mutableListOf<Byte>()
+                        for (idCmd in listOf(0x01, 0x02, 0xC0, 0x9F)) {
+                            val idTx = byteArrayOf(idCmd.toByte())
+                            transport.flushRx()
+                            transport.writeRawBytes(idTx)
+                            pulseSyncClockPin(role.clkOnRts, cycles = 10, halfPeriodMs = 1L)
+                            val idClean = stripStrictEcho(idTx, transport.drainAvailableRaw(waitMs = 55L))
+                            if (isMeaningfulGenericReply(idTx, idClean)) {
+                                idFollowUp.addAll(idClean.toList())
+                                break
+                            }
+                        }
+                        val finalBytes = if (idFollowUp.isNotEmpty()) idFollowUp.toByteArray() else clean
+                        val isSamsungLike = family == ProberTargetFamily.SAMSUNG_S3F ||
+                            qBytes.contentEquals(byteArrayOf(0xAA.toByte(), 0x55)) ||
+                            qBytes[0] == 0x80.toByte()
+                        if (isSamsungLike) {
+                            detectedSamsungIdHex = finalBytes.toHexStr()
+                        } else {
+                            detectedRawIdHex = finalBytes.toHexStr()
+                        }
+                        appendLog(
+                            ProberLogDirection.SUCCESS,
+                            "✅ [Level B] استجابة متزامنة @ $baud bps (${role.desc}) على [$qName] -> ${finalBytes.toHexStr()}"
+                        )
+                        return SyncLock(
+                            baudRate = baud,
+                            evenParity = false,
+                            parityMode = "8N1 (Level B Sync Clock+Data)",
+                            wakeUpPatternUsed = "Level B: Sync SCLK+SDAT ($qName | ${role.desc})",
+                            flmd0PinState = if (role.clkOnRts) "DTR=TEST/MODE (${role.modePre}->${role.modePost})" else "RTS=TEST/MODE (${role.modePre}->${role.modePost})",
+                            resetPinIdleState = if (role.clkOnRts) "RTS=SCLK Clock Pulses" else "DTR=SCLK Clock Pulses",
+                            resetPinPulsePolarity = role.desc,
+                            dtrPolarity = if (role.clkOnRts) "DTR=TEST/MODE" else "DTR=SCLK (Pulsed)",
+                            rtsPolarity = if (role.clkOnRts) "RTS=SCLK (Pulsed)" else "RTS=TEST/MODE",
+                            inverted = role.modePost,
+                            useResetToggle = false,
+                            resetPulseMs = 35,
+                            postResetDelayMs = 35,
+                            syncByteGapMs = 2,
+                            syncPulseHex = qBytes.toHexStr(),
+                            framing = if (isSamsungLike) DetectedFraming.SAMSUNG_ISP else DetectedFraming.CUSTOM_RAW,
+                            firstReplyHex = finalBytes.toHexStr(),
+                            latencySampleMs = (System.currentTimeMillis() - t0).toInt().coerceAtLeast(10),
+                            swapDtrRtsRoles = !role.clkOnRts,
+                            staticDtr = if (role.clkOnRts) role.modePost else false,
+                            staticRts = if (role.clkOnRts) false else role.modePost,
+                            physicalLevelTag = "Level B: Sync Clock+Data",
+                            syncClkOnRts = role.clkOnRts,
+                            syncModePinState = role.modePost
+                        )
+                    }
+                }
+            }
+        }
+        return null
+    }
+
+    /**
+     * Level C: Single-Wire Pulse / BDM / SWIM Matrix @ 1.5 Mbps (1,500,000 bps)
+     * Sends pulse-width patterns (0x00, 0xC0, 0xFE, 0x80, 0xF0, 0x55, 0x3A) over merged TX/RX
+     * with Strict Echo Rejection, plus Freescale HCS08 SDID (0x1806..0x1807) probe.
+     */
+    private suspend fun runSerialLevelCSingleWirePulseMatrix(family: ProberTargetFamily): SyncLock? {
+        currentCoroutineContext().ensureActive()
+        appendLog(
+            ProberLogDirection.INFO,
+            "── المستوى C (Single-Wire Pulse / BDM / SWIM Matrix @ 1,500,000 bps): فحص نبضات السلك الواحد ──"
+        )
+        transport.configureUart(1_500_000, evenParity = false)
+        detectedSdidHex = ""
+        detectedFreescaleModel = ""
+
+        val profiles = listOf(
+            buildLevelAPinProfiles()[0], // Active-Low (DTR=MODE, RTS=RESET)
+            buildLevelAPinProfiles()[1], // Active-High
+            buildLevelAPinProfiles()[2], // Swapped Active-Low
+            buildLevelAPinProfiles()[4], // Static LOW/LOW
+            buildLevelAPinProfiles()[7]  // Static HIGH/HIGH
+        )
+        val pulseWidthBytes = listOf(0x00, 0xC0, 0xFE, 0x80, 0xF0, 0x55, 0x3A)
+
+        for (profile in profiles) {
+            currentCoroutineContext().ensureActive()
+            applyPinProfile(profile)
+            val t0 = System.currentTimeMillis()
+
+            for (pulseByte in pulseWidthBytes) {
+                currentCoroutineContext().ensureActive()
+                val tx = byteArrayOf(pulseByte.toByte())
+                val rawRx = transport.transceive(tx, 16, 85, "Level C 1.5M Pulse [0x%02X]".format(pulseByte), logTxRx = false)
+                val clean = stripStrictEcho(tx, rawRx)
+                if (isMeaningfulGenericReply(tx, clean)) {
+                    // Attempt HCS08 BDM SDID read as enrichment
+                    val sdidH = stripStrictEcho(
+                        byteArrayOf(0xE8.toByte(), 0x18, 0x06),
+                        transport.transceive(byteArrayOf(0xE8.toByte(), 0x18, 0x06), 8, 95, "Level C SDIDH [0x1806]", logTxRx = false)
+                    )
+                    val sdidL = stripStrictEcho(
+                        byteArrayOf(0xE8.toByte(), 0x18, 0x07),
+                        transport.transceive(byteArrayOf(0xE8.toByte(), 0x18, 0x07), 8, 95, "Level C SDIDL [0x1807]", logTxRx = false)
+                    )
+                    val sdidValid = sdidH.isNotEmpty() && sdidL.isNotEmpty() &&
+                        ((sdidH[0].toInt() and 0xFF) != 0x00 || (sdidL[0].toInt() and 0xFF) != 0x00)
+                    if (sdidValid) {
+                        val sdid16 = ((sdidH[0].toInt() and 0xFF) shl 8) or (sdidL[0].toInt() and 0xFF)
+                        detectedSdidHex = "0x%04X".format(sdid16)
+                        detectedFreescaleModel = lookupHcs08ModelBySdid(sdid16)
+                    }
+                    val combined = if (sdidValid) (sdidH + sdidL) else clean
+                    val isBdmFreescale = sdidValid || family == ProberTargetFamily.FREESCALE_HCS08 || pulseByte == 0xFE || pulseByte == 0xC0
+                    appendLog(
+                        ProberLogDirection.SUCCESS,
+                        "✅ [Level C] استجابة السلك الواحد @ 1.5Mbps [0x%02X] (${profile.name}): ${combined.toHexStr()}".format(pulseByte)
+                    )
                     return SyncLock(
-                        baudRate = baud,
+                        baudRate = 1_500_000,
                         evenParity = false,
-                        parityMode = "8N1",
-                        wakeUpPatternUsed = "Samsung S3F/S3P ISP Sync (0xAA 0x55 / 0x80 @ $baud bps)",
-                        flmd0PinState = "TOOL0/SDAT + RESET ($polDesc)",
-                        resetPinIdleState = "HIGH (+5V)",
-                        resetPinPulsePolarity = polDesc,
-                        dtrPolarity = polDesc,
-                        rtsPolarity = polDesc,
-                        inverted = inverted,
-                        useResetToggle = doToggle,
-                        resetPulseMs = 80,
-                        postResetDelayMs = 60,
-                        syncByteGapMs = 10,
-                        syncPulseHex = if (r1.isNotEmpty()) "AA 55" else "80",
-                        framing = DetectedFraming.SAMSUNG_ISP,
-                        firstReplyHex = idBytes.toHexStr(),
-                        latencySampleMs = (System.currentTimeMillis() - t0).toInt().coerceAtLeast(10)
+                        parityMode = "8N1 (1.5 Mbps Single-Wire Pulse)",
+                        wakeUpPatternUsed = "Level C: Single-Wire Pulse (0x%02X @ 1.5Mbps)".format(pulseByte),
+                        flmd0PinState = "Single-Wire TX+RX (${profile.flmd0State})",
+                        resetPinIdleState = profile.resetIdleState,
+                        resetPinPulsePolarity = profile.resetPulsePolarity,
+                        dtrPolarity = profile.dtrDesc,
+                        rtsPolarity = profile.rtsDesc,
+                        inverted = profile.inverted,
+                        useResetToggle = profile.useResetToggle,
+                        resetPulseMs = if (profile.useResetToggle) 70 else 0,
+                        postResetDelayMs = if (profile.useResetToggle) 70 else 30,
+                        syncByteGapMs = 2,
+                        syncPulseHex = "0x%02X".format(pulseByte),
+                        framing = if (isBdmFreescale) DetectedFraming.FREESCALE_SINGLE_WIRE_BDM else DetectedFraming.CUSTOM_RAW,
+                        firstReplyHex = combined.toHexStr(),
+                        latencySampleMs = (System.currentTimeMillis() - t0).toInt().coerceAtLeast(5),
+                        swapDtrRtsRoles = profile.swapDtrRtsRoles,
+                        staticDtr = profile.staticDtr,
+                        staticRts = profile.staticRts,
+                        physicalLevelTag = "Level C: Single-Wire 1.5Mbps"
                     )
                 }
+            }
+
+            // Direct HCS08 BDM SDID probe (0xE8 0x18 0x06/0x07) even if single pulse was silent
+            val sdidH = stripStrictEcho(
+                byteArrayOf(0xE8.toByte(), 0x18, 0x06),
+                transport.transceive(byteArrayOf(0xE8.toByte(), 0x18, 0x06), 8, 95, "Level C Direct SDIDH [0x1806]", logTxRx = false)
+            )
+            val sdidL = stripStrictEcho(
+                byteArrayOf(0xE8.toByte(), 0x18, 0x07),
+                transport.transceive(byteArrayOf(0xE8.toByte(), 0x18, 0x07), 8, 95, "Level C Direct SDIDL [0x1807]", logTxRx = false)
+            )
+            if (sdidH.isNotEmpty() && sdidL.isNotEmpty() &&
+                isMeaningfulGenericReply(byteArrayOf(0xE8.toByte(), 0x18, 0x06), sdidH + sdidL)
+            ) {
+                val sdid16 = ((sdidH[0].toInt() and 0xFF) shl 8) or (sdidL[0].toInt() and 0xFF)
+                detectedSdidHex = "0x%04X".format(sdid16)
+                detectedFreescaleModel = lookupHcs08ModelBySdid(sdid16)
+                val combined = sdidH + sdidL
+                appendLog(ProberLogDirection.SUCCESS, "✅ [Level C] Freescale 1.5Mbps BDM SDID=$detectedSdidHex -> ${combined.toHexStr()}")
+                return SyncLock(
+                    baudRate = 1_500_000,
+                    evenParity = false,
+                    parityMode = "8N1 (1.5 Mbps Single-Wire BDM)",
+                    wakeUpPatternUsed = "Level C: Freescale Single-Wire BDM SDID (0xE8 18 06 @ 1.5Mbps)",
+                    flmd0PinState = "BKGD (TX+1kΩ+RX) @ 1,500,000 bps",
+                    resetPinIdleState = profile.resetIdleState,
+                    resetPinPulsePolarity = profile.resetPulsePolarity,
+                    dtrPolarity = profile.dtrDesc,
+                    rtsPolarity = profile.rtsDesc,
+                    inverted = profile.inverted,
+                    useResetToggle = profile.useResetToggle,
+                    resetPulseMs = if (profile.useResetToggle) 70 else 0,
+                    postResetDelayMs = if (profile.useResetToggle) 70 else 30,
+                    syncByteGapMs = 2,
+                    syncPulseHex = "0xE8 18 06",
+                    framing = DetectedFraming.FREESCALE_SINGLE_WIRE_BDM,
+                    firstReplyHex = combined.toHexStr(),
+                    latencySampleMs = (System.currentTimeMillis() - t0).toInt().coerceAtLeast(5),
+                    swapDtrRtsRoles = profile.swapDtrRtsRoles,
+                    staticDtr = profile.staticDtr,
+                    staticRts = profile.staticRts,
+                    physicalLevelTag = "Level C: Single-Wire 1.5Mbps"
+                )
             }
         }
         return null
@@ -1670,7 +2288,7 @@ class ProberEngine(context: Context) {
     }
 
     private suspend fun runStage1UniversalBlindHandshake(family: ProberTargetFamily): SyncLock? {
-        // 0. Route according to connected USB programmer VID:PID / Interface inspection
+        // 0. Native USB Programmers (USBDM, ST-LINK, USBasp, Atmel/AVR, PICkit, Unknown USB)
         when (transport.currentChip()) {
             ProberUsbChip.USBDM -> return tryUsbdmMultiArchHandshake(family)
             ProberUsbChip.ST_LINK -> return tryStLinkHandshake()
@@ -1678,236 +2296,38 @@ class ProberEngine(context: Context) {
             ProberUsbChip.ATMEL_AVR -> return tryAtmelAvrHandshake() ?: tryUnknownUsbProgrammerHandshake()
             ProberUsbChip.MICROCHIP_PICKIT -> return tryMicrochipPickitHandshake() ?: tryUnknownUsbProgrammerHandshake()
             ProberUsbChip.UNKNOWN_USB -> return tryUnknownUsbProgrammerHandshake()
-            else -> { /* Proceed with Serial UART Universal Blind Sync */ }
+            else -> { /* Proceed to Universal 3-Level Serial/UART Matrix */ }
         }
 
-        // 1. NEC / Renesas (78K0 / RL78) at 115200 & 9600 bps (8N1)
+        // Fast-path NEC / Renesas 78K0 if user explicitly targets NEC or AUTO_DETECT at primary 9600/115200 8N1
         if (family == ProberTargetFamily.NEC_78K0 || family == ProberTargetFamily.AUTO_DETECT) {
-            appendLog(ProberLogDirection.INFO, "── [1/4] فحص NEC / Renesas 78K0 / RL78 على 115200 و 9600 bps (8N1) ──")
+            appendLog(ProberLogDirection.INFO, "── فحص سريع NEC / Renesas 78K0 / RL78 قبل المصفوفة الشاملة ──")
             for (necBaud in listOf(9600, 115200)) {
-                tryLiteralNec78k0Handshake(necBaud, false, "Active-Low (DTR=FLMD0, RTS=RESET)", inverted = false, useResetToggle = true)?.let { return it }
-                tryLiteralNec78k0Handshake(necBaud, false, "Active-High / عكس القطبية", inverted = true, useResetToggle = true)?.let { return it }
-                tryLiteralNec78k0Handshake(necBaud, false, "بدون نبضة خطوط (Direct $necBaud)", inverted = false, useResetToggle = false)?.let { return it }
+                tryLiteralNec78k0Handshake(necBaud, false, "Active-Low (DTR=FLMD0, RTS=RESET)", inverted = false, useResetToggle = true)
+                    ?.let { return it.copy(physicalLevelTag = "Level A: Async UART (NEC 78K0)") }
+                tryLiteralNec78k0Handshake(necBaud, false, "Active-High / عكس القطبية", inverted = true, useResetToggle = true)
+                    ?.let { return it.copy(physicalLevelTag = "Level A: Async UART (NEC 78K0)") }
             }
         }
 
-        // 2. Freescale / NXP HCS08 Single-Wire BDM via FT232 @ 1.5 Mbps
-        if (family == ProberTargetFamily.FREESCALE_HCS08 || family == ProberTargetFamily.AUTO_DETECT) {
-            tryFreescaleSingleWireBdm1_5Mbps()?.let { return it }
-        }
-
-        // 3. Samsung S3F8 / S3F9 / S3P ISP (9600 & 38400 bps)
-        if (family == ProberTargetFamily.SAMSUNG_S3F || family == ProberTargetFamily.AUTO_DETECT) {
-            trySamsungIspHandshake()?.let { return it }
-        }
-
-        // 4. Universal Blind Sync matrix across 4800..115200, 8N1 & 8E1, and 5 global wake-up patterns (incl. R8C 16x0x00 & STM32 8E1 0x7F)
-        val baudRates = when (family) {
-            ProberTargetFamily.STM32_UART -> listOf(115200, 57600, 38400, 19200, 9600, 4800)
-            ProberTargetFamily.RENESAS_R8C_RL78 -> listOf(9600, 19200, 38400, 57600, 115200, 4800)
-            else -> listOf(9600, 115200, 38400, 19200, 57600, 4800)
-        }
-        val parityOptions = when (family) {
-            ProberTargetFamily.STM32_UART -> listOf(true to "8E1", false to "8N1")
-            ProberTargetFamily.NEC_78K0 -> listOf(false to "8N1", true to "8E1")
-            else -> listOf(false to "8N1", true to "8E1")
-        }
-        val lineConfigs = listOf(
-            Triple("Active-Low (DTR=FLMD0, RTS=RESET)", false, true),
-            Triple("Active-High / معكوسة", true, true),
-            Triple("بدون تحكم خطوط (Direct)", false, false)
-        )
-
-        for (baud in baudRates) {
-            for ((evenParity, parityLabel) in parityOptions) {
-                currentCoroutineContext().ensureActive()
-                transport.configureUart(baud, evenParity = evenParity)
-                appendLog(ProberLogDirection.INFO, "── فحص السرعة $baud bps ($parityLabel) بالأنماط الخمسة ──")
-
-                for ((polDesc, inverted, doToggle) in lineConfigs) {
-                    currentCoroutineContext().ensureActive()
-                    if (doToggle) {
-                        transport.pulseResetSequence(inverted, holdResetMs = 100L, settleMs = 150L)
-                    } else {
-                        transport.setControlLines(dtr = false, rts = false)
-                        delay(50)
-                    }
-                    transport.flushRx()
-
-                    val flmd0State = if (doToggle) "HIGH (+5V) via DTR=$inverted" else "Static (DTR=false)"
-                    val resetIdle = if (doToggle) "HIGH (+5V) via RTS=$inverted" else "Static (RTS=false)"
-                    val pulsePol = if (doToggle) (if (inverted) "Active-High Pulse (100ms)" else "Active-Low Pulse (100ms)") else "Static"
-
-                    // 1. Pattern 1: Framed (NEC / Renesas RL78/RX/V850 / TI MSP430 / Infineon)
-                    if (!(baud == 9600 && !evenParity && (family == ProberTargetFamily.NEC_78K0 || family == ProberTargetFamily.AUTO_DETECT))) {
-                        val necFrame = buildNecCommandFrame(0x00)
-                        val t0 = System.currentTimeMillis()
-                        transport.writeRawBytes(byteArrayOf(0x00))
-                        delay(10)
-                        transport.writeRawBytes(byteArrayOf(0x00))
-                        delay(40)
-                        transport.flushRx()
-                        val rxNec = transport.transceive(necFrame, 16, 280, "P1 Framed NEC/RL78 [$baud $parityLabel]", stopOnCompleteNecFrame = true)
-                        if (rxNec.any { (it.toInt() and 0xFF) == STX }) {
-                            return SyncLock(
-                                baudRate = baud, evenParity = evenParity, parityMode = parityLabel,
-                                wakeUpPatternUsed = "Pattern 1: Framed (NEC / Renesas 78K0 / RL78)",
-                                flmd0PinState = flmd0State, resetPinIdleState = resetIdle, resetPinPulsePolarity = pulsePol,
-                                dtrPolarity = polDesc, rtsPolarity = pulsePol, inverted = inverted, useResetToggle = doToggle,
-                                resetPulseMs = 100, postResetDelayMs = 150, syncByteGapMs = 10,
-                                syncPulseHex = "0x00 (10ms) 0x00 + 01 01 00 FF 03",
-                                framing = DetectedFraming.NEC_STX_ETX,
-                                firstReplyHex = rxNec.toHexStr(),
-                                latencySampleMs = (System.currentTimeMillis() - t0).toInt().coerceAtLeast(10)
-                            )
-                        }
-                    }
-
-                    // RL78 0x3A / TI MSP430 BSL (0x80) / Infineon (0x00/0x6C)
-                    val pattern1Extra = listOf(
-                        "Pattern 1: RL78 Single-Wire (0x3A Reset)" to byteArrayOf(0x3A, 0x01, 0x00, 0xFF.toByte(), 0x03),
-                        "Pattern 1: TI MSP430 BSL Sync (0x80)" to byteArrayOf(0x80.toByte(), 0x01, 0x00, 0x19, 0xE8.toByte(), 0x62),
-                        "Pattern 1: Infineon BSL Header (0x00/0x6C)" to byteArrayOf(0x00, 0x6C)
-                    )
-                    for ((pName, pBytes) in pattern1Extra) {
-                        val t0 = System.currentTimeMillis()
-                        val rx = transport.transceive(pBytes, 20, 200, "$pName [$baud $parityLabel]")
-                        if (rx.isNotEmpty()) {
-                            return SyncLock(
-                                baudRate = baud, evenParity = evenParity, parityMode = parityLabel,
-                                wakeUpPatternUsed = pName,
-                                flmd0PinState = flmd0State, resetPinIdleState = resetIdle, resetPinPulsePolarity = pulsePol,
-                                dtrPolarity = polDesc, rtsPolarity = pulsePol, inverted = inverted, useResetToggle = doToggle,
-                                resetPulseMs = 100, postResetDelayMs = 150, syncByteGapMs = 10,
-                                syncPulseHex = pBytes.toHexStr(),
-                                framing = classifyFraming(rx, pBytes),
-                                firstReplyHex = rx.toHexStr(),
-                                latencySampleMs = (System.currentTimeMillis() - t0).toInt().coerceAtLeast(10)
-                            )
-                        }
-                    }
-
-                    // 2. Pattern 2: Renesas Direct Commands (R8C/M16C/H8/SH: 16x 0x00 @ 20ms then 0xB0 & 0xFB)
-                    if (family == ProberTargetFamily.RENESAS_R8C_RL78 || family == ProberTargetFamily.AUTO_DETECT) {
-                        val t0 = System.currentTimeMillis()
-                        appendLog(ProberLogDirection.TX, "Pattern 2 (R8C/M16C/H8/SH): 16x 0x00 @ 20ms [$baud $parityLabel]")
-                        for (i in 0 until 16) {
-                            currentCoroutineContext().ensureActive()
-                            transport.writeRawBytes(byteArrayOf(0x00))
-                            delay(20)
-                        }
-                        transport.flushRx()
-                        val rxB0 = transport.transceive(byteArrayOf(0xB0.toByte()), 16, 220, "P2 Direct 0xB0 [$baud $parityLabel]")
-                        val rxFB = if (rxB0.isEmpty()) transport.transceive(byteArrayOf(0xFB.toByte()), 24, 240, "P2 Direct 0xFB [$baud $parityLabel]") else ByteArray(0)
-                        val rxDirect = if (rxB0.isNotEmpty()) rxB0 else rxFB
-                        if (rxDirect.isNotEmpty()) {
-                            return SyncLock(
-                                baudRate = baud, evenParity = evenParity, parityMode = parityLabel,
-                                wakeUpPatternUsed = "Pattern 2: Direct Commands (R8C/M16C/H8/SH: 16x0x00 @ 20ms + 0xB0/0xFB)",
-                                flmd0PinState = flmd0State, resetPinIdleState = resetIdle, resetPinPulsePolarity = pulsePol,
-                                dtrPolarity = polDesc, rtsPolarity = pulsePol, inverted = inverted, useResetToggle = doToggle,
-                                resetPulseMs = 100, postResetDelayMs = 20, syncByteGapMs = 20,
-                                syncPulseHex = "16x 0x00 (20ms) + ${if (rxB0.isNotEmpty()) "0xB0" else "0xFB"}",
-                                framing = DetectedFraming.RENESAS_RAW,
-                                firstReplyHex = rxDirect.toHexStr(),
-                                latencySampleMs = (System.currentTimeMillis() - t0).toInt().coerceAtLeast(15)
-                            )
-                        }
-                    }
-
-                    // 3. Pattern 3: Auto-Baud (STM32 0x7F + 0x02 0xFD, Nuvoton, PIC, Holtek)
-                    val autoBaudCandidates = listOf(
-                        "Pattern 3: Auto-Baud STM32 (0x7F -> 0x02 0xFD)" to byteArrayOf(0x7F),
-                        "Pattern 3: Auto-Baud General (0x55)" to byteArrayOf(0x55),
-                        "Pattern 3: Nuvoton/Holtek Sync (0xA5 / 0x5A)" to byteArrayOf(0xA5.toByte(), 0x5A)
-                    )
-                    for ((pName, pBytes) in autoBaudCandidates) {
-                        val t0 = System.currentTimeMillis()
-                        val rx = transport.transceive(pBytes, 16, 200, "$pName [$baud $parityLabel]")
-                        if (rx.isNotEmpty()) {
-                            val b0 = rx[0].toInt() and 0xFF
-                            if (pBytes[0] == 0x7F.toByte() && (b0 == ACK_STM32 || b0 == NACK_STM32)) {
-                                // Verify STM32 Get ID 0x02 0xFD
-                                val idRx = transport.transceive(byteArrayOf(0x02, 0xFD.toByte()), 16, 220, "STM32 Verify [0x02 0xFD]")
-                                val firstCombined = (rx + idRx).toHexStr()
-                                return SyncLock(
-                                    baudRate = baud, evenParity = evenParity, parityMode = parityLabel,
-                                    wakeUpPatternUsed = pName,
-                                    flmd0PinState = flmd0State, resetPinIdleState = resetIdle, resetPinPulsePolarity = pulsePol,
-                                    dtrPolarity = polDesc, rtsPolarity = pulsePol, inverted = inverted, useResetToggle = doToggle,
-                                    resetPulseMs = 100, postResetDelayMs = 150, syncByteGapMs = 10,
-                                    syncPulseHex = "0x7F -> 0x02 0xFD",
-                                    framing = DetectedFraming.STM32_ACK,
-                                    firstReplyHex = firstCombined,
-                                    latencySampleMs = (System.currentTimeMillis() - t0).toInt().coerceAtLeast(10)
-                                )
-                            } else {
-                                return SyncLock(
-                                    baudRate = baud, evenParity = evenParity, parityMode = parityLabel,
-                                    wakeUpPatternUsed = pName,
-                                    flmd0PinState = flmd0State, resetPinIdleState = resetIdle, resetPinPulsePolarity = pulsePol,
-                                    dtrPolarity = polDesc, rtsPolarity = pulsePol, inverted = inverted, useResetToggle = doToggle,
-                                    resetPulseMs = 100, postResetDelayMs = 150, syncByteGapMs = 10,
-                                    syncPulseHex = pBytes.toHexStr(),
-                                    framing = classifyFraming(rx, pBytes),
-                                    firstReplyHex = rx.toHexStr(),
-                                    latencySampleMs = (System.currentTimeMillis() - t0).toInt().coerceAtLeast(10)
-                                )
-                            }
-                        }
-                    }
-
-                    // 4. Pattern 4: Standard & Text Patterns (NXP '?', AVR 0x30 0x20, ESP SLIP)
-                    val stdPatterns = listOf(
-                        "Pattern 4: NXP ISP Autobaud ('?' 0x3F)" to byteArrayOf(0x3F),
-                        "Pattern 4: AVR STK500 GET_SYNC (0x30 0x20)" to byteArrayOf(0x30, 0x20),
-                        "Pattern 4: ESP ROM SLIP Sync" to byteArrayOf(
-                            0xC0.toByte(), 0x00, 0x08, 0x24, 0x00, 0x00, 0x00, 0x00,
-                            0x07, 0x07, 0x12, 0x20, 0x55, 0x55, 0xC0.toByte()
-                        )
-                    )
-                    for ((pName, pBytes) in stdPatterns) {
-                        val t0 = System.currentTimeMillis()
-                        val rx = transport.transceive(pBytes, 24, 200, "$pName [$baud $parityLabel]")
-                        if (rx.isNotEmpty()) {
-                            return SyncLock(
-                                baudRate = baud, evenParity = evenParity, parityMode = parityLabel,
-                                wakeUpPatternUsed = pName,
-                                flmd0PinState = flmd0State, resetPinIdleState = resetIdle, resetPinPulsePolarity = pulsePol,
-                                dtrPolarity = polDesc, rtsPolarity = pulsePol, inverted = inverted, useResetToggle = doToggle,
-                                resetPulseMs = 100, postResetDelayMs = 150, syncByteGapMs = 10,
-                                syncPulseHex = pBytes.toHexStr(),
-                                framing = DetectedFraming.CUSTOM_RAW,
-                                firstReplyHex = rx.toHexStr(),
-                                latencySampleMs = (System.currentTimeMillis() - t0).toInt().coerceAtLeast(10)
-                            )
-                        }
-                    }
-
-                    // 5. Pattern 5: Blind Exploration for Unknown MCUs (0x00, 0xFF, 0xAA, 0x55, 0x01, 0x05)
-                    val blindBytes = listOf(0xFF, 0xAA, 0x01, 0x05)
-                    for (b in blindBytes) {
-                        val t0 = System.currentTimeMillis()
-                        val pkt = byteArrayOf(b.toByte())
-                        val rx = transport.transceive(pkt, 20, 160, "P5 Blind Probe [0x%02X @ $baud $parityLabel]".format(b))
-                        if (rx.isNotEmpty()) {
-                            return SyncLock(
-                                baudRate = baud, evenParity = evenParity, parityMode = parityLabel,
-                                wakeUpPatternUsed = "Pattern 5: Blind Unknown MCU Probe (0x%02X)".format(b),
-                                flmd0PinState = flmd0State, resetPinIdleState = resetIdle, resetPinPulsePolarity = pulsePol,
-                                dtrPolarity = polDesc, rtsPolarity = pulsePol, inverted = inverted, useResetToggle = doToggle,
-                                resetPulseMs = 100, postResetDelayMs = 150, syncByteGapMs = 10,
-                                syncPulseHex = pkt.toHexStr(),
-                                framing = classifyFraming(rx, pkt),
-                                firstReplyHex = rx.toHexStr(),
-                                latencySampleMs = (System.currentTimeMillis() - t0).toInt().coerceAtLeast(10)
-                            )
-                        }
-                    }
-                }
+        // Order the 3 Universal Physical Levels according to optional user hint, covering ALL 3 automatically:
+        return when (family) {
+            ProberTargetFamily.SAMSUNG_S3F -> {
+                runSerialLevelBSyncClockDataMatrix(family)
+                    ?: runSerialLevelAAsyncMatrix(family)
+                    ?: runSerialLevelCSingleWirePulseMatrix(family)
+            }
+            ProberTargetFamily.FREESCALE_HCS08 -> {
+                runSerialLevelCSingleWirePulseMatrix(family)
+                    ?: runSerialLevelAAsyncMatrix(family)
+                    ?: runSerialLevelBSyncClockDataMatrix(family)
+            }
+            else -> {
+                runSerialLevelAAsyncMatrix(family)
+                    ?: runSerialLevelBSyncClockDataMatrix(family)
+                    ?: runSerialLevelCSingleWirePulseMatrix(family)
             }
         }
-        return null
     }
 
     /**
@@ -2283,7 +2703,12 @@ class ProberEngine(context: Context) {
             }
         }
         if (sync.framing != DetectedFraming.NEC_STX_ETX) {
-            return updateAndReturn("stage2_checksum_1b", ChecklistStepStatus.FAILED, "غير مدعوم / غير مطلوب في ${sync.framing.label}")
+            val directPassed = _state.value.checklist.firstOrNull { it.id == "stage2_direct_read" }?.status == ChecklistStepStatus.PASSED
+            return if (directPassed) {
+                updateAndReturn("stage2_checksum_1b", ChecklistStepStatus.PASSED, "غير مطلوب — السحب مباشر عبر ${sync.framing.label}")
+            } else {
+                updateAndReturn("stage2_checksum_1b", ChecklistStepStatus.BYPASSED, "غير منطبق على ${sync.framing.label}")
+            }
         }
 
         val c1 = buildNecCommandFrame(0xB0, byteArrayOf(0x00, 0x00, 0x00, 0x00, 0x00, 0x00))
@@ -2317,8 +2742,13 @@ class ProberEngine(context: Context) {
             return item to "Dual-Read Verify (USBDM READ_MEM)"
         }
         if (sync.framing != DetectedFraming.NEC_STX_ETX) {
-            val item = updateAndReturn("stage2_verify_0x13", ChecklistStepStatus.FAILED, "غير منطبق على ${sync.framing.label}")
-            return item to "N/A (${sync.framing.name})"
+            val directPassed = _state.value.checklist.firstOrNull { it.id == "stage2_direct_read" }?.status == ChecklistStepStatus.PASSED
+            val item = if (directPassed) {
+                updateAndReturn("stage2_verify_0x13", ChecklistStepStatus.PASSED, "التحقق المطابق عبر القراءة المزدوجة (${sync.framing.label})")
+            } else {
+                updateAndReturn("stage2_verify_0x13", ChecklistStepStatus.BYPASSED, "غير منطبق على ${sync.framing.label}")
+            }
+            return item to "Dual-Read Verify (${sync.framing.name})"
         }
 
         var pageLen = 256
@@ -2618,6 +3048,31 @@ class ProberEngine(context: Context) {
                 continue
             }
 
+            if (sync.framing != DetectedFraming.NEC_STX_ETX) {
+                if (cmd in WRITE_ERASE_GUARD_CMDS) {
+                    discovered.add(DiscoveredCommandEntry("0x%02X".format(cmd), cmd, "GUARDED", 0, guessCommandRole(cmd), false))
+                    continue
+                }
+                val rawTx = byteArrayOf(cmd.toByte())
+                val rawRx = if (sync.syncClkOnRts != null) {
+                    transport.flushRx()
+                    transport.writeRawBytes(rawTx)
+                    pulseSyncClockPin(sync.syncClkOnRts, cycles = 8, halfPeriodMs = 1L)
+                    transport.drainAvailableRaw(waitMs = 45L)
+                } else {
+                    transport.transceive(rawTx, 12, 55, "Raw Sweep 0x%02X".format(cmd), logTxRx = false)
+                }
+                val clean = stripStrictEcho(rawTx, rawRx)
+                if (isMeaningfulGenericReply(rawTx, clean)) {
+                    val sts = clean[0].toInt() and 0xFF
+                    if (sts !in HARD_REJECT_STATUS) {
+                        candidateBytes.add(cmd to sts)
+                        appendLog(ProberLogDirection.SUCCESS, "رصد أمر خام [0x%02X] -> 0x%02X (${guessCommandRole(cmd)})".format(cmd, sts))
+                    }
+                }
+                continue
+            }
+
             val tx = if (cmd in ZERO_ARG_DANGER_CMDS) {
                 buildNecCommandFrame(cmd, byteArrayOf(-1, -1, -1, -1, -1, -1))
             } else {
@@ -2632,7 +3087,7 @@ class ProberEngine(context: Context) {
                 stopOnCompleteNecFrame = true,
                 logTxRx = false
             )
-            if (rx.isEmpty() && sync.framing == DetectedFraming.NEC_STX_ETX) {
+            if (rx.isEmpty()) {
                 consecutiveNoReply++
                 if (consecutiveNoReply >= 3 || cmd == 0x90 || cmd == 0x9A || cmd == 0xA0) {
                     consecutiveNoReply = 0
@@ -2654,7 +3109,7 @@ class ProberEngine(context: Context) {
             }
             if (rx.isEmpty()) continue
 
-            val sts = if (sync.framing == DetectedFraming.NEC_STX_ETX) parseNecStatus(rx) else (rx[0].toInt() and 0xFF)
+            val sts = parseNecStatus(rx)
             if (sts == ACK_NEC || sts == STS_PARAM_ERROR || sts == STS_BLANK_CHECK_ERROR || sts == STS_PROTECT_ERROR) {
                 candidateBytes.add(cmd to sts)
                 appendLog(ProberLogDirection.SUCCESS, "رصد أمر [0x%02X] -> Status 0x%02X (${guessCommandRole(cmd)})".format(cmd, sts))
@@ -2664,7 +3119,11 @@ class ProberEngine(context: Context) {
         ensureBootloaderReady(sync, "تأكيد الجاهزية قبل فحص أطوال LEN", relockOsc = false)
         for ((cmd, initialSts) in candidateBytes) {
             currentCoroutineContext().ensureActive()
-            val detectedLen = probeExactParamLen(sync, cmd, initialSts)
+            val detectedLen = if (sync.framing == DetectedFraming.NEC_STX_ETX) {
+                probeExactParamLen(sync, cmd, initialSts)
+            } else {
+                0
+            }
             discovered.add(
                 DiscoveredCommandEntry(
                     cmdHex = "0x%02X".format(cmd),
@@ -2960,7 +3419,55 @@ class ProberEngine(context: Context) {
             return FlashBoundsProbeResult(0x000000, 0x007FFF, "0x007FFF (32 KB AVR)", "USBasp EP0 Fallback 32 KB")
         }
 
-        return FlashBoundsProbeResult(sync.flashBaseAddr, sync.flashBaseAddr + 0x007FFF, "0x%06X (32 KB Typical)".format(sync.flashBaseAddr + 0x007FFF), "Generic Flash Bound (32 KB Typical)")
+        if (sync.framing == DetectedFraming.FREESCALE_SINGLE_WIRE_BDM) {
+            for ((candStart, sizeLabel) in listOf(
+                0x001900 to "58-60 KB",
+                0x004000 to "48 KB",
+                0x008000 to "32 KB",
+                0x00C000 to "16 KB",
+                0x00E000 to "8 KB",
+                0x00F000 to "4 KB"
+            )) {
+                currentCoroutineContext().ensureActive()
+                val pkt = byteArrayOf(0xE8.toByte(), ((candStart ushr 8) and 0xFF).toByte(), (candStart and 0xFF).toByte())
+                val clean = stripStrictEcho(pkt, transport.transceive(pkt, 8, 95, "4.1 Single-Wire BDM Probe [0x%04X]".format(candStart), logTxRx = false))
+                if (clean.isNotEmpty() && !clean.all { it == 0x00.toByte() }) {
+                    val label = "0x00FFFF ($sizeLabel HCS08 BDM)"
+                    return FlashBoundsProbeResult(candStart, 0x00FFFF, label, "Single-Wire BDM 0xE8 Bound Probe (4KB..60KB) -> 0x%04X..0xFFFF".format(candStart))
+                }
+            }
+            return FlashBoundsProbeResult(0x00C000, 0x00FFFF, "0x00FFFF (16 KB HCS08 Fallback)", "Single-Wire BDM Fallback 0xC000..0xFFFF")
+        }
+
+        // Dynamic 2MB..4KB Read Probe for any open raw / Renesas / Samsung / Custom UART MCU
+        val stage2DirectDetail = _state.value.checklist.firstOrNull { it.id == "stage2_direct_read" }?.detail.orEmpty()
+        val openReadCmd = Regex("0x([0-9A-Fa-f]{2})").find(stage2DirectDetail)?.groupValues?.get(1)?.toIntOrNull(16)
+        if (openReadCmd != null) {
+            for ((sizeBytes, sizeLabel) in sizesDesc) {
+                currentCoroutineContext().ensureActive()
+                val testAddr = sync.flashBaseAddr + sizeBytes - 4
+                val pkt = byteArrayOf(
+                    openReadCmd.toByte(),
+                    ((testAddr ushr 16) and 0xFF).toByte(),
+                    ((testAddr ushr 8) and 0xFF).toByte(),
+                    (testAddr and 0xFF).toByte(),
+                    0x04
+                )
+                val clean = stripStrictEcho(pkt, transport.transceive(pkt, 12, 120, "4.1 Generic Bound [$sizeLabel]", logTxRx = false))
+                if (clean.size >= 4 && isMeaningfulGenericReply(pkt, clean)) {
+                    val endAddr = sync.flashBaseAddr + sizeBytes - 1
+                    val label = "0x%06X ($sizeLabel)".format(endAddr)
+                    return FlashBoundsProbeResult(sync.flashBaseAddr, endAddr, label, "Dynamic Generic Read 0x%02X Boundary Probe (2MB->4KB) -> $label".format(openReadCmd))
+                }
+            }
+        }
+
+        return FlashBoundsProbeResult(
+            sync.flashBaseAddr,
+            sync.flashBaseAddr + 0x007FFF,
+            "0x%06X (32 KB Typical)".format(sync.flashBaseAddr + 0x007FFF),
+            "Dynamic Bound Probe Checked (4KB..2MB) -> Generic 32 KB Typical Fallback"
+        )
     }
 
     private suspend fun runStage4DynamicFamilyAlgorithms(
@@ -3857,7 +4364,7 @@ class ProberEngine(context: Context) {
                 val candList = (
                     listOf(sync.flashBaseAddr, detectedProbedFlashStart) +
                         arch.flashBaseCandidates.map { it.toInt() } +
-                        if (arch == UsbdmTargetArch.HCS08) listOf(0xC000, 0x8000, 0x1900) else emptyList()
+                        if (arch == UsbdmTargetArch.HCS08) listOf(0xC000, 0x8000, 0xE000, 0xF000, 0x1900) else emptyList()
                     ).distinct()
                 for (altAddr in candList) {
                     if (altAddr == page0Start) continue
@@ -4739,16 +5246,7 @@ class ProberEngine(context: Context) {
             return true
         }
         transport.configureUart(sync.baudRate, evenParity = sync.evenParity)
-        if (sync.useResetToggle) {
-            transport.pulseResetSequence(
-                invertedPolarity = sync.inverted,
-                holdResetMs = sync.resetPulseMs.toLong(),
-                settleMs = sync.postResetDelayMs.toLong()
-            )
-        } else {
-            transport.setControlLines(dtr = false, rts = false)
-            delay(80)
-        }
+        applySyncPinState(sync)
         transport.flushRx()
         val ok = resyncHandshakeQuiet(sync)
         if (ok && relockOsc && sync.framing == DetectedFraming.NEC_STX_ETX) {
@@ -4944,7 +5442,7 @@ class ProberEngine(context: Context) {
                     familyDisplayName = "${summary.manufacturerGuess} (${summary.framing?.label ?: usb.programmerCategory})",
                     sampleChipDatabaseKey = sampleKey,
                     supportedAdapterVidPids = mergeVidPids(if (usb.chip == ProberUsbChip.UNKNOWN_USB) emptyList() else standardUartVidPids),
-                    autoDetectProbeRule = "${summary.wakeUpPatternUsed} | Sync=${summary.syncPulseHex} | ID=${summary.autoDetectionRule.idRegisterOrOpcode}"
+                    autoDetectProbeRule = "${summary.adapterInitSpec.powerControlLogic} | ${summary.baudRate ?: 9600}bps ${summary.parityMode} | ${summary.wakeUpPatternUsed} | Sync=${summary.syncPulseHex} | ID=${summary.autoDetectionRule.idRegisterOrOpcode}"
                 )
             }
         }
