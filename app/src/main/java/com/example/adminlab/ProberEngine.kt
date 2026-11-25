@@ -81,7 +81,9 @@ class ProberEngine(context: Context) {
         val staticRts: Boolean? = null,
         val physicalLevelTag: String = "",
         val syncClkOnRts: Boolean? = null,
-        val syncModePinState: Boolean = false
+        val syncModePinState: Boolean = false,
+        val useBitBangSync: Boolean = false,
+        val syncSampleOnFallingEdge: Boolean = false
     )
 
     private data class PhysicalPinProfile(
@@ -467,7 +469,11 @@ class ProberEngine(context: Context) {
         val autoId = extractUniversalAutoId(sync)
         val initialAdapterSpec = buildAdapterInitSpec(sync)
         val initialAutoRule = AutoChipDetectionRule(
-            targetFamilyDetected = sync.usbdmTargetArch?.archName ?: sync.framing.label,
+            targetFamilyDetected = if (sync.framing == DetectedFraming.SAMSUNG_ISP && sync.useBitBangSync) {
+                "SAMSUNG_S3F8_S3F9_SYNC_FAMILY"
+            } else {
+                sync.usbdmTargetArch?.archName ?: sync.framing.label
+            },
             identificationSequence = "${sync.physicalLevelTag.ifBlank { "Universal" }} | ${autoId.autoIdRule}",
             idRegisterOrOpcode = autoId.idRegisterOrOpcode,
             rawSiliconIdHex = autoId.rawSiliconIdHex,
@@ -1609,8 +1615,9 @@ class ProberEngine(context: Context) {
     }
 
     /**
-     * Rejects UART framing-error garbage (e.g. FF 7F F5 EB F5 ED...) caused by clock/mode mismatch
-     * such as synchronous Samsung S3F8/S3F9 targets sampled asynchronously at 115200 bps.
+     * Rejects UART framing-error / bit-slip / floating-line garbage
+     * (e.g. 0x55 'U', 0x75 'u', 0x77 'w', 0x5F '_', 0xF5, 0xEB, 0xED, 0xD5, 0xFF, 0x7F...)
+     * caused by synchronous targets (such as Samsung S3F8/S3F9) sampled asynchronously at 115200 bps.
      */
     private fun isFramingNoise(bytes: ByteArray): Boolean {
         if (bytes.isEmpty()) return true
@@ -1619,9 +1626,12 @@ class ProberEngine(context: Context) {
         if (hasNecFrame) return false
         if (bytes.size == 1 && (bytes[0].toInt() and 0xFF) == ACK_STM32) return false
 
-        val framingNoiseBytes = setOf(0xFF, 0x7F, 0xF5, 0xEB, 0xED, 0xFD, 0xFE, 0xDF, 0xBF, 0xFB, 0xEF, 0x00)
-        val noiseCount = bytes.count { (it.toInt() and 0xFF) in framingNoiseBytes }
-        return (noiseCount * 100.0 / bytes.size) > 70.0
+        val slipBytes = setOf(
+            0xFF, 0x7F, 0x5F, 0x57, 0x55, 0x75, 0xF5, 0xD5, 0xEB, 0xED, 0xFD, 0xAD,
+            0x77, 0xFE, 0xDF, 0xBF, 0xFB, 0xEF, 0x00
+        )
+        val slipCount = bytes.count { (it.toInt() and 0xFF) in slipBytes }
+        return (slipCount * 100.0 / bytes.size) > 50.0
     }
 
     private fun buildLevelAPinProfiles(): List<PhysicalPinProfile> = listOf(
@@ -1751,6 +1761,15 @@ class ProberEngine(context: Context) {
     }
 
     private suspend fun applySyncPinState(sync: SyncLock) {
+        if (sync.useBitBangSync) {
+            val sclkOnDtr = !(sync.syncClkOnRts ?: false)
+            transport.runSamsungBitBangResetEntry(
+                sclkOnDtr = sclkOnDtr,
+                resetActiveLow = sync.syncModePinState,
+                initialClocks = 16
+            )
+            return
+        }
         val clkRts = sync.syncClkOnRts
         if (clkRts != null) {
             if (clkRts) {
@@ -1961,7 +1980,14 @@ class ProberEngine(context: Context) {
                         val t0 = System.currentTimeMillis()
                         val rawRx = transport.transceive(vBytes, 24, probeTimeoutMs, "Level A $vName [$baud $parityLabel]", logTxRx = false)
                         val clean = stripStrictEcho(vBytes, rawRx)
-                        if (isMeaningfulGenericReply(vBytes, clean) && !isFramingNoise(clean)) {
+                        val isInfineonBsl = vBytes.contentEquals(byteArrayOf(0x00, 0x6C))
+                        val accepted = if (isInfineonBsl) {
+                            // Infineon BSL ONLY accepts the exclusive single-byte 0xD5 confirmation; reject any multi-byte or slip reply
+                            clean.size == 1 && (clean[0].toInt() and 0xFF) == 0xD5
+                        } else {
+                            isMeaningfulGenericReply(vBytes, clean) && !isFramingNoise(clean)
+                        }
+                        if (accepted) {
                             appendLog(ProberLogDirection.SUCCESS, "✅ [Level A] بصمة $vName @ $baud $parityLabel (${profile.name}): ${clean.toHexStr()}")
                             return SyncLock(
                                 baudRate = baud,
@@ -2041,124 +2067,163 @@ class ProberEngine(context: Context) {
         return null
     }
 
+    private suspend fun samsungSyncTransceive(
+        sync: SyncLock,
+        txBytes: ByteArray,
+        rxLen: Int,
+        label: String,
+        logTxRx: Boolean = true
+    ): ByteArray {
+        if (logTxRx) {
+            appendLog(ProberLogDirection.TX, "$label [Sync Bit-Bang] -> ${txBytes.toHexStr()}")
+        }
+        val raw = if (sync.useBitBangSync) {
+            val sclkOnDtr = !(sync.syncClkOnRts ?: false)
+            transport.syncBitBangTransceive(
+                txBytes = txBytes,
+                rxLen = rxLen,
+                sclkOnDtr = sclkOnDtr,
+                resetHighState = sync.syncModePinState,
+                clkHalfPeriodMs = 1L,
+                sampleOnFallingEdge = sync.syncSampleOnFallingEdge
+            )
+        } else {
+            transport.transceive(txBytes, rxLen.coerceAtLeast(1), 160, label, logTxRx = false)
+        }
+        val clean = stripStrictEcho(txBytes, raw)
+        if (logTxRx) {
+            appendLog(ProberLogDirection.RX, if (clean.isEmpty()) "(No Sync Reply)" else clean.toHexStr())
+        }
+        return clean
+    }
+
     /**
-     * Level B: Synchronous Clock + Data Matrix (Samsung S3F8/S3F9/S3P, PIC, Holtek, Elan, Sonix, etc.)
-     * Dynamically switches DTR/RTS roles so one generates SCLK clock pulses and the other acts as TEST/MODE
-     * (HIGH then LOW and vice-versa), sending SDAT queries (AA 55, 0x80, 0x01, 0x02, 0xC0, 0x9F, 0x55, 0x00)
-     * with Strict Echo Rejection to prevent TX/RX loopback false Chip IDs.
+     * Level B: Synchronous Bit-Bang SCLK + SDAT + RESET/TEST Matrix (Samsung S3F8/S3F9/S3P, PIC, Holtek, Elan, Sonix)
+     * 1) Sets RESET = LOW (0V) + TEST/VPP active, sends 16 initial SCLK pulses.
+     * 2) Raises RESET = HIGH (+5V) while keeping serial programming mode active.
+     * 3) Clocks bit-by-bit Sync (0xAA 0x55) + Samsung ID queries (0x80, 0x01, 0xC0) reading bits on clock edge.
      */
     private suspend fun runSerialLevelBSyncClockDataMatrix(family: ProberTargetFamily): SyncLock? {
         currentCoroutineContext().ensureActive()
         appendLog(
             ProberLogDirection.INFO,
-            "── المستوى B (Synchronous Clock + Data Matrix): تبديل DTR/RTS كـ SCLK و TEST/MODE مع رفض الصدى الصارم ──"
+            "── المستوى B (Synchronous Bit-Bang SCLK + SDAT + RESET/TEST): دخول وضع برمجة Samsung S3F8/S3F9 المتزامن ──"
         )
         detectedSamsungIdHex = ""
 
-        data class SyncRoleCfg(val desc: String, val clkOnRts: Boolean, val modePre: Boolean, val modePost: Boolean)
-        val syncRoles = listOf(
-            SyncRoleCfg("RTS=SCLK (Pulse) | DTR=TEST/MODE (HIGH->LOW)", clkOnRts = true, modePre = true, modePost = false),
-            SyncRoleCfg("RTS=SCLK (Pulse) | DTR=TEST/MODE (LOW->HIGH)", clkOnRts = true, modePre = false, modePost = true),
-            SyncRoleCfg("DTR=SCLK (Pulse) | RTS=TEST/MODE (HIGH->LOW)", clkOnRts = false, modePre = true, modePost = false),
-            SyncRoleCfg("DTR=SCLK (Pulse) | RTS=TEST/MODE (LOW->HIGH)", clkOnRts = false, modePre = false, modePost = true)
-        )
-        val syncQueries: List<Pair<String, ByteArray>> = listOf(
-            "Sync Query AA 55" to byteArrayOf(0xAA.toByte(), 0x55),
-            "Sync Query 0x80" to byteArrayOf(0x80.toByte()),
-            "Sync Query 0x01" to byteArrayOf(0x01),
-            "Sync Query 0x02" to byteArrayOf(0x02),
-            "Sync Query 0xC0" to byteArrayOf(0xC0.toByte()),
-            "Sync Query 0x9F" to byteArrayOf(0x9F.toByte()),
-            "Sync Query 0x55" to byteArrayOf(0x55),
-            "Sync Query 0x00" to byteArrayOf(0x00)
+        data class SyncWiringCfg(
+            val desc: String,
+            val sclkOnDtr: Boolean,
+            val resetActiveLow: Boolean,
+            val sampleFalling: Boolean
         )
 
-        for (baud in listOf(9600, 38400, 115200, 19200)) {
-            transport.configureUart(baud, evenParity = false)
-            for (role in syncRoles) {
+        val wiringConfigs = listOf(
+            SyncWiringCfg("DTR=SCLK | TX/RX=SDAT | RTS=RESET/TEST (Active-Low, Rising Edge)", sclkOnDtr = true, resetActiveLow = true, sampleFalling = false),
+            SyncWiringCfg("DTR=SCLK | TX/RX=SDAT | RTS=RESET/TEST (Active-Low, Falling Edge)", sclkOnDtr = true, resetActiveLow = true, sampleFalling = true),
+            SyncWiringCfg("DTR=SCLK | TX/RX=SDAT | RTS=RESET/TEST (Inverted RESET)", sclkOnDtr = true, resetActiveLow = false, sampleFalling = false),
+            SyncWiringCfg("RTS=SCLK | TX/RX=SDAT | DTR=RESET/TEST (Swapped Active-Low)", sclkOnDtr = false, resetActiveLow = true, sampleFalling = false),
+            SyncWiringCfg("RTS=SCLK | TX/RX=SDAT | DTR=RESET/TEST (Swapped Inverted)", sclkOnDtr = false, resetActiveLow = false, sampleFalling = false)
+        )
+        val samsungSyncIdQueries: List<Pair<String, ByteArray>> = listOf(
+            "Samsung ID 0x80" to byteArrayOf(0x80.toByte()),
+            "Samsung ID 0x01" to byteArrayOf(0x01),
+            "Samsung ID 0xC0" to byteArrayOf(0xC0.toByte()),
+            "Sync ID 0x02" to byteArrayOf(0x02),
+            "Sync ID 0x9F" to byteArrayOf(0x9F.toByte())
+        )
+        val syncPattern = byteArrayOf(0xAA.toByte(), 0x55)
+
+        try {
+            for (cfg in wiringConfigs) {
                 currentCoroutineContext().ensureActive()
-                // Hold TEST/MODE in pre-state + generate pre-clock pulses, then switch MODE pin for sync entry
-                if (role.clkOnRts) {
-                    transport.setControlLines(dtr = role.modePre, rts = false)
-                } else {
-                    transport.setControlLines(dtr = false, rts = role.modePre)
-                }
-                delay(35)
-                pulseSyncClockPin(role.clkOnRts, cycles = 8, halfPeriodMs = 1L)
-                if (role.clkOnRts) {
-                    transport.setControlLines(dtr = role.modePost, rts = false)
-                } else {
-                    transport.setControlLines(dtr = false, rts = role.modePost)
-                }
-                delay(35)
-                transport.flushRx()
+                val t0 = System.currentTimeMillis()
+                // Steps 1 & 2: RESET = LOW (0V) + TEST/VPP + 16 initial SCLK pulses -> RESET = HIGH (+5V)
+                val entered = transport.runSamsungBitBangResetEntry(
+                    sclkOnDtr = cfg.sclkOnDtr,
+                    resetActiveLow = cfg.resetActiveLow,
+                    initialClocks = 16
+                )
+                if (!entered) continue
 
-                for ((qName, qBytes) in syncQueries) {
+                // Step 3a: Clocked bit-by-bit sync pattern (0xAA 0x55)
+                val syncRxRaw = transport.syncBitBangTransceive(
+                    txBytes = syncPattern,
+                    rxLen = 2,
+                    sclkOnDtr = cfg.sclkOnDtr,
+                    resetHighState = cfg.resetActiveLow,
+                    clkHalfPeriodMs = 1L,
+                    sampleOnFallingEdge = cfg.sampleFalling
+                )
+                val syncClean = stripStrictEcho(syncPattern, syncRxRaw)
+                val syncReplyValid = isMeaningfulGenericReply(syncPattern, syncClean) && !isFramingNoise(syncClean)
+
+                // Step 3b: Clocked bit-by-bit Samsung ID queries (0x80, 0x01, 0xC0, ...)
+                var winningQueryName = "0xAA 0x55"
+                var winningQueryBytes = syncPattern
+                var capturedIdBytes: ByteArray? = null
+                for ((qName, qBytes) in samsungSyncIdQueries) {
                     currentCoroutineContext().ensureActive()
-                    val t0 = System.currentTimeMillis()
-                    transport.flushRx()
-                    transport.writeRawBytes(qBytes)
-                    pulseSyncClockPin(role.clkOnRts, cycles = 12, halfPeriodMs = 1L)
-                    val rawRx = transport.drainAvailableRaw(waitMs = 70L)
-                    val clean = stripStrictEcho(qBytes, rawRx)
-                    if (isMeaningfulGenericReply(qBytes, clean) && !isFramingNoise(clean)) {
-                        // Capture Chip ID follow-up using standard ID queries under the winning clock role
-                        val idFollowUp = mutableListOf<Byte>()
-                        for (idCmd in listOf(0x01, 0x02, 0xC0, 0x9F)) {
-                            val idTx = byteArrayOf(idCmd.toByte())
-                            transport.flushRx()
-                            transport.writeRawBytes(idTx)
-                            pulseSyncClockPin(role.clkOnRts, cycles = 10, halfPeriodMs = 1L)
-                            val idClean = stripStrictEcho(idTx, transport.drainAvailableRaw(waitMs = 55L))
-                            if (isMeaningfulGenericReply(idTx, idClean) && !isFramingNoise(idClean)) {
-                                idFollowUp.addAll(idClean.toList())
-                                break
-                            }
-                        }
-                        val finalBytes = if (idFollowUp.isNotEmpty()) idFollowUp.toByteArray() else clean
-                        val isSamsungLike = family == ProberTargetFamily.SAMSUNG_S3F ||
-                            qBytes.contentEquals(byteArrayOf(0xAA.toByte(), 0x55)) ||
-                            qBytes[0] == 0x80.toByte()
-                        if (isSamsungLike) {
-                            detectedSamsungIdHex = finalBytes.toHexStr()
-                        } else {
-                            detectedRawIdHex = finalBytes.toHexStr()
-                        }
-                        appendLog(
-                            ProberLogDirection.SUCCESS,
-                            "✅ [Level B] استجابة متزامنة @ $baud bps (${role.desc}) على [$qName] -> ${finalBytes.toHexStr()}"
-                        )
-                        return SyncLock(
-                            baudRate = baud,
-                            evenParity = false,
-                            parityMode = "8N1 (Level B Sync Clock+Data)",
-                            wakeUpPatternUsed = "Level B: Sync SCLK+SDAT ($qName | ${role.desc})",
-                            flmd0PinState = if (role.clkOnRts) "DTR=TEST/MODE (${role.modePre}->${role.modePost})" else "RTS=TEST/MODE (${role.modePre}->${role.modePost})",
-                            resetPinIdleState = if (role.clkOnRts) "RTS=SCLK Clock Pulses" else "DTR=SCLK Clock Pulses",
-                            resetPinPulsePolarity = role.desc,
-                            dtrPolarity = if (role.clkOnRts) "DTR=TEST/MODE" else "DTR=SCLK (Pulsed)",
-                            rtsPolarity = if (role.clkOnRts) "RTS=SCLK (Pulsed)" else "RTS=TEST/MODE",
-                            inverted = role.modePost,
-                            useResetToggle = false,
-                            resetPulseMs = 35,
-                            postResetDelayMs = 35,
-                            syncByteGapMs = 2,
-                            syncPulseHex = qBytes.toHexStr(),
-                            framing = if (isSamsungLike) DetectedFraming.SAMSUNG_ISP else DetectedFraming.CUSTOM_RAW,
-                            firstReplyHex = finalBytes.toHexStr(),
-                            latencySampleMs = (System.currentTimeMillis() - t0).toInt().coerceAtLeast(10),
-                            swapDtrRtsRoles = !role.clkOnRts,
-                            staticDtr = if (role.clkOnRts) role.modePost else false,
-                            staticRts = if (role.clkOnRts) false else role.modePost,
-                            physicalLevelTag = "Level B: Sync Clock+Data",
-                            syncClkOnRts = role.clkOnRts,
-                            syncModePinState = role.modePost
-                        )
+                    val qRaw = transport.syncBitBangTransceive(
+                        txBytes = qBytes,
+                        rxLen = 2,
+                        sclkOnDtr = cfg.sclkOnDtr,
+                        resetHighState = cfg.resetActiveLow,
+                        clkHalfPeriodMs = 1L,
+                        sampleOnFallingEdge = cfg.sampleFalling
+                    )
+                    val qClean = stripStrictEcho(qBytes, qRaw)
+                    if (isMeaningfulGenericReply(qBytes, qClean) && !isFramingNoise(qClean)) {
+                        winningQueryName = qName
+                        winningQueryBytes = qBytes
+                        capturedIdBytes = qClean
+                        break
                     }
                 }
+
+                val finalBytes = capturedIdBytes ?: if (syncReplyValid) syncClean else null
+                if (finalBytes != null) {
+                    detectedSamsungIdHex = finalBytes.toHexStr()
+                    appendLog(
+                        ProberLogDirection.SUCCESS,
+                        "✅ [Level B] تزامن Bit-Bang (${cfg.desc}) -> SAMSUNG_S3F8_S3F9_SYNC_FAMILY [$winningQueryName] = ${finalBytes.toHexStr()}"
+                    )
+                    return SyncLock(
+                        baudRate = 38400,
+                        evenParity = false,
+                        parityMode = "Bit-Bang Sync (SCLK+SDAT)",
+                        wakeUpPatternUsed = "Level B: Bit-Bang Sync (RESET=LOW + 16 SCLK -> RESET=HIGH -> 0xAA 0x55 + $winningQueryName)",
+                        flmd0PinState = if (cfg.sclkOnDtr) "TX/RX=SDAT (Diode) | RTS=RESET/TEST (${if (cfg.resetActiveLow) "Active-Low->+5V" else "Inverted"})" else "TX/RX=SDAT (Diode) | DTR=RESET/TEST",
+                        resetPinIdleState = if (cfg.sclkOnDtr) "RTS=RESET (+5V) | DTR=SCLK (16+ Pulses)" else "DTR=RESET (+5V) | RTS=SCLK (16+ Pulses)",
+                        resetPinPulsePolarity = cfg.desc,
+                        dtrPolarity = if (cfg.sclkOnDtr) "DTR=SCLK (Bit-Bang Clock)" else "DTR=RESET/TEST",
+                        rtsPolarity = if (cfg.sclkOnDtr) "RTS=RESET/TEST" else "RTS=SCLK (Bit-Bang Clock)",
+                        inverted = !cfg.resetActiveLow,
+                        useResetToggle = false,
+                        resetPulseMs = 25,
+                        postResetDelayMs = 20,
+                        syncByteGapMs = 1,
+                        syncPulseHex = (syncPattern + winningQueryBytes).toHexStr(),
+                        framing = DetectedFraming.SAMSUNG_ISP,
+                        firstReplyHex = finalBytes.toHexStr(),
+                        latencySampleMs = (System.currentTimeMillis() - t0).toInt().coerceAtLeast(10),
+                        swapDtrRtsRoles = !cfg.sclkOnDtr,
+                        staticDtr = if (cfg.sclkOnDtr) false else cfg.resetActiveLow,
+                        staticRts = if (cfg.sclkOnDtr) cfg.resetActiveLow else false,
+                        physicalLevelTag = "Level B: Bit-Bang SCLK+SDAT (SAMSUNG_S3F8_S3F9_SYNC_FAMILY)",
+                        syncClkOnRts = !cfg.sclkOnDtr,
+                        syncModePinState = cfg.resetActiveLow,
+                        useBitBangSync = true,
+                        syncSampleOnFallingEdge = cfg.sampleFalling
+                    )
+                }
             }
+            transport.exitFtdiBitBangMode()
+            return null
+        } catch (t: Throwable) {
+            transport.exitFtdiBitBangMode()
+            throw t
         }
-        return null
     }
 
     /**
@@ -2471,12 +2536,16 @@ class ProberEngine(context: Context) {
             val sig = detectedSamsungIdHex.ifBlank { sync.firstReplyHex }
             detectedRawIdHex = sig
             return UniversalIdCapture(
-                autoIdRule = "RESET Pulse -> Samsung ISP Sync (0xAA 0x55 / 0x80 @ ${sync.baudRate} bps) -> ID Query [0x01/0x02/0xC0]",
-                manufacturerGuess = "Samsung Electronics",
-                inferredModel = "Samsung S3F8 / S3F9 / S3P Series (Raw ID=$sig)",
+                autoIdRule = if (sync.useBitBangSync) {
+                    "FT232R Bit-Bang Sync (DTR=SCLK, TX/RX=SDAT, RTS=RESET/TEST) -> RESET=LOW + 16 SCLK -> RESET=HIGH -> 0xAA 0x55 -> ID [0x80/0x01/0xC0]"
+                } else {
+                    "RESET Pulse -> Samsung ISP Sync (0xAA 0x55 / 0x80 @ ${sync.baudRate} bps) -> ID Query [0x80/0x01/0xC0]"
+                },
+                manufacturerGuess = "Samsung Electronics (SAMSUNG_S3F8_S3F9_SYNC_FAMILY)",
+                inferredModel = "SAMSUNG_S3F8_S3F9_SYNC_FAMILY (Raw ID=$sig)",
                 rawSignatureSummary = sig,
                 rawC0Payload = ByteArray(0),
-                idRegisterOrOpcode = "0x01 / 0x02 / 0xC0",
+                idRegisterOrOpcode = "Bit-Bang Sync 0xAA 0x55 -> 0x80 / 0x01 / 0xC0",
                 rawSiliconIdHex = sig
             )
         }
@@ -2554,7 +2623,7 @@ class ProberEngine(context: Context) {
             return "Microchip Technology" to "PIC Target (Raw ID=${detectedPicIdHex.ifBlank { sigText }})"
         }
         if (sync.framing == DetectedFraming.SAMSUNG_ISP) {
-            return "Samsung Electronics" to "Samsung S3F8 / S3F9 / S3P (Raw ID=${detectedSamsungIdHex.ifBlank { sigText }})"
+            return "Samsung Electronics" to "SAMSUNG_S3F8_S3F9_SYNC_FAMILY (Raw ID=${detectedSamsungIdHex.ifBlank { sigText }})"
         }
         val combined = "$ascii $sigText ${sync.firstReplyHex}".uppercase(Locale.US)
         val rawSuffix = if (sigText.isNotBlank()) " [Raw=${sigText.take(28)}]" else ""
@@ -2582,7 +2651,7 @@ class ProberEngine(context: Context) {
                 stopOnCompleteNecFrame = true,
                 logTxRx = false
             )
-        } else if (sync.framing == DetectedFraming.USBDM_BDM) {
+        } else if (sync.framing == DetectedFraming.USBDM_BDM || sync.useBitBangSync) {
             transport.flushRx()
             delay(10)
         } else {
@@ -2682,14 +2751,15 @@ class ProberEngine(context: Context) {
         }
 
         if (sync.framing == DetectedFraming.SAMSUNG_ISP) {
-            for (cmd in listOf(0x03, 0x11, 0xD0, 0xA0)) {
-                val rx = transport.transceive(byteArrayOf(cmd.toByte(), 0x00, 0x00, 0x10), 24, 240, "Samsung Read [0x%02X]".format(cmd))
-                val real16 = extract16Bytes(rx, sync.framing)
+            for (cmd in listOf(0x03, 0x11, 0xD0, 0xA0, 0x80, 0x01, 0xC0)) {
+                val pkt = byteArrayOf(cmd.toByte(), 0x00, 0x00, 0x10)
+                val rx = samsungSyncTransceive(sync, pkt, rxLen = 16, label = "Samsung Sync Read [0x%02X]".format(cmd))
+                val real16 = if (!isFramingNoise(rx)) extract16Bytes(rx, sync.framing) else null
                 if (real16 != null) {
-                    return updateAndReturn("stage2_direct_read", ChecklistStepStatus.PASSED, "Samsung [0x%02X] -> ${real16.toHexStr()}".format(cmd))
+                    return updateAndReturn("stage2_direct_read", ChecklistStepStatus.PASSED, "Samsung Sync [0x%02X] -> ${real16.toHexStr()}".format(cmd))
                 }
             }
-            return updateAndReturn("stage2_direct_read", ChecklistStepStatus.FAILED, "فشلت أوامر القراءة المباشرة في Samsung ISP")
+            return updateAndReturn("stage2_direct_read", ChecklistStepStatus.FAILED, "فشلت أوامر القراءة المباشرة المتزامنة في SAMSUNG_S3F8_S3F9_SYNC_FAMILY")
         }
 
         for (cmd in cmds) {
@@ -3018,11 +3088,24 @@ class ProberEngine(context: Context) {
         }
 
         if (sync.framing == DetectedFraming.SAMSUNG_ISP) {
-            for (cmd in listOf(0x01, 0x02, 0x03, 0x11, 0xC0, 0xD0, 0xA0)) {
+            val baselineSamples = mutableListOf<ByteArray>()
+            for (cal in listOf(0xFE, 0xFD)) {
+                val calRx = samsungSyncTransceive(sync, byteArrayOf(cal.toByte()), rxLen = 2, label = "Samsung Stage3 Baseline 0x%02X".format(cal), logTxRx = false)
+                if (calRx.isNotEmpty()) baselineSamples.add(calRx)
+            }
+            for (cmd in listOf(0x01, 0x02, 0x03, 0x11, 0x80, 0xC0, 0xD0, 0xA0)) {
                 if (cmd in WRITE_ERASE_GUARD_CMDS) continue
-                val rx = transport.transceive(byteArrayOf(cmd.toByte()), 16, 120, "Samsung Sweep [0x%02X]".format(cmd), logTxRx = false)
-                if (rx.isNotEmpty() && (rx[0].toInt() and 0xFF) !in HARD_REJECT_STATUS) {
-                    discovered.add(DiscoveredCommandEntry("0x%02X".format(cmd), cmd, "0x%02X".format(rx[0].toInt() and 0xFF), 1, guessCommandRole(cmd), true))
+                val tx = byteArrayOf(cmd.toByte())
+                val rx = samsungSyncTransceive(sync, tx, rxLen = 4, label = "Samsung Sync Sweep [0x%02X]".format(cmd), logTxRx = false)
+                val matchesBase = rx.isNotEmpty() && baselineSamples.any { it.contentEquals(rx) }
+                if (rx.isEmpty() || rx.contentEquals(tx) || matchesBase || isFramingNoise(rx)) {
+                    if (rx.isNotEmpty()) stage3IgnoredNoiseCount++
+                    continue
+                }
+                val sts = rx[0].toInt() and 0xFF
+                if (sts !in HARD_REJECT_STATUS) {
+                    discovered.add(DiscoveredCommandEntry("0x%02X".format(cmd), cmd, "0x%02X".format(sts), 1, guessCommandRole(cmd), true))
+                    appendLog(ProberLogDirection.SUCCESS, "رصد أمر Samsung Sync [0x%02X] -> 0x%02X".format(cmd, sts))
                 }
             }
             discovered.add(DiscoveredCommandEntry("0x20", 0x20, "ISP", 0, "Samsung Chip Erase", false))
@@ -4963,6 +5046,17 @@ class ProberEngine(context: Context) {
             return PageReadOutcome(null, "STM32 Read 0x11 Failed", tx)
         }
 
+        if (sync.framing == DetectedFraming.SAMSUNG_ISP && sync.useBitBangSync) {
+            for (cmd in listOf(0x03, 0x11, 0xD0, 0xA0)) {
+                val pkt = byteArrayOf(cmd.toByte(), ((startAddr ushr 8) and 0xFF).toByte(), (startAddr and 0xFF).toByte(), (length and 0xFF).toByte())
+                val rx = samsungSyncTransceive(sync, pkt, rxLen = length, label = "Stage6 Samsung Bit-Bang Read [0x%02X @ 0x%04X]".format(cmd, startAddr))
+                if (rx.size >= length && !isFramingNoise(rx)) {
+                    return PageReadOutcome(rx.copyOfRange(0, length), "Samsung Bit-Bang Sync Read [0x%02X]".format(cmd), pkt)
+                }
+            }
+            return PageReadOutcome(null, "Samsung Bit-Bang Sync Read Protected/Locked", byteArrayOf(0x03))
+        }
+
         // Collect candidate direct read opcodes (prioritize any command that succeeded in Stage 2.1 or Stage 3)
         val stage2DirectDetail = _state.value.checklist.firstOrNull { it.id == "stage2_direct_read" }?.detail.orEmpty()
         val winningMatch = Regex("0x([0-9A-Fa-f]{2})").find(stage2DirectDetail)?.groupValues?.get(1)?.toIntOrNull(16)
@@ -5265,14 +5359,18 @@ class ProberEngine(context: Context) {
             return true to "0x40 Block-Aligned Write ACK"
         }
 
-        // Generic / Renesas Raw Page Write 0x41
+        // Generic / Renesas Raw / Samsung Sync Page Write 0x41
         val rawPkt = byteArrayOf(
             0x41,
             ((lastPageStart ushr 16) and 0xFF).toByte(),
             ((lastPageStart ushr 8) and 0xFF).toByte(),
             (lastPageStart and 0xFF).toByte()
         ) + payloadPage
-        val rx = transport.transceive(rawPkt, 16, busyWait + 350, "Stage6 Raw Write [0x41]", paced64B = true)
+        val rx = if (sync.useBitBangSync) {
+            samsungSyncTransceive(sync, rawPkt, rxLen = 2, label = "Stage6 Samsung Sync Write [0x41]")
+        } else {
+            transport.transceive(rawPkt, 16, busyWait + 350, "Stage6 Raw Write [0x41]", paced64B = true)
+        }
         return rx.isNotEmpty() to if (rx.isNotEmpty()) "0x41 ACK (${rx.toHexStr()})" else "0x41 Timeout"
     }
 
@@ -5409,6 +5507,11 @@ class ProberEngine(context: Context) {
             transport.flushRx()
             delay(35)
             return true
+        }
+        if (sync.useBitBangSync) {
+            applySyncPinState(sync)
+            val syncAck = samsungSyncTransceive(sync, byteArrayOf(0xAA.toByte(), 0x55), rxLen = 2, label = "Samsung Bit-Bang Re-Sync [0xAA 0x55]", logTxRx = false)
+            return syncAck.isNotEmpty()
         }
         transport.configureUart(sync.baudRate, evenParity = sync.evenParity)
         applySyncPinState(sync)
@@ -5593,11 +5696,11 @@ class ProberEngine(context: Context) {
                 autoDetectProbeRule = "Microchip USB HID/Bulk PICkit/SNAP -> GET_VERSION [0x76] -> ICSP Device ID Query"
             )
             DetectedFraming.SAMSUNG_ISP -> PlugAndPlayRegistryEntry(
-                protocolId = "SAMSUNG_S3F_ISP_FAMILY",
-                familyDisplayName = "Samsung S3F8 / S3F9 / S3P ISP Family",
+                protocolId = "SAMSUNG_S3F8_S3F9_SYNC_FAMILY",
+                familyDisplayName = "Samsung S3F8 / S3F9 / S3P Synchronous Serial ISP Family",
                 sampleChipDatabaseKey = sampleKey,
                 supportedAdapterVidPids = mergeVidPids(standardUartVidPids),
-                autoDetectProbeRule = "UART ${summary.baudRate ?: 9600}bps 8N1 + RESET Pulse -> Sync [0xAA 0x55 / 0x80] -> ID Query [0x01 / 0x02 / 0xC0]"
+                autoDetectProbeRule = "FT232R Bit-Bang Sync (DTR=SCLK, TX/RX=SDAT, RTS=RESET/TEST) -> RESET=LOW + 16 SCLK -> RESET=HIGH -> Sync [0xAA 0x55] -> ID Query [0x80 / 0x01 / 0xC0]"
             )
             DetectedFraming.CUSTOM_RAW, null -> {
                 val pidId = if (usb.chip == ProberUsbChip.UNKNOWN_USB && currentVidPid != null) {
