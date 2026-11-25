@@ -142,7 +142,7 @@ fun ProtocolProberScreen(
                             overflow = TextOverflow.Ellipsis
                         )
                         Text(
-                            text = "التعرف التلقائي الذكي (USBDM + FT232 Auto-ID) • تكييف البروتوكول • 3 بطاقات",
+                            text = "محرك المبرمجات الشامل (USBDM • ST-LINK • USBasp • PICkit • FT232/UART)",
                             fontSize = 11.sp,
                             color = Color(0xFFF59E0B),
                             fontWeight = FontWeight.Medium,
@@ -779,12 +779,31 @@ private fun UsbStatusHeaderCard(
                 Spacer(modifier = Modifier.width(12.dp))
                 Column {
                     Text(status.adapterName, fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text("${status.chipModel} • ${status.vidPidHex}", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(
+                        text = if (status.isConnected) {
+                            "${status.chipModel} • ${status.vidPidHex} • ${status.programmerCategory}"
+                        } else {
+                            "${status.chipModel} • ${status.vidPidHex}"
+                        },
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    if (status.isConnected && status.endpointsSummary != "--") {
+                        Text(
+                            text = "USB Endpoints: ${status.endpointsSummary}",
+                            fontSize = 10.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
                     Text(
                         text = when {
-                            status.isConnected && status.hasPermission -> "USB متصل وجاهز"
+                            status.isConnected && status.hasPermission -> "USB متصل وجاهز (${status.programmerCategory})"
                             status.isConnected -> "متصل — اضغط لمنح الصلاحية"
-                            else -> "قم بتوصيل مبرمجة USBDM أو محول FT232/UART عبر OTG"
+                            else -> "وصّل أي مبرمجة (USBDM / ST-LINK / USBasp / PICkit / FT232) عبر OTG"
                         },
                         fontSize = 11.sp,
                         fontWeight = FontWeight.SemiBold,

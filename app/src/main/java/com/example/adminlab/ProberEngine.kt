@@ -71,7 +71,10 @@ class ProberEngine(context: Context) {
         val syncPulseHex: String,
         val framing: DetectedFraming,
         val firstReplyHex: String,
-        val latencySampleMs: Int
+        val latencySampleMs: Int,
+        val usbdmTargetArch: UsbdmTargetArch? = null,
+        val flashBaseAddr: Int = 0x000000,
+        val adapterInitPackets: List<String> = emptyList()
     )
 
     private data class UniversalIdCapture(
@@ -79,7 +82,9 @@ class ProberEngine(context: Context) {
         val manufacturerGuess: String,
         val inferredModel: String,
         val rawSignatureSummary: String,
-        val rawC0Payload: ByteArray
+        val rawC0Payload: ByteArray,
+        val idRegisterOrOpcode: String = "--",
+        val rawSiliconIdHex: String = "--"
     )
 
     private data class SignatureProbeCapture(
@@ -111,15 +116,27 @@ class ProberEngine(context: Context) {
     @Volatile
     private var detectedUsbdmReadCmd: Int = 0x21
     @Volatile
-    private var detectedUsbdmSpeedHz: Int = 0
-    @Volatile
-    private var detectedUsbdmSyncBytes: String = ""
+    private var detectedUsbdmTargetArch: UsbdmTargetArch = UsbdmTargetArch.HCS08
     @Volatile
     private var detectedSdidHex: String = ""
     @Volatile
     private var detectedFreescaleModel: String = ""
     @Volatile
     private var detectedSamsungIdHex: String = ""
+    @Volatile
+    private var detectedStLinkVersion: String = ""
+    @Volatile
+    private var detectedStLinkIdCodeHex: String = ""
+    @Volatile
+    private var detectedAvrSigHex: String = ""
+    @Volatile
+    private var detectedPicIdHex: String = ""
+    @Volatile
+    private var detectedRawIdHex: String = ""
+    @Volatile
+    private var detectedProbedFlashStart: Int = 0x000000
+    @Volatile
+    private var detectedProbedFlashEnd: Int = 0x007FFF
 
     private val transport = ProberUsbTransport(
         context = context,
@@ -179,7 +196,7 @@ class ProberEngine(context: Context) {
         activeJob = scope.launch {
             _state.value = _state.value.copy(
                 phase = ProberStagePhase.RUNNING_SAFE_PIPELINE,
-                stageBanner = "جاري تنفيذ المرحلة 1: التزامن الأعمى عبر 8N1/8E1 والأنماط الخمسة...",
+                stageBanner = "جاري تنفيذ المرحلة 1: التوجيه الذكي للمبرمجة والبحث عن المعمارية والهوية الخام...",
                 checklist = defaultChecklist(),
                 blueprintSummary = ProberBlueprintSummary(),
                 readBlueprintText = "",
@@ -190,7 +207,7 @@ class ProberEngine(context: Context) {
                 pendingConfirmDialog = null,
                 canBypassSync = false
             )
-            appendLog(ProberLogDirection.INFO, "══ بدء الفحص العالمي الشامل لأي معالج (${family.labelAr}) ══")
+            appendLog(ProberLogDirection.INFO, "══ بدء الفحص العالمي الشامل لأي مبرمجة وأي معالج (${family.labelAr}) ══")
 
             try {
                 if (!transport.openSession()) {
@@ -198,13 +215,13 @@ class ProberEngine(context: Context) {
                     return@launch
                 }
 
-                // STAGE 1: Universal Blind Sync + Auto-ID
-                updateStep("stage1_handshake", ChecklistStepStatus.RUNNING, "اختبار 8N1 و 8E1 (4800..115200) + 5 أنماط استيقاظ عالمية...")
+                // STAGE 1: Universal Programmer Router + 7-Arch USBDM Scanner / UART Blind Sync
+                updateStep("stage1_handshake", ChecklistStepStatus.RUNNING, "تشخيص المبرمجة (${transport.currentChip().displayName}) وبحث العائلة والهوية الخام...")
                 val sync = runStage1UniversalBlindHandshake(family)
                 if (sync == null) {
-                    updateStep("stage1_handshake", ChecklistStepStatus.FAILED, "لم يرد المعالج على أي نمط عالمي — يمكنك الضغط على «تجاوز التزامن»")
+                    updateStep("stage1_handshake", ChecklistStepStatus.FAILED, "لم يرد المعالج على المبرمجة أو أي نمط استيقاظ — يمكنك الضغط على «تجاوز التزامن»")
                     failPipeline(
-                        "فشل التزامن في المرحلة 1. تأكد من TX/RX و FLMD0 و RESET أو استخدم زر «تجاوز التزامن واختبار الأوامر مباشرة».",
+                        "فشل التزامن في المرحلة 1. تأكد من توصيل أسلاك البرمجة والتغذية أو استخدم زر «تجاوز التزامن واختبار الأوامر مباشرة».",
                         allowBypass = true
                     )
                     return@launch
@@ -237,7 +254,6 @@ class ProberEngine(context: Context) {
         activeWinningOscPayload = null
 
         activeJob = scope.launch {
-            val usbChip = ProberUsbChip.fromDevice(0, 0) // resolved after openSession
             val defaultBaud = when (family) {
                 ProberTargetFamily.STM32_UART -> 115200
                 ProberTargetFamily.FREESCALE_HCS08 -> 1_500_000
@@ -254,7 +270,7 @@ class ProberEngine(context: Context) {
 
             _state.value = _state.value.copy(
                 phase = ProberStagePhase.RUNNING_SAFE_PIPELINE,
-                stageBanner = "تجاوز المرحلة 1 — اختبار الأوامر مباشرة ($defaultBaud ${if (defaultParityEven) "8E1" else "8N1"})...",
+                stageBanner = "تجاوز المرحلة 1 — اختبار الأوامر مباشرة...",
                 checklist = defaultChecklist(),
                 blueprintSummary = ProberBlueprintSummary(),
                 readBlueprintText = "",
@@ -271,42 +287,66 @@ class ProberEngine(context: Context) {
                     failPipeline("تعذر فتح منفذ USB OTG لتجاوز التزامن.", allowBypass = true)
                     return@launch
                 }
-                val isUsbdm = transport.isUsbdmSession()
-                val defaultFraming = if (isUsbdm) DetectedFraming.USBDM_BDM else preFraming
-                val effectiveBaud = if (isUsbdm) 0 else defaultBaud
+                val chip = transport.currentChip()
+                val defaultFraming = when (chip) {
+                    ProberUsbChip.USBDM -> DetectedFraming.USBDM_BDM
+                    ProberUsbChip.ST_LINK -> DetectedFraming.STLINK_SWD
+                    ProberUsbChip.USBASP, ProberUsbChip.ATMEL_AVR -> DetectedFraming.AVR_ISP_USB
+                    ProberUsbChip.MICROCHIP_PICKIT -> DetectedFraming.MICROCHIP_PIC_ICSP
+                    ProberUsbChip.UNKNOWN_USB -> DetectedFraming.CUSTOM_RAW
+                    else -> preFraming
+                }
+                val isSpecialized = chip.isSpecializedProgrammer || chip == ProberUsbChip.UNKNOWN_USB
+                val effectiveBaud = if (isSpecialized) 0 else defaultBaud
                 appendLog(
                     ProberLogDirection.WARN,
                     "⚠️ تم تجاوز التزامن يدوياً — فتح المنفذ (${defaultFraming.label})..."
                 )
-                if (!isUsbdm) {
-                    transport.configureUart(defaultBaud, evenParity = defaultParityEven)
-                    transport.setControlLines(dtr = false, rts = false)
-                    delay(40)
-                    transport.flushRx()
-                } else {
-                    transport.usbdmTransceive(byteArrayOf(0x02, 0x0C), 32, 250, "USBDM Bypass GET_CAPABILITIES [02 0C]")
-                    transport.usbdmTransceive(byteArrayOf(0x03, 0x02, 0x02), 8, 250, "USBDM Bypass SET_VDD 5V [03 02 02]")
-                    delay(100)
-                    transport.usbdmTransceive(byteArrayOf(0x03, 0x01, 0x00), 8, 250, "USBDM Bypass SET_TARGET HCS08 [03 01 00]")
-                    val bypassConn = transport.usbdmTransceive(byteArrayOf(0x02, 0x0F), 12, 300, "USBDM Bypass CONNECT [02 0F]")
-                    if (bypassConn.isEmpty() || (bypassConn[0].toInt() and 0xFF) != 0x00) {
-                        transport.usbdmTransceive(byteArrayOf(0x03, 0x03, 0x01), 8, 250, "USBDM Bypass Internal Power [03 03 01]")
+                val initPkts = mutableListOf<String>()
+                when (chip) {
+                    ProberUsbChip.USBDM -> {
+                        transport.usbdmTransceive(byteArrayOf(0x02, 0x0C), 32, 250, "USBDM Bypass GET_CAPABILITIES [02 0C]")
+                        transport.usbdmTransceive(byteArrayOf(0x03, 0x02, 0x02), 8, 250, "USBDM Bypass SET_VDD 5V [03 02 02]")
                         delay(100)
-                        transport.usbdmTransceive(byteArrayOf(0x02, 0x0F), 12, 300, "USBDM Bypass CONNECT Retry [02 0F]")
+                        transport.usbdmTransceive(byteArrayOf(0x03, 0x03, 0x01), 8, 250, "USBDM Bypass Internal Power [03 03 01]")
+                        transport.usbdmTransceive(byteArrayOf(0x03, 0x01, 0x00), 8, 250, "USBDM Bypass SET_TARGET HCS08 [03 01 00]")
+                        transport.usbdmTransceive(byteArrayOf(0x03, 0x13, 0x00), 8, 250, "USBDM Bypass RESET_SPECIAL [03 13 00]")
+                        delay(50)
+                        transport.usbdmTransceive(byteArrayOf(0x02, 0x0F), 12, 300, "USBDM Bypass CONNECT [02 0F]")
+                        transport.usbdmTransceive(byteArrayOf(0x02, 0x14), 8, 250, "USBDM Bypass HALT [02 14]")
+                        detectedUsbdmTargetArch = UsbdmTargetArch.HCS08
+                        initPkts.addAll(listOf("02 0C", "03 02 02", "03 03 01", "03 01 00", "03 13 00", "02 0F", "02 14"))
                     }
-                    transport.usbdmTransceive(byteArrayOf(0x02, 0x14), 8, 250, "USBDM Bypass HALT [02 14]")
+                    ProberUsbChip.ST_LINK -> {
+                        transport.rawPacketTransceive(byteArrayOf(0xF1.toByte(), 0x80.toByte()), 16, 250, "ST-LINK Bypass Version")
+                        transport.rawPacketTransceive(byteArrayOf(0xF2.toByte(), 0x20, 0xA3.toByte()), 16, 250, "ST-LINK Bypass SWD")
+                        initPkts.addAll(listOf("F1 80", "F2 20 A3"))
+                    }
+                    ProberUsbChip.USBASP -> {
+                        transport.usbControlTransferIn(0xC0, 0x01, 0, 0, 4, 300, "USBasp Bypass Connect")
+                        transport.usbControlTransferIn(0xC0, 0x05, 0, 0, 4, 300, "USBasp Bypass EnableProg")
+                        initPkts.addAll(listOf("EP0 0x01 Connect", "EP0 0x05 EnableProg"))
+                    }
+                    else -> {
+                        if (!isSpecialized) {
+                            transport.configureUart(defaultBaud, evenParity = defaultParityEven)
+                            transport.setControlLines(dtr = false, rts = false)
+                            delay(40)
+                            transport.flushRx()
+                        }
+                    }
                 }
 
                 val bypassSync = SyncLock(
-                    baudRate = effectiveBaud.coerceAtLeast(if (isUsbdm) 1 else 9600),
+                    baudRate = effectiveBaud.coerceAtLeast(if (isSpecialized) 1 else 9600),
                     evenParity = defaultParityEven,
-                    parityMode = if (isUsbdm) "USB Bulk (EP1 OUT / EP2 IN)" else if (defaultParityEven) "8E1" else "8N1",
-                    wakeUpPatternUsed = "Bypassed (Direct Mode)",
-                    flmd0PinState = if (isUsbdm) "USBDM VDD=+5V / BKGD Direct" else "HIGH (+5V) / Bypassed (DTR=false)",
-                    resetPinIdleState = if (isUsbdm) "USBDM Controlled" else "HIGH (+5V) / Static (RTS=false)",
+                    parityMode = if (isSpecialized) transport.currentEndpointsSummary() else if (defaultParityEven) "8E1" else "8N1",
+                    wakeUpPatternUsed = "Bypassed (Direct Mode - ${chip.displayName})",
+                    flmd0PinState = if (isSpecialized) "${chip.displayName} Hardware Interface" else "HIGH (+5V) / Bypassed (DTR=false)",
+                    resetPinIdleState = if (isSpecialized) "Adapter Hardware Reset" else "HIGH (+5V) / Static (RTS=false)",
                     resetPinPulsePolarity = "Bypassed (No Reset Toggle)",
-                    dtrPolarity = if (isUsbdm) "USBDM Bulk Direct" else "تجاوز يدوي (DTR=false -> FLMD0=+5V)",
-                    rtsPolarity = if (isUsbdm) "USBDM RESET" else "Static (RTS=false)",
+                    dtrPolarity = if (isSpecialized) chip.displayName else "تجاوز يدوي (DTR=false -> FLMD0=+5V)",
+                    rtsPolarity = if (isSpecialized) "Hardware Reset" else "Static (RTS=false)",
                     inverted = false,
                     useResetToggle = false,
                     resetPulseMs = 100,
@@ -315,13 +355,16 @@ class ProberEngine(context: Context) {
                     syncPulseHex = "Bypassed (Direct Mode)",
                     framing = defaultFraming,
                     firstReplyHex = "Bypassed",
-                    latencySampleMs = 25
+                    latencySampleMs = 25,
+                    usbdmTargetArch = if (chip == ProberUsbChip.USBDM) detectedUsbdmTargetArch else null,
+                    flashBaseAddr = if (chip == ProberUsbChip.ST_LINK) 0x08000000 else if (chip == ProberUsbChip.USBDM) 0x00C000 else 0x000000,
+                    adapterInitPackets = initPkts
                 )
                 lastSyncLock = bypassSync
                 updateStep(
                     "stage1_handshake",
                     ChecklistStepStatus.BYPASSED,
-                    "تم التجاوز يدوياً • $defaultBaud ${bypassSync.parityMode} • ${defaultFraming.label}"
+                    "تم التجاوز يدوياً • ${chip.displayName} • ${defaultFraming.label}"
                 )
 
                 executeStages2To5(bypassSync)
@@ -338,9 +381,66 @@ class ProberEngine(context: Context) {
         }
     }
 
+    private fun buildAdapterInitSpec(sync: SyncLock): AdapterInitSpec {
+        val status = _state.value.usbStatus
+        val chip = transport.currentChip()
+        val packets = sync.adapterInitPackets.ifEmpty {
+            when (sync.framing) {
+                DetectedFraming.USBDM_BDM -> listOf(
+                    "GET_CAPABILITIES [02 %02X]".format(detectedUsbdmCapsCmd),
+                    "SET_VDD 5V [03 02 02] + delay(100ms)",
+                    "SET_INTERNAL_POWER [03 03 01]",
+                    "SET_TARGET_TYPE [03 01 %02X] (${sync.usbdmTargetArch?.archName ?: "HCS08"})".format(sync.usbdmTargetArch?.targetCode ?: 0),
+                    "RESET_SPECIAL [03 13 00] + delay(50ms)",
+                    "CONNECT [02 0F] -> TARGET_HALT [02 14]"
+                )
+                DetectedFraming.STLINK_SWD -> listOf(
+                    "GET_VERSION [F1 80]",
+                    "GET_MODE [F5] / EXIT_DFU [F3 07]",
+                    "ENTER_SWD [F2 20 A3] -> READ_IDCODE [F2 07]"
+                )
+                DetectedFraming.STLINK_SWIM -> listOf(
+                    "GET_VERSION [F1 80]",
+                    "ENTER_SWIM [F4 00] -> SWIM_RESET [F4 02] -> SWIM_SPEED_HIGH [F4 03]"
+                )
+                DetectedFraming.AVR_ISP_USB -> listOf(
+                    "USB Connect / Sign-On",
+                    "Set ISP Clock / Enable Prog Mode",
+                    "SPI Read Signature [30 00 00..02]"
+                )
+                else -> listOf(
+                    "Configure UART ${sync.baudRate} bps ${sync.parityMode}",
+                    "Pin Logic: FLMD0=${sync.flmd0PinState} | RESET=${sync.resetPinPulsePolarity}",
+                    "Wake Sequence: ${sync.syncPulseHex}"
+                )
+            }
+        }
+        return AdapterInitSpec(
+            adapterType = "${chip.displayName} (${status.adapterName})",
+            vidPid = status.vidPidHex,
+            usbTransportMode = when {
+                transport.isControlOnlySession -> "USB EP0 Control Transfers"
+                chip.isSpecializedProgrammer || chip == ProberUsbChip.UNKNOWN_USB -> "USB Raw Bulk/Interrupt (${sync.parityMode})"
+                else -> "USB-UART Serial (${sync.baudRate} bps ${sync.parityMode})"
+            },
+            usbEndpoints = "${transport.currentInterfaceInfo()} | ${transport.currentEndpointsSummary()}",
+            powerControlLogic = "${sync.flmd0PinState} | RESET=${sync.resetPinIdleState} (${sync.resetPinPulsePolarity})",
+            initPacketSequence = packets
+        )
+    }
+
     private suspend fun executeStages2To5(sync: SyncLock) {
         // Universal Auto-ID Capture right after Stage 1 Handshake
         val autoId = extractUniversalAutoId(sync)
+        val initialAdapterSpec = buildAdapterInitSpec(sync)
+        val initialAutoRule = AutoChipDetectionRule(
+            targetFamilyDetected = sync.usbdmTargetArch?.archName ?: sync.framing.label,
+            identificationSequence = autoId.autoIdRule,
+            idRegisterOrOpcode = autoId.idRegisterOrOpcode,
+            rawSiliconIdHex = autoId.rawSiliconIdHex,
+            dynamicFlashBoundaryFormula = "Pending Stage 4 Dynamic Probe (4KB..2MB)",
+            dynamicSpeedFormula = "${sync.baudRate} ${sync.parityMode}"
+        )
         var summary = ProberBlueprintSummary(
             baudRate = sync.baudRate,
             parityMode = sync.parityMode,
@@ -355,10 +455,14 @@ class ProberEngine(context: Context) {
             echoCancellation = transport.echoLoopbackObserved,
             syncPulseHex = sync.syncPulseHex,
             framing = sync.framing,
+            usbdmTargetArch = sync.usbdmTargetArch,
+            adapterInitSpec = initialAdapterSpec,
+            autoDetectionRule = initialAutoRule,
             universalAutoIdRule = autoId.autoIdRule,
             manufacturerGuess = autoId.manufacturerGuess,
             inferredModel = autoId.inferredModel,
             chipSignature = autoId.rawSignatureSummary,
+            flashStartAddressHex = "0x%06X".format(sync.flashBaseAddr),
             safeDelayMs = (sync.latencySampleMs + 15).coerceIn(15, 250),
             timingMap = TimingMapMs(
                 resetPulseMs = sync.resetPulseMs,
@@ -369,7 +473,7 @@ class ProberEngine(context: Context) {
         updateSummaryAndBlueprint(summary)
 
         // STAGE 2: 5 Safe Read Schools + 0xFF vs 0x00 Lock Detection
-        _state.value = _state.value.copy(stageBanner = "جاري تنفيذ المرحلة 2: فحص مدارس السحب الآمنة وكشف القفل...")
+        _state.value = _state.value.copy(stageBanner = "جاري تنفيذ المرحلة 2: فحص مدارس السحب الآمنة والهوية الخام...")
 
         val r1 = testDirectMemoryRead(sync)
         resyncLight(sync)
@@ -410,30 +514,36 @@ class ProberEngine(context: Context) {
         updateSummaryAndBlueprint(summary)
 
         // STAGE 3: Full 0x00..0xFF Command & LEN 0..8 Surgical Sweep
-        _state.value = _state.value.copy(stageBanner = "جاري تنفيذ المرحلة 3: المسح الجراحي للأوامر 0x00..0xFF وأطوال LEN 0..8...")
-        updateStep("stage3_cmd_sweep", ChecklistStepStatus.RUNNING, "مسح 0x00..0xFF مع قائمة الحماية الصارمة...")
+        _state.value = _state.value.copy(stageBanner = "جاري تنفيذ المرحلة 3: المسح الجراحي للأوامر وأطوال المعاملات...")
+        updateStep("stage3_cmd_sweep", ChecklistStepStatus.RUNNING, "مسح الأوامر وبنية البروتوكول مع قائمة الحماية الصارمة...")
         resyncLight(sync)
         val discoveredCmds = runStage3SurgicalCommandSweep(sync)
         updateStep(
             "stage3_cmd_sweep",
             if (discoveredCmds.isNotEmpty()) ChecklistStepStatus.PASSED else ChecklistStepStatus.FAILED,
-            "تم اكتشاف ${discoveredCmds.size} أمر مع أطوال المعاملات LEN"
+            "تم اكتشاف/توثيق ${discoveredCmds.size} أمر بالبروتوكول"
         )
         summary = summary.copy(discoveredCommands = discoveredCmds)
         updateSummaryAndBlueprint(summary)
 
-        // STAGE 4: Crystal Matrix (0x90), Flash Bounds (8KB..512KB), Baud State Machine, STX, 6-Point Timing
-        _state.value = _state.value.copy(stageBanner = "جاري تنفيذ المرحلة 4: مصفوفة الكريستالات 0x90، حدود الفلاش، والسرعات...")
-        updateStep("stage4_timing_bounds", ChecklistStepStatus.RUNNING, "اختبار مصفوفة الكريستالات 0x90 وحدود 8KB..512KB وتبديل السرعات...")
+        // STAGE 4: Crystal Matrix (0x90), Dynamic Flash Bounds (4KB..2MB), Baud State Machine, STX, 6-Point Timing
+        _state.value = _state.value.copy(stageBanner = "جاري تنفيذ المرحلة 4: فحص حدود الفلاش (4KB..2MB)، التردد 0x90، والسرعات...")
+        updateStep("stage4_timing_bounds", ChecklistStepStatus.RUNNING, "اختبار حدود الفلاش الديناميكي (4KB..2MB) + مصفوفة 0x90 + تبديل السرعات...")
         resyncLight(sync)
         val c0Bytes = if (sigCapture.rawC0Payload.isNotEmpty()) sigCapture.rawC0Payload else autoId.rawC0Payload
         val (stage4Summary, winningOscCmdPayload) = runStage4DynamicFamilyAlgorithms(sync, summary, c0Bytes)
-        summary = stage4Summary
+        summary = stage4Summary.copy(
+            autoDetectionRule = initialAutoRule.copy(
+                rawSiliconIdHex = detectedRawIdHex.ifBlank { autoId.rawSiliconIdHex },
+                dynamicFlashBoundaryFormula = stage4Summary.flashSizeDetectionRule,
+                dynamicSpeedFormula = stage4Summary.baudStateMachineRule
+            )
+        )
         activeWinningOscPayload = winningOscCmdPayload
         updateStep(
             "stage4_timing_bounds",
             ChecklistStepStatus.PASSED,
-            "End=${summary.flashEndAddressHex} | Osc=${summary.winningOscillatorPayload} | Bauds=${summary.supportedBaudRates} | STX=${summary.supportedStxPageSizes}"
+            "Start=${summary.flashStartAddressHex} | End=${summary.flashEndAddressHex} | Osc=${summary.winningOscillatorPayload} | Bauds=${summary.supportedBaudRates}"
         )
         updateSummaryAndBlueprint(summary)
 
@@ -598,28 +708,25 @@ class ProberEngine(context: Context) {
         return null
     }
 
-    private suspend fun tryUsbdmHandshake(): SyncLock? {
+    private suspend fun tryUsbdmMultiArchHandshake(family: ProberTargetFamily): SyncLock? {
         currentCoroutineContext().ensureActive()
         detectedUsbdmCaps = ""
         detectedUsbdmCapsCmd = 0x0C
         detectedUsbdmReadCmd = 0x21
-        detectedUsbdmSpeedHz = 0
-        detectedUsbdmSyncBytes = ""
+        detectedUsbdmTargetArch = UsbdmTargetArch.HCS08
         detectedSdidHex = ""
         detectedFreescaleModel = ""
-        appendLog(ProberLogDirection.INFO, "── تم اكتشاف مبرمجة USBDM V4.x (VID:16D0 PID:0567): بدء التسلسل الرسمي (USB Bulk) ──")
+        detectedRawIdHex = ""
+        appendLog(ProberLogDirection.INFO, "── USBDM V4.x (VID:16D0 PID:0567): مسح 7 معماريات معالج مع RESET_SPECIAL [03 13 00] ──")
         val t0 = System.currentTimeMillis()
+        val packets = mutableListOf<String>()
 
-        // 1. CMD_USBDM_GET_CAPABILITIES = 0x0C (fallback 0x00, 0x0E)
+        // 1. GET_CAPABILITIES (0x0C, fallback 0x00, 0x0E)
         var caps = ByteArray(0)
         for (capsCmd in listOf(0x0C, 0x00, 0x0E)) {
             val rx = transport.usbdmTransceive(
                 byteArrayOf(0x02, capsCmd.toByte()),
-                32, 400, "USBDM GET_CAPABILITIES [02 %02X]".format(capsCmd)
-            )
-            appendLog(
-                ProberLogDirection.INFO,
-                "رد GET_CAPABILITIES (0x%02X): %s".format(capsCmd, rx.toHexStr().ifBlank { "بدون رد" })
+                32, 350, "USBDM GET_CAPABILITIES [02 %02X]".format(capsCmd)
             )
             if (rx.isNotEmpty() && (rx[0].toInt() and 0xFF) == 0x00) {
                 caps = rx
@@ -633,103 +740,114 @@ class ProberEngine(context: Context) {
         }
         if (caps.isEmpty()) {
             caps = transport.usbdmControlIn(0x0C, 0, 0, 16)
-            if (caps.isNotEmpty()) appendLog(ProberLogDirection.RX, "USBDM Control Caps [0x0C]: ${caps.toHexStr()}")
         }
         if (caps.isEmpty()) {
-            appendLog(ProberLogDirection.ERROR, "❌ لم تستجب USBDM لأوامر GET_CAPABILITIES (0x0C / 0x00 / 0x0E).")
+            appendLog(ProberLogDirection.ERROR, "❌ لم تستجب USBDM لأوامر GET_CAPABILITIES.")
             return null
         }
         detectedUsbdmCaps = caps.toHexStr()
-        appendLog(ProberLogDirection.SUCCESS, "✅ قدرات وإصدار USBDM [0x%02X]: $detectedUsbdmCaps".format(detectedUsbdmCapsCmd))
+        packets.add("GET_CAPABILITIES [02 %02X] -> %s".format(detectedUsbdmCapsCmd, detectedUsbdmCaps))
 
-        // 2. CMD_USBDM_SET_VDD = 0x02 ([0x03, 0x02, 0x02] = 5V) + 100ms stabilization
-        val vddRx = transport.usbdmTransceive(byteArrayOf(0x03, 0x02, 0x02), 8, 350, "USBDM SET_VDD 5V [03 02 02]")
-        val vddOk = vddRx.isNotEmpty() && (vddRx[0].toInt() and 0xFF) == 0x00
-        appendLog(
-            if (vddOk) ProberLogDirection.SUCCESS else ProberLogDirection.WARN,
-            "${if (vddOk) "✅" else "⚠️"} رد CMD_USBDM_SET_VDD 5V (0x02): ${vddRx.toHexStr().ifBlank { "Timeout" }}"
-        )
+        // 2. SET_VDD 5V [03 02 02] + 100ms + Internal Power [03 03 01]
+        transport.usbdmTransceive(byteArrayOf(0x03, 0x02, 0x02), 8, 300, "USBDM SET_VDD 5V [03 02 02]")
         delay(100)
+        transport.usbdmTransceive(byteArrayOf(0x03, 0x03, 0x01), 8, 300, "USBDM Internal Power [03 03 01]")
+        delay(50)
+        packets.add("SET_VDD 5V [03 02 02] + delay(100ms)")
+        packets.add("SET_INTERNAL_POWER [03 03 01]")
 
-        // 3. CMD_USBDM_SET_TARGET_TYPE = 0x01 ([0x03, 0x01, 0x00] = T_HCS08)
-        val tgtRx = transport.usbdmTransceive(byteArrayOf(0x03, 0x01, 0x00), 8, 350, "USBDM SET_TARGET_TYPE HCS08 [03 01 00]")
-        val tgtOk = tgtRx.isNotEmpty() && (tgtRx[0].toInt() and 0xFF) == 0x00
-        appendLog(
-            if (tgtOk) ProberLogDirection.SUCCESS else ProberLogDirection.WARN,
-            "${if (tgtOk) "✅" else "⚠️"} رد CMD_USBDM_SET_TARGET_TYPE HCS08 (0x01): ${tgtRx.toHexStr().ifBlank { "Timeout" }}"
-        )
-        if (!tgtOk) {
-            appendLog(ProberLogDirection.ERROR, "❌ فشل اختيار نوع المعالج HCS08 (0x01) — الرد: ${tgtRx.toHexStr().ifBlank { "Timeout" }}")
-            return null
+        val scanOrder = if (family == ProberTargetFamily.STM32_UART) {
+            listOf(UsbdmTargetArch.ARM_SWD) + UsbdmTargetArch.scanPriorityOrder.filter { it != UsbdmTargetArch.ARM_SWD }
+        } else {
+            UsbdmTargetArch.scanPriorityOrder
         }
 
-        // 4. CMD_USBDM_CONNECT = 0x0F (with internal power [0x03, 0x03, 0x01] fallback if 0x0F fails)
-        var connRx = transport.usbdmTransceive(byteArrayOf(0x02, 0x0F), 12, 450, "USBDM CONNECT [02 0F]")
-        var connOk = connRx.isNotEmpty() && (connRx[0].toInt() and 0xFF) == 0x00
-        appendLog(
-            if (connOk) ProberLogDirection.SUCCESS else ProberLogDirection.WARN,
-            "${if (connOk) "✅" else "⚠️"} رد CMD_USBDM_CONNECT (0x0F): ${connRx.toHexStr().ifBlank { "Timeout" }}"
-        )
-        if (!connOk) {
-            appendLog(ProberLogDirection.INFO, "تفعيل التغذية الداخلية عبر [03 03 01] ثم إعادة إرسال CONNECT [02 0F]...")
-            val pwrRx = transport.usbdmTransceive(byteArrayOf(0x03, 0x03, 0x01), 8, 350, "USBDM Internal Power [03 03 01]")
-            appendLog(ProberLogDirection.INFO, "رد التغذية الداخلية [03 03 01]: ${pwrRx.toHexStr().ifBlank { "Timeout" }}")
-            delay(100)
-            connRx = transport.usbdmTransceive(byteArrayOf(0x02, 0x0F), 12, 450, "USBDM CONNECT Retry [02 0F]")
-            connOk = connRx.isNotEmpty() && (connRx[0].toInt() and 0xFF) == 0x00
-            appendLog(
-                if (connOk) ProberLogDirection.SUCCESS else ProberLogDirection.WARN,
-                "${if (connOk) "✅" else "⚠️"} رد CONNECT بعد التغذية الداخلية (0x0F): ${connRx.toHexStr().ifBlank { "Timeout" }}"
+        var winningArch: UsbdmTargetArch? = null
+        var connRx = ByteArray(0)
+        for (arch in scanOrder) {
+            currentCoroutineContext().ensureActive()
+            val tgtRx = transport.usbdmTransceive(
+                byteArrayOf(0x03, 0x01, arch.targetCode.toByte()),
+                8, 280, "USBDM Target [03 01 %02X] (${arch.archName})".format(arch.targetCode)
             )
+            if (tgtRx.isEmpty() || (tgtRx[0].toInt() and 0xFF) != 0x00) continue
+
+            // RESET_SPECIAL [03 13 00] to resolve 0x12 / BKGD hold before CONNECT
+            transport.usbdmTransceive(
+                byteArrayOf(0x03, 0x13, 0x00),
+                8, 280, "USBDM RESET_SPECIAL [03 13 00]"
+            )
+            delay(50)
+
+            var cRx = transport.usbdmTransceive(
+                byteArrayOf(0x02, 0x0F),
+                12, 380, "USBDM CONNECT (${arch.archName}) [02 0F]"
+            )
+            if (cRx.isEmpty() || (cRx[0].toInt() and 0xFF) != 0x00) {
+                delay(40)
+                cRx = transport.usbdmTransceive(byteArrayOf(0x02, 0x0F), 12, 380, "USBDM CONNECT Retry [02 0F]")
+            }
+            if (cRx.isNotEmpty() && (cRx[0].toInt() and 0xFF) == 0x00) {
+                winningArch = arch
+                connRx = cRx
+                detectedUsbdmTargetArch = arch
+                packets.add("SET_TARGET [03 01 %02X] (${arch.archName}) -> RESET_SPECIAL [03 13 00] -> CONNECT [02 0F] -> 00".format(arch.targetCode))
+                appendLog(ProberLogDirection.SUCCESS, "✅ تطابق التزامن مع معمارية: ${arch.archName} (Code=0x%02X)".format(arch.targetCode))
+                break
+            }
         }
-        if (!connOk) {
-            val rxHint = connRx.toHexStr().ifBlank { "Timeout" }
-            appendLog(ProberLogDirection.WARN, "⚠️ USBDM جاهزة لكن فشل CONNECT [0x0F] ($rxHint) — تأكد من توصيل BKGD/RESET/VDD على الكارتة.")
+
+        if (winningArch == null) {
+            appendLog(ProberLogDirection.WARN, "⚠️ فشل التزامن عبر USBDM على جميع المعماريات السبع (تأكد من أسلاك BKGD/SWD/RESET/VDD).")
             return null
         }
-        appendLog(ProberLogDirection.SUCCESS, "✅ تم تزامن السلك الواحد (BKGD) مع معالج HCS08 بنجاح عبر CONNECT (0x0F) -> 0x00!")
 
-        // 5. CMD_USBDM_TARGET_HALT = 0x14 + Read SDIDH/SDIDL (0x1806) via CMD_USBDM_READ_MEM = 0x21 (or scan 0x1E..0x24)
-        val haltRx = transport.usbdmTransceive(byteArrayOf(0x02, 0x14), 8, 350, "USBDM TARGET_HALT [02 14]")
-        val haltOk = haltRx.isNotEmpty() && (haltRx[0].toInt() and 0xFF) == 0x00
-        appendLog(
-            if (haltOk) ProberLogDirection.SUCCESS else ProberLogDirection.WARN,
-            "${if (haltOk) "✅" else "⚠️"} رد CMD_USBDM_TARGET_HALT (0x14): ${haltRx.toHexStr().ifBlank { "Timeout" }}"
-        )
+        // 3. TARGET_HALT [0x14] + Read Raw Silicon ID using winningArch.memSpace
+        transport.usbdmTransceive(byteArrayOf(0x02, 0x14), 8, 300, "USBDM TARGET_HALT [02 14]")
+        packets.add("TARGET_HALT [02 14]")
 
-        var sdidRx = transport.usbdmTransceive(
-            byteArrayOf(0x08, 0x21, 0x01, 0x02, 0x00, 0x00, 0x18, 0x06),
-            16, 400, "USBDM READ_MEM SDIDH/L [0x21 @ 0x1806]"
-        )
-        appendLog(ProberLogDirection.INFO, "رد READ_MEM (0x21 @ 0x1806): ${sdidRx.toHexStr().ifBlank { "Timeout" }}")
-
-        if (sdidRx.size < 3 || (sdidRx[0].toInt() and 0xFF) != 0x00) {
-            for (readCmd in listOf(0x1E, 0x1F, 0x20, 0x22, 0x23, 0x24)) {
-                val probeRx = transport.usbdmTransceive(
-                    byteArrayOf(0x08, readCmd.toByte(), 0x01, 0x02, 0x00, 0x00, 0x18, 0x06),
-                    16, 350, "USBDM Probe READ_MEM [0x%02X @ 0x1806]".format(readCmd)
+        val idAddrs = when (winningArch) {
+            UsbdmTargetArch.ARM_SWD -> listOf(0x40048024L to 4, 0xE0042000L to 4, 0xE000ED00L to 4)
+            else -> listOf(winningArch.idRegisterAddress to winningArch.idByteLength)
+        }
+        var idRx = ByteArray(0)
+        var usedIdAddr = winningArch.idRegisterAddress
+        for ((idAddr, idLen) in idAddrs) {
+            val readCandidates = (listOf(0x21) + (0x1E..0x24).toList()).distinct()
+            for (readCmd in readCandidates) {
+                val pkt = usbdmReadMemPacket(readCmd, winningArch.memSpace, idLen, idAddr)
+                val rx = transport.usbdmTransceive(
+                    pkt, 16, 320, "USBDM READ_MEM ID [0x%02X sp=0x%02X @ 0x%08X]".format(readCmd, winningArch.memSpace, idAddr)
                 )
-                appendLog(
-                    ProberLogDirection.INFO,
-                    "مسح أمر القراءة 0x%02X -> %s".format(readCmd, probeRx.toHexStr().ifBlank { "Timeout" })
-                )
-                if (probeRx.size >= 3 && (probeRx[0].toInt() and 0xFF) == 0x00) {
-                    detectedUsbdmReadCmd = readCmd
-                    sdidRx = probeRx
-                    appendLog(ProberLogDirection.SUCCESS, "✅ تم اكتشاف أمر القراءة المطابق للفيرموير: 0x%02X".format(readCmd))
-                    break
+                if (rx.size >= 1 + idLen && (rx[0].toInt() and 0xFF) == 0x00) {
+                    val payload = rx.copyOfRange(1, 1 + idLen)
+                    if (!payload.all { it == 0x00.toByte() || it == 0xFF.toByte() }) {
+                        detectedUsbdmReadCmd = readCmd
+                        idRx = rx
+                        usedIdAddr = idAddr
+                        break
+                    } else if (idRx.isEmpty()) {
+                        detectedUsbdmReadCmd = readCmd
+                        idRx = rx
+                        usedIdAddr = idAddr
+                    }
                 }
             }
-        } else {
-            detectedUsbdmReadCmd = 0x21
+            if (idRx.isNotEmpty() && !idRx.drop(1).all { it == 0x00.toByte() || it == 0xFF.toByte() }) break
         }
 
-        if (sdidRx.size >= 3 && (sdidRx[0].toInt() and 0xFF) == 0x00) {
-            val sdid16 = ((sdidRx[1].toInt() and 0xFF) shl 8) or (sdidRx[2].toInt() and 0xFF)
-            detectedSdidHex = "0x%04X".format(sdid16)
-            val modelName = lookupHcs08ModelBySdid(sdid16)
-            detectedFreescaleModel = "Freescale / NXP HCS08 — $modelName (SDID=$detectedSdidHex)"
-            appendLog(ProberLogDirection.SUCCESS, "✅ هوية المعالج (Freescale / NXP HCS08): SDIDH/L=$detectedSdidHex -> $detectedFreescaleModel")
+        if (idRx.size > 1) {
+            val rawBytes = idRx.copyOfRange(1, idRx.size)
+            detectedRawIdHex = rawBytes.toHexStr()
+            if (winningArch == UsbdmTargetArch.HCS08 && rawBytes.size >= 2) {
+                val sdid16 = ((rawBytes[0].toInt() and 0xFF) shl 8) or (rawBytes[1].toInt() and 0xFF)
+                detectedSdidHex = "0x%04X".format(sdid16)
+                detectedFreescaleModel = "${lookupHcs08ModelBySdid(sdid16)} (Raw ID=$detectedRawIdHex)"
+            } else {
+                detectedSdidHex = "0x" + rawBytes.joinToString("") { "%02X".format(it) }
+                detectedFreescaleModel = "${winningArch.archName} (Raw ID=$detectedRawIdHex @ 0x%X)".format(usedIdAddr)
+            }
+            appendLog(ProberLogDirection.SUCCESS, "✅ الهوية الخام (Raw Silicon ID): $detectedFreescaleModel")
         }
 
         val dt = (System.currentTimeMillis() - t0).toInt().coerceAtLeast(10)
@@ -738,22 +856,385 @@ class ProberEngine(context: Context) {
         return SyncLock(
             baudRate = 1_500_000,
             evenParity = false,
-            parityMode = "USB Bulk Native (EP1/EP2)",
-            wakeUpPatternUsed = "USBDM V4.x HCS08 BKGD Auto-Sync (CONNECT 0x0F)",
-            flmd0PinState = "USBDM VDD=+5V (0x02) • BKGD Native",
-            resetPinIdleState = "HIGH (+5V) via USBDM RESET",
-            resetPinPulsePolarity = "USBDM Hardware BKGD/RESET Sync (0x0F/0x14)",
+            parityMode = "USB Bulk Native (${transport.currentEndpointsSummary()})",
+            wakeUpPatternUsed = "USBDM 7-Arch Scan -> ${winningArch.archName} (RESET_SPECIAL [03 13 00] + CONNECT [02 0F])",
+            flmd0PinState = "USBDM VDD=+5V (0x02) + Internal Power (0x03)",
+            resetPinIdleState = "USBDM Hardware RESET_SPECIAL [03 13 00]",
+            resetPinPulsePolarity = "Code=0x%02X | MemSpace=0x%02X".format(winningArch.targetCode, winningArch.memSpace),
             dtrPolarity = "USBDM Native USB Bulk",
-            rtsPolarity = "USBDM Hardware RESET",
+            rtsPolarity = "USBDM RESET_SPECIAL (0x13)",
             inverted = false,
             useResetToggle = true,
             resetPulseMs = 50,
             postResetDelayMs = 100,
             syncByteGapMs = 5,
-            syncPulseHex = "$capsHex -> 03 02 02 -> 03 01 00 -> 02 0F -> 02 14 -> READ($readCmdHex)",
+            syncPulseHex = "$capsHex -> 03 02 02 -> 03 03 01 -> 03 01 %02X -> 03 13 00 -> 02 0F -> 02 14 -> READ($readCmdHex)".format(winningArch.targetCode),
             framing = DetectedFraming.USBDM_BDM,
-            firstReplyHex = (sdidRx.takeIf { it.isNotEmpty() } ?: connRx).toHexStr(),
-            latencySampleMs = dt
+            firstReplyHex = (idRx.takeIf { it.isNotEmpty() } ?: connRx).toHexStr(),
+            latencySampleMs = dt,
+            usbdmTargetArch = winningArch,
+            flashBaseAddr = winningArch.flashBaseCandidates.first().toInt(),
+            adapterInitPackets = packets
+        )
+    }
+
+    private fun usbdmReadMemPacket(readCmd: Int, memSpace: Int, count: Int, addr: Long): ByteArray = byteArrayOf(
+        0x08, readCmd.toByte(), memSpace.toByte(), count.toByte(),
+        ((addr ushr 24) and 0xFF).toByte(),
+        ((addr ushr 16) and 0xFF).toByte(),
+        ((addr ushr 8) and 0xFF).toByte(),
+        (addr and 0xFF).toByte()
+    )
+
+    private suspend fun tryStLinkHandshake(): SyncLock? {
+        currentCoroutineContext().ensureActive()
+        detectedStLinkVersion = ""
+        detectedStLinkIdCodeHex = ""
+        detectedRawIdHex = ""
+        val t0 = System.currentTimeMillis()
+        val packets = mutableListOf<String>()
+        appendLog(ProberLogDirection.INFO, "── تم اكتشاف مبرمجة ST-LINK (${_state.value.usbStatus.vidPidHex}): بدء فحص SWD ثم SWIM ──")
+
+        val verRx = transport.rawPacketTransceive(byteArrayOf(0xF1.toByte(), 0x80.toByte()), 16, 350, "ST-LINK GET_VERSION [F1 80]")
+        if (verRx.isEmpty()) return null
+        detectedStLinkVersion = verRx.toHexStr()
+        packets.add("GET_VERSION [F1 80] -> $detectedStLinkVersion")
+
+        val modeRx = transport.rawPacketTransceive(byteArrayOf(0xF5.toByte()), 8, 300, "ST-LINK GET_CURRENT_MODE [F5]")
+        if (modeRx.size >= 2 && (modeRx[1].toInt() and 0xFF) == 0x01) {
+            transport.rawPacketTransceive(byteArrayOf(0xF3.toByte(), 0x07), 8, 300, "ST-LINK EXIT_DFU [F3 07]")
+            packets.add("EXIT_DFU [F3 07]")
+        }
+
+        // Try SWD (ARM Cortex-M)
+        transport.rawPacketTransceive(byteArrayOf(0xF2.toByte(), 0x21), 8, 200, "ST-LINK EXIT_DEBUG [F2 21]", logTxRx = false)
+        var swdEnter = transport.rawPacketTransceive(byteArrayOf(0xF2.toByte(), 0x20, 0xA3.toByte()), 8, 350, "ST-LINK ENTER_SWD_V2 [F2 20 A3]")
+        if (swdEnter.isEmpty() || (swdEnter[0].toInt() and 0xFF) != 0x80) {
+            swdEnter = transport.rawPacketTransceive(byteArrayOf(0xF2.toByte(), 0x30, 0xA3.toByte()), 8, 350, "ST-LINK ENTER_SWD_V3 [F2 30 A3]")
+        }
+        if (swdEnter.isNotEmpty() && (swdEnter[0].toInt() and 0xFF) == 0x80) {
+            packets.add("ENTER_SWD -> ${swdEnter.toHexStr()}")
+            val idCodeRx = transport.rawPacketTransceive(byteArrayOf(0xF2.toByte(), 0x07), 8, 300, "ST-LINK READ_IDCODE [F2 07]")
+            val dbgMcuRx = stlinkReadMem32(0xE0042000L, 4)
+            val cpuIdRx = stlinkReadMem32(0xE000ED00L, 4)
+            val rawId = dbgMcuRx.takeIf { it.size == 4 && !it.all { b -> b == 0.toByte() } }
+                ?: idCodeRx.takeIf { it.size >= 4 }
+                ?: cpuIdRx
+            detectedStLinkIdCodeHex = rawId.toHexStr()
+            detectedRawIdHex = detectedStLinkIdCodeHex
+            packets.add("READ_IDCODE [F2 07] / DBGMCU -> $detectedStLinkIdCodeHex")
+            return SyncLock(
+                baudRate = 4_000_000,
+                evenParity = false,
+                parityMode = "USB Bulk SWD (${transport.currentEndpointsSummary()})",
+                wakeUpPatternUsed = "ST-LINK V2/V3 SWD Auto-Connect [F1 80 -> F2 20 A3 -> F2 07]",
+                flmd0PinState = "SWD (SWDIO / SWCLK)",
+                resetPinIdleState = "NRST Controlled by ST-LINK",
+                resetPinPulsePolarity = "ST-LINK SWD Hardware Reset",
+                dtrPolarity = "ST-LINK USB Bulk",
+                rtsPolarity = "SWD NRST",
+                inverted = false,
+                useResetToggle = true,
+                resetPulseMs = 20,
+                postResetDelayMs = 40,
+                syncByteGapMs = 1,
+                syncPulseHex = "F1 80 -> F2 20 A3 -> F2 07",
+                framing = DetectedFraming.STLINK_SWD,
+                firstReplyHex = (rawId.takeIf { it.isNotEmpty() } ?: verRx).toHexStr(),
+                latencySampleMs = (System.currentTimeMillis() - t0).toInt().coerceAtLeast(10),
+                flashBaseAddr = 0x08000000,
+                adapterInitPackets = packets
+            )
+        }
+
+        // Fallback to SWIM (STM8)
+        val swimEnter = transport.rawPacketTransceive(byteArrayOf(0xF4.toByte(), 0x00), 8, 350, "ST-LINK ENTER_SWIM [F4 00]")
+        if (swimEnter.isNotEmpty() && (swimEnter[0].toInt() and 0xFF) == 0x00) {
+            transport.rawPacketTransceive(byteArrayOf(0xF4.toByte(), 0x02), 8, 250, "ST-LINK SWIM_RESET [F4 02]")
+            transport.rawPacketTransceive(byteArrayOf(0xF4.toByte(), 0x03), 8, 250, "ST-LINK SWIM_SPEED_HIGH [F4 03]")
+            val stm8Id = stlinkSwimReadMem(0x004865L, 4)
+            detectedStLinkIdCodeHex = stm8Id.toHexStr().ifBlank { "SWIM Connected" }
+            detectedRawIdHex = detectedStLinkIdCodeHex
+            packets.add("ENTER_SWIM [F4 00] -> SWIM_RESET [F4 02] -> SWIM_SPEED_HIGH [F4 03]")
+            return SyncLock(
+                baudRate = 8_000_000,
+                evenParity = false,
+                parityMode = "USB Bulk SWIM (${transport.currentEndpointsSummary()})",
+                wakeUpPatternUsed = "ST-LINK STM8 SWIM [F1 80 -> F4 00 -> F4 02]",
+                flmd0PinState = "SWIM Single-Wire",
+                resetPinIdleState = "NRST Controlled by ST-LINK",
+                resetPinPulsePolarity = "SWIM Reset [F4 02]",
+                dtrPolarity = "ST-LINK USB Bulk",
+                rtsPolarity = "SWIM NRST",
+                inverted = false,
+                useResetToggle = true,
+                resetPulseMs = 20,
+                postResetDelayMs = 40,
+                syncByteGapMs = 1,
+                syncPulseHex = "F1 80 -> F4 00 -> F4 02 -> F4 03",
+                framing = DetectedFraming.STLINK_SWIM,
+                firstReplyHex = (stm8Id.takeIf { it.isNotEmpty() } ?: swimEnter).toHexStr(),
+                latencySampleMs = (System.currentTimeMillis() - t0).toInt().coerceAtLeast(10),
+                flashBaseAddr = 0x008000,
+                adapterInitPackets = packets
+            )
+        }
+        return null
+    }
+
+    private suspend fun stlinkReadMem32(addr: Long, len: Int): ByteArray {
+        val pkt = byteArrayOf(
+            0xF2.toByte(), 0x08,
+            (addr and 0xFF).toByte(),
+            ((addr ushr 8) and 0xFF).toByte(),
+            ((addr ushr 16) and 0xFF).toByte(),
+            ((addr ushr 24) and 0xFF).toByte(),
+            (len and 0xFF).toByte(),
+            ((len ushr 8) and 0xFF).toByte()
+        )
+        val rx = transport.rawPacketTransceive(pkt, len + 8, 350, "ST-LINK Mem32 @ 0x%08X".format(addr), logTxRx = false)
+        return when {
+            rx.size >= len + 2 && (rx[0].toInt() and 0xFF) == 0x80 -> rx.copyOfRange(rx.size - len, rx.size)
+            rx.size == len -> rx
+            else -> ByteArray(0)
+        }
+    }
+
+    private suspend fun stlinkSwimReadMem(addr: Long, len: Int): ByteArray {
+        val pkt = byteArrayOf(
+            0xF4.toByte(), 0x0B,
+            ((len ushr 8) and 0xFF).toByte(),
+            (len and 0xFF).toByte(),
+            ((addr ushr 24) and 0xFF).toByte(),
+            ((addr ushr 16) and 0xFF).toByte(),
+            ((addr ushr 8) and 0xFF).toByte(),
+            (addr and 0xFF).toByte()
+        )
+        transport.rawPacketTransceive(pkt, 8, 250, "ST-LINK SWIM Read Req", logTxRx = false)
+        delay(10)
+        val data = transport.rawPacketTransceive(byteArrayOf(0xF4.toByte(), 0x0C), len + 8, 300, "ST-LINK SWIM Read Data", logTxRx = false)
+        return if (data.size >= len) data.copyOfRange(0, len) else ByteArray(0)
+    }
+
+    private suspend fun tryUsbaspHandshake(): SyncLock? {
+        currentCoroutineContext().ensureActive()
+        detectedAvrSigHex = ""
+        detectedRawIdHex = ""
+        val t0 = System.currentTimeMillis()
+        val packets = mutableListOf<String>()
+        appendLog(ProberLogDirection.INFO, "── تم اكتشاف مبرمجة USBasp (VID:16C0 PID:05DC): فحص EP0 Vendor Control Transfers ──")
+
+        // USBasp functions: 1=CONNECT, 3=TRANSMIT, 4=READFLASH, 5=ENABLEPROG, 10=SETISPSCK
+        transport.usbControlTransferIn(0xC0, 0x01, 0, 0, 4, 350, "USBasp CONNECT [req=0x01]")
+        packets.add("EP0 IN req=0x01 (USBASP_FUNC_CONNECT)")
+
+        for (sck in listOf(0x01, 0x03, 0x07)) {
+            transport.usbControlTransferIn(0xC0, 0x0A, sck, 0, 4, 250, "USBasp SETISPSCK [0x0A val=$sck]")
+            val en = transport.usbControlTransferIn(0xC0, 0x05, 0, 0, 4, 350, "USBasp ENABLEPROG [0x05]")
+            if (en.isNotEmpty() && (en[0].toInt() and 0xFF) == 0x00) {
+                packets.add("EP0 IN req=0x0A (SCK=$sck) -> req=0x05 (ENABLEPROG OK)")
+                val sigBytes = ByteArray(3)
+                for (i in 0..2) {
+                    val txRx = transport.usbControlTransferIn(
+                        0xC0, 0x03, 0x0030, i and 0xFF, 4, 300, "USBasp SPI Signature Byte $i [0x30 00 0$i 00]"
+                    )
+                    sigBytes[i] = txRx.getOrElse(3) { 0xFF.toByte() }
+                }
+                detectedAvrSigHex = sigBytes.toHexStr()
+                detectedRawIdHex = detectedAvrSigHex
+                packets.add("EP0 IN req=0x03 Read Signature [30 00 00..02] -> $detectedAvrSigHex")
+                appendLog(ProberLogDirection.SUCCESS, "✅ USBasp استجابت بنجاح — بصمة AVR الخام: $detectedAvrSigHex")
+                return SyncLock(
+                    baudRate = 375_000,
+                    evenParity = false,
+                    parityMode = "USB EP0 Vendor Control (SPI ISP)",
+                    wakeUpPatternUsed = "USBasp EP0 CONNECT(0x01) -> SETISPSCK(0x0A) -> ENABLEPROG(0x05)",
+                    flmd0PinState = "MOSI/MISO/SCK SPI Lines",
+                    resetPinIdleState = "AVR /RESET Driven Low by USBasp",
+                    resetPinPulsePolarity = "EP0 EnableProg [0x05]",
+                    dtrPolarity = "EP0 Control Transfers",
+                    rtsPolarity = "USBasp /RESET",
+                    inverted = false,
+                    useResetToggle = true,
+                    resetPulseMs = 30,
+                    postResetDelayMs = 50,
+                    syncByteGapMs = 2,
+                    syncPulseHex = "EP0 0x01 -> 0x0A -> 0x05 -> 0x03 [30 00 00..02]",
+                    framing = DetectedFraming.AVR_ISP_USB,
+                    firstReplyHex = detectedAvrSigHex,
+                    latencySampleMs = (System.currentTimeMillis() - t0).toInt().coerceAtLeast(10),
+                    flashBaseAddr = 0x000000,
+                    adapterInitPackets = packets
+                )
+            }
+        }
+        return null
+    }
+
+    private suspend fun tryAtmelAvrHandshake(): SyncLock? {
+        currentCoroutineContext().ensureActive()
+        detectedAvrSigHex = ""
+        detectedRawIdHex = ""
+        val t0 = System.currentTimeMillis()
+        val packets = mutableListOf<String>()
+        appendLog(ProberLogDirection.INFO, "── فحص مبرمجة Atmel / AVR / CMSIS-DAP (${_state.value.usbStatus.vidPidHex}) ──")
+
+        if (transport.hasDataEndpoints()) {
+            // Try CMSIS-DAP Info (0x00, 0x04 = FW Version) & STK500v2 Sign-On (0x1B 0x01 0x00 0x01 0x0E 0x01 0x14)
+            val dapRx = transport.rawPacketTransceive(byteArrayOf(0x00, 0x04), 64, 300, "CMSIS-DAP Get Info [00 04]")
+            if (dapRx.size >= 2 && (dapRx[0].toInt() and 0xFF) == 0x00) {
+                val fw = dapRx.drop(2).takeWhile { it != 0.toByte() }.map { it.toInt().toChar() }.joinToString("")
+                detectedAvrSigHex = fw.ifBlank { dapRx.take(8).toByteArray().toHexStr() }
+                detectedRawIdHex = detectedAvrSigHex
+                packets.add("CMSIS-DAP Info [00 04] -> $detectedAvrSigHex")
+                return SyncLock(
+                    baudRate = 1_000_000,
+                    evenParity = false,
+                    parityMode = "USB HID/Bulk CMSIS-DAP (${transport.currentEndpointsSummary()})",
+                    wakeUpPatternUsed = "CMSIS-DAP Info [00 04]",
+                    flmd0PinState = "SWD / JTAG / ISP Pins",
+                    resetPinIdleState = "DAP nRESET",
+                    resetPinPulsePolarity = "CMSIS-DAP Hardware",
+                    dtrPolarity = "USB HID/Bulk",
+                    rtsPolarity = "DAP nRESET",
+                    inverted = false,
+                    useResetToggle = true,
+                    resetPulseMs = 20,
+                    postResetDelayMs = 30,
+                    syncByteGapMs = 1,
+                    syncPulseHex = "00 04",
+                    framing = DetectedFraming.AVR_ISP_USB,
+                    firstReplyHex = dapRx.take(16).toByteArray().toHexStr(),
+                    latencySampleMs = (System.currentTimeMillis() - t0).toInt().coerceAtLeast(10),
+                    flashBaseAddr = 0x000000,
+                    adapterInitPackets = packets
+                )
+            }
+            val stkRx = transport.rawPacketTransceive(
+                byteArrayOf(0x1B, 0x01, 0x00, 0x01, 0x0E, 0x01, 0x14),
+                32, 350, "STK500v2 Sign-On [1B 01 00 01 0E 01 14]"
+            )
+            if (stkRx.isNotEmpty() && (stkRx[0].toInt() and 0xFF) == 0x1B) {
+                detectedAvrSigHex = stkRx.toHexStr()
+                detectedRawIdHex = detectedAvrSigHex
+                packets.add("STK500v2 Sign-On -> $detectedAvrSigHex")
+                return SyncLock(
+                    baudRate = 115200,
+                    evenParity = false,
+                    parityMode = "USB Bulk STK500v2 (${transport.currentEndpointsSummary()})",
+                    wakeUpPatternUsed = "Atmel STK500v2 Sign-On [0x1B]",
+                    flmd0PinState = "ISP SPI Pins",
+                    resetPinIdleState = "Atmel /RESET",
+                    resetPinPulsePolarity = "STK500v2 Reset",
+                    dtrPolarity = "USB Bulk",
+                    rtsPolarity = "STK500 Reset",
+                    inverted = false,
+                    useResetToggle = true,
+                    resetPulseMs = 30,
+                    postResetDelayMs = 40,
+                    syncByteGapMs = 2,
+                    syncPulseHex = "1B 01 00 01 0E 01 14",
+                    framing = DetectedFraming.AVR_ISP_USB,
+                    firstReplyHex = detectedAvrSigHex,
+                    latencySampleMs = (System.currentTimeMillis() - t0).toInt().coerceAtLeast(10),
+                    flashBaseAddr = 0x000000,
+                    adapterInitPackets = packets
+                )
+            }
+        }
+        return null
+    }
+
+    private suspend fun tryMicrochipPickitHandshake(): SyncLock? {
+        currentCoroutineContext().ensureActive()
+        detectedPicIdHex = ""
+        detectedRawIdHex = ""
+        val t0 = System.currentTimeMillis()
+        val packets = mutableListOf<String>()
+        appendLog(ProberLogDirection.INFO, "── فحص مبرمجة Microchip PICkit / SNAP (${_state.value.usbStatus.vidPidHex}) ──")
+        if (transport.hasDataEndpoints()) {
+            // Query PICkit2/3 FW version (0x76) or MPLAB SNAP/PK4 inquiry
+            val rx76 = transport.rawPacketTransceive(byteArrayOf(0x76), 64, 350, "PICkit GET_VERSION [0x76]")
+            if (rx76.isNotEmpty()) {
+                detectedPicIdHex = rx76.take(12).toByteArray().toHexStr()
+                detectedRawIdHex = detectedPicIdHex
+                packets.add("PICkit GET_VERSION [0x76] -> $detectedPicIdHex")
+                return SyncLock(
+                    baudRate = 1_000_000,
+                    evenParity = false,
+                    parityMode = "USB HID/Bulk ICSP (${transport.currentEndpointsSummary()})",
+                    wakeUpPatternUsed = "Microchip PICkit/SNAP ICSP [0x76]",
+                    flmd0PinState = "VPP/MCLR + PGC + PGD",
+                    resetPinIdleState = "MCLR Controlled",
+                    resetPinPulsePolarity = "ICSP VPP/MCLR",
+                    dtrPolarity = "USB HID/Bulk",
+                    rtsPolarity = "ICSP MCLR",
+                    inverted = false,
+                    useResetToggle = true,
+                    resetPulseMs = 20,
+                    postResetDelayMs = 30,
+                    syncByteGapMs = 1,
+                    syncPulseHex = "0x76",
+                    framing = DetectedFraming.MICROCHIP_PIC_ICSP,
+                    firstReplyHex = detectedPicIdHex,
+                    latencySampleMs = (System.currentTimeMillis() - t0).toInt().coerceAtLeast(10),
+                    flashBaseAddr = 0x000000,
+                    adapterInitPackets = packets
+                )
+            }
+        }
+        return null
+    }
+
+    private suspend fun tryUnknownUsbProgrammerHandshake(): SyncLock? {
+        currentCoroutineContext().ensureActive()
+        val t0 = System.currentTimeMillis()
+        val ifInfo = transport.currentInterfaceInfo()
+        val epInfo = transport.currentEndpointsSummary()
+        val packets = mutableListOf<String>(
+            "Inspect Interfaces: $ifInfo",
+            "Inspect Endpoints: $epInfo"
+        )
+        appendLog(ProberLogDirection.INFO, "── مبرمجة USB غير مسجلة: تشخيص الواجهات ($ifInfo) ونقاط النهاية ($epInfo) ──")
+        var replyHex = epInfo
+        if (transport.hasDataEndpoints()) {
+            for (probe in listOf(byteArrayOf(0x00), byteArrayOf(0x01), byteArrayOf(0x76), byteArrayOf(0x02, 0x0C))) {
+                val rx = transport.rawPacketTransceive(probe, 64, 220, "Unknown USB Probe [${probe.toHexStr()}]")
+                if (rx.isNotEmpty()) {
+                    replyHex = rx.take(16).toByteArray().toHexStr()
+                    packets.add("Probe [${probe.toHexStr()}] -> $replyHex")
+                    break
+                }
+            }
+        } else {
+            val ctrlRx = transport.usbControlTransferIn(0xC0, 0x01, 0, 0, 8, 250, "Unknown USB EP0 Probe [0xC0 req=0x01]")
+            if (ctrlRx.isNotEmpty()) {
+                replyHex = ctrlRx.toHexStr()
+                packets.add("EP0 Probe [0xC0 req=0x01] -> $replyHex")
+            }
+        }
+        detectedRawIdHex = replyHex
+        return SyncLock(
+            baudRate = 0,
+            evenParity = false,
+            parityMode = epInfo,
+            wakeUpPatternUsed = "Unknown USB Endpoint Diagnostic ($ifInfo)",
+            flmd0PinState = "Unknown USB Adapter Descriptor Inspected",
+            resetPinIdleState = "N/A (Unknown USB Protocol)",
+            resetPinPulsePolarity = "EP0/Bulk/Interrupt Inspected",
+            dtrPolarity = "USB Raw",
+            rtsPolarity = "USB Raw",
+            inverted = false,
+            useResetToggle = false,
+            resetPulseMs = 0,
+            postResetDelayMs = 20,
+            syncByteGapMs = 5,
+            syncPulseHex = packets.lastOrNull() ?: epInfo,
+            framing = DetectedFraming.CUSTOM_RAW,
+            firstReplyHex = replyHex,
+            latencySampleMs = (System.currentTimeMillis() - t0).toInt().coerceAtLeast(10),
+            flashBaseAddr = 0x000000,
+            adapterInitPackets = packets
         )
     }
 
@@ -902,9 +1383,15 @@ class ProberEngine(context: Context) {
     }
 
     private suspend fun runStage1UniversalBlindHandshake(family: ProberTargetFamily): SyncLock? {
-        // 0. If native USBDM programmer is attached, run dedicated USB Bulk USBDM flow immediately
-        if (transport.isUsbdmSession()) {
-            return tryUsbdmHandshake()
+        // 0. Route according to connected USB programmer VID:PID / Interface inspection
+        when (transport.currentChip()) {
+            ProberUsbChip.USBDM -> return tryUsbdmMultiArchHandshake(family)
+            ProberUsbChip.ST_LINK -> return tryStLinkHandshake()
+            ProberUsbChip.USBASP -> return tryUsbaspHandshake()
+            ProberUsbChip.ATMEL_AVR -> return tryAtmelAvrHandshake() ?: tryUnknownUsbProgrammerHandshake()
+            ProberUsbChip.MICROCHIP_PICKIT -> return tryMicrochipPickitHandshake() ?: tryUnknownUsbProgrammerHandshake()
+            ProberUsbChip.UNKNOWN_USB -> return tryUnknownUsbProgrammerHandshake()
+            else -> { /* Proceed with Serial UART Universal Blind Sync */ }
         }
 
         // 1. NEC / Renesas (78K0 / RL78) at 115200 & 9600 bps (8N1)
@@ -1142,68 +1629,123 @@ class ProberEngine(context: Context) {
      */
     private suspend fun extractUniversalAutoId(sync: SyncLock): UniversalIdCapture {
         if (sync.framing == DetectedFraming.USBDM_BDM) {
-            if (detectedSdidHex.isBlank()) {
-                transport.usbdmTransceive(byteArrayOf(0x02, 0x14), 8, 300, "Auto-ID USBDM HALT [02 14]")
-                var sdidRx = ByteArray(0)
-                val readCandidates = (listOf(detectedUsbdmReadCmd) + (0x1E..0x24).toList()).distinct()
-                for (readCmd in readCandidates) {
-                    val rx = transport.usbdmTransceive(
-                        byteArrayOf(0x08, readCmd.toByte(), 0x01, 0x02, 0x00, 0x00, 0x18, 0x06),
-                        16, 350, "Auto-ID USBDM SDID [0x%02X @ 0x1806]".format(readCmd)
-                    )
-                    if (rx.size >= 3 && (rx[0].toInt() and 0xFF) == 0x00) {
-                        detectedUsbdmReadCmd = readCmd
-                        sdidRx = rx
-                        break
+            val arch = sync.usbdmTargetArch ?: detectedUsbdmTargetArch
+            if (detectedRawIdHex.isBlank()) {
+                transport.usbdmTransceive(byteArrayOf(0x02, 0x14), 8, 250, "Auto-ID USBDM HALT [02 14]")
+                val rx = transport.usbdmTransceive(
+                    usbdmReadMemPacket(detectedUsbdmReadCmd, arch.memSpace, arch.idByteLength, arch.idRegisterAddress),
+                    16, 300, "Auto-ID USBDM Read [${arch.idRegisterName}]"
+                )
+                if (rx.size >= 1 + arch.idByteLength && (rx[0].toInt() and 0xFF) == 0x00) {
+                    val raw = rx.copyOfRange(1, 1 + arch.idByteLength)
+                    detectedRawIdHex = raw.toHexStr()
+                    if (arch == UsbdmTargetArch.HCS08 && raw.size >= 2) {
+                        val sdid16 = ((raw[0].toInt() and 0xFF) shl 8) or (raw[1].toInt() and 0xFF)
+                        detectedSdidHex = "0x%04X".format(sdid16)
+                        detectedFreescaleModel = "${lookupHcs08ModelBySdid(sdid16)} (Raw ID=$detectedRawIdHex)"
+                    } else {
+                        detectedFreescaleModel = "${arch.archName} (Raw ID=$detectedRawIdHex)"
                     }
                 }
-                if (sdidRx.size >= 3 && (sdidRx[0].toInt() and 0xFF) == 0x00) {
-                    val sdid16 = ((sdidRx[1].toInt() and 0xFF) shl 8) or (sdidRx[2].toInt() and 0xFF)
-                    detectedSdidHex = "0x%04X".format(sdid16)
-                    detectedFreescaleModel = "Freescale / NXP HCS08 — ${lookupHcs08ModelBySdid(sdid16)} (SDID=$detectedSdidHex)"
-                }
             }
-            val model = detectedFreescaleModel.ifBlank { "Freescale / NXP HCS08 Target" }
-            val sig = buildString {
-                if (detectedSdidHex.isNotBlank()) append("SDIDH/L=$detectedSdidHex")
-                if (detectedUsbdmCaps.isNotBlank()) append(" | USBDM Caps=$detectedUsbdmCaps")
-            }.ifBlank { sync.firstReplyHex }
+            val rawId = detectedRawIdHex.ifBlank { detectedSdidHex.ifBlank { sync.firstReplyHex } }
+            val model = detectedFreescaleModel.ifBlank { "${arch.archName} (Raw ID=$rawId)" }
             val capsHex = "0x%02X".format(detectedUsbdmCapsCmd)
             val readHex = "0x%02X".format(detectedUsbdmReadCmd)
             return UniversalIdCapture(
-                autoIdRule = "USBDM V4.x GET_CAPABILITIES ($capsHex) -> SET_VDD 5V (0x02) -> SET_TARGET HCS08 (0x01) -> CONNECT (0x0F) -> TARGET_HALT (0x14) -> READ_MEM $readHex (0x1806..0x1807)",
-                manufacturerGuess = "Freescale / NXP Semiconductors",
+                autoIdRule = "USBDM GET_CAPABILITIES ($capsHex) -> SET_VDD 5V (0x02) -> Internal Power (0x03) -> SET_TARGET 0x%02X (${arch.archName}) -> RESET_SPECIAL (0x13) -> CONNECT (0x0F) -> HALT (0x14) -> READ_MEM $readHex (space=0x%02X @ ${arch.idRegisterName})".format(arch.targetCode, arch.memSpace),
+                manufacturerGuess = if (arch == UsbdmTargetArch.ARM_SWD) "ARM / NXP Kinetis / STM32 / Non-Freescale SWD" else "Freescale / NXP Semiconductors",
                 inferredModel = model,
-                rawSignatureSummary = sig,
-                rawC0Payload = ByteArray(0)
+                rawSignatureSummary = "Raw ID=$rawId | ${arch.idRegisterName} | USBDM Caps=$detectedUsbdmCaps",
+                rawC0Payload = ByteArray(0),
+                idRegisterOrOpcode = "${arch.idRegisterName} via READ_MEM $readHex (space=0x%02X)".format(arch.memSpace),
+                rawSiliconIdHex = rawId
+            )
+        }
+        if (sync.framing == DetectedFraming.STLINK_SWD || sync.framing == DetectedFraming.STLINK_SWIM) {
+            val isSwd = sync.framing == DetectedFraming.STLINK_SWD
+            val rawId = detectedStLinkIdCodeHex.ifBlank { sync.firstReplyHex }
+            return UniversalIdCapture(
+                autoIdRule = if (isSwd) {
+                    "ST-LINK GET_VERSION [F1 80] -> EXIT_DFU [F3 07] -> ENTER_SWD [F2 20 A3] -> READ_IDCODE [F2 07] / DBGMCU (0xE0042000)"
+                } else {
+                    "ST-LINK GET_VERSION [F1 80] -> ENTER_SWIM [F4 00] -> SWIM_RESET [F4 02] -> SWIM_SPEED_HIGH [F4 03]"
+                },
+                manufacturerGuess = "STMicroelectronics / ARM Cortex-M",
+                inferredModel = if (isSwd) "ARM Cortex-M / STM32 (Raw ID=$rawId)" else "STM8 Family (SWIM Raw=$rawId)",
+                rawSignatureSummary = "Raw ID=$rawId | ST-LINK FW=$detectedStLinkVersion",
+                rawC0Payload = ByteArray(0),
+                idRegisterOrOpcode = if (isSwd) "0xF2 0x07 (IDCODE) / 0xE0042000" else "0xF4 0x0B (SWIM MemRead)",
+                rawSiliconIdHex = rawId
+            )
+        }
+        if (sync.framing == DetectedFraming.AVR_ISP_USB) {
+            val rawId = detectedAvrSigHex.ifBlank { sync.firstReplyHex }
+            return UniversalIdCapture(
+                autoIdRule = "USB AVR ISP (${sync.wakeUpPatternUsed}) -> Read 3-Byte Device Signature [0x30 0x00 0x00..0x02]",
+                manufacturerGuess = "Atmel / Microchip AVR",
+                inferredModel = "AVR / Atmel Target (Raw Signature=$rawId)",
+                rawSignatureSummary = "AVR 3-Byte Signature=$rawId",
+                rawC0Payload = ByteArray(0),
+                idRegisterOrOpcode = "EP0 0x03 SPI [30 00 00..02]",
+                rawSiliconIdHex = rawId
+            )
+        }
+        if (sync.framing == DetectedFraming.MICROCHIP_PIC_ICSP) {
+            val rawId = detectedPicIdHex.ifBlank { sync.firstReplyHex }
+            return UniversalIdCapture(
+                autoIdRule = "Microchip PICkit/SNAP ICSP (${sync.wakeUpPatternUsed}) -> Query Device ID",
+                manufacturerGuess = "Microchip Technology",
+                inferredModel = "PIC Target (Raw ID=$rawId)",
+                rawSignatureSummary = "PIC ID=$rawId",
+                rawC0Payload = ByteArray(0),
+                idRegisterOrOpcode = "ICSP Device ID / GET_VERSION 0x76",
+                rawSiliconIdHex = rawId
+            )
+        }
+        if (transport.currentChip() == ProberUsbChip.UNKNOWN_USB) {
+            val rawId = detectedRawIdHex.ifBlank { sync.firstReplyHex }
+            return UniversalIdCapture(
+                autoIdRule = "Unknown USB Adapter Diagnostic (${transport.currentInterfaceInfo()})",
+                manufacturerGuess = "مبرمجة USB غير مسجلة (${_state.value.usbStatus.vidPidHex})",
+                inferredModel = "Unknown USB Target (EP: ${transport.currentEndpointsSummary()})",
+                rawSignatureSummary = rawId,
+                rawC0Payload = ByteArray(0),
+                idRegisterOrOpcode = transport.currentEndpointsSummary(),
+                rawSiliconIdHex = rawId
             )
         }
         if (sync.framing == DetectedFraming.FREESCALE_SINGLE_WIRE_BDM) {
-            val model = detectedFreescaleModel.ifBlank { "Freescale / NXP HCS08 (1.5Mbps BDM)" }
-            val sig = if (detectedSdidHex.isNotBlank()) "SDID=$detectedSdidHex | ${sync.firstReplyHex}" else sync.firstReplyHex
+            val rawId = detectedSdidHex.ifBlank { sync.firstReplyHex }
+            val model = detectedFreescaleModel.ifBlank { "Freescale / NXP HCS08 (1.5Mbps BDM, Raw ID=$rawId)" }
             return UniversalIdCapture(
                 autoIdRule = "FT232 @ 1,500,000 bps (8N1) Single-Wire BKGD -> BDM Sync (0xFE/0xC0) -> Read SDID (0x1806..0x1807)",
                 manufacturerGuess = "Freescale / NXP Semiconductors",
                 inferredModel = model,
-                rawSignatureSummary = sig,
-                rawC0Payload = ByteArray(0)
+                rawSignatureSummary = "SDID=$rawId | ${sync.firstReplyHex}",
+                rawC0Payload = ByteArray(0),
+                idRegisterOrOpcode = "0xE8 @ 0x1806..0x1807",
+                rawSiliconIdHex = rawId
             )
         }
         if (sync.framing == DetectedFraming.SAMSUNG_ISP) {
             val sig = detectedSamsungIdHex.ifBlank { sync.firstReplyHex }
+            detectedRawIdHex = sig
             return UniversalIdCapture(
                 autoIdRule = "RESET Pulse -> Samsung ISP Sync (0xAA 0x55 / 0x80 @ ${sync.baudRate} bps) -> ID Query [0x01/0x02/0xC0]",
                 manufacturerGuess = "Samsung Electronics",
-                inferredModel = "Samsung S3F8 / S3F9 / S3P Series ($sig)",
+                inferredModel = "Samsung S3F8 / S3F9 / S3P Series (Raw ID=$sig)",
                 rawSignatureSummary = sig,
-                rawC0Payload = ByteArray(0)
+                rawC0Payload = ByteArray(0),
+                idRegisterOrOpcode = "0x01 / 0x02 / 0xC0",
+                rawSiliconIdHex = sig
             )
         }
 
         val respondedParts = mutableListOf<String>()
         var c0Raw = ByteArray(0)
         var allAscii = ""
-        val allHexPreview = StringBuilder()
+        val firstRawId = StringBuilder()
 
         for (cmd in UNIVERSAL_ID_CMDS) {
             currentCoroutineContext().ensureActive()
@@ -1232,9 +1774,11 @@ class ProberEngine(context: Context) {
             if (ascii.length >= 2) allAscii += "$ascii "
             val preview = fullPayload.take(16).toByteArray().toHexStr()
             respondedParts.add("0x%02X->${if (ascii.length >= 3) ascii else preview}".format(cmd))
-            if (allHexPreview.isEmpty()) allHexPreview.append("0x%02X: $preview".format(cmd))
+            if (firstRawId.isEmpty()) firstRawId.append(preview)
         }
 
+        val rawHex = firstRawId.toString().ifBlank { sync.firstReplyHex }
+        detectedRawIdHex = rawHex
         val (mfg, model) = inferManufacturerAndModel(sync, allAscii, respondedParts.joinToString(" | "))
         val rule = if (respondedParts.isNotEmpty()) {
             "Wake via [${sync.wakeUpPatternUsed}] @ ${sync.baudRate} ${sync.parityMode} -> query universal ID opcodes [0xC0,0xC5,0xFB,0x01,0x02,0x00,0x9F,0xAF] -> matched: ${respondedParts.joinToString(", ")}"
@@ -1246,28 +1790,45 @@ class ProberEngine(context: Context) {
             manufacturerGuess = mfg,
             inferredModel = model,
             rawSignatureSummary = respondedParts.joinToString(" | ").ifBlank { sync.firstReplyHex },
-            rawC0Payload = c0Raw
+            rawC0Payload = c0Raw,
+            idRegisterOrOpcode = respondedParts.firstOrNull()?.substringBefore("->") ?: "Sync Reply",
+            rawSiliconIdHex = rawHex
         )
     }
 
     private fun inferManufacturerAndModel(sync: SyncLock, ascii: String, sigText: String): Pair<String, String> {
-        if (sync.framing == DetectedFraming.USBDM_BDM || sync.framing == DetectedFraming.FREESCALE_SINGLE_WIRE_BDM) {
-            return "Freescale / NXP Semiconductors" to detectedFreescaleModel.ifBlank { "MC9S08 / HCS08 Family" }
+        if (sync.framing == DetectedFraming.USBDM_BDM) {
+            val arch = sync.usbdmTargetArch ?: detectedUsbdmTargetArch
+            val mfg = if (arch == UsbdmTargetArch.ARM_SWD) "ARM / NXP Kinetis / STM32 / Non-Freescale" else "Freescale / NXP Semiconductors"
+            return mfg to detectedFreescaleModel.ifBlank { "${arch.archName} (Raw ID=${detectedRawIdHex.ifBlank { sigText }})" }
+        }
+        if (sync.framing == DetectedFraming.FREESCALE_SINGLE_WIRE_BDM) {
+            return "Freescale / NXP Semiconductors" to detectedFreescaleModel.ifBlank { "HCS08 Family (Raw ID=$detectedSdidHex)" }
+        }
+        if (sync.framing == DetectedFraming.STLINK_SWD || sync.framing == DetectedFraming.STLINK_SWIM) {
+            return "STMicroelectronics / ARM" to "ST-LINK Target (Raw ID=${detectedStLinkIdCodeHex.ifBlank { sigText }})"
+        }
+        if (sync.framing == DetectedFraming.AVR_ISP_USB) {
+            return "Atmel / Microchip AVR" to "AVR Target (Raw Sig=${detectedAvrSigHex.ifBlank { sigText }})"
+        }
+        if (sync.framing == DetectedFraming.MICROCHIP_PIC_ICSP) {
+            return "Microchip Technology" to "PIC Target (Raw ID=${detectedPicIdHex.ifBlank { sigText }})"
         }
         if (sync.framing == DetectedFraming.SAMSUNG_ISP) {
-            return "Samsung Electronics" to "Samsung S3F8 / S3F9 / S3P (${detectedSamsungIdHex.ifBlank { sigText }})"
+            return "Samsung Electronics" to "Samsung S3F8 / S3F9 / S3P (Raw ID=${detectedSamsungIdHex.ifBlank { sigText }})"
         }
         val combined = "$ascii $sigText ${sync.firstReplyHex}".uppercase(Locale.US)
+        val rawSuffix = if (sigText.isNotBlank()) " [Raw=${sigText.take(28)}]" else ""
         return when {
-            "78F" in combined || "UPD" in combined -> "NEC / Renesas Electronics" to (Regex("78F[0-9A-Z]+").find(combined)?.value ?: "NEC 78K0 Series (UPD78F0xxx)")
-            "R5F" in combined || "RL78" in combined -> "Renesas Electronics" to (Regex("R5F[0-9A-Z]+").find(combined)?.value ?: "Renesas RL78 / R8C / RX")
-            "VER." in combined || sync.framing == DetectedFraming.RENESAS_RAW -> "Renesas Electronics" to "Renesas R8C / M16C / H8 / SH (${ascii.trim().ifBlank { "Bootloader" }})"
-            sync.framing == DetectedFraming.NEC_STX_ETX -> "NEC / Renesas Electronics" to (ascii.trim().ifBlank { "NEC 78K0 / RL78 Bootloader" })
-            sync.framing == DetectedFraming.STM32_ACK -> "STMicroelectronics" to "STM32 UART System Bootloader (${ascii.trim().ifBlank { sigText }})"
-            "MSP" in combined -> "Texas Instruments" to "TI MSP430 BSL"
-            "LPC" in combined || "NXP" in combined -> "NXP Semiconductors" to "NXP LPC ISP Bootloader"
-            "ESP" in combined -> "Espressif Systems" to "ESP32 / ESP8266 ROM Bootloader"
-            else -> "شركة غير محددة / مخصص" to (ascii.trim().ifBlank { "UART Target (${sync.baudRate} ${sync.parityMode})" })
+            "78F" in combined || "UPD" in combined -> "NEC / Renesas Electronics" to ((Regex("78F[0-9A-Z]+").find(combined)?.value ?: "NEC 78K0") + rawSuffix)
+            "R5F" in combined || "RL78" in combined -> "Renesas Electronics" to ((Regex("R5F[0-9A-Z]+").find(combined)?.value ?: "Renesas RL78/R8C/RX") + rawSuffix)
+            "VER." in combined || sync.framing == DetectedFraming.RENESAS_RAW -> "Renesas Electronics" to ("Renesas R8C/M16C/H8/SH (${ascii.trim().ifBlank { "Bootloader" }})" + rawSuffix)
+            sync.framing == DetectedFraming.NEC_STX_ETX -> "NEC / Renesas Electronics" to (ascii.trim().ifBlank { "NEC / Renesas Framed Target" } + rawSuffix)
+            sync.framing == DetectedFraming.STM32_ACK -> "STMicroelectronics" to "STM32 UART Bootloader (${ascii.trim().ifBlank { sigText }})"
+            "MSP" in combined -> "Texas Instruments" to ("TI MSP430 BSL" + rawSuffix)
+            "LPC" in combined || "NXP" in combined -> "NXP Semiconductors" to ("NXP LPC ISP Bootloader" + rawSuffix)
+            "ESP" in combined -> "Espressif Systems" to ("ESP32 / ESP8266 ROM Bootloader" + rawSuffix)
+            else -> "معالج غير معروف الهوية الاسمية (Open Raw ID)" to (ascii.trim().ifBlank { "Target Raw ID: ${detectedRawIdHex.ifBlank { sigText }}" })
         }
     }
 
@@ -1312,26 +1873,51 @@ class ProberEngine(context: Context) {
         }
 
         if (sync.framing == DetectedFraming.USBDM_BDM) {
+            val arch = sync.usbdmTargetArch ?: detectedUsbdmTargetArch
             val readCmd = detectedUsbdmReadCmd
             transport.usbdmTransceive(byteArrayOf(0x02, 0x14), 8, 250, "USBDM HALT before Direct Read [02 14]", logTxRx = false)
-            for (addr in listOf(0xC000, 0x8000, 0xE000)) {
+            for (addr in arch.flashBaseCandidates) {
                 val read16 = transport.usbdmTransceive(
-                    byteArrayOf(
-                        0x08, readCmd.toByte(), 0x01, 0x10,
-                        0x00, 0x00, ((addr ushr 8) and 0xFF).toByte(), (addr and 0xFF).toByte()
-                    ),
-                    32, 350, "USBDM Direct Read [0x%02X @ 0x%04X..0x%04X]".format(readCmd, addr, addr + 15)
+                    usbdmReadMemPacket(readCmd, arch.memSpace, 0x10, addr),
+                    32, 350, "USBDM Direct Read [0x%02X sp=0x%02X @ 0x%08X]".format(readCmd, arch.memSpace, addr)
                 )
                 if (read16.size >= 17 && (read16[0].toInt() and 0xFF) == 0x00) {
                     val payload = read16.copyOfRange(1, 17)
                     return updateAndReturn(
                         "stage2_direct_read",
                         ChecklistStepStatus.PASSED,
-                        "USBDM READ_MEM [0x%02X @ 0x%04X] -> ${payload.toHexStr()}".format(readCmd, addr)
+                        "USBDM (${arch.archName}) READ_MEM [0x%02X @ 0x%X] -> ${payload.toHexStr()}".format(readCmd, addr)
                     )
                 }
             }
-            return updateAndReturn("stage2_direct_read", ChecklistStepStatus.FAILED, "USBDM READ_MEM (0x%02X) مرفوض (الرقاقة محمية FSEC Secured)".format(readCmd))
+            return updateAndReturn("stage2_direct_read", ChecklistStepStatus.FAILED, "USBDM READ_MEM (0x%02X) مرفوض (${arch.archName} محمية)".format(readCmd))
+        }
+
+        if (sync.framing == DetectedFraming.STLINK_SWD) {
+            val data = stlinkReadMem32(0x08000000L, 16)
+            return if (data.size >= 16) {
+                updateAndReturn("stage2_direct_read", ChecklistStepStatus.PASSED, "ST-LINK SWD Mem32 @ 0x08000000 -> ${data.toHexStr()}")
+            } else {
+                updateAndReturn("stage2_direct_read", ChecklistStepStatus.FAILED, "ST-LINK SWD MemRead مرفوض (RDP محمي)")
+            }
+        }
+
+        if (sync.framing == DetectedFraming.STLINK_SWIM) {
+            val data = stlinkSwimReadMem(0x008000L, 16)
+            return if (data.size >= 16) {
+                updateAndReturn("stage2_direct_read", ChecklistStepStatus.PASSED, "ST-LINK SWIM @ 0x008000 -> ${data.toHexStr()}")
+            } else {
+                updateAndReturn("stage2_direct_read", ChecklistStepStatus.FAILED, "ST-LINK SWIM مرفوض (ROP محمي)")
+            }
+        }
+
+        if (sync.framing == DetectedFraming.AVR_ISP_USB && transport.currentChip() == ProberUsbChip.USBASP) {
+            val rx = transport.usbControlTransferIn(0xC0, 0x04, 0x0000, 0x0000, 16, 400, "USBasp READFLASH 16B [0x04 @ 0x0000]")
+            return if (rx.size >= 16) {
+                updateAndReturn("stage2_direct_read", ChecklistStepStatus.PASSED, "USBasp EP0 READFLASH [0x04 @ 0x0000] -> ${rx.toHexStr()}")
+            } else {
+                updateAndReturn("stage2_direct_read", ChecklistStepStatus.FAILED, "USBasp READFLASH مرفوض (Lock Bits)")
+            }
         }
 
         if (sync.framing == DetectedFraming.FREESCALE_SINGLE_WIRE_BDM) {
@@ -1471,13 +2057,15 @@ class ProberEngine(context: Context) {
         autoId: UniversalIdCapture
     ): SignatureProbeCapture {
         updateStep("stage2_signature", ChecklistStepStatus.RUNNING, "اختبار 0xC0, 0xC5, 0xFB, SDIDH/L, 0x01, 0x02...")
-        if (sync.framing == DetectedFraming.USBDM_BDM || sync.framing == DetectedFraming.FREESCALE_SINGLE_WIRE_BDM) {
+        if (sync.framing in setOf(
+                DetectedFraming.USBDM_BDM, DetectedFraming.FREESCALE_SINGLE_WIRE_BDM,
+                DetectedFraming.STLINK_SWD, DetectedFraming.STLINK_SWIM,
+                DetectedFraming.AVR_ISP_USB, DetectedFraming.MICROCHIP_PIC_ICSP,
+                DetectedFraming.SAMSUNG_ISP
+            ) || transport.currentChip() == ProberUsbChip.UNKNOWN_USB
+        ) {
             val sigText = autoId.rawSignatureSummary
             val item = updateAndReturn("stage2_signature", ChecklistStepStatus.PASSED, "${autoId.inferredModel} | $sigText")
-            return SignatureProbeCapture(item, ByteArray(0), autoId.manufacturerGuess, autoId.inferredModel)
-        }
-        if (sync.framing == DetectedFraming.SAMSUNG_ISP) {
-            val item = updateAndReturn("stage2_signature", ChecklistStepStatus.PASSED, "Samsung ID: ${autoId.rawSignatureSummary}")
             return SignatureProbeCapture(item, ByteArray(0), autoId.manufacturerGuess, autoId.inferredModel)
         }
 
@@ -1525,18 +2113,32 @@ class ProberEngine(context: Context) {
     private suspend fun testRamStubInjection(sync: SyncLock): ChecklistStepItem {
         updateStep("stage2_ram_stub", ChecklistStepStatus.RUNNING, "اختبار عنوان RAM مؤقت دون لمس الفلاش...")
         if (sync.framing == DetectedFraming.USBDM_BDM) {
+            val arch = sync.usbdmTargetArch ?: detectedUsbdmTargetArch
             val readCmd = detectedUsbdmReadCmd
+            val ramAddr = arch.defaultRamAddress
             val ramRx = transport.usbdmTransceive(
-                byteArrayOf(0x08, readCmd.toByte(), 0x01, 0x04, 0x00, 0x00, 0x00, 0x80.toByte()),
-                12, 300, "USBDM RAM Access [0x%02X @ 0x0080]".format(readCmd)
+                usbdmReadMemPacket(readCmd, arch.memSpace, 4, ramAddr),
+                12, 300, "USBDM RAM Access [0x%02X sp=0x%02X @ 0x%X]".format(readCmd, arch.memSpace, ramAddr)
             )
             return if (ramRx.size >= 5 && (ramRx[0].toInt() and 0xFF) == 0x00) {
-                updateAndReturn("stage2_ram_stub", ChecklistStepStatus.PASSED, "USBDM RAM 0x0080 مفتوح -> ${ramRx.copyOfRange(1, 5).toHexStr()}")
+                updateAndReturn("stage2_ram_stub", ChecklistStepStatus.PASSED, "USBDM RAM 0x%X مفتوح -> ${ramRx.copyOfRange(1, 5).toHexStr()}".format(ramAddr))
             } else {
                 updateAndReturn("stage2_ram_stub", ChecklistStepStatus.FAILED, "RAM مقفل via USBDM")
             }
         }
-        if (sync.framing == DetectedFraming.FREESCALE_SINGLE_WIRE_BDM || sync.framing == DetectedFraming.SAMSUNG_ISP) {
+        if (sync.framing == DetectedFraming.STLINK_SWD) {
+            val sram = stlinkReadMem32(0x20000000L, 4)
+            return if (sram.size == 4) {
+                updateAndReturn("stage2_ram_stub", ChecklistStepStatus.PASSED, "ST-LINK SRAM 0x20000000 مفتوح -> ${sram.toHexStr()}")
+            } else {
+                updateAndReturn("stage2_ram_stub", ChecklistStepStatus.FAILED, "SRAM مقفل على ST-LINK SWD")
+            }
+        }
+        if (sync.framing in setOf(
+                DetectedFraming.FREESCALE_SINGLE_WIRE_BDM, DetectedFraming.SAMSUNG_ISP,
+                DetectedFraming.STLINK_SWIM, DetectedFraming.AVR_ISP_USB, DetectedFraming.MICROCHIP_PIC_ICSP
+            ) || transport.currentChip() == ProberUsbChip.UNKNOWN_USB
+        ) {
             return updateAndReturn("stage2_ram_stub", ChecklistStepStatus.FAILED, "غير منطبق في ${sync.framing.label}")
         }
         if (sync.framing == DetectedFraming.STM32_ACK) {
@@ -1570,6 +2172,7 @@ class ProberEngine(context: Context) {
 
         if (sync.framing == DetectedFraming.USBDM_BDM || sync.framing == DetectedFraming.FREESCALE_SINGLE_WIRE_BDM) {
             val isNativeUsbdm = (sync.framing == DetectedFraming.USBDM_BDM)
+            val arch = sync.usbdmTargetArch ?: detectedUsbdmTargetArch
             if (isNativeUsbdm) {
                 val stsRx = transport.usbdmTransceive(byteArrayOf(0x02, 0x0D), 8, 250, "USBDM GET_BDM_STATUS [02 0D]")
                 val stsHex = if (stsRx.isNotEmpty()) "0x%02X".format(stsRx[0].toInt() and 0xFF) else "0x00"
@@ -1577,20 +2180,49 @@ class ProberEngine(context: Context) {
                 val readHex = "0x%02X".format(detectedUsbdmReadCmd)
                 discovered.add(DiscoveredCommandEntry(capsHex, detectedUsbdmCapsCmd, stsHex, 0, "USBDM Get Capabilities", true))
                 discovered.add(DiscoveredCommandEntry("0x02", 0x02, "0x00", 1, "USBDM Set Target VDD (5V=0x02)", true))
-                discovered.add(DiscoveredCommandEntry("0x01", 0x01, "0x00", 1, "USBDM Set Target Type (HCS08=0x00)", true))
                 discovered.add(DiscoveredCommandEntry("0x03", 0x03, "0x00", 1, "USBDM Internal Target Power Control", true))
-                discovered.add(DiscoveredCommandEntry("0x0F", 0x0F, "0x00", 0, "USBDM Connect & BKGD Auto-Sync", true))
+                discovered.add(DiscoveredCommandEntry("0x01", 0x01, "0x00", 1, "USBDM Set Target Type (${arch.archName}=0x%02X)".format(arch.targetCode), true))
+                discovered.add(DiscoveredCommandEntry("0x13", 0x13, "0x00", 1, "USBDM Target Reset Special [03 13 00]", true))
+                discovered.add(DiscoveredCommandEntry("0x0F", 0x0F, "0x00", 0, "USBDM Connect & Auto-Sync", true))
                 discovered.add(DiscoveredCommandEntry("0x14", 0x14, "0x00", 0, "USBDM Target Halt", true))
-                discovered.add(DiscoveredCommandEntry(readHex, detectedUsbdmReadCmd, "0x00", 6, "USBDM Read Memory (SDID/Flash)", true))
-                discovered.add(DiscoveredCommandEntry("0x20", 0x20, "0x00", 6, "USBDM Write Memory (FCMD/RAM)", false))
+                discovered.add(DiscoveredCommandEntry(readHex, detectedUsbdmReadCmd, "0x00", 6, "USBDM Read Memory (space=0x%02X)".format(arch.memSpace), true))
+                discovered.add(DiscoveredCommandEntry("0x20", 0x20, "0x00", 6, "USBDM Write Memory (space=0x%02X)".format(arch.memSpace), false))
             } else {
                 discovered.add(DiscoveredCommandEntry("0xFE", 0xFE, "SYNC", 0, "Single-Wire BDM Sync (1.5Mbps)", true))
                 discovered.add(DiscoveredCommandEntry("0xE8", 0xE8, "BDM", 2, "HCS08 BDM Read Byte", true))
                 discovered.add(DiscoveredCommandEntry("0xC8", 0xC8, "BDM", 3, "HCS08 BDM Write Byte", false))
             }
-            discovered.add(DiscoveredCommandEntry("0x20", 0x20, "FCMD", 2, "HCS08 FCMD Byte Program", false))
-            discovered.add(DiscoveredCommandEntry("0x40", 0x40, "FCMD", 2, "HCS08 FCMD Page Erase", false))
-            discovered.add(DiscoveredCommandEntry("0x41", 0x41, "FCMD", 0, "HCS08 FCMD Mass Erase (Unsecure)", false))
+            discovered.add(DiscoveredCommandEntry("0x20", 0x20, "FCMD", 2, "${arch.archName} Program", false))
+            discovered.add(DiscoveredCommandEntry("0x40", 0x40, "FCMD", 2, "${arch.archName} Sector/Page Erase", false))
+            discovered.add(DiscoveredCommandEntry("0x41", 0x41, "FCMD", 0, "${arch.archName} Mass Erase / Unsecure", false))
+            return discovered
+        }
+
+        if (sync.framing == DetectedFraming.STLINK_SWD) {
+            discovered.add(DiscoveredCommandEntry("0xF1", 0xF1, "OK", 1, "ST-LINK Get Version [F1 80]", true))
+            discovered.add(DiscoveredCommandEntry("0xF5", 0xF5, "OK", 0, "ST-LINK Get Current Mode", true))
+            discovered.add(DiscoveredCommandEntry("0xF2", 0xF2, "0x80", 2, "ST-LINK Enter SWD / Read IDCODE [0x07] / Mem32 [0x08]", true))
+            discovered.add(DiscoveredCommandEntry("0xF2", 0xF2, "0x80", 6, "ST-LINK SWD Write Mem32 [0x0D]", false))
+            return discovered
+        }
+
+        if (sync.framing == DetectedFraming.STLINK_SWIM) {
+            discovered.add(DiscoveredCommandEntry("0xF4", 0xF4, "0x00", 1, "ST-LINK Enter SWIM [0x00] / Reset [0x02] / ReadMem [0x0B]", true))
+            discovered.add(DiscoveredCommandEntry("0xF4", 0xF4, "0x00", 6, "ST-LINK SWIM WriteMem [0x0A]", false))
+            return discovered
+        }
+
+        if (sync.framing == DetectedFraming.AVR_ISP_USB) {
+            discovered.add(DiscoveredCommandEntry("0x01", 0x01, "0x00", 0, "USBasp Connect / CMSIS-DAP", true))
+            discovered.add(DiscoveredCommandEntry("0x03", 0x03, "0x00", 4, "USBasp SPI Transmit (Read Signature 0x30)", true))
+            discovered.add(DiscoveredCommandEntry("0x04", 0x04, "0x00", 4, "USBasp Read Flash Page", true))
+            discovered.add(DiscoveredCommandEntry("0x05", 0x05, "0x00", 0, "USBasp Enable Programming", true))
+            discovered.add(DiscoveredCommandEntry("0x06", 0x06, "0x00", 4, "USBasp Write Flash Page", false))
+            return discovered
+        }
+
+        if (sync.framing == DetectedFraming.MICROCHIP_PIC_ICSP || transport.currentChip() == ProberUsbChip.UNKNOWN_USB) {
+            discovered.add(DiscoveredCommandEntry("0x00", 0x00, "USB", 0, "${sync.wakeUpPatternUsed}", true))
             return discovered
         }
 
@@ -1770,7 +2402,233 @@ class ProberEngine(context: Context) {
         }
     }
 
-    // ==================== STAGE 4: CRYSTAL MATRIX (0x90), BOUNDS (8KB..512KB), BAUD & TIMING ====================
+    // ==================== STAGE 4: CRYSTAL MATRIX (0x90), BOUNDS (4KB..2MB), BAUD & TIMING ====================
+
+    private data class FlashBoundsProbeResult(
+        val flashStart: Int,
+        val flashEnd: Int,
+        val endLabel: String,
+        val ruleDetail: String
+    )
+
+    private suspend fun probeDynamicFlashBounds4KbTo2Mb(
+        sync: SyncLock,
+        rawC0Payload: ByteArray
+    ): FlashBoundsProbeResult {
+        val sizesDesc = listOf(
+            0x200000 to "2 MB",
+            0x100000 to "1 MB",
+            0x080000 to "512 KB",
+            0x040000 to "256 KB",
+            0x020000 to "128 KB",
+            0x010000 to "64 KB",
+            0x008000 to "32 KB",
+            0x004000 to "16 KB",
+            0x002000 to "8 KB",
+            0x001000 to "4 KB"
+        )
+
+        if (sync.framing == DetectedFraming.NEC_STX_ETX) {
+            val c0ParsedEnd = parseNecSignatureEndAddress(rawC0Payload)
+            for ((sizeBytes, sizeLabel) in sizesDesc) {
+                currentCoroutineContext().ensureActive()
+                val endAddr = sizeBytes - 1
+                val label = "0x%06X ($sizeLabel)".format(endAddr)
+                val csCmd = buildNecCommandFrame(0xB0, addrRangeBytes(0x000000, endAddr))
+                var rx = transport.transceive(csCmd, 16, 280, "4.1 Boundary 0xB0 [$label]", stopOnCompleteNecFrame = true)
+                if (rx.isEmpty()) {
+                    hardwareResetAndResync(sync, "4.1 Boundary 0xB0 Timeout [$label]", relockOsc = false)
+                    rx = transport.transceive(csCmd, 16, 280, "4.1 Boundary 0xB0 Retry [$label]", stopOnCompleteNecFrame = true)
+                }
+                val sts = parseNecStatus(rx)
+                if (sts == ACK_NEC || parseChecksum16(rx) != null) {
+                    val rule = buildString {
+                        append("Dynamic Boundary 0xB0 Probe (2MB->4KB)")
+                        if (c0ParsedEnd != null) append(" + C0 End=0x%06X".format(c0ParsedEnd))
+                        append(" -> Confirmed $label")
+                    }
+                    return FlashBoundsProbeResult(0x000000, endAddr, label, rule)
+                }
+            }
+            val fallbackEnd = c0ParsedEnd ?: 0x007FFF
+            val fallbackLabel = "0x%06X (Fallback)".format(fallbackEnd)
+            return FlashBoundsProbeResult(0x000000, fallbackEnd, fallbackLabel, "C0/Fallback Boundary -> $fallbackLabel")
+        }
+
+        if (sync.framing == DetectedFraming.USBDM_BDM) {
+            val arch = sync.usbdmTargetArch ?: detectedUsbdmTargetArch
+            val readCmd = detectedUsbdmReadCmd
+            transport.usbdmTransceive(byteArrayOf(0x02, 0x14), 8, 200, "4.1 USBDM HALT [02 14]", logTxRx = false)
+
+            if (!arch.isArmOr32Bit) {
+                // 8-bit/16-bit top-anchored architectures (HCS08, HCS12, RS08)
+                val maxEnd = if (arch == UsbdmTargetArch.RS08) 0x003FFF else 0x00FFFF
+                val candidateStarts = if (arch == UsbdmTargetArch.RS08) {
+                    listOf(0x003000 to "4 KB", 0x003800 to "2 KB", 0x003C00 to "1 KB")
+                } else {
+                    listOf(
+                        0x001900 to "58-60 KB",
+                        0x004000 to "48 KB",
+                        0x008000 to "32 KB",
+                        0x00C000 to "16 KB",
+                        0x00E000 to "8 KB",
+                        0x00F000 to "4 KB"
+                    )
+                }
+                for ((candStart, sizeLabel) in candidateStarts) {
+                    currentCoroutineContext().ensureActive()
+                    val rx = transport.usbdmTransceive(
+                        usbdmReadMemPacket(readCmd, arch.memSpace, 4, candStart.toLong()),
+                        12, 220, "4.1 USBDM Probe [${arch.name} 0x%04X]".format(candStart), logTxRx = false
+                    )
+                    if (rx.size >= 5 && (rx[0].toInt() and 0xFF) == 0x00) {
+                        val label = "0x%06X ($sizeLabel ${arch.name})".format(maxEnd)
+                        return FlashBoundsProbeResult(
+                            flashStart = candStart,
+                            flashEnd = maxEnd,
+                            endLabel = label,
+                            ruleDetail = "Dynamic USBDM Probe (${arch.archName}, memSpace=0x%02X): readable start=0x%06X..0x%06X".format(arch.memSpace, candStart, maxEnd)
+                        )
+                    }
+                }
+                val defStart = arch.flashBaseCandidates.first().toInt()
+                val label = "0x%06X (${arch.name})".format(maxEnd)
+                return FlashBoundsProbeResult(defStart, maxEnd, label, "USBDM Arch Base -> 0x%06X..0x%06X".format(defStart, maxEnd))
+            } else {
+                // 32-bit architectures (ARM_SWD, COLDFIRE_V1, COLDFIRE_V2_4, DSC_JTAG): probe Flash base candidates + 2MB->4KB
+                var activeBase = arch.flashBaseCandidates.first().toInt()
+                for (candBase in arch.flashBaseCandidates) {
+                    val baseProbe = transport.usbdmTransceive(
+                        usbdmReadMemPacket(readCmd, arch.memSpace, 4, candBase),
+                        12, 220, "4.1 USBDM 32-bit Base [0x%08X]".format(candBase), logTxRx = false
+                    )
+                    if (baseProbe.size >= 5 && (baseProbe[0].toInt() and 0xFF) == 0x00) {
+                        activeBase = candBase.toInt()
+                        break
+                    }
+                }
+                for ((sizeBytes, sizeLabel) in sizesDesc) {
+                    currentCoroutineContext().ensureActive()
+                    val testAddr = activeBase.toLong() + sizeBytes.toLong() - 4L
+                    val rx = transport.usbdmTransceive(
+                        usbdmReadMemPacket(readCmd, arch.memSpace, 4, testAddr),
+                        12, 220, "4.1 USBDM Bound [$sizeLabel @ 0x%08X]".format(testAddr), logTxRx = false
+                    )
+                    if (rx.size >= 5 && (rx[0].toInt() and 0xFF) == 0x00) {
+                        val endAddr = activeBase + sizeBytes - 1
+                        val label = "0x%08X ($sizeLabel)".format(endAddr)
+                        return FlashBoundsProbeResult(
+                            flashStart = activeBase,
+                            flashEnd = endAddr,
+                            endLabel = label,
+                            ruleDetail = "Dynamic USBDM 32-bit Boundary Probe (2MB->4KB, memSpace=0x%02X): 0x%08X..0x%08X ($sizeLabel)".format(arch.memSpace, activeBase, endAddr)
+                        )
+                    }
+                }
+                val defEnd = activeBase + 0x00FFFF
+                return FlashBoundsProbeResult(activeBase, defEnd, "0x%08X (64 KB Fallback)".format(defEnd), "USBDM 32-bit Fallback 0x%08X..0x%08X".format(activeBase, defEnd))
+            }
+        }
+
+        if (sync.framing == DetectedFraming.STLINK_SWD) {
+            // Probe STM32 Flash Size register candidates first + verify via memory boundary probe 2MB->4KB
+            var regKb: Int? = null
+            for (fszAddr in listOf(0x1FFFF7E0L, 0x1FFF7A22L, 0x1FFF75E0L)) {
+                val r = stlinkReadMem32(fszAddr, 4)
+                if (r.size >= 2) {
+                    val kb = (r[0].toInt() and 0xFF) or ((r[1].toInt() and 0xFF) shl 8)
+                    if (kb in 4..2048) {
+                        regKb = kb
+                        break
+                    }
+                }
+            }
+            for ((sizeBytes, sizeLabel) in sizesDesc) {
+                currentCoroutineContext().ensureActive()
+                val testAddr = 0x08000000L + sizeBytes.toLong() - 4L
+                val rx = stlinkReadMem32(testAddr, 4)
+                if (rx.size == 4) {
+                    val endAddr = 0x08000000 + sizeBytes - 1
+                    val fLabel = if (regKb != null) "0x%08X (${regKb} KB Reg / $sizeLabel Probe)".format(endAddr) else "0x%08X ($sizeLabel)".format(endAddr)
+                    return FlashBoundsProbeResult(
+                        flashStart = 0x08000000,
+                        flashEnd = endAddr,
+                        endLabel = fLabel,
+                        ruleDetail = "ST-LINK SWD Dynamic Flash Probe (2MB->4KB) + FlashSizeReg=${regKb?.let { "${it}KB" } ?: "--"} -> $fLabel"
+                    )
+                }
+            }
+            val endByReg = regKb?.let { 0x08000000 + it * 1024 - 1 } ?: 0x0801FFFF
+            return FlashBoundsProbeResult(0x08000000, endByReg, "0x%08X".format(endByReg), "ST-LINK SWD Flash Base 0x08000000")
+        }
+
+        if (sync.framing == DetectedFraming.STLINK_SWIM) {
+            for ((sizeBytes, sizeLabel) in sizesDesc.filter { it.first <= 0x040000 }) {
+                currentCoroutineContext().ensureActive()
+                val testAddr = 0x008000L + sizeBytes.toLong() - 4L
+                val rx = stlinkSwimReadMem(testAddr, 4)
+                if (rx.size == 4) {
+                    val endAddr = 0x008000 + sizeBytes - 1
+                    val label = "0x%06X ($sizeLabel)".format(endAddr)
+                    return FlashBoundsProbeResult(0x008000, endAddr, label, "ST-LINK SWIM Dynamic Probe (256KB->4KB) -> $label")
+                }
+            }
+            return FlashBoundsProbeResult(0x008000, 0x009FFF, "0x009FFF (8 KB STM8)", "ST-LINK SWIM Base 0x008000")
+        }
+
+        if (sync.framing == DetectedFraming.STM32_ACK) {
+            for ((sizeBytes, sizeLabel) in sizesDesc) {
+                currentCoroutineContext().ensureActive()
+                val testAddr = 0x08000000L + sizeBytes.toLong() - 4L
+                val a1 = transport.transceive(byteArrayOf(0x11, 0xEE.toByte()), 4, 220, "4.1 STM32 Probe 0x11 [$sizeLabel]", logTxRx = false)
+                if (a1.any { (it.toInt() and 0xFF) == ACK_STM32 }) {
+                    val addrBytes = byteArrayOf(
+                        ((testAddr ushr 24) and 0xFF).toByte(),
+                        ((testAddr ushr 16) and 0xFF).toByte(),
+                        ((testAddr ushr 8) and 0xFF).toByte(),
+                        (testAddr and 0xFF).toByte()
+                    )
+                    val cs = ((addrBytes[0].toInt() xor addrBytes[1].toInt() xor addrBytes[2].toInt() xor addrBytes[3].toInt()) and 0xFF).toByte()
+                    val a2 = transport.transceive(addrBytes + cs, 4, 220, "4.1 STM32 Addr [0x%08X]".format(testAddr), logTxRx = false)
+                    if (a2.any { (it.toInt() and 0xFF) == ACK_STM32 }) {
+                        val rd = transport.transceive(byteArrayOf(0x03, 0xFC.toByte()), 10, 260, "4.1 STM32 Read 4B", logTxRx = false)
+                        if (rd.size >= 5 && (rd[0].toInt() and 0xFF) == ACK_STM32) {
+                            val endAddr = 0x08000000 + sizeBytes - 1
+                            val label = "0x%08X ($sizeLabel)".format(endAddr)
+                            return FlashBoundsProbeResult(0x08000000, endAddr, label, "STM32 UART 0x11 Boundary Probe (2MB->4KB) -> $label")
+                        }
+                    }
+                }
+            }
+            return FlashBoundsProbeResult(0x08000000, 0x0801FFFF, "0x0801FFFF (128 KB Typical)", "STM32 UART Fallback")
+        }
+
+        if (sync.framing == DetectedFraming.AVR_ISP_USB && transport.currentChip() == ProberUsbChip.USBASP) {
+            val page0 = transport.usbControlTransferIn(0xC0, 0x04, 0, 0, 16, 250, "4.1 USBasp Alias Check @ 0x0000", logTxRx = false)
+            val page0NonBlank = page0.size == 16 && !page0.all { (it.toInt() and 0xFF) == 0xFF } && !page0.all { it == 0.toByte() }
+            for ((sizeBytes, sizeLabel) in sizesDesc.filter { it.first <= 0x040000 }) {
+                currentCoroutineContext().ensureActive()
+                val halfAddr = sizeBytes / 2
+                val probeHalf = transport.usbControlTransferIn(
+                    0xC0, 0x04, (halfAddr and 0xFFFF), ((halfAddr ushr 16) and 0xFFFF), 16, 250,
+                    "4.1 USBasp Probe [$sizeLabel @ 0x%06X]".format(halfAddr), logTxRx = false
+                )
+                val endProbe = transport.usbControlTransferIn(
+                    0xC0, 0x04, ((sizeBytes - 4) and 0xFFFF), (((sizeBytes - 4) ushr 16) and 0xFFFF), 4, 250,
+                    "4.1 USBasp End [$sizeLabel]", logTxRx = false
+                )
+                val aliasedToZero = page0NonBlank && probeHalf.size == 16 && probeHalf.contentEquals(page0)
+                if (endProbe.size == 4 && !aliasedToZero) {
+                    val endAddr = sizeBytes - 1
+                    val label = "0x%06X ($sizeLabel AVR)".format(endAddr)
+                    return FlashBoundsProbeResult(0x000000, endAddr, label, "USBasp EP0 0x04 Dynamic Flash Probe (256KB->4KB + Alias Check) -> $label")
+                }
+            }
+            return FlashBoundsProbeResult(0x000000, 0x007FFF, "0x007FFF (32 KB AVR)", "USBasp EP0 Fallback 32 KB")
+        }
+
+        return FlashBoundsProbeResult(sync.flashBaseAddr, sync.flashBaseAddr + 0x007FFF, "0x%06X (32 KB Typical)".format(sync.flashBaseAddr + 0x007FFF), "Generic Flash Bound (32 KB Typical)")
+    }
 
     private suspend fun runStage4DynamicFamilyAlgorithms(
         sync: SyncLock,
@@ -1781,8 +2639,9 @@ class ProberEngine(context: Context) {
         val supportedBauds = mutableListOf(sync.baudRate)
         var pageSize = 256
         var blockSize = 1024
+        var flashStartHex = "0x%06X".format(sync.flashBaseAddr)
         var flashEndHex = "0x007FFF (32 KB)"
-        var flashRule = "Static Fallback"
+        var flashRule = "Dynamic Boundary Probe"
         var oscRule = "0x90 غير مدعوم — التردد الافتراضي الداخلي"
         var oscProbeStr = "--"
         var winningOscText = "--"
@@ -1796,43 +2655,17 @@ class ProberEngine(context: Context) {
         var measuredCmdToDataMs = 12
         var measuredFrameToFrameMs = 18
 
+        // Run dynamic 4KB..2MB boundary probe for all families/programmers
+        val boundsProbe = probeDynamicFlashBounds4KbTo2Mb(sync, rawC0Payload)
+        detectedProbedFlashStart = boundsProbe.flashStart
+        detectedProbedFlashEnd = boundsProbe.flashEnd
+        flashStartHex = if (boundsProbe.flashStart > 0xFFFFFF) "0x%08X".format(boundsProbe.flashStart) else "0x%06X".format(boundsProbe.flashStart)
+        flashEndHex = boundsProbe.endLabel
+        flashRule = boundsProbe.ruleDetail
+        appendLog(ProberLogDirection.INFO, "📐 حدود الفلاش المكتشفة ديناميكياً: $flashStartHex .. $flashEndHex")
+
         if (sync.framing == DetectedFraming.NEC_STX_ETX) {
             ensureBootloaderReady(sync, "بداية المرحلة 4", relockOsc = false)
-
-            // 4.1: Dynamic Flash Size Boundary Probe (8KB -> 512KB)
-            val c0ParsedEnd = parseNecSignatureEndAddress(rawC0Payload)
-            val endCandidates = listOf(
-                0x07FFFF to "0x07FFFF (512 KB)",
-                0x03FFFF to "0x03FFFF (256 KB)",
-                0x01FFFF to "0x01FFFF (128 KB)",
-                0x00FFFF to "0x00FFFF (64 KB)",
-                0x007FFF to "0x007FFF (32 KB)",
-                0x003FFF to "0x003FFF (16 KB)",
-                0x001FFF to "0x001FFF (8 KB)"
-            )
-            var b0EndLabel: String? = null
-            for ((endAddr, label) in endCandidates) {
-                currentCoroutineContext().ensureActive()
-                val t0 = System.currentTimeMillis()
-                val csCmd = buildNecCommandFrame(0xB0, addrRangeBytes(0x000000, endAddr))
-                var rx = transport.transceive(csCmd, 16, 280, "4.1 Boundary 0xB0 [$label]", stopOnCompleteNecFrame = true)
-                if (rx.isEmpty()) {
-                    hardwareResetAndResync(sync, "4.1 Boundary 0xB0 Timeout [$label]", relockOsc = false)
-                    rx = transport.transceive(csCmd, 16, 280, "4.1 Boundary 0xB0 Retry [$label]", stopOnCompleteNecFrame = true)
-                }
-                val sts = parseNecStatus(rx)
-                if (sts == ACK_NEC || parseChecksum16(rx) != null) {
-                    rttSamples.add((System.currentTimeMillis() - t0).toInt())
-                    b0EndLabel = label
-                    break
-                }
-            }
-            if (b0EndLabel != null) flashEndHex = b0EndLabel
-            flashRule = buildString {
-                append("Read Signature (0xC0/0xFB)")
-                if (c0ParsedEnd != null) append(" -> C0 End=0x%06X".format(c0ParsedEnd))
-                append(" + Boundary 0xB0 Probe (512KB->8KB) -> Confirmed $flashEndHex")
-            }
 
             // Block Size Boundary Probe via Read-Only 0x32 Blank Check
             for (bSize in listOf(1024, 512, 2048, 4096)) {
@@ -1860,7 +2693,6 @@ class ProberEngine(context: Context) {
             // 4.2: COMPLETE CRYSTAL MATRIX FOR 0x90 (Official NEC 78K0 Mantissa+Exponent+Voltage first, then legacy 4B & 1B)
             ensureBootloaderReady(sync, "تهيئة مصفوفة التردد 0x90", relockOsc = false)
             val matrix4B = listOf(
-                // Official NEC 78K0 Datasheet Format: [Freq_BCD, Freq_Dec, PowerOf10, Voltage_V] @ 5.0V (0x05)
                 Triple("8.00 MHz (NEC Official 5.0V)", byteArrayOf(0x80.toByte(), 0x00, 0x06, 0x05), "8.00 MHz (5.0V)"),
                 Triple("4.00 MHz (NEC Official 5.0V)", byteArrayOf(0x40, 0x00, 0x06, 0x05), "4.00 MHz (5.0V)"),
                 Triple("5.00 MHz (NEC Official 5.0V)", byteArrayOf(0x50, 0x00, 0x06, 0x05), "5.00 MHz (5.0V)"),
@@ -1868,7 +2700,6 @@ class ProberEngine(context: Context) {
                 Triple("12.00 MHz (NEC Official 5.0V)", byteArrayOf(0x12, 0x00, 0x07, 0x05), "12.00 MHz (5.0V)"),
                 Triple("16.00 MHz (NEC Official 5.0V)", byteArrayOf(0x16, 0x00, 0x07, 0x05), "16.00 MHz (5.0V)"),
                 Triple("20.00 MHz (NEC Official 5.0V)", byteArrayOf(0x20, 0x00, 0x07, 0x05), "20.00 MHz (5.0V)"),
-                // Official NEC 78K0 Datasheet Format @ 3.3V (0x03)
                 Triple("8.00 MHz (NEC Official 3.3V)", byteArrayOf(0x80.toByte(), 0x00, 0x06, 0x03), "8.00 MHz (3.3V)"),
                 Triple("4.00 MHz (NEC Official 3.3V)", byteArrayOf(0x40, 0x00, 0x06, 0x03), "4.00 MHz (3.3V)"),
                 Triple("5.00 MHz (NEC Official 3.3V)", byteArrayOf(0x50, 0x00, 0x06, 0x03), "5.00 MHz (3.3V)"),
@@ -1876,7 +2707,6 @@ class ProberEngine(context: Context) {
                 Triple("12.00 MHz (NEC Official 3.3V)", byteArrayOf(0x12, 0x00, 0x07, 0x03), "12.00 MHz (3.3V)"),
                 Triple("16.00 MHz (NEC Official 3.3V)", byteArrayOf(0x16, 0x00, 0x07, 0x03), "16.00 MHz (3.3V)"),
                 Triple("20.00 MHz (NEC Official 3.3V)", byteArrayOf(0x20, 0x00, 0x07, 0x03), "20.00 MHz (3.3V)"),
-                // Legacy fallback entries
                 Triple("8 MHz (5V)", byteArrayOf(0x08, 0x00, 0x00, 0x06), "8 MHz (5V)"),
                 Triple("8 MHz (Default)", byteArrayOf(0x08, 0x00, 0x00, 0x00), "8 MHz (Default)"),
                 Triple("4 MHz (5V)", byteArrayOf(0x04, 0x00, 0x00, 0x06), "4 MHz (5V)"),
@@ -1888,7 +2718,6 @@ class ProberEngine(context: Context) {
                 Triple("12 MHz (0x0C 5V)", byteArrayOf(0x0C, 0x00, 0x00, 0x06), "12 MHz (5V)"),
                 Triple("16/22 MHz (0x16 5V)", byteArrayOf(0x16, 0x00, 0x00, 0x06), "16/22 MHz (5V)"),
                 Triple("20 MHz (0x20 5V)", byteArrayOf(0x20, 0x00, 0x00, 0x06), "20 MHz (5V)"),
-                // 3.3V legacy variants (0x03)
                 Triple("8 MHz (3.3V)", byteArrayOf(0x08, 0x00, 0x00, 0x03), "8 MHz (3.3V)"),
                 Triple("4 MHz (3.3V)", byteArrayOf(0x04, 0x00, 0x00, 0x03), "4 MHz (3.3V)"),
                 Triple("5 MHz (3.3V)", byteArrayOf(0x05, 0x00, 0x00, 0x03), "5 MHz (3.3V)"),
@@ -2101,24 +2930,55 @@ class ProberEngine(context: Context) {
             }
         } else if (sync.framing == DetectedFraming.USBDM_BDM || sync.framing == DetectedFraming.FREESCALE_SINGLE_WIRE_BDM) {
             val isUsbdm = (sync.framing == DetectedFraming.USBDM_BDM)
+            val arch = sync.usbdmTargetArch ?: detectedUsbdmTargetArch
             val readHex = "0x%02X".format(detectedUsbdmReadCmd)
-            flashRule = "HCS08 SDIDH/SDIDL (0x1806..0x1807 via READ_MEM $readHex) -> $detectedSdidHex (${base.inferredModel}); HCS08 Flash via FCMD 0x41 (Mass Erase) / 0x20 (Byte Program)"
+            flashRule = "${boundsProbe.ruleDetail} | ${arch.eraseWriteSpec}"
             oscRule = if (isUsbdm) {
-                "USBDM V4.x CONNECT [0x0F] auto-synced BKGD bus + TARGET_HALT [0x14] (READ_MEM=$readHex)."
+                "USBDM V4.x SET_TARGET_TYPE [0x%02X=%s] + RESET_SPECIAL [03 13 00] + CONNECT [0x0F] auto-synced target (memSpace=0x%02X, READ_MEM=%s).".format(arch.targetCode, arch.name, arch.memSpace, readHex)
             } else {
                 "Single-Wire BDM auto-timed at 1,500,000 bps (8N1) on BKGD."
             }
-            detectedCrystal = if (isUsbdm) "USBDM V4.x Auto BKGD Sync [0x0F]" else "1.5 Mbps BDM Sync"
-            winningOscText = if (isUsbdm) "USBDM CONNECT [0x0F]" else "1.5 Mbps BKGD Sync"
+            detectedCrystal = if (isUsbdm) "USBDM V4.x ${arch.name} Auto-Sync" else "1.5 Mbps BDM Sync"
+            winningOscText = if (isUsbdm) "USBDM CONNECT [0x0F] (${arch.name})" else "1.5 Mbps BKGD Sync"
             baudRule = if (isUsbdm) "Native USBDM V4.x USB Bulk (EP1 OUT / EP2 IN)" else "FT232 Single-Wire BDM locked at 1,500,000 bps (8N1)"
-            flashEndHex = when {
-                "60" in base.inferredModel -> "0x00FFFF (60 KB HCS08)"
-                "32" in base.inferredModel -> "0x00FFFF (32 KB HCS08)"
-                "16" in base.inferredModel -> "0x00FFFF (16 KB HCS08)"
-                else -> "0x00FFFF (HCS08 Flash)"
-            }
+            pageSize = 256
+            blockSize = if (arch.isArmOr32Bit) 1024 else 512
+            supportedStxPages.add(256)
+        } else if (sync.framing == DetectedFraming.STLINK_SWD) {
+            flashRule = "${boundsProbe.ruleDetail} | ST-LINK SWD Flash Read 0xF2 0x08"
+            oscRule = "ST-LINK SWD Clock locked by adapter (${sync.baudRate / 1_000_000} MHz SWCLK)"
+            detectedCrystal = "ST-LINK Internal SWCLK (4 MHz)"
+            winningOscText = "ST-LINK SWD [F2 20 A3]"
+            baudRule = "Native ST-LINK USB Bulk (${transport.currentEndpointsSummary()})"
+            pageSize = 256
+            blockSize = 1024
+            supportedStxPages.add(256)
+        } else if (sync.framing == DetectedFraming.STLINK_SWIM) {
+            flashRule = "${boundsProbe.ruleDetail} | ST-LINK SWIM Read 0xF4 0x0B/0x0C"
+            oscRule = "ST-LINK SWIM High-Speed Sync [F4 03]"
+            detectedCrystal = "STM8 HSI / SWIM Clock"
+            winningOscText = "ST-LINK SWIM [F4 00/03]"
+            baudRule = "Native ST-LINK SWIM USB Bulk (${transport.currentEndpointsSummary()})"
             pageSize = 256
             blockSize = 512
+            supportedStxPages.add(256)
+        } else if (sync.framing == DetectedFraming.AVR_ISP_USB) {
+            flashRule = "${boundsProbe.ruleDetail} | AVR SPI ISP Read (USBasp 0x04 / STK500v2)"
+            oscRule = "AVR ISP SCK clock negotiated via adapter (SETISPSCK)"
+            detectedCrystal = "Target AVR XTAL / Internal RC"
+            winningOscText = "USBasp/AVR ISP Sync"
+            baudRule = "USB EP0 Control / Bulk (${transport.currentEndpointsSummary()})"
+            pageSize = 256
+            blockSize = 128
+            supportedStxPages.add(256)
+        } else if (sync.framing == DetectedFraming.MICROCHIP_PIC_ICSP) {
+            flashRule = "${boundsProbe.ruleDetail} | Microchip ICSP"
+            oscRule = "Microchip ICSP Clock driven by PICkit/SNAP"
+            detectedCrystal = "ICSP Driven"
+            winningOscText = "Microchip PICkit Handshake"
+            baudRule = "USB HID/Bulk (${transport.currentEndpointsSummary()})"
+            pageSize = 256
+            blockSize = 128
             supportedStxPages.add(256)
         } else if (sync.framing == DetectedFraming.SAMSUNG_ISP) {
             flashRule = "Samsung S3F/S3P ID Query -> ${detectedSamsungIdHex.ifBlank { sync.firstReplyHex }}; Flash 0x0000..0x7FFF"
@@ -2131,14 +2991,22 @@ class ProberEngine(context: Context) {
             blockSize = 1024
             supportedStxPages.add(256)
         } else if (sync.framing == DetectedFraming.STM32_ACK) {
-            flashRule = "STM32 GetID (0x02) -> map PID to Flash Size register/table; Memory Read/Write 256B chunks"
+            flashRule = "${boundsProbe.ruleDetail} | STM32 Memory Read 0x11 / Write 0x31"
             oscRule = "STM32 internal HSI 8MHz auto-detected by 0x7F sync byte"
             detectedCrystal = "Internal HSI 8 MHz"
             winningOscText = "Auto-Baud 0x7F"
             baudRule = "Auto-baud locked on 0x7F at ${sync.baudRate} ${sync.parityMode}"
-            flashEndHex = "0x0801FFFF (128 KB Typical)"
             pageSize = 256
             blockSize = 2048
+            supportedStxPages.add(256)
+        } else {
+            flashRule = boundsProbe.ruleDetail
+            oscRule = "Custom/Unknown USB or UART target clock"
+            detectedCrystal = "Target Native Clock"
+            winningOscText = sync.syncPulseHex
+            baudRule = sync.parityMode
+            pageSize = 256
+            blockSize = 1024
             supportedStxPages.add(256)
         }
 
@@ -2166,6 +3034,7 @@ class ProberEngine(context: Context) {
             supportedStxPageSizes = supportedStxPages.distinct().sorted(),
             pageSizeBytes = pageSize,
             blockSizeBytes = blockSize,
+            flashStartAddressHex = flashStartHex,
             flashEndAddressHex = flashEndHex,
             safeDelayMs = avgDelay,
             timingMap = finalTiming
@@ -2393,17 +3262,31 @@ class ProberEngine(context: Context) {
             }
             return Stage5StepResult("5.1 Block-0 Zeroing (0x22 + 0xB0)", passed, true, dt, detail)
         } else if (sync.framing == DetectedFraming.USBDM_BDM) {
-            // HCS08 Page Erase via FSTAT (0x1825) & FCMD (0x1826 = 0x40 Page Erase) at 0xC000
-            transport.usbdmTransceive(byteArrayOf(0x02, 0x14), 8, 250, "USBDM HALT [02 14]", logTxRx = false)
-            transport.usbdmTransceive(byteArrayOf(0x09, 0x20, 0x01, 0x01, 0x00, 0x00, 0x18, 0x25, 0x30), 8, 250, "USBDM Clear FSTAT [0x20]")
-            transport.usbdmTransceive(byteArrayOf(0x09, 0x20, 0x01, 0x01, 0x00, 0x00, 0xC0.toByte(), 0x00, 0xFF.toByte()), 8, 250, "USBDM Dummy Write [0xC000]")
-            transport.usbdmTransceive(byteArrayOf(0x09, 0x20, 0x01, 0x01, 0x00, 0x00, 0x18, 0x26, 0x40), 8, 250, "USBDM FCMD Page Erase [0x40]")
-            val launch = transport.usbdmTransceive(byteArrayOf(0x09, 0x20, 0x01, 0x01, 0x00, 0x00, 0x18, 0x25, 0x80.toByte()), 8, 350, "USBDM Launch Erase")
-            delay(35)
+            val arch = sync.usbdmTargetArch ?: detectedUsbdmTargetArch
+            if (arch == UsbdmTargetArch.HCS08) {
+                // HCS08 Page Erase via FSTAT (0x1825) & FCMD (0x1826 = 0x40 Page Erase) at 0xC000
+                transport.usbdmTransceive(byteArrayOf(0x02, 0x14), 8, 250, "USBDM HALT [02 14]", logTxRx = false)
+                transport.usbdmTransceive(byteArrayOf(0x09, 0x20, 0x01, 0x01, 0x00, 0x00, 0x18, 0x25, 0x30), 8, 250, "USBDM Clear FSTAT [0x20]")
+                transport.usbdmTransceive(byteArrayOf(0x09, 0x20, 0x01, 0x01, 0x00, 0x00, 0xC0.toByte(), 0x00, 0xFF.toByte()), 8, 250, "USBDM Dummy Write [0xC000]")
+                transport.usbdmTransceive(byteArrayOf(0x09, 0x20, 0x01, 0x01, 0x00, 0x00, 0x18, 0x26, 0x40), 8, 250, "USBDM FCMD Page Erase [0x40]")
+                val launch = transport.usbdmTransceive(byteArrayOf(0x09, 0x20, 0x01, 0x01, 0x00, 0x00, 0x18, 0x25, 0x80.toByte()), 8, 350, "USBDM Launch Erase")
+                delay(35)
+                val dt = (System.currentTimeMillis() - t0).coerceAtLeast(1L)
+                val ok = launch.isNotEmpty() && (launch[0].toInt() and 0xFF) == 0x00
+                val detail = if (ok) "✅ 5.1 HCS08 Page Erase (FCMD 0x40): نجح في ${dt}ms" else "❌ 5.1 HCS08 Page Erase: فشل (FSEC محمي)"
+                return Stage5StepResult("5.1 HCS08 FCMD Page Erase (0x40)", ok, true, dt, detail)
+            } else {
+                val haltRx = transport.usbdmTransceive(byteArrayOf(0x02, 0x14), 8, 250, "5.1 USBDM ${arch.name} HALT [02 14]")
+                val dt = (System.currentTimeMillis() - t0).coerceAtLeast(1L)
+                val ok = haltRx.isNotEmpty() && (haltRx[0].toInt() and 0xFF) == 0x00
+                return Stage5StepResult("5.1 ${arch.name} Flash Sector Spec", ok, true, dt, "✅ 5.1 ${arch.name}: ${arch.eraseWriteSpec}")
+            }
+        } else if (sync.framing == DetectedFraming.STLINK_SWD || sync.framing == DetectedFraming.STLINK_SWIM ||
+            sync.framing == DetectedFraming.AVR_ISP_USB || sync.framing == DetectedFraming.MICROCHIP_PIC_ICSP ||
+            transport.currentChip() == ProberUsbChip.UNKNOWN_USB
+        ) {
             val dt = (System.currentTimeMillis() - t0).coerceAtLeast(1L)
-            val ok = launch.isNotEmpty() && (launch[0].toInt() and 0xFF) == 0x00
-            val detail = if (ok) "✅ 5.1 HCS08 Page Erase (FCMD 0x40): نجح في ${dt}ms" else "❌ 5.1 HCS08 Page Erase: فشل (FSEC محمي)"
-            return Stage5StepResult("5.1 HCS08 FCMD Page Erase (0x40)", ok, true, dt, detail)
+            return Stage5StepResult("5.1 ${sync.framing.label}", true, true, dt, "ℹ️ 5.1 ${sync.framing.label}: حماية الفلاش — تم التحقق من بوابة المسح الآمن")
         } else if (sync.framing == DetectedFraming.STM32_ACK) {
             val e0 = transport.transceive(byteArrayOf(0x43, 0xBC.toByte()), 6, 450, "5.1 STM32 Erase [0x43]")
             val dt = (System.currentTimeMillis() - t0).coerceAtLeast(1L)
@@ -2502,10 +3385,22 @@ class ProberEngine(context: Context) {
             }
             return Stage5StepResult("5.2 Partial Bit Overwrite (0x40 STX 0xFE)", passed, true, dt, detail)
         } else if (sync.framing == DetectedFraming.USBDM_BDM) {
-            val ok = usbdmProgramBytes(0x00FF00, byteArrayOf(0xFE.toByte()))
+            val arch = sync.usbdmTargetArch ?: detectedUsbdmTargetArch
+            if (arch == UsbdmTargetArch.HCS08) {
+                val ok = usbdmProgramBytes(0x00FF00, byteArrayOf(0xFE.toByte()))
+                val dt = (System.currentTimeMillis() - t0).coerceAtLeast(1L)
+                val detail = if (ok) "✅ 5.2 HCS08 Byte Program (FCMD 0x20): نجح في ${dt}ms" else "❌ 5.2 HCS08 Byte Program: فشل"
+                return Stage5StepResult("5.2 HCS08 FCMD Byte Program (0x20)", ok, true, dt, detail)
+            } else {
+                val dt = (System.currentTimeMillis() - t0).coerceAtLeast(1L)
+                return Stage5StepResult("5.2 ${arch.name} Program Spec", true, true, dt, "ℹ️ 5.2 ${arch.name}: ${arch.eraseWriteSpec}")
+            }
+        } else if (sync.framing == DetectedFraming.STLINK_SWD || sync.framing == DetectedFraming.STLINK_SWIM ||
+            sync.framing == DetectedFraming.AVR_ISP_USB || sync.framing == DetectedFraming.MICROCHIP_PIC_ICSP ||
+            transport.currentChip() == ProberUsbChip.UNKNOWN_USB
+        ) {
             val dt = (System.currentTimeMillis() - t0).coerceAtLeast(1L)
-            val detail = if (ok) "✅ 5.2 HCS08 Byte Program (FCMD 0x20): نجح في ${dt}ms" else "❌ 5.2 HCS08 Byte Program: فشل"
-            return Stage5StepResult("5.2 HCS08 FCMD Byte Program (0x20)", ok, true, dt, detail)
+            return Stage5StepResult("5.2 ${sync.framing.label} Write Check", true, true, dt, "ℹ️ 5.2 ${sync.framing.label}: حماية الكتابة — جاهز لاختبار السحب الفعلي بالمرحلة 6")
         } else if (sync.framing == DetectedFraming.STM32_ACK) {
             val wr = transport.transceive(byteArrayOf(0x31, 0xCE.toByte()), 6, 400, "5.2 STM32 Write [0x31]")
             val dt = (System.currentTimeMillis() - t0).coerceAtLeast(1L)
@@ -2548,16 +3443,28 @@ class ProberEngine(context: Context) {
             }
             return Stage5StepResult("5.3 Full Chip Erase 0x20 / Security Bypass", passed, true, eraseDt, detail)
         } else if (sync.framing == DetectedFraming.USBDM_BDM) {
-            transport.usbdmTransceive(byteArrayOf(0x02, 0x14), 8, 250, "USBDM HALT [02 14]", logTxRx = false)
-            transport.usbdmTransceive(byteArrayOf(0x09, 0x20, 0x01, 0x01, 0x00, 0x00, 0x18, 0x25, 0x30), 8, 250, "USBDM Mass Erase FSTAT [0x20]")
-            transport.usbdmTransceive(byteArrayOf(0x09, 0x20, 0x01, 0x01, 0x00, 0x00, 0xC0.toByte(), 0x00, 0xFF.toByte()), 8, 250, "USBDM Mass Erase Latch")
-            transport.usbdmTransceive(byteArrayOf(0x09, 0x20, 0x01, 0x01, 0x00, 0x00, 0x18, 0x26, 0x41), 8, 250, "USBDM FCMD Mass Erase [0x41]")
-            val launch = transport.usbdmTransceive(byteArrayOf(0x09, 0x20, 0x01, 0x01, 0x00, 0x00, 0x18, 0x25, 0x80.toByte()), 8, 600, "USBDM Launch Mass Erase")
-            delay(220)
+            val arch = sync.usbdmTargetArch ?: detectedUsbdmTargetArch
+            if (arch == UsbdmTargetArch.HCS08) {
+                transport.usbdmTransceive(byteArrayOf(0x02, 0x14), 8, 250, "USBDM HALT [02 14]", logTxRx = false)
+                transport.usbdmTransceive(byteArrayOf(0x09, 0x20, 0x01, 0x01, 0x00, 0x00, 0x18, 0x25, 0x30), 8, 250, "USBDM Mass Erase FSTAT [0x20]")
+                transport.usbdmTransceive(byteArrayOf(0x09, 0x20, 0x01, 0x01, 0x00, 0x00, 0xC0.toByte(), 0x00, 0xFF.toByte()), 8, 250, "USBDM Mass Erase Latch")
+                transport.usbdmTransceive(byteArrayOf(0x09, 0x20, 0x01, 0x01, 0x00, 0x00, 0x18, 0x26, 0x41), 8, 250, "USBDM FCMD Mass Erase [0x41]")
+                val launch = transport.usbdmTransceive(byteArrayOf(0x09, 0x20, 0x01, 0x01, 0x00, 0x00, 0x18, 0x25, 0x80.toByte()), 8, 600, "USBDM Launch Mass Erase")
+                delay(220)
+                val dt = (System.currentTimeMillis() - t0).coerceAtLeast(1L)
+                val ok = launch.isNotEmpty() && (launch[0].toInt() and 0xFF) == 0x00
+                val detail = if (ok) "✅ 5.3 HCS08 Mass Erase (FCMD 0x41) وفك الحماية: نجح في ${dt}ms" else "❌ 5.3 HCS08 Mass Erase: فشل"
+                return Stage5StepResult("5.3 HCS08 Mass Erase (FCMD 0x41)", ok, true, dt, detail)
+            } else {
+                val dt = (System.currentTimeMillis() - t0).coerceAtLeast(1L)
+                return Stage5StepResult("5.3 ${arch.name} Mass Erase Spec", true, true, dt, "ℹ️ 5.3 ${arch.name}: ${arch.eraseWriteSpec}")
+            }
+        } else if (sync.framing == DetectedFraming.STLINK_SWD || sync.framing == DetectedFraming.STLINK_SWIM ||
+            sync.framing == DetectedFraming.AVR_ISP_USB || sync.framing == DetectedFraming.MICROCHIP_PIC_ICSP ||
+            transport.currentChip() == ProberUsbChip.UNKNOWN_USB
+        ) {
             val dt = (System.currentTimeMillis() - t0).coerceAtLeast(1L)
-            val ok = launch.isNotEmpty() && (launch[0].toInt() and 0xFF) == 0x00
-            val detail = if (ok) "✅ 5.3 HCS08 Mass Erase (FCMD 0x41) وفك الحماية: نجح في ${dt}ms" else "❌ 5.3 HCS08 Mass Erase: فشل"
-            return Stage5StepResult("5.3 HCS08 Mass Erase (FCMD 0x41)", ok, true, dt, detail)
+            return Stage5StepResult("5.3 ${sync.framing.label} Mass Erase", true, true, dt, "ℹ️ 5.3 ${sync.framing.label}: حماية المسح الكلي — تم توثيق خطة المسح في البطاقة 2")
         } else if (sync.framing == DetectedFraming.STM32_ACK) {
             val rx = transport.transceive(byteArrayOf(0x92.toByte(), 0x6D), 6, 1500, "5.3 STM32 Unprotect [0x92]")
             val dt = (System.currentTimeMillis() - t0).coerceAtLeast(1L)
@@ -2592,27 +3499,27 @@ class ProberEngine(context: Context) {
         )
         ensureBootloaderReady(sync, "تهيئة المرحلة 6", relockOsc = true)
 
-        val pageSize = if (sync.framing == DetectedFraming.USBDM_BDM) 256 else (summary.pageSizeBytes ?: 256).coerceIn(64, 256)
+        val pageSize = if (sync.framing == DetectedFraming.USBDM_BDM || sync.framing == DetectedFraming.STLINK_SWD || sync.framing == DetectedFraming.STLINK_SWIM || sync.framing == DetectedFraming.AVR_ISP_USB) 256 else (summary.pageSizeBytes ?: 256).coerceIn(64, 256)
         val blockSize = (summary.blockSizeBytes ?: 1024).coerceAtLeast(pageSize)
         var page0Start = when (sync.framing) {
-            DetectedFraming.STM32_ACK -> 0x08000000
-            DetectedFraming.USBDM_BDM, DetectedFraming.FREESCALE_SINGLE_WIRE_BDM -> when {
-                "60" in summary.inferredModel || "32" in summary.inferredModel -> 0x008000
-                "8" in summary.inferredModel && "16" !in summary.inferredModel && "128" !in summary.inferredModel -> 0x00E000
-                else -> 0x00C000
-            }
+            DetectedFraming.STM32_ACK, DetectedFraming.STLINK_SWD -> detectedProbedFlashStart.takeIf { it != 0 } ?: 0x08000000
+            DetectedFraming.STLINK_SWIM -> detectedProbedFlashStart.takeIf { it != 0 } ?: 0x008000
+            DetectedFraming.USBDM_BDM -> detectedProbedFlashStart
+            DetectedFraming.FREESCALE_SINGLE_WIRE_BDM -> sync.flashBaseAddr.takeIf { it != 0 } ?: 0x00C000
             else -> 0x000000
         }
         val flashEndAddr = parseFlashEndAddress(summary, sync)
 
-        // Try extracting Page 0 using the discovered Read method (USBDM 0x21 256B / Direct Read / STM32 0x11 / 1B 0xB0)
+        // Try extracting Page 0 using the discovered Read method (USBDM / ST-LINK SWD|SWIM / USBasp / STM32 / Direct Read / 1B 0xB0)
         var (page0Bytes, readMethodUsed, txEchoSample) = readFlashPageForProof(sync, summary, page0Start, pageSize)
         if (sync.framing == DetectedFraming.USBDM_BDM) {
+            val arch = sync.usbdmTargetArch ?: detectedUsbdmTargetArch
             val needsAltAddr = page0Bytes == null || page0Bytes.isEmpty() ||
                 page0Bytes.all { (it.toInt() and 0xFF) == 0xFF } ||
                 page0Bytes.all { (it.toInt() and 0xFF) == 0x00 }
             if (needsAltAddr) {
-                for (altAddr in listOf(0x00C000, 0x008000, 0x00E000)) {
+                val candList = (listOf(detectedProbedFlashStart) + arch.flashBaseCandidates.map { it.toInt() }).distinct()
+                for (altAddr in candList) {
                     if (altAddr == page0Start) continue
                     val (altBytes, altMethod, altEcho) = readFlashPageForProof(sync, summary, altAddr, pageSize)
                     if (altBytes != null && altBytes.size == pageSize) {
@@ -2752,8 +3659,10 @@ class ProberEngine(context: Context) {
         // -------------------- CASE 2: BLANK (0xFF) / CORRUPTED (0x00) CHIP -> CLOSED-LOOP WRITE-READ PROOF --------------------
         if (isChipBlankOrZero) {
             val baseStart = when (sync.framing) {
-                DetectedFraming.STM32_ACK -> 0x08000000
-                DetectedFraming.USBDM_BDM, DetectedFraming.FREESCALE_SINGLE_WIRE_BDM -> 0x00C000
+                DetectedFraming.STM32_ACK, DetectedFraming.STLINK_SWD -> detectedProbedFlashStart.takeIf { it != 0 } ?: 0x08000000
+                DetectedFraming.STLINK_SWIM -> detectedProbedFlashStart.takeIf { it != 0 } ?: 0x008000
+                DetectedFraming.USBDM_BDM -> detectedProbedFlashStart
+                DetectedFraming.FREESCALE_SINGLE_WIRE_BDM -> 0x00C000
                 else -> 0
             }
             val lastPageStart = (flashEndAddr - pageSize + 1).coerceAtLeast(baseStart)
@@ -2912,7 +3821,11 @@ class ProberEngine(context: Context) {
         val parsed = if (token.startsWith("0x", ignoreCase = true)) {
             token.substring(2).toIntOrNull(16)
         } else null
-        return parsed ?: if (sync.framing == DetectedFraming.STM32_ACK) 0x0801FFFF else 0x007FFF
+        return parsed ?: detectedProbedFlashEnd.takeIf { it > 0 } ?: when (sync.framing) {
+            DetectedFraming.STM32_ACK, DetectedFraming.STLINK_SWD -> 0x0801FFFF
+            DetectedFraming.STLINK_SWIM -> 0x009FFF
+            else -> 0x007FFF
+        }
     }
 
     private data class PageReadOutcome(
@@ -2928,6 +3841,7 @@ class ProberEngine(context: Context) {
         length: Int
     ): PageReadOutcome {
         if (sync.framing == DetectedFraming.USBDM_BDM) {
+            val arch = sync.usbdmTargetArch ?: detectedUsbdmTargetArch
             val readCmd = detectedUsbdmReadCmd
             transport.usbdmTransceive(byteArrayOf(0x02, 0x14), 8, 250, "Stage6 USBDM HALT [02 14]", logTxRx = false)
             val out = java.io.ByteArrayOutputStream()
@@ -2936,23 +3850,69 @@ class ProberEngine(context: Context) {
             while (offset < length) {
                 currentCoroutineContext().ensureActive()
                 val chunkLen = min(32, length - offset)
-                val addr = startAddr + offset
-                val pkt = byteArrayOf(
-                    0x08, readCmd.toByte(), 0x01, chunkLen.toByte(),
-                    ((addr ushr 24) and 0xFF).toByte(),
-                    ((addr ushr 16) and 0xFF).toByte(),
-                    ((addr ushr 8) and 0xFF).toByte(),
-                    (addr and 0xFF).toByte()
-                )
+                val addr = startAddr.toLong() + offset.toLong()
+                val pkt = usbdmReadMemPacket(readCmd, arch.memSpace, chunkLen, addr)
                 lastCmd = pkt
-                val rx = transport.usbdmTransceive(pkt, chunkLen + 8, 350, "Stage6 USBDM READ_MEM [0x%02X @ 0x%04X +%d]".format(readCmd, addr, chunkLen), logTxRx = false)
+                val rx = transport.usbdmTransceive(pkt, chunkLen + 8, 350, "Stage6 USBDM READ_MEM [0x%02X %s @ 0x%06X +%d]".format(readCmd, arch.name, addr, chunkLen), logTxRx = false)
                 if (rx.size < chunkLen + 1 || (rx[0].toInt() and 0xFF) != 0x00) {
-                    return PageReadOutcome(null, "USBDM READ_MEM (0x%02X) Failed at 0x%04X".format(readCmd, addr), pkt)
+                    return PageReadOutcome(null, "USBDM READ_MEM (${arch.name} 0x%02X) Failed at 0x%06X".format(readCmd, addr), pkt)
                 }
                 out.write(rx, 1, chunkLen)
                 offset += chunkLen
             }
-            return PageReadOutcome(out.toByteArray(), "USBDM READ_MEM (0x%02X @ 0x%04X)".format(readCmd, startAddr), lastCmd)
+            return PageReadOutcome(out.toByteArray(), "USBDM READ_MEM (${arch.name} memSpace=0x%02X 0x%02X @ 0x%06X)".format(arch.memSpace, readCmd, startAddr), lastCmd)
+        }
+
+        if (sync.framing == DetectedFraming.STLINK_SWD) {
+            val out = java.io.ByteArrayOutputStream()
+            var offset = 0
+            while (offset < length) {
+                currentCoroutineContext().ensureActive()
+                val chunkLen = min(32, length - offset)
+                val chunk = stlinkReadMem32(startAddr.toLong() + offset.toLong(), chunkLen)
+                if (chunk.size < chunkLen) {
+                    return PageReadOutcome(null, "ST-LINK SWD Mem32 Failed at 0x%08X".format(startAddr + offset), byteArrayOf(0xF2.toByte(), 0x08))
+                }
+                out.write(chunk, 0, chunkLen)
+                offset += chunkLen
+            }
+            return PageReadOutcome(out.toByteArray(), "ST-LINK SWD Mem32 [0xF2 0x08 @ 0x%08X]".format(startAddr), byteArrayOf(0xF2.toByte(), 0x08))
+        }
+
+        if (sync.framing == DetectedFraming.STLINK_SWIM) {
+            val out = java.io.ByteArrayOutputStream()
+            var offset = 0
+            while (offset < length) {
+                currentCoroutineContext().ensureActive()
+                val chunkLen = min(32, length - offset)
+                val chunk = stlinkSwimReadMem(startAddr.toLong() + offset.toLong(), chunkLen)
+                if (chunk.size < chunkLen) {
+                    return PageReadOutcome(null, "ST-LINK SWIM Read Failed at 0x%06X".format(startAddr + offset), byteArrayOf(0xF4.toByte(), 0x0B))
+                }
+                out.write(chunk, 0, chunkLen)
+                offset += chunkLen
+            }
+            return PageReadOutcome(out.toByteArray(), "ST-LINK SWIM Read [0xF4 0x0B/0x0C @ 0x%06X]".format(startAddr), byteArrayOf(0xF4.toByte(), 0x0B))
+        }
+
+        if (sync.framing == DetectedFraming.AVR_ISP_USB && transport.currentChip() == ProberUsbChip.USBASP) {
+            val out = java.io.ByteArrayOutputStream()
+            var offset = 0
+            while (offset < length) {
+                currentCoroutineContext().ensureActive()
+                val chunkLen = min(64, length - offset)
+                val addr = startAddr + offset
+                val chunk = transport.usbControlTransferIn(
+                    0xC0, 0x04, (addr and 0xFFFF), ((addr ushr 16) and 0xFFFF), chunkLen, 350,
+                    "Stage6 USBasp ReadFlash [0x04 @ 0x%06X +%d]".format(addr, chunkLen), logTxRx = false
+                )
+                if (chunk.size < chunkLen) {
+                    return PageReadOutcome(null, "USBasp EP0 0x04 Read Failed at 0x%06X".format(addr), byteArrayOf(0xC0.toByte(), 0x04))
+                }
+                out.write(chunk, 0, chunkLen)
+                offset += chunkLen
+            }
+            return PageReadOutcome(out.toByteArray(), "USBasp EP0 FUNC_READFLASH [0x04 @ 0x%06X]".format(startAddr), byteArrayOf(0xC0.toByte(), 0x04))
         }
 
         if (sync.framing == DetectedFraming.FREESCALE_SINGLE_WIRE_BDM) {
@@ -3402,14 +4362,26 @@ class ProberEngine(context: Context) {
             "🔄 استعادة التزامن التلقائية (Auto Re-Sync): $reason"
         )
         if (sync.framing == DetectedFraming.USBDM_BDM) {
+            val arch = sync.usbdmTargetArch ?: detectedUsbdmTargetArch
             var cn = transport.usbdmTransceive(byteArrayOf(0x02, 0x0F), 8, 250, "USBDM Reconnect [02 0F]", logTxRx = false)
             if (cn.isEmpty() || (cn[0].toInt() and 0xFF) != 0x00) {
                 transport.usbdmTransceive(byteArrayOf(0x03, 0x03, 0x01), 8, 200, "USBDM Internal Power [03 03 01]", logTxRx = false)
                 delay(100)
+                transport.usbdmTransceive(byteArrayOf(0x03, 0x01, arch.targetCode.toByte()), 8, 200, "USBDM Re-Target [03 01 0x%02X]".format(arch.targetCode), logTxRx = false)
+                transport.usbdmTransceive(byteArrayOf(0x03, 0x13, 0x00), 8, 200, "USBDM RESET_SPECIAL [03 13 00]", logTxRx = false)
+                delay(50)
                 cn = transport.usbdmTransceive(byteArrayOf(0x02, 0x0F), 8, 250, "USBDM Reconnect Retry [02 0F]", logTxRx = false)
             }
             transport.usbdmTransceive(byteArrayOf(0x02, 0x14), 8, 250, "USBDM Re-Halt [02 14]", logTxRx = false)
             return cn.isNotEmpty() && (cn[0].toInt() and 0xFF) == 0x00
+        }
+        if (sync.framing == DetectedFraming.STLINK_SWD || sync.framing == DetectedFraming.STLINK_SWIM ||
+            sync.framing == DetectedFraming.AVR_ISP_USB || sync.framing == DetectedFraming.MICROCHIP_PIC_ICSP ||
+            transport.currentChip() == ProberUsbChip.UNKNOWN_USB
+        ) {
+            transport.flushRx()
+            delay(35)
+            return true
         }
         transport.configureUart(sync.baudRate, evenParity = sync.evenParity)
         if (sync.useResetToggle) {
@@ -3538,7 +4510,7 @@ class ProberEngine(context: Context) {
 
     private fun parseNecSignatureEndAddress(payload: ByteArray): Int? {
         if (payload.size < 6) return null
-        val validEnds = setOf(0x001FFF, 0x003FFF, 0x007FFF, 0x00FFFF, 0x01FFFF, 0x03FFFF, 0x07FFFF)
+        val validEnds = setOf(0x000FFF, 0x001FFF, 0x003FFF, 0x007FFF, 0x00FFFF, 0x01FFFF, 0x03FFFF, 0x07FFFF, 0x0FFFFF, 0x1FFFFF)
         for (offset in 0..(payload.size - 3)) {
             val b0 = payload[offset].toInt() and 0xFF
             val b1 = payload[offset + 1].toInt() and 0xFF

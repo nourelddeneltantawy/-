@@ -62,6 +62,13 @@ class ProberUsbTransport(
     @Volatile
     private var controlInterfaceIndex: Int = 0
     @Volatile
+    private var lastEndpointsSummary: String = "--"
+    @Volatile
+    private var lastInterfaceInfo: String = "--"
+    @Volatile
+    var isControlOnlySession: Boolean = false
+        private set
+    @Volatile
     var currentBaudRate: Int = 9600
         private set
     @Volatile
@@ -81,6 +88,91 @@ class ProberUsbTransport(
 
     fun currentChip(): ProberUsbChip = activeChip
     fun isUsbdmSession(): Boolean = activeChip == ProberUsbChip.USBDM
+    fun currentEndpointsSummary(): String = lastEndpointsSummary
+    fun currentInterfaceInfo(): String = lastInterfaceInfo
+    fun hasDataEndpoints(): Boolean = (inEndpoint != null && outEndpoint != null)
+
+    private data class UsbInspection(
+        val chip: ProberUsbChip,
+        val endpointsSummary: String,
+        val interfaceInfo: String,
+        val bulkIn: UsbEndpoint?,
+        val bulkOut: UsbEndpoint?,
+        val intIn: UsbEndpoint?,
+        val intOut: UsbEndpoint?,
+        val controlIfaceIdx: Int
+    )
+
+    private fun inspectDevice(dev: UsbDevice): UsbInspection {
+        var hasCdc = false
+        var ctrlIdx = 0
+        var bulkIn: UsbEndpoint? = null
+        var bulkOut: UsbEndpoint? = null
+        var intIn: UsbEndpoint? = null
+        var intOut: UsbEndpoint? = null
+        val epParts = mutableListOf<String>()
+        val ifParts = mutableListOf<String>()
+
+        for (i in 0 until dev.interfaceCount) {
+            val iface = dev.getInterface(i)
+            if (iface.interfaceClass == UsbConstants.USB_CLASS_COMM || iface.interfaceClass == UsbConstants.USB_CLASS_CDC_DATA) {
+                hasCdc = true
+            }
+            if (iface.interfaceClass == UsbConstants.USB_CLASS_COMM || i == 0) {
+                ctrlIdx = iface.id
+            }
+            ifParts.add("IF${iface.id}(cls=0x%02X/sub=0x%02X/p=0x%02X)".format(iface.interfaceClass, iface.interfaceSubclass, iface.interfaceProtocol))
+            for (epIdx in 0 until iface.endpointCount) {
+                val ep = iface.getEndpoint(epIdx)
+                val typeStr = when (ep.type) {
+                    UsbConstants.USB_ENDPOINT_XFER_BULK -> "BULK"
+                    UsbConstants.USB_ENDPOINT_XFER_INT -> "INT"
+                    UsbConstants.USB_ENDPOINT_XFER_ISOC -> "ISOC"
+                    else -> "CTRL"
+                }
+                val dirStr = if (ep.direction == UsbConstants.USB_DIR_IN) "IN" else "OUT"
+                epParts.add("0x%02X($typeStr/$dirStr/${ep.maxPacketSize}B)".format(ep.address))
+            }
+        }
+
+        val chip = ProberUsbChip.fromDevice(dev.vendorId, dev.productId, hasCdc)
+        for (i in 0 until dev.interfaceCount) {
+            val iface = dev.getInterface(i)
+            for (epIdx in 0 until iface.endpointCount) {
+                val ep = iface.getEndpoint(epIdx)
+                val epNum = ep.address and 0x0F
+                if (ep.type == UsbConstants.USB_ENDPOINT_XFER_BULK) {
+                    if (ep.direction == UsbConstants.USB_DIR_IN) {
+                        if (chip == ProberUsbChip.USBDM && epNum == 2) {
+                            bulkIn = ep
+                        } else if (chip == ProberUsbChip.ST_LINK) {
+                            // Prefer EP1 IN (0x81); avoid trace endpoint EP3 IN (0x83)
+                            if (epNum == 1 || (bulkIn == null && epNum != 3)) bulkIn = ep
+                        } else if (bulkIn == null) {
+                            bulkIn = ep
+                        }
+                    } else {
+                        if (chip == ProberUsbChip.USBDM && epNum == 1) {
+                            bulkOut = ep
+                        } else if (chip == ProberUsbChip.ST_LINK) {
+                            if (epNum == 2 || epNum == 1 || bulkOut == null) {
+                                if (bulkOut == null || epNum == 1 || epNum == 2) bulkOut = ep
+                            }
+                        } else if (bulkOut == null) {
+                            bulkOut = ep
+                        }
+                    }
+                } else if (ep.type == UsbConstants.USB_ENDPOINT_XFER_INT) {
+                    if (ep.direction == UsbConstants.USB_DIR_IN && intIn == null) intIn = ep
+                    if (ep.direction == UsbConstants.USB_DIR_OUT && intOut == null) intOut = ep
+                }
+            }
+        }
+
+        val epSummary = if (epParts.isEmpty()) "EP0 Control Only (No Bulk/Int EPs)" else epParts.joinToString(", ")
+        val ifaceSummary = ifParts.joinToString(", ").ifBlank { "No Interfaces" }
+        return UsbInspection(chip, epSummary, ifaceSummary, bulkIn, bulkOut, intIn, intOut, ctrlIdx)
+    }
 
     fun scanStatus(): ProberUsbStatus {
         val mgr = usbManager
@@ -91,22 +183,31 @@ class ProberUsbTransport(
                 isConnected = false,
                 adapterName = "لا توجد مبرمجة USB OTG موصولة",
                 chipModel = "غير متصل",
+                programmerCategory = "غير متصل",
                 vidPidHex = "--",
+                endpointsSummary = "--",
+                usbInterfaceInfo = "--",
                 hasPermission = false,
                 deviceCount = 0,
-                isUsbdm = false
+                isUsbdm = false,
+                chip = ProberUsbChip.CDC_ACM
             )
         } else {
-            val chip = ProberUsbChip.fromDevice(chosen.vendorId, chosen.productId)
+            val info = inspectDevice(chosen)
+            val chip = info.chip
             val perm = mgr?.hasPermission(chosen) == true
             ProberUsbStatus(
                 isConnected = true,
                 adapterName = chosen.productName?.takeIf { it.isNotBlank() } ?: chip.displayName,
                 chipModel = chip.displayName,
+                programmerCategory = chip.categoryLabelAr,
                 vidPidHex = "VID:%04X PID:%04X".format(chosen.vendorId, chosen.productId),
+                endpointsSummary = info.endpointsSummary,
+                usbInterfaceInfo = info.interfaceInfo,
                 hasPermission = perm,
                 deviceCount = devices.size,
-                isUsbdm = (chip == ProberUsbChip.USBDM)
+                isUsbdm = (chip == ProberUsbChip.USBDM),
+                chip = chip
             )
         }
         onDeviceStatusChanged(status)
@@ -151,76 +252,73 @@ class ProberUsbTransport(
             return false
         }
 
-        val detectedChip = ProberUsbChip.fromDevice(dev.vendorId, dev.productId)
-        var bulkIn: UsbEndpoint? = null
-        var bulkOut: UsbEndpoint? = null
-        var preferredUsbdmIn: UsbEndpoint? = null
-        var preferredUsbdmOut: UsbEndpoint? = null
-        controlInterfaceIndex = 0
+        val inspection = inspectDevice(dev)
+        val detectedChip = inspection.chip
+        controlInterfaceIndex = inspection.controlIfaceIdx
         for (i in 0 until dev.interfaceCount) {
             val iface = dev.getInterface(i)
-            if (iface.interfaceClass == UsbConstants.USB_CLASS_COMM || i == 0) {
-                controlInterfaceIndex = iface.id
-            }
             if (conn.claimInterface(iface, true)) {
                 claimedInterfaces.add(iface)
             }
-            for (epIdx in 0 until iface.endpointCount) {
-                val ep = iface.getEndpoint(epIdx)
-                if (ep.type == UsbConstants.USB_ENDPOINT_XFER_BULK) {
-                    val epNum = ep.address and 0x0F
-                    if (ep.direction == UsbConstants.USB_DIR_IN) {
-                        if (bulkIn == null) bulkIn = ep
-                        if (detectedChip == ProberUsbChip.USBDM && epNum == 2) preferredUsbdmIn = ep
-                    } else if (ep.direction == UsbConstants.USB_DIR_OUT) {
-                        if (bulkOut == null) bulkOut = ep
-                        if (detectedChip == ProberUsbChip.USBDM && epNum == 1) preferredUsbdmOut = ep
-                    }
-                }
-            }
-        }
-        if (detectedChip == ProberUsbChip.USBDM) {
-            if (preferredUsbdmIn != null) bulkIn = preferredUsbdmIn
-            if (preferredUsbdmOut != null) bulkOut = preferredUsbdmOut
         }
 
-        if (bulkIn == null || bulkOut == null) {
+        val chosenIn = inspection.bulkIn ?: inspection.intIn
+        val chosenOut = inspection.bulkOut ?: inspection.intOut
+        val ctrlOnly = (chosenIn == null || chosenOut == null)
+
+        if (ctrlOnly && detectedChip != ProberUsbChip.USBASP && detectedChip != ProberUsbChip.UNKNOWN_USB &&
+            detectedChip != ProberUsbChip.ATMEL_AVR && detectedChip != ProberUsbChip.MICROCHIP_PICKIT
+        ) {
             conn.close()
-            onLog(ProberLogDirection.ERROR, "الجهاز المتصل لا يحتوي على نقاط Serial/USBDM Bulk صالحة.")
+            onLog(ProberLogDirection.ERROR, "الجهاز المتصل لا يحتوي على نقاط Bulk/Interrupt/Control صالحة (${inspection.endpointsSummary}).")
             return false
         }
 
         synchronized(sessionLock) {
             activeDevice = dev
             activeConnection = conn
-            inEndpoint = bulkIn
-            outEndpoint = bulkOut
+            inEndpoint = chosenIn
+            outEndpoint = chosenOut
             activeChip = detectedChip
+            isControlOnlySession = ctrlOnly
+            lastEndpointsSummary = inspection.endpointsSummary
+            lastInterfaceInfo = inspection.interfaceInfo
             echoLoopbackObserved = false
         }
         scanStatus()
-        startReaderLoop(conn, bulkIn)
+        if (chosenIn != null) {
+            startReaderLoop(conn, chosenIn)
+        }
         onLog(
             ProberLogDirection.INFO,
-            "منفذ USB مفتوح: ${activeChip.displayName} (VID:%04X PID:%04X) | EP_OUT=0x%02X EP_IN=0x%02X".format(
-                dev.vendorId, dev.productId, bulkOut.address, bulkIn.address
+            "منفذ USB مفتوح: ${activeChip.displayName} (VID:%04X PID:%04X) | IF=[${inspection.interfaceInfo}] | EP=[${inspection.endpointsSummary}]".format(
+                dev.vendorId, dev.productId
             )
         )
         return true
     }
 
     /**
-     * Puts lines into Safe Idle (DTR=false, RTS=false) and releases USB handle so technician can
+     * Puts lines into Safe Idle and releases USB handle so technician can
      * safely unplug / swap boards without losing session results.
      */
     fun enterSafeIdleAndClose() {
         try {
             if (activeConnection != null) {
-                if (activeChip == ProberUsbChip.USBDM) {
-                    // Turn target VDD off gently (USBDM V4.x CMD_USBDM_SET_VDD = 0x02, OFF = 0x00) before releasing USBDM
-                    writeBytesRaw(byteArrayOf(0x03, 0x02, 0x00))
-                } else {
-                    setControlLines(dtr = false, rts = false)
+                when (activeChip) {
+                    ProberUsbChip.USBDM -> {
+                        writeBytesRaw(byteArrayOf(0x03, 0x02, 0x00))
+                    }
+                    ProberUsbChip.ST_LINK -> {
+                        writeBytesRaw(byteArrayOf(0xF2.toByte(), 0x21))
+                    }
+                    ProberUsbChip.USBASP -> {
+                        activeConnection?.controlTransfer(0xC0, 0x02, 0, 0, ByteArray(4), 4, 250)
+                    }
+                    ProberUsbChip.FT232R, ProberUsbChip.CH340G, ProberUsbChip.CP2102, ProberUsbChip.PL2303, ProberUsbChip.CDC_ACM -> {
+                        setControlLines(dtr = false, rts = false)
+                    }
+                    else -> {}
                 }
             }
         } catch (_: Throwable) {}
@@ -244,15 +342,16 @@ class ProberUsbTransport(
             activeDevice = null
             inEndpoint = null
             outEndpoint = null
+            isControlOnlySession = false
         }
     }
 
     fun configureUart(baudRate: Int, evenParity: Boolean = false) {
         currentBaudRate = baudRate
         val conn = activeConnection ?: return
-        if (activeChip == ProberUsbChip.USBDM) return
+        if (activeChip.isSpecializedProgrammer || activeChip == ProberUsbChip.UNKNOWN_USB) return
         when (activeChip) {
-            ProberUsbChip.USBDM -> return
+            ProberUsbChip.USBDM, ProberUsbChip.ST_LINK, ProberUsbChip.USBASP, ProberUsbChip.ATMEL_AVR, ProberUsbChip.MICROCHIP_PICKIT, ProberUsbChip.UNKNOWN_USB -> return
             ProberUsbChip.FT232R -> {
                 conn.controlTransfer(0x40, 0x00, 0x0000, 0, null, 0, 500) // Reset
                 conn.controlTransfer(0x40, 0x00, 0x0001, 0, null, 0, 500) // Purge RX FIFO
@@ -327,9 +426,8 @@ class ProberUsbTransport(
         currentDtrState = dtr
         currentRtsState = rts
         val conn = activeConnection ?: return
-        if (activeChip == ProberUsbChip.USBDM) return
+        if (activeChip.isSpecializedProgrammer || activeChip == ProberUsbChip.UNKNOWN_USB) return
         when (activeChip) {
-            ProberUsbChip.USBDM -> return
             ProberUsbChip.FT232R -> {
                 val value = (if (dtr) 0x0101 else 0x0100) or (if (rts) 0x0202 else 0x0200)
                 conn.controlTransfer(0x40, 0x01, value, 0, null, 0, 300)
@@ -352,7 +450,7 @@ class ProberUsbTransport(
     fun setDtr(enabled: Boolean) {
         currentDtrState = enabled
         val conn = activeConnection ?: return
-        if (activeChip == ProberUsbChip.USBDM) return
+        if (activeChip.isSpecializedProgrammer || activeChip == ProberUsbChip.UNKNOWN_USB) return
         when (activeChip) {
             ProberUsbChip.FT232R -> {
                 val value = if (enabled) 0x0101 else 0x0100
@@ -369,7 +467,7 @@ class ProberUsbTransport(
     fun setRts(enabled: Boolean) {
         currentRtsState = enabled
         val conn = activeConnection ?: return
-        if (activeChip == ProberUsbChip.USBDM) return
+        if (activeChip.isSpecializedProgrammer || activeChip == ProberUsbChip.UNKNOWN_USB) return
         when (activeChip) {
             ProberUsbChip.FT232R -> {
                 val value = if (enabled) 0x0202 else 0x0200
@@ -571,6 +669,60 @@ class ProberUsbTransport(
         return if (n > 0) buf.copyOf(n) else ByteArray(0)
     }
 
+    suspend fun usbControlTransferIn(
+        requestType: Int = 0xC0,
+        request: Int,
+        value: Int = 0,
+        index: Int = 0,
+        length: Int = 8,
+        timeoutMs: Int = 450,
+        label: String = "CTRL IN",
+        logTxRx: Boolean = true
+    ): ByteArray {
+        currentCoroutineContext().ensureActive()
+        val conn = activeConnection ?: return ByteArray(0)
+        if (logTxRx) {
+            onLog(ProberLogDirection.TX, "$label [reqType=0x%02X req=0x%02X val=0x%04X idx=0x%04X len=%d]".format(requestType, request, value, index, length))
+        }
+        val buf = ByteArray(length.coerceAtLeast(1))
+        val n = conn.controlTransfer(requestType, request, value, index, buf, buf.size, timeoutMs)
+        val rx = if (n > 0) buf.copyOf(n) else ByteArray(0)
+        if (logTxRx) {
+            if (rx.isEmpty()) {
+                onLog(ProberLogDirection.RX, "(CTRL Timeout/Empty n=$n)")
+            } else {
+                onLog(ProberLogDirection.RX, rx.toHexStr())
+            }
+        }
+        return rx
+    }
+
+    suspend fun usbControlTransferOut(
+        requestType: Int = 0x40,
+        request: Int,
+        value: Int = 0,
+        index: Int = 0,
+        data: ByteArray? = null,
+        timeoutMs: Int = 450,
+        label: String = "CTRL OUT",
+        logTxRx: Boolean = true
+    ): Int {
+        currentCoroutineContext().ensureActive()
+        val conn = activeConnection ?: return -1
+        if (logTxRx) {
+            onLog(ProberLogDirection.TX, "$label [reqType=0x%02X req=0x%02X val=0x%04X idx=0x%04X] ${data?.toHexStr().orEmpty()}".trim())
+        }
+        return conn.controlTransfer(requestType, request, value, index, data, data?.size ?: 0, timeoutMs)
+    }
+
+    suspend fun rawPacketTransceive(
+        packet: ByteArray,
+        expectedMax: Int = 64,
+        timeoutMs: Int = 450,
+        label: String = "USB RAW",
+        logTxRx: Boolean = true
+    ): ByteArray = usbdmTransceive(packet, expectedMax, timeoutMs, label, logTxRx)
+
     fun stripEchoPrefix(txBytes: ByteArray, rx: ByteArray): ByteArray {
         if (txBytes.isNotEmpty() && rx.size >= txBytes.size && rx.copyOfRange(0, txBytes.size).contentEquals(txBytes)) {
             echoLoopbackObserved = true
@@ -690,8 +842,12 @@ class ProberUsbTransport(
 
     private fun pickBestSerialDevice(devices: List<UsbDevice>): UsbDevice? {
         if (devices.isEmpty()) return null
-        return devices.firstOrNull { ProberUsbChip.fromDevice(it.vendorId, it.productId) == ProberUsbChip.USBDM }
-            ?: devices.firstOrNull { ProberUsbChip.fromDevice(it.vendorId, it.productId) != ProberUsbChip.CDC_ACM }
+        return devices.firstOrNull { inspectDevice(it).chip == ProberUsbChip.USBDM }
+            ?: devices.firstOrNull { inspectDevice(it).chip.isSpecializedProgrammer }
+            ?: devices.firstOrNull {
+                val c = inspectDevice(it).chip
+                c != ProberUsbChip.CDC_ACM && c != ProberUsbChip.UNKNOWN_USB
+            }
             ?: devices.first()
     }
 
