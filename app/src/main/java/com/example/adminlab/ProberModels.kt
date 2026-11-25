@@ -73,7 +73,7 @@ enum class UsbdmTargetArch(
         defaultRamAddress = 0x0080L,
         flashBaseCandidates = listOf(0xC000L, 0x8000L, 0xE000L),
         isArmOr32Bit = false,
-        eraseWriteSpec = "HCS08 FSTAT (0x1825) & FCMD (0x1826): 0x41 Mass Erase / 0x40 Page Erase / 0x20 Byte Program"
+        eraseWriteSpec = "HCS08 Flash Regs: FCLKDIV = 0x1820, FSTAT = 0x1825, FCMD = 0x1826 (0x41 Mass Erase, 0x40 Page Erase, 0x20 Byte Program)"
     ),
     HCS12(
         targetCode = 0x01,
@@ -255,6 +255,14 @@ data class AutoChipDetectionRule(
     val dynamicSpeedFormula: String = "--"
 )
 
+data class PlugAndPlayRegistryEntry(
+    val protocolId: String = "--",
+    val familyDisplayName: String = "--",
+    val sampleChipDatabaseKey: String = "--",
+    val supportedAdapterVidPids: List<String> = emptyList(),
+    val autoDetectProbeRule: String = "--"
+)
+
 enum class DetectedFraming(
     val label: String,
     val sohHex: String,
@@ -428,6 +436,7 @@ data class ProberBlueprintSummary(
     val usbdmTargetArch: UsbdmTargetArch? = null,
     val adapterInitSpec: AdapterInitSpec = AdapterInitSpec(),
     val autoDetectionRule: AutoChipDetectionRule = AutoChipDetectionRule(),
+    val plugAndPlayRegistryEntry: PlugAndPlayRegistryEntry = PlugAndPlayRegistryEntry(),
     val universalAutoIdRule: String = "--",
     val manufacturerGuess: String = "غير محدد بعد",
     val inferredModel: String = "غير محدد بعد",
@@ -526,6 +535,17 @@ private fun appendAutoDetectionRuleJson(sb: StringBuilder, s: ProberBlueprintSum
     sb.appendLine("$indent},")
 }
 
+private fun appendPlugAndPlayRegistryJson(sb: StringBuilder, s: ProberBlueprintSummary, indent: String = "  ") {
+    val p = s.plugAndPlayRegistryEntry
+    sb.appendLine("$indent\"plugAndPlayRegistryEntry\": {")
+    sb.appendLine("$indent  \"protocolId\": \"${jsonEsc(p.protocolId)}\",")
+    sb.appendLine("$indent  \"familyDisplayName\": \"${jsonEsc(p.familyDisplayName)}\",")
+    sb.appendLine("$indent  \"sampleChipDatabaseKey\": \"${jsonEsc(p.sampleChipDatabaseKey)}\",")
+    sb.appendLine("$indent  \"supportedAdapterVidPids\": [${p.supportedAdapterVidPids.joinToString(", ") { "\"${jsonEsc(it)}\"" }}],")
+    sb.appendLine("$indent  \"autoDetectProbeRule\": \"${jsonEsc(p.autoDetectProbeRule)}\"")
+    sb.appendLine("$indent},")
+}
+
 private fun buildWorkflows(state: ProberUiState): Pair<List<String>, List<String>> {
     val s = state.blueprintSummary
     val framing = s.framing
@@ -602,8 +622,8 @@ private fun buildWorkflows(state: ProberUiState): Pair<List<String>, List<String
         )
         val writeWf = listOf(
             "1. Connect via ${framing.label} and sync bus clock (${s.detectedCrystalMhz}).",
-            "2. Erase Flash via HCS08 FSTAT/FCMD 0x41 (Mass Erase) or 0x40 (Page Erase), waiting ${tm.eraseWriteBusyWaitMs}ms.",
-            "3. Program Flash via FCMD 0x20 (Byte Program) in ${s.pageSizeBytes ?: 64}B blocks and verify read-back."
+            "2. Erase Flash via HCS08 FCLKDIV = 0x1820, FSTAT = 0x1825, FCMD = 0x1826: 0x41 (Mass Erase) or 0x40 (Page Erase), waiting ${tm.eraseWriteBusyWaitMs}ms.",
+            "3. Program Flash via FCMD = 0x20 (Byte Program) in ${s.pageSizeBytes ?: 64}B blocks and verify read-back."
         )
         return readWf to writeWf
     }
@@ -671,6 +691,7 @@ fun formatReadBlueprintJson(state: ProberUiState): String {
         appendLine("  \"generatedAt\": \"$now\",")
         appendAdapterInitJson(this, s)
         appendAutoDetectionRuleJson(this, s)
+        appendPlugAndPlayRegistryJson(this, s)
         appendLine("  \"targetIdentity\": {")
         appendLine("    \"manufacturer\": \"${jsonEsc(s.manufacturerGuess)}\",")
         appendLine("    \"inferredModel\": \"${jsonEsc(s.inferredModel)}\",")
@@ -768,6 +789,7 @@ fun formatWriteBlueprintJson(state: ProberUiState): String {
         appendLine("  \"generatedAt\": \"$now\",")
         appendAdapterInitJson(this, s)
         appendAutoDetectionRuleJson(this, s)
+        appendPlugAndPlayRegistryJson(this, s)
         appendLine("  \"targetIdentity\": {")
         appendLine("    \"manufacturer\": \"${jsonEsc(s.manufacturerGuess)}\",")
         appendLine("    \"inferredModel\": \"${jsonEsc(s.inferredModel)}\",")
@@ -882,6 +904,13 @@ fun formatHumanGuideText(state: ProberUiState): String {
         appendLine("  • البصمة الخام (Raw Silicon ID): ${r.rawSiliconIdHex}")
         appendLine("  • معادلة حجم الفلاش (4KB..2MB): ${r.dynamicFlashBoundaryFormula}")
         appendLine("  • معادلة السرعة المثلى: ${r.dynamicSpeedFormula}")
+        val pnp = s.plugAndPlayRegistryEntry
+        appendLine("▶ plugAndPlayRegistryEntry (وحدة الإدراج التلقائي Plug & Play):")
+        appendLine("  • protocolId: ${pnp.protocolId}")
+        appendLine("  • familyDisplayName: ${pnp.familyDisplayName}")
+        appendLine("  • sampleChipDatabaseKey: ${pnp.sampleChipDatabaseKey}")
+        appendLine("  • supportedAdapterVidPids: ${pnp.supportedAdapterVidPids.joinToString(", ")}")
+        appendLine("  • autoDetectProbeRule: ${pnp.autoDetectProbeRule}")
         appendLine()
 
         appendLine("══════════════════════════════════════════════")
@@ -967,6 +996,7 @@ fun formatHumanGuideJson(state: ProberUiState): String {
         appendLine("  \"generatedAt\": \"$now\",")
         appendAdapterInitJson(this, s)
         appendAutoDetectionRuleJson(this, s)
+        appendPlugAndPlayRegistryJson(this, s)
         appendLine("  \"processorIdentityCard\": {")
         appendLine("    \"manufacturer\": \"${jsonEsc(s.manufacturerGuess)}\",")
         appendLine("    \"family\": \"${jsonEsc(s.framing?.label ?: state.selectedFamily.labelAr)}\",")
@@ -1020,6 +1050,7 @@ fun formatAiReadyBlueprintJson(state: ProberUiState): String {
         appendLine("  \"generatedAt\": \"$now\",")
         appendAdapterInitJson(this, s)
         appendAutoDetectionRuleJson(this, s)
+        appendPlugAndPlayRegistryJson(this, s)
         appendLine("  \"manufacturer\": \"${jsonEsc(s.manufacturerGuess)}\",")
         appendLine("  \"inferredModel\": \"${jsonEsc(s.inferredModel)}\",")
         appendLine("  \"universalAutoIdRule\": \"${jsonEsc(s.universalAutoIdRule)}\",")
