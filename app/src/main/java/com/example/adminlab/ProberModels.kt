@@ -457,8 +457,10 @@ data class ProberBlueprintSummary(
     val safeDelayMs: Int? = null,
     val timingMap: TimingMapMs = TimingMapMs(),
     val discoveredCommands: List<DiscoveredCommandEntry> = emptyList(),
+    val ignoredNoiseCommandsCount: Int = 0,
     val stage5Results: List<Stage5StepResult> = emptyList(),
     val advancedSchoolsNotes: String = "",
+    val hasPartialBypass: Boolean = false,
     val liveReadProofPassed: Boolean = false,
     val liveReadProofMode: String = "--",
     val liveReadProofStatus: String = "لم يُختبر بعد",
@@ -654,6 +656,9 @@ private fun buildWorkflows(state: ProberUiState): Pair<List<String>, List<String
         add("5. Speed Transition: ${s.baudStateMachineRule} (wait ${tm.baudSwitchDelayMs}ms after ACK).")
         if (!isLocked) {
             add("6. Safe Direct Extraction succeeded via ${s.winningReadMethod}: read ${s.flashStartAddressHex}..${s.flashEndAddressHex} in ${s.pageSizeBytes ?: 256}B pages (${tm.frameToFrameDelayMs}ms frame gap).")
+        } else if (s.hasPartialBypass) {
+            add("6. Winning Non-Standard Extraction Path (Block-0 Bypass + 0xB0/0x13): Block-0 zeroed/partially bypassed (${s.verify0x13DiffResult}).")
+            add("7. Extract remaining protected Flash blocks starting at Block 2 (0x0400..${s.flashEndAddressHex}) via 0xB0 Checksum + 0x13 Verify probes.")
         } else {
             add("6. Target is LOCKED (${s.verify0x13DiffResult}): capture Full Flash & Block-0 Checksums via 0xB0 before any destructive step.")
             add("7. Zero Block-0 (0x22) -> extract Block-0 via 0xB0 differential if supported -> extract remaining blocks -> restore Block-0 (0x40) -> verify Full Flash Checksum (0xB0).")
@@ -718,6 +723,8 @@ fun formatReadBlueprintJson(state: ProberUiState): String {
         appendLine("  },")
         appendLine("  \"readExtractionStatus\": {")
         appendLine("    \"isLockedForSafeRead\": $isLocked,")
+        appendLine("    \"hasPartialBypass\": ${s.hasPartialBypass},")
+        appendLine("    \"ignoredNoiseCommandsCount\": ${s.ignoredNoiseCommandsCount},")
         appendLine("    \"verify0x13DiffResult\": \"${jsonEsc(s.verify0x13DiffResult)}\",")
         appendLine("    \"winningReadSchool\": \"${jsonEsc(s.winningReadMethod)}\",")
         appendLine("    \"safeReadTests\": [")
@@ -832,6 +839,8 @@ fun formatWriteBlueprintJson(state: ProberUiState): String {
         appendLine("    \"baudSwitchDelayMs\": ${tm.baudSwitchDelayMs},")
         appendLine("    \"eraseWriteBusyWaitMs\": ${tm.eraseWriteBusyWaitMs}")
         appendLine("  },")
+        appendLine("  \"hasPartialBypass\": ${s.hasPartialBypass},")
+        appendLine("  \"ignoredNoiseCommandsCount\": ${s.ignoredNoiseCommandsCount},")
         appendLine("  \"writeEraseVerifyCommands\": [")
         writeEraseCmds.forEachIndexed { idx, cmd ->
             val comma = if (idx < writeEraseCmds.lastIndex) "," else ""
@@ -874,10 +883,10 @@ fun formatHumanGuideText(state: ProberUiState): String {
     val r = s.autoDetectionRule
     val safeExtractSchoolIds = setOf("stage2_direct_read", "stage2_checksum_1b", "stage2_ram_stub")
     val isLocked = state.checklist.none { it.id in safeExtractSchoolIds && it.status == ChecklistStepStatus.PASSED }
-    val lockStatusAr = if (isLocked) {
-        "🔒 محمي ومقفل (Locked Bootloader / Secured — لا يسمح بالسحب المباشر الآمن)"
-    } else {
-        "🔓 مفتوح للسحب الآمن (${s.winningReadMethod})"
+    val lockStatusAr = when {
+        !isLocked -> "🔓 مفتوح للسحب الآمن (${s.winningReadMethod})"
+        s.hasPartialBypass -> "🔓 مسار تجاوز جزئي نشط (Block-0 Bypass + 0xB0/0x13 @ 0x0400)"
+        else -> "🔒 محمي ومقفل (Locked Bootloader / Secured — لا يسمح بالسحب المباشر الآمن)"
     }
 
     val stage2List = state.checklist.filter { it.id.startsWith("stage2_") }
@@ -966,7 +975,7 @@ fun formatHumanGuideText(state: ProberUiState): String {
         appendLine("══════════════════════════════════════════════")
         appendLine("• معادلة Checksum / Frame: ${s.framing?.checksumFormula ?: "غير محددة"}")
         appendLine("• أكواد الاستجابة: ACK=${s.framing?.ackHex ?: "0x06"} | ErrCmd=${s.framing?.errCmdHex ?: "0x04"} | ErrParam=${s.framing?.errParamHex ?: "0x05"}")
-        appendLine("• جدول الأوامر المكتشفة (${s.discoveredCommands.size} أمر):")
+        appendLine("• جدول الأوامر المكتشفة (${s.discoveredCommands.size} أمر | أوامر الضوضاء المتجاهلة: ${s.ignoredNoiseCommandsCount}):")
         appendLine(extraCmds)
         appendLine()
 
@@ -1020,6 +1029,8 @@ fun formatHumanGuideJson(state: ProberUiState): String {
         appendLine("    \"baudSwitchDelayMs\": ${tm.baudSwitchDelayMs},")
         appendLine("    \"eraseWriteBusyWaitMs\": ${tm.eraseWriteBusyWaitMs}")
         appendLine("  },")
+        appendLine("  \"hasPartialBypass\": ${s.hasPartialBypass},")
+        appendLine("  \"ignoredNoiseCommandsCount\": ${s.ignoredNoiseCommandsCount},")
         appendLine("  \"universalLiveReadProof\": {")
         appendLine("    \"passed\": ${s.liveReadProofPassed},")
         appendLine("    \"mode\": \"${jsonEsc(s.liveReadProofMode)}\",")
@@ -1057,6 +1068,8 @@ fun formatAiReadyBlueprintJson(state: ProberUiState): String {
         appendLine("  \"parityMode\": \"${jsonEsc(s.parityMode)}\",")
         appendLine("  \"wakeUpPatternUsed\": \"${jsonEsc(s.wakeUpPatternUsed)}\",")
         appendLine("  \"isLockedForSafeRead\": $isLocked,")
+        appendLine("  \"hasPartialBypass\": ${s.hasPartialBypass},")
+        appendLine("  \"ignoredNoiseCommandsCount\": ${s.ignoredNoiseCommandsCount},")
         appendLine("  \"framing\": \"${jsonEsc(framing?.label ?: "--")}\",")
         appendLine("  \"winningOscillatorPayload\": \"${jsonEsc(s.winningOscillatorPayload)}\",")
         appendLine("  \"eraseWriteBusyWaitMs\": ${tm.eraseWriteBusyWaitMs},")
