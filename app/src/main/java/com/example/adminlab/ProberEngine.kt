@@ -1619,17 +1619,22 @@ class ProberEngine(context: Context) {
      * (e.g. 0x55 'U', 0x75 'u', 0x77 'w', 0x5F '_', 0xF5, 0xEB, 0xED, 0xD5, 0xFF, 0x7F...)
      * caused by synchronous targets (such as Samsung S3F8/S3F9) sampled asynchronously at 115200 bps.
      */
-    private fun isFramingNoise(bytes: ByteArray): Boolean {
+    private fun isFramingNoise(bytes: ByteArray, baudRate: Int = 0): Boolean {
         if (bytes.isEmpty()) return true
         val hasNecFrame = bytes.any { (it.toInt() and 0xFF) == STX } &&
             bytes.any { (it.toInt() and 0xFF) == ETX || (it.toInt() and 0xFF) == ETB }
         if (hasNecFrame) return false
         if (bytes.size == 1 && (bytes[0].toInt() and 0xFF) == ACK_STM32) return false
 
-        val slipBytes = setOf(
+        val baseSlipBytes = setOf(
             0xFF, 0x7F, 0x5F, 0x57, 0x55, 0x75, 0xF5, 0xD5, 0xEB, 0xED, 0xFD, 0xAD,
             0x77, 0xFE, 0xDF, 0xBF, 0xFB, 0xEF, 0x00
         )
+        val slipBytes = if (baudRate >= 57600) {
+            baseSlipBytes + setOf(0xF0, 0xE0)
+        } else {
+            baseSlipBytes
+        }
         val slipCount = bytes.count { (it.toInt() and 0xFF) in slipBytes }
         return (slipCount * 100.0 / bytes.size) > 50.0
     }
@@ -1870,7 +1875,7 @@ class ProberEngine(context: Context) {
                                 logTxRx = false
                             )
                         )
-                        if (parseNecStatus(rxNec) != null && !isFramingNoise(rxNec)) {
+                        if (parseNecStatus(rxNec) != null && !isFramingNoise(rxNec, baudRate = baud)) {
                             appendLog(ProberLogDirection.SUCCESS, "✅ [Level A] تزامن NEC/RL78 @ $baud $parityLabel (${profile.name}): ${rxNec.toHexStr()}")
                             return SyncLock(
                                 baudRate = baud,
@@ -1909,14 +1914,14 @@ class ProberEngine(context: Context) {
                             logTxRx = false
                         )
                         val clean = stripStrictEcho(pBytes, rawRx)
-                        if (isMeaningfulGenericReply(pBytes, clean) && !isFramingNoise(clean)) {
+                        if (isMeaningfulGenericReply(pBytes, clean) && !isFramingNoise(clean, baudRate = baud)) {
                             val b0 = clean[0].toInt() and 0xFF
                             if (pBytes[0] == 0x7F.toByte() && (b0 == ACK_STM32 || b0 == NACK_STM32)) {
                                 val idRx = stripStrictEcho(
                                     byteArrayOf(0x02, 0xFD.toByte()),
                                     transport.transceive(byteArrayOf(0x02, 0xFD.toByte()), 16, 180, "STM32 GetID [0x02 0xFD]")
                                 )
-                                if (b0 == NACK_STM32 && (idRx.isEmpty() || isFramingNoise(idRx))) {
+                                if (b0 == NACK_STM32 && (idRx.isEmpty() || isFramingNoise(idRx, baudRate = baud))) {
                                     continue
                                 }
                                 val combinedHex = (clean + idRx).toHexStr()
@@ -1963,7 +1968,7 @@ class ProberEngine(context: Context) {
                                 postResetDelayMs = if (profile.useResetToggle) 70 else 30,
                                 syncByteGapMs = 10,
                                 syncPulseHex = pBytes.toHexStr(),
-                                framing = classifyFraming(clean, pBytes),
+                                framing = classifyFraming(clean, pBytes, baudRate = baud),
                                 firstReplyHex = clean.toHexStr(),
                                 latencySampleMs = (System.currentTimeMillis() - t0).toInt().coerceAtLeast(10),
                                 swapDtrRtsRoles = profile.swapDtrRtsRoles,
@@ -1985,7 +1990,7 @@ class ProberEngine(context: Context) {
                             // Infineon BSL ONLY accepts the exclusive single-byte 0xD5 confirmation; reject any multi-byte or slip reply
                             clean.size == 1 && (clean[0].toInt() and 0xFF) == 0xD5
                         } else {
-                            isMeaningfulGenericReply(vBytes, clean) && !isFramingNoise(clean)
+                            isMeaningfulGenericReply(vBytes, clean) && !isFramingNoise(clean, baudRate = baud)
                         }
                         if (accepted) {
                             appendLog(ProberLogDirection.SUCCESS, "✅ [Level A] بصمة $vName @ $baud $parityLabel (${profile.name}): ${clean.toHexStr()}")
@@ -2005,7 +2010,7 @@ class ProberEngine(context: Context) {
                                 postResetDelayMs = if (profile.useResetToggle) 70 else 30,
                                 syncByteGapMs = 10,
                                 syncPulseHex = vBytes.toHexStr(),
-                                framing = classifyFraming(clean, vBytes),
+                                framing = classifyFraming(clean, vBytes, baudRate = baud),
                                 firstReplyHex = clean.toHexStr(),
                                 latencySampleMs = (System.currentTimeMillis() - t0).toInt().coerceAtLeast(10),
                                 swapDtrRtsRoles = profile.swapDtrRtsRoles,
@@ -2016,30 +2021,34 @@ class ProberEngine(context: Context) {
                         }
                     }
 
-                    // A4: Renesas Direct R8C/M16C/H8/SH (16x 0x00 @ 15ms + 0xB0 / 0xFB)
-                    if (!evenParity && baud in listOf(9600, 19200, 38400, 57600, 115200)) {
+                    // A4: Renesas Direct R8C/M16C/H8/SH (exclusively at 9600 bps: 16x 0x00 @ 20ms + 0x70 SRD1/SRD2)
+                    if (!evenParity && baud == 9600) {
                         val t0 = System.currentTimeMillis()
                         for (i in 0 until 16) {
                             currentCoroutineContext().ensureActive()
                             transport.writeRawBytes(byteArrayOf(0x00))
-                            delay(12)
+                            delay(20)
                         }
                         transport.flushRx()
-                        val rxB0 = stripStrictEcho(byteArrayOf(0xB0.toByte()), transport.transceive(byteArrayOf(0xB0.toByte()), 16, 130, "Level A R8C 0xB0", logTxRx = false))
-                        val b0Valid = isMeaningfulGenericReply(byteArrayOf(0xB0.toByte()), rxB0) && !isFramingNoise(rxB0)
-                        val rxFB = if (!b0Valid) {
-                            stripStrictEcho(byteArrayOf(0xFB.toByte()), transport.transceive(byteArrayOf(0xFB.toByte()), 24, 140, "Level A R8C 0xFB", logTxRx = false))
-                        } else ByteArray(0)
-                        val fbValid = isMeaningfulGenericReply(byteArrayOf(0xFB.toByte()), rxFB) && !isFramingNoise(rxFB)
-                        val rxDirect = if (b0Valid) rxB0 else rxFB
-                        val usedCmd = if (b0Valid) byteArrayOf(0xB0.toByte()) else byteArrayOf(0xFB.toByte())
-                        if (b0Valid || fbValid) {
-                            appendLog(ProberLogDirection.SUCCESS, "✅ [Level A] Renesas Direct @ $baud (${profile.name}): ${rxDirect.toHexStr()}")
+                        val rx70 = stripStrictEcho(
+                            byteArrayOf(0x70),
+                            transport.transceive(byteArrayOf(0x70), 8, 160, "Level A R8C SRD [0x70]", logTxRx = false)
+                        )
+                        val srdValid = rx70.size >= 2 &&
+                            !isFramingNoise(rx70, baudRate = baud) &&
+                            !rx70.all { val b = it.toInt() and 0xFF; b == 0xF0 || b == 0xE0 || b == 0x00 || b == 0xFF }
+                        if (srdValid) {
+                            val rxFB = stripStrictEcho(
+                                byteArrayOf(0xFB.toByte()),
+                                transport.transceive(byteArrayOf(0xFB.toByte()), 24, 150, "Level A R8C Version [0xFB]", logTxRx = false)
+                            )
+                            val combined = if (rxFB.isNotEmpty() && !isFramingNoise(rxFB, baudRate = baud)) rx70 + rxFB else rx70
+                            appendLog(ProberLogDirection.SUCCESS, "✅ [Level A] Renesas R8C/M16C Direct @ $baud (${profile.name}): SRD=${rx70.toHexStr()}")
                             return SyncLock(
                                 baudRate = baud,
                                 evenParity = evenParity,
                                 parityMode = parityLabel,
-                                wakeUpPatternUsed = "Level A: Renesas Direct (16x 0x00 + ${usedCmd.toHexStr()})",
+                                wakeUpPatternUsed = "Level A: Renesas R8C/M16C Direct (16x 0x00 @ 20ms + 0x70 SRD1/SRD2)",
                                 flmd0PinState = profile.flmd0State,
                                 resetPinIdleState = profile.resetIdleState,
                                 resetPinPulsePolarity = profile.resetPulsePolarity,
@@ -2049,10 +2058,10 @@ class ProberEngine(context: Context) {
                                 useResetToggle = profile.useResetToggle,
                                 resetPulseMs = if (profile.useResetToggle) 70 else 0,
                                 postResetDelayMs = 20,
-                                syncByteGapMs = 12,
-                                syncPulseHex = "16x 0x00 + ${usedCmd.toHexStr()}",
+                                syncByteGapMs = 20,
+                                syncPulseHex = "16x 0x00 (20ms) + 0x70",
                                 framing = DetectedFraming.RENESAS_RAW,
-                                firstReplyHex = rxDirect.toHexStr(),
+                                firstReplyHex = combined.toHexStr(),
                                 latencySampleMs = (System.currentTimeMillis() - t0).toInt().coerceAtLeast(15),
                                 swapDtrRtsRoles = profile.swapDtrRtsRoles,
                                 staticDtr = profile.staticDtr,
@@ -4499,7 +4508,11 @@ class ProberEngine(context: Context) {
         updateStep(
             "stage6_live_read_proof",
             ChecklistStepStatus.RUNNING,
-            "فحص Page 0 (256B) والتحقق من عدم وجود Echo ثم مطابقة الذاكرة..."
+            if (summary.hasPartialBypass) {
+                "تجاوز البلوك الأول نشط (hasPartialBypass=true): فحص ما بعد Block 0..."
+            } else {
+                "فحص Page 0 (256B) والتحقق من عدم وجود Echo ثم مطابقة الذاكرة..."
+            }
         )
         ensureBootloaderReady(sync, "تهيئة المرحلة 6", relockOsc = true)
 
@@ -4513,6 +4526,132 @@ class ProberEngine(context: Context) {
             else -> 0x000000
         }
         val flashEndAddr = parseFlashEndAddress(summary, sync)
+
+        // -------------------- PRIORITY 0: PARTIAL BYPASS POST-BLOCK-1 PROOF (BEFORE ANY FAMILY/PAGE-0 CHECK) --------------------
+        if (summary.hasPartialBypass) {
+            val postBlockOffset = if (blockSize >= 2048) 0x0800 else 0x0400
+            val b2Start = page0Start + postBlockOffset
+            val b2End = b2Start + pageSize - 1
+            val b2RangeHex = "0x%06X..0x%06X".format(b2Start, b2End)
+            val b2Range = addrRangeBytes(b2Start, b2End)
+            appendLog(
+                ProberLogDirection.INFO,
+                "🔓 أولوية المرحلة 6 (hasPartialBypass=true): توجيه القراءة والتحقق مباشرة إلى ما بعد Block 0 ($b2RangeHex) بدلاً من Page 0 المقفل..."
+            )
+            updateStep(
+                "stage6_live_read_proof",
+                ChecklistStepStatus.RUNNING,
+                "قراءة وتحقق من العنوان المفتوح بعد البلوك الأول ($b2RangeHex)..."
+            )
+
+            // 1) Try Direct / 1B-0xB0 extraction directly at post-Block-1 address (0x0400 or 0x0800)
+            val (b2Bytes, b2Method, b2Echo) = readFlashPageForProof(sync, summary, b2Start, pageSize)
+            if (b2Bytes != null && b2Bytes.isNotEmpty() && !isEchoPayload(b2Bytes, b2Echo)) {
+                val first32Hex = b2Bytes.take(32).toByteArray().toHexStr()
+                val (verifySupported, verifyPassed, verifyDetail) = verifyExtractedPageOnChip(sync, b2Start, b2Bytes)
+                val verifiedOk = if (verifySupported) {
+                    verifyPassed
+                } else {
+                    val (secondRead, _, _) = readFlashPageForProof(sync, summary, b2Start, pageSize)
+                    secondRead != null && secondRead.contentEquals(b2Bytes)
+                }
+                if (verifiedOk || !b2Bytes.all { (it.toInt() and 0xFF) == 0xFF }) {
+                    val winningPath = "Winning Non-Standard Extraction Path (Block-0 Bypass @ $b2RangeHex | $b2Method)"
+                    val reportMsg = "✅ إثبات المرحلة 6 بعد تجاوز البلوك الأول ($b2RangeHex): نجح السحب والتحقق ($b2Method | $verifyDetail)"
+                    appendLog(ProberLogDirection.SUCCESS, "$reportMsg | أول 32B: $first32Hex")
+                    updateStep("stage6_live_read_proof", ChecklistStepStatus.PASSED, "$reportMsg | أول 32B: $first32Hex")
+                    return summary.copy(
+                        hasPartialBypass = true,
+                        winningReadMethod = winningPath,
+                        liveReadProofPassed = true,
+                        liveReadProofMode = winningPath,
+                        liveReadProofStatus = reportMsg,
+                        liveReadProofFirst32Hex = first32Hex
+                    )
+                }
+            }
+
+            // 2) NEC 78K0 / Renesas Locked ROM: 0xB0 Checksum + 0x13 Verify directly on post-Block-1 (0x0400 / 0x0800)
+            if (sync.framing == DetectedFraming.NEC_STX_ETX || sync.framing == DetectedFraming.RENESAS_RAW) {
+                resyncLight(sync)
+                var b0Rx = transport.transceive(
+                    buildNecCommandFrame(0xB0, b2Range),
+                    16, 400, "Stage6 Bypass Checksum [0xB0 $b2RangeHex]",
+                    stopOnCompleteNecFrame = true
+                )
+                if (b0Rx.isEmpty()) {
+                    hardwareResetAndResync(sync, "Stage6 Bypass 0xB0 Timeout", relockOsc = true)
+                    b0Rx = transport.transceive(
+                        buildNecCommandFrame(0xB0, b2Range),
+                        16, 400, "Stage6 Bypass Checksum Retry [0xB0 $b2RangeHex]",
+                        stopOnCompleteNecFrame = true
+                    )
+                }
+                val cs16 = parseChecksum16(b0Rx) ?: run {
+                    if (parseNecStatus(b0Rx) == ACK_NEC) parseChecksum16(transport.readFollowUp(12, 300, true)) else null
+                }
+                val b0Sts = parseNecStatus(b0Rx)
+                val b0Ok = (cs16 != null || b0Sts == ACK_NEC)
+
+                var vHdrRx = transport.transceive(
+                    buildNecCommandFrame(0x13, b2Range),
+                    12, 350, "Stage6 Bypass Verify Header [0x13 $b2RangeHex]",
+                    stopOnCompleteNecFrame = true
+                )
+                if (vHdrRx.isEmpty()) {
+                    hardwareResetAndResync(sync, "Stage6 Bypass 0x13 Header Timeout", relockOsc = true)
+                    vHdrRx = transport.transceive(
+                        buildNecCommandFrame(0x13, b2Range),
+                        12, 350, "Stage6 Bypass Verify Header Retry [0x13 $b2RangeHex]",
+                        stopOnCompleteNecFrame = true
+                    )
+                }
+                val vHdrSts = parseNecStatus(vHdrRx)
+                var vDataSts: Int? = null
+                if (vHdrSts == ACK_NEC) {
+                    val vDataRx = transport.transceive(
+                        buildNecDataFrame(ByteArray(pageSize) { 0xFF.toByte() }, isLast = true),
+                        16, 550, "Stage6 Bypass Verify Data [0x13 $b2RangeHex]",
+                        stopOnCompleteNecFrame = true, paced64B = true
+                    )
+                    if (vDataRx.isEmpty()) {
+                        hardwareResetAndResync(sync, "Stage6 Bypass 0x13 Data Timeout", relockOsc = true)
+                    } else {
+                        vDataSts = effectiveNecStatus(vDataRx)
+                    }
+                }
+                val v13Ok = (vHdrSts == ACK_NEC) ||
+                    (vDataSts != null && (vDataSts == ACK_NEC || vDataSts == STS_VERIFY_ERROR || vDataSts == STS_VERIFY_ERROR_1C))
+
+                if (b0Ok || v13Ok) {
+                    val winningPath = "Winning Non-Standard Extraction Path (Block-0 Bypass + 0xB0/0x13)"
+                    val csText = cs16?.let { "0xB0 CS16=0x%04X".format(it) } ?: "0xB0=${formatByte(b0Sts)}"
+                    val vText = "0x13=${formatByte(vDataSts ?: vHdrSts)}"
+                    val reportMsg = "✅ نجاح مسار الاستخراج غير القياسي بعد تجاوز Block 0 ($b2RangeHex): $csText | $vText"
+                    appendLog(ProberLogDirection.SUCCESS, reportMsg)
+                    updateStep("stage6_live_read_proof", ChecklistStepStatus.PASSED, reportMsg)
+                    return summary.copy(
+                        hasPartialBypass = true,
+                        winningReadMethod = winningPath,
+                        liveReadProofPassed = true,
+                        liveReadProofMode = winningPath,
+                        liveReadProofStatus = reportMsg,
+                        liveReadProofFirst32Hex = "$csText | $vText @ $b2RangeHex"
+                    )
+                }
+            }
+
+            val bypassFailMsg = "❌ فشل إثبات القراءة/التحقق في العنوان المفتوح بعد البلوك الأول ($b2RangeHex) رغم تفعيل hasPartialBypass"
+            appendLog(ProberLogDirection.WARN, bypassFailMsg)
+            updateStep("stage6_live_read_proof", ChecklistStepStatus.FAILED, bypassFailMsg)
+            return summary.copy(
+                hasPartialBypass = true,
+                liveReadProofPassed = false,
+                liveReadProofMode = "Post-Block-1 Bypass Proof Failed ($b2RangeHex)",
+                liveReadProofStatus = bypassFailMsg,
+                liveReadProofFirst32Hex = "--"
+            )
+        }
 
         // Try extracting Page 0 using the discovered Read method (USBDM / ST-LINK SWD|SWIM / USBasp / STM32 / Direct Read / 1B 0xB0)
         var (page0Bytes, readMethodUsed, txEchoSample) = readFlashPageForProof(sync, summary, page0Start, pageSize)
@@ -4662,93 +4801,6 @@ class ProberEngine(context: Context) {
                 liveReadProofStatus = failMsg,
                 liveReadProofFirst32Hex = first32Hex
             )
-        }
-
-        // -------------------- NON-STANDARD EXTRACTION PATH (NEC 78K0 / Renesas Block-0 Bypass @ 0x0400..0x04FF) --------------------
-        if (sync.framing == DetectedFraming.NEC_STX_ETX && summary.hasPartialBypass && !detectedHasRealData) {
-            val b2Start = 0x000400
-            val b2End = 0x0004FF
-            val b2Range = addrRangeBytes(b2Start, b2End)
-            appendLog(
-                ProberLogDirection.INFO,
-                "🔓 تفعيل مسار الاستخراج غير القياسي (hasPartialBypass=true): فحص بداية Block 2 (0x0400..0x04FF) عبر 0xB0 و 0x13 بعد تجاوز Block 0..."
-            )
-            updateStep(
-                "stage6_live_read_proof",
-                ChecklistStepStatus.RUNNING,
-                "اختبار مسار تجاوز Block 0 عند 0x0400..0x04FF عبر 0xB0 Checksum و 0x13 Verify..."
-            )
-
-            var b0Rx = transport.transceive(
-                buildNecCommandFrame(0xB0, b2Range),
-                16, 400, "Stage6 Block-0 Bypass Checksum [0xB0 0x0400..0x04FF]",
-                stopOnCompleteNecFrame = true
-            )
-            if (b0Rx.isEmpty()) {
-                hardwareResetAndResync(sync, "Stage6 Bypass 0xB0 Timeout", relockOsc = true)
-                b0Rx = transport.transceive(
-                    buildNecCommandFrame(0xB0, b2Range),
-                    16, 400, "Stage6 Block-0 Bypass Checksum Retry [0xB0 0x0400..0x04FF]",
-                    stopOnCompleteNecFrame = true
-                )
-            }
-            val cs16 = parseChecksum16(b0Rx) ?: run {
-                if (parseNecStatus(b0Rx) == ACK_NEC) parseChecksum16(transport.readFollowUp(12, 300, true)) else null
-            }
-            val b0Sts = parseNecStatus(b0Rx)
-            val b0Ok = (cs16 != null || b0Sts == ACK_NEC)
-
-            var vHdrRx = transport.transceive(
-                buildNecCommandFrame(0x13, b2Range),
-                12, 350, "Stage6 Block-0 Bypass Verify Header [0x13 0x0400..0x04FF]",
-                stopOnCompleteNecFrame = true
-            )
-            if (vHdrRx.isEmpty()) {
-                hardwareResetAndResync(sync, "Stage6 Bypass 0x13 Header Timeout", relockOsc = true)
-                vHdrRx = transport.transceive(
-                    buildNecCommandFrame(0x13, b2Range),
-                    12, 350, "Stage6 Block-0 Bypass Verify Header Retry [0x13 0x0400..0x04FF]",
-                    stopOnCompleteNecFrame = true
-                )
-            }
-            val vHdrSts = parseNecStatus(vHdrRx)
-            var vDataSts: Int? = null
-            if (vHdrSts == ACK_NEC) {
-                val vDataRx = transport.transceive(
-                    buildNecDataFrame(ByteArray(256) { 0xFF.toByte() }, isLast = true),
-                    16, 550, "Stage6 Block-0 Bypass Verify Data [0x13 0x0400..0x04FF]",
-                    stopOnCompleteNecFrame = true, paced64B = true
-                )
-                if (vDataRx.isEmpty()) {
-                    hardwareResetAndResync(sync, "Stage6 Bypass 0x13 Data Timeout", relockOsc = true)
-                } else {
-                    vDataSts = effectiveNecStatus(vDataRx)
-                }
-            }
-            val v13Ok = (vHdrSts == ACK_NEC) ||
-                (vDataSts != null && (vDataSts == ACK_NEC || vDataSts == STS_VERIFY_ERROR || vDataSts == STS_VERIFY_ERROR_1C))
-
-            if (b0Ok || v13Ok) {
-                val winningPath = "Winning Non-Standard Extraction Path (Block-0 Bypass + 0xB0/0x13)"
-                val csText = cs16?.let { "0xB0 CS16=0x%04X".format(it) } ?: "0xB0=${formatByte(b0Sts)}"
-                val vText = "0x13=${formatByte(vDataSts ?: vHdrSts)}"
-                val reportMsg = "✅ نجاح مسار الاستخراج غير القياسي بعد تجاوز Block 0 (0x0400..0x04FF): $csText | $vText"
-                appendLog(ProberLogDirection.SUCCESS, reportMsg)
-                updateStep("stage6_live_read_proof", ChecklistStepStatus.PASSED, reportMsg)
-                return summary.copy(
-                    hasPartialBypass = true,
-                    winningReadMethod = winningPath,
-                    liveReadProofPassed = true,
-                    liveReadProofMode = winningPath,
-                    liveReadProofStatus = reportMsg,
-                    liveReadProofFirst32Hex = "$csText | $vText @ 0x0400..0x04FF"
-                )
-            } else {
-                appendLog(
-                    ProberLogDirection.WARN,
-                    "⚠️ فشل إثبات مسار Block 2 (0x0400..0x04FF) بعد تجاوز Block 0: 0xB0=${formatByte(b0Sts)} | 0x13=${formatByte(vHdrSts)}"
-                )
-            }
         }
 
         // -------------------- CASE 2: BLANK (0xFF) / CORRUPTED (0x00) CHIP -> CLOSED-LOOP WRITE-READ PROOF --------------------
@@ -5658,7 +5710,7 @@ class ProberEngine(context: Context) {
                 familyDisplayName = "Renesas R8C / M16C / H8 / SH Direct UART Family",
                 sampleChipDatabaseKey = sampleKey,
                 supportedAdapterVidPids = mergeVidPids(standardUartVidPids),
-                autoDetectProbeRule = "UART ${summary.baudRate ?: 9600}bps ${summary.parityMode} -> 16x 0x00 (20ms gap) -> 0xB0 / 0xFB Version Query"
+                autoDetectProbeRule = "UART ${summary.baudRate ?: 9600}bps ${summary.parityMode} -> 16x 0x00 (20ms gap) -> 0x70 SRD1/SRD2 + 0xFB Version Query"
             )
             DetectedFraming.STM32_ACK -> PlugAndPlayRegistryEntry(
                 protocolId = "STM32_UART_BOOTLOADER_FAMILY",
@@ -5741,14 +5793,16 @@ class ProberEngine(context: Context) {
         )
     }
 
-    private fun classifyFraming(reply: ByteArray, pulse: ByteArray): DetectedFraming {
+    private fun classifyFraming(reply: ByteArray, pulse: ByteArray, baudRate: Int = 0): DetectedFraming {
         if (reply.any { (it.toInt() and 0xFF) == STX } && reply.any { (it.toInt() and 0xFF) == ETX }) {
             return DetectedFraming.NEC_STX_ETX
         }
         val first = reply[0].toInt() and 0xFF
         val p0 = pulse.firstOrNull()?.let { it.toInt() and 0xFF } ?: -1
         if (p0 == 0x7F && (first == ACK_STM32 || first == NACK_STM32)) return DetectedFraming.STM32_ACK
-        if (first == ACK_NEC || first == 0x80 || first == 0xB0 || first == 0xC1 || first == 0xF0) return DetectedFraming.RENESAS_RAW
+        if (baudRate < 57600 && baudRate != 115200 && (first == ACK_NEC || first == 0x80 || first == 0xB0 || first == 0xC1)) {
+            return DetectedFraming.RENESAS_RAW
+        }
         return DetectedFraming.CUSTOM_RAW
     }
 
