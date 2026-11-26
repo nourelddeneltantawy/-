@@ -594,14 +594,14 @@ private fun Ft232Direct6Wire78k0Card(
                 bridgeComponent = "توصيل مباشر",
                 mcuTarget = "MCU FLMD0",
                 accentColor = Color(0xFF10B981),
-                subNote = "تُرفع تلقائياً إلى HIGH طوال جلسة البرمجة"
+                subNote = "تُرفع تلقائياً إلى HIGH (+5V) عبر DTR=false طوال جلسة البرمجة"
             )
             SchematicTableRow(
                 programmerSignal = "FT232 TX",
                 bridgeComponent = "خط مستقل (بدون دايود)",
                 mcuTarget = "MCU RX",
                 accentColor = Color(0xFF38BDF8),
-                subNote = "اتصال مباشر بـ 9600 bps 8N1 دون دايود 1N4148 أو إلغاء صدى"
+                subNote = "اتصال مباشر بـ 9600 bps 8N1 دون دايود 1N4148 (Echo Cancel = OFF)"
             )
             SchematicTableRow(
                 programmerSignal = "FT232 RX",

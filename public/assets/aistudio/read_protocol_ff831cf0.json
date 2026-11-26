@@ -1,0 +1,117 @@
+{
+  "blueprintType": "UNIVERSAL_READ_PROTOCOL_V1",
+  "generatedAt": "2026-11-26 07:07:24",
+  "adapterInitializationSpec": {
+    "adapterType": "FTDI FT232R / FT232RL (Red UART) (FT232R USB UART)",
+    "vidPid": "VID:0403 PID:6001",
+    "usbTransportMode": "USB-UART Level A: Async UART (NEC 78K0) (9600 bps 8N1)",
+    "usbEndpoints": "IF0(cls=0xFF/sub=0xFF/p=0xFF) | 0x81(BULK/IN/64B), 0x02(BULK/OUT/64B)",
+    "powerControlLogic": "Level A: Async UART (NEC 78K0) | HIGH (+5V) via DTR=false | HIGH (+5V) via RTS=false (Active-Low Pulse (0V RTS=true for 100ms -> +5V RTS=false))",
+    "initPacketSequence": [
+      "Physical Layer: Level A: Async UART (NEC 78K0)",
+      "Configure UART 9600 bps 8N1",
+      "Pin Mapping: FLMD0/MODE=HIGH (+5V) via DTR=false | RESET/CLK=HIGH (+5V) via RTS=false (Active-Low Pulse (0V RTS=true for 100ms -> +5V RTS=false))",
+      "DTR=Active-Low (DTR=FLMD0, RTS=RESET) | RTS=Active-Low Pulse (0V RTS=true for 100ms -> +5V RTS=false)",
+      "Winning Wake Sequence: 0x00 (10ms) 0x00 + 01 01 00 FF 03"
+    ]
+  },
+  "automaticChipDetectionRule": {
+    "targetFamilyDetected": "NEC / Renesas 78K0 / RL78 Framed (SOH/STX/ETB/ETX)",
+    "identificationSequence": "Level A: Async UART (NEC 78K0) | Wake via [Pattern 1: Framed (NEC/Renesas 78K0/RL78: 0x00+0x00 -> SOH Reset 0x00)] @ 9600 8N1 -> query universal ID opcodes [0xC0,0xC5,0xFB,0x01,0x02,0x00,0x9F,0xAF] -> matched: 0xC0->|78F1 , 0xC5->00 00 00 02 01 00, 0x00->02 01 06 F9 03",
+    "idRegisterOrOpcode": "0xC0",
+    "rawSiliconIdHex": "10 7F 04 7C 7F 7F 01 C4 37 38 46 B0 B5 31 B3 C1",
+    "dynamicFlashBoundaryFormula": "C0/Fallback Boundary -> 0x007FFF (Fallback)",
+    "dynamicSpeedFormula": "Connect at 9600 8N1 -> lock 0x90 (--) -> send 0x9A [code] -> wait 25ms -> reconfigure host UART -> confirm 0x00 Ping -> Supported: 9600 bps"
+  },
+  "plugAndPlayRegistryEntry": {
+    "protocolId": "NEC_78K0_FAMILY",
+    "familyDisplayName": "NEC / Renesas 78K0 (uPD78F) Framed Bootloader Family",
+    "sampleChipDatabaseKey": "10 7F 04 7C 7F 7F 01 C4 37 38 46 B0 B5 31 B3 C1",
+    "supportedAdapterVidPids": ["VID:0403 PID:6001", "0403:6001", "0403:6015", "1A86:7523", "10C4:EA60", "067B:2303"],
+    "autoDetectProbeRule": "UART 9600bps 8N1 | Reset (100ms->150ms) -> 0x00 (10ms) 0x00 -> SOH Reset [01 01 00 FF 03] -> ACK 0x06 -> Signature [01 01 C0 3E 03] | Winning Non-Standard Extraction Path (Block-0 Bypass + 0xB0/0x13 @ 0x0400..0x04FF)"
+  },
+  "targetIdentity": {
+    "manufacturer": "NEC / Renesas Electronics",
+    "inferredModel": "78F1 [Raw=10 7F 04 7C 7F 7F 01 C4 37 3]",
+    "usbdmArchitecture": "--",
+    "universalAutoIdRule": "Wake via [Pattern 1: Framed (NEC/Renesas 78K0/RL78: 0x00+0x00 -> SOH Reset 0x00)] @ 9600 8N1 -> query universal ID opcodes [0xC0,0xC5,0xFB,0x01,0x02,0x00,0x9F,0xAF] -> matched: 0xC0->|78F1 , 0xC5->00 00 00 02 01 00, 0x00->02 01 06 F9 03",
+    "rawSignature": "[0xC0] |78F1  | Raw=10 7F 04 7C 7F 7F 01 C4 37 38 46 B0 B5 31 B3 C1 20 7F 03"
+  },
+  "uartAndPinHandshake": {
+    "baudRate": 9600,
+    "parityMode": "8N1",
+    "wakeUpPattern": "Pattern 1: Framed (NEC/Renesas 78K0/RL78: 0x00+0x00 -> SOH Reset 0x00)",
+    "syncPulseHex": "0x00 (10ms) 0x00 + 01 01 00 FF 03",
+    "flmd0ModePin": "HIGH (+5V) via DTR=false",
+    "resetPinIdle": "HIGH (+5V) via RTS=false",
+    "resetPinPulsePolarity": "Active-Low Pulse (0V RTS=true for 100ms -> +5V RTS=false)",
+    "echoCancellation": false
+  },
+  "memoryGeometry": {
+    "flashStartAddress": "0x000000",
+    "flashEndAddress": "0x007FFF (Fallback)",
+    "flashSizeDetectionRule": "C0/Fallback Boundary -> 0x007FFF (Fallback)",
+    "pageSizeBytes": 256,
+    "blockSizeBytes": 1024
+  },
+  "readExtractionStatus": {
+    "isLockedForSafeRead": true,
+    "hasPartialBypass": true,
+    "ignoredNoiseCommandsCount": 0,
+    "verify0x13DiffResult": "Page0xFF(256B)->0x0F | Page0x00(256B)->0x0F | رد متطابق/حماية قفل",
+    "winningReadSchool": "Winning Non-Standard Extraction Path (Block-0 Bypass + 0xB0/0x13)",
+    "safeReadTests": [
+      { "school": "مدرسة القراءة المباشرة (0x11, 0x03, 0x18, 0x74, USBDM, ST-LINK, USBasp)", "passed": false, "detail": "فشلت جميع أوامر القراءة المباشرة" },
+      { "school": "مدرسة السحب عبر بصمة بايت واحد (0xB0 على 1B ثم 2B)", "passed": false, "detail": "فشل نطاق 1B/2B في 0xB0" },
+      { "school": "مدرسة التحقق التدريجي (Verify 0x13: مقارنة صفحة 0xFF مع 0x00 لكشف القفل)", "passed": true, "detail": "Page0xFF(256B)->0x0F | Page0x00(256B)->0x0F | رد متطابق/حماية قفل (لا يكفي لفك القفل للسحب المباشر)" },
+      { "school": "مدرسة قراءة الهوية الخام بدون قوائم مغلقة (SDID / PARTID / IDCODE / Signature)", "passed": true, "detail": "[0xC0] |78F1  | Raw=10 7F 04 7C 7F 7F 01 C4 37 38 46 B0 B5 31 B3 C1 20 7F 03" },
+      { "school": "مدرسة حقن/فحص الرام (RAM Stub في عنوان مؤقت آمن)", "passed": false, "detail": "لا يقبل تحميل كود RAM مؤقت" }
+    ]
+  },
+  "safeReadCommands": [
+    { "cmd": "0x00", "lenArgs": 0, "reply": "0x06", "role": "Reset / Get" },
+    { "cmd": "0x13", "lenArgs": 6, "reply": "0x05", "role": "Verify / Compare" },
+    { "cmd": "0x32", "lenArgs": 6, "reply": "0x05", "role": "Blank Check" },
+    { "cmd": "0x90", "lenArgs": 4, "reply": "0x05", "role": "Oscillation Frequency Set" },
+    { "cmd": "0x9E", "lenArgs": 0, "reply": "0x06", "role": "Custom / Vendor Cmd" },
+    { "cmd": "0xA4", "lenArgs": 2, "reply": "0x05", "role": "Custom / Vendor Cmd" },
+    { "cmd": "0xB0", "lenArgs": 6, "reply": "0x05", "role": "Checksum" },
+    { "cmd": "0xC0", "lenArgs": 0, "reply": "0x06", "role": "Silicon Signature" },
+    { "cmd": "0xC5", "lenArgs": 0, "reply": "0x06", "role": "Version / Status" }
+  ],
+  "readTimingMs": {
+    "resetPulseMs": 100,
+    "postResetDelayMs": 150,
+    "syncByteGapMs": 10,
+    "interByteDelayMs": 1,
+    "frameToFrameDelayMs": 120,
+    "baudSwitchDelayMs": 25
+  },
+  "frameFormat": {
+    "protocol": "NEC / Renesas 78K0 / RL78 Framed (SOH/STX/ETB/ETX)",
+    "soh": "0x01",
+    "ack": "0x06",
+    "endianness": "Big-Endian (24-bit: Addr_H, Addr_M, Addr_L)"
+  },
+  "exactDynamicReadWorkflow": [
+    "1. Apply Pin Logic: FLMD0/MODE=HIGH (+5V) via DTR=false, RESET Idle=HIGH (+5V) via RTS=false, Pulse=Active-Low Pulse (0V RTS=true for 100ms -> +5V RTS=false) (100ms -> wait 150ms).",
+    "2. Open Adapter/UART (9600 bps 8N1, echoCancellation=false); run wake-up pattern [Pattern 1: Framed (NEC/Renesas 78K0/RL78: 0x00+0x00 -> SOH Reset 0x00)] (0x00 (10ms) 0x00 + 01 01 00 FF 03).",
+    "3. Run Auto-ID (Wake via [Pattern 1: Framed (NEC/Renesas 78K0/RL78: 0x00+0x00 -> SOH Reset 0x00)] @ 9600 8N1 -> query universal ID opcodes [0xC0,0xC5,0xFB,0x01,0x02,0x00,0x9F,0xAF] -> matched: 0xC0->|78F1 , 0xC5->00 00 00 02 01 00, 0x00->02 01 06 F9 03) -> RawID=[0xC0] |78F1  | Raw=10 7F 04 7C 7F 7F 01 C4 37 38 46 B0 B5 31 B3 C1 20 7F 03 & Dynamic Flash Probe 4KB..2MB -> 0x000000..0x007FFF (Fallback).",
+    "4. Crystal/Oscillator Lock: 0x90 crystal matrix probed (45 entries) without 0x06 ACK — target uses locked internal clock.",
+    "5. Speed Transition: Connect at 9600 8N1 -> lock 0x90 (--) -> send 0x9A [code] -> wait 25ms -> reconfigure host UART -> confirm 0x00 Ping -> Supported: 9600 bps (wait 25ms after ACK).",
+    "6. Winning Non-Standard Extraction Path (Block-0 Bypass + 0xB0/0x13): Block-0 zeroed/partially bypassed (Page0xFF(256B)->0x0F | Page0x00(256B)->0x0F | رد متطابق/حماية قفل).",
+    "7. Extract remaining protected Flash blocks starting at Block 2 (0x0400..0x007FFF (Fallback)) via 0xB0 Checksum + 0x13 Verify probes."
+  ],
+  "universalLiveReadProof": {
+    "passed": true,
+    "mode": "Winning Non-Standard Extraction Path (Block-0 Bypass + 0xB0/0x13)",
+    "statusReport": "✅ نجاح مسار الاستخراج غير القياسي بعد تجاوز Block 0 (0x000400..0x0004FF): 0xB0 CS16=0x0001 | 0x13=0x06",
+    "first32BytesHex": "0xB0 CS16=0x0001 | 0x13=0x06 @ 0x000400..0x0004FF"
+  },
+  "antiDummyValidationRules": [
+    "Reject any extracted firmware file immediately if >= 99% of bytes are 0x00 or 0xFF unless it passes a genuine on-chip Verify command inside the MCU.",
+    "Verify extracted RX payload bytes never match TX command frame bytes (strict UART diode-echo rejection).",
+    "Validate Verify/Compare commands with two vectors: unmodified extracted bytes MUST return ACK, and 1-byte mutated bytes MUST return Mismatch/Verify Error.",
+    "On blank (0xFF) test chips, execute Write-Read closed-loop proof using [55 AA 12 34 56 78 9A BC DE F0 11 22 33 44 55 66] at (End_Addr - PageSize + 1) and confirm 100% read-back equality."
+  ]
+}

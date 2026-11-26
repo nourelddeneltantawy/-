@@ -17,6 +17,7 @@ import com.example.util.ChipAutoDetectResult
 import com.example.util.FirmwareParser
 import com.example.util.FlashOperationResult
 import com.example.util.Nec78k0ProtocolEngine
+import com.example.util.Nec78k0ProtocolRegistry
 import com.example.util.Nec78k0RecoveryManager
 import com.example.util.R8cProtocolEngine
 import com.example.util.UsbConnectResult
@@ -94,7 +95,8 @@ data class McuProgrammerUiState(
     val nec78k0DetectedInfo: Nec78k0ProtocolEngine.Nec78k0DetectedInfo? = null,
     val pendingRescueSessions: List<Nec78k0RecoveryManager.Nec78k0RecoverySession> = emptyList(),
     val watchdogAlertMessage: String? = null,
-    val watchdogPausedBlock: Int? = null
+    val watchdogPausedBlock: Int? = null,
+    val isCurrentDumpMcuVerified: Boolean = false
 )
 
 class McuProgrammerViewModel(application: Application) : AndroidViewModel(application) {
@@ -495,7 +497,7 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                     isAutoDetecting = true,
                     enableDtrRtsReset = if (is78k0) true else it.enableDtrRtsReset,
                     enableEchoCancellation = if (is78k0) false else it.enableEchoCancellation,
-                    autoDetectStatus = "جاري فحص $familyHint عبر USB OTG (${if (is78k0) "FT232 DTR/RTS 50ms -> 0xC0 / 0xB0" else "مزامنة الدايود"})...",
+                    autoDetectStatus = "جاري فحص $familyHint عبر USB OTG (${if (is78k0) "FT232 DTR/RTS 100ms/150ms -> 0xC0 / 0xB0" else "مزامنة الدايود"})...",
                     autoDetectIsSuccess = false
                 )
             }
@@ -867,7 +869,8 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                         loadedFormat = parsed.format,
                         loadedNonEmptyCount = parsed.nonEmptyBytesCount,
                         firstNonEmptyRowIndex = firstDataRow,
-                        hexJumpSequence = it.hexJumpSequence + 1
+                        hexJumpSequence = it.hexJumpSequence + 1,
+                        isCurrentDumpMcuVerified = false
                     )
                 }
                 val startHex = String.format(Locale.US, "0x%08X", resolvedBase + firstDataRow * 16)
@@ -893,6 +896,18 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
         val dfBase = state.dataFlashBaseAddress
         val chipConfig = state.selectedProcessor?.chipConfig
         val isMergedMode = state.dataFlashMode == DataFlashExportMode.MERGED
+
+        // Anti-Dummy Rule 1: Never allow saving >= 99% 0x00/0xFF extracted dumps without on-chip MCU Verify confirmation
+        if (state.loadedFormat == "Chip Read" &&
+            Nec78k0ProtocolRegistry.isDummyAllZeroOrFf(buffer) &&
+            !state.isCurrentDumpMcuVerified
+        ) {
+            addLog(
+                "تم رفض حفظ السوفت المسحوب: نسبة بايتات 0x00/0xFF >= 99% ولم يتم اجتياز اختبار Verify الحقيقي داخل المعالج.",
+                LogLevel.ERROR
+            )
+            return
+        }
 
         viewModelScope.launch {
             try {
@@ -1091,7 +1106,8 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                                 firstNonEmptyRowIndex = firstDataRow,
                                 hexJumpSequence = it.hexJumpSequence + 1,
                                 watchdogAlertMessage = null,
-                                watchdogPausedBlock = null
+                                watchdogPausedBlock = null,
+                                isCurrentDumpMcuVerified = res.isMcuVerified
                             )
                         }
                         refresh78k0RescueSessions()
@@ -1220,7 +1236,8 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                                     it.idCodeBytesHex
                                 },
                                 loadedNonEmptyCount = 0,
-                                firstNonEmptyRowIndex = 0
+                                firstNonEmptyRowIndex = 0,
+                                isCurrentDumpMcuVerified = false
                             )
                         }
                         addLog(res.message, LogLevel.SUCCESS)

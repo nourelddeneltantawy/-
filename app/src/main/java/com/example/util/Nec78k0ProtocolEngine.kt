@@ -91,7 +91,9 @@ object Nec78k0ProtocolEngine {
         val fullFlashChecksum16: Int,
         val block0Checksum16: Int,
         val rawSignatureHex: String,
-        val matchedProcessor: McuProcessor?
+        val matchedProcessor: McuProcessor?,
+        val protocolId: String = Nec78k0ProtocolRegistry.PROTOCOL_ID,
+        val prefersBlockErase0x22: Boolean = false
     ) {
         val fullFlashChecksumHex: String
             get() = "%04X".format(fullFlashChecksum16 and 0xFFFF)
@@ -206,15 +208,15 @@ object Nec78k0ProtocolEngine {
         val rtsResetHigh = invertControlPolarity
         val polarityTag = if (invertControlPolarity) "قطبية معكوسة في الخلفية" else "قطبية FT232 Active-Low"
 
-        onLog("2) ضبط خطوط التحكم ($polarityTag): setDTR($dtrFlmd0High) [FLMD0=+5V] + setRTS($rtsResetLow) [RESET=0V] -> انتظار 100ms...")
+        onLog("2) ضبط خطوط التحكم ($polarityTag): setDTR($dtrFlmd0High) [FLMD0=+5V] + setRTS($rtsResetLow) [RESET=0V] -> انتظار ${Nec78k0ProtocolRegistry.RESET_PULSE_MS}ms...")
         transport.setDtr(dtrFlmd0High, onLog)
         transport.setRts(rtsResetLow, onLog)
-        delay(100)
+        delay(Nec78k0ProtocolRegistry.RESET_PULSE_MS)
 
-        onLog("3) تحرير الريسيت: setRTS($rtsResetHigh) [RESET=+5V] مع إبقاء setDTR($dtrFlmd0High) [FLMD0=+5V] -> انتظار 150ms لاستقرار المذبذب...")
+        onLog("3) تحرير الريسيت: setRTS($rtsResetHigh) [RESET=+5V] مع إبقاء setDTR($dtrFlmd0High) [FLMD0=+5V] -> انتظار ${Nec78k0ProtocolRegistry.POST_RESET_DELAY_MS}ms لاستقرار المذبذب...")
         transport.setDtr(dtrFlmd0High, onLog)
         transport.setRts(rtsResetHigh, onLog)
-        delay(150)
+        delay(Nec78k0ProtocolRegistry.POST_RESET_DELAY_MS)
         transport.flushInputBuffer()
 
         if (!transport.isDeviceAttached()) {
@@ -222,13 +224,13 @@ object Nec78k0ProtocolEngine {
             return false
         }
 
-        onLog("4) إرسال نبضة المزامنة [0x00, 0x00] بفاصل 10ms على 9600 bps (8N1) ثم انتظار 50ms...")
+        onLog("4) إرسال نبضة المزامنة [0x00, 0x00] بفاصل ${Nec78k0ProtocolRegistry.SYNC_BYTE_GAP_MS}ms على ${Nec78k0ProtocolRegistry.INITIAL_BAUD_RATE} bps (8N1) ثم انتظار 50ms...")
         val err1 = transport.writeRaw(byteArrayOf(0x00))
         if (err1 != null) {
             onLog("TX Error (Sync #1): $err1")
             return false
         }
-        delay(10)
+        delay(Nec78k0ProtocolRegistry.SYNC_BYTE_GAP_MS)
 
         val err2 = transport.writeRaw(byteArrayOf(0x00))
         if (err2 != null) {
@@ -932,6 +934,8 @@ object Nec78k0ProtocolEngine {
         val extractionStartMs = System.currentTimeMillis()
         val initialDoneBytes = minOf(startBlock * BLOCK_SIZE, totalSize)
         var supports1024Read: Boolean? = null
+        var directRead0x18Unsupported = false
+        var twoVectorVerifyPassedInExtraction = false
 
         for (blockIdx in startBlock until blockCount) {
             currentCoroutineContext().ensureActive()
@@ -971,7 +975,7 @@ object Nec78k0ProtocolEngine {
                 val readBytes = ByteArray(BLOCK_SIZE)
                 var readFailed = false
 
-                if (supports1024Read != false) {
+                if (!directRead0x18Unsupported && supports1024Read != false) {
                     when (val fullReadRes = readRangeVia0x18(
                         transport = transport,
                         startAddr = blockStart,
@@ -994,6 +998,10 @@ object Nec78k0ProtocolEngine {
                             supports1024Read = false
                             onLog("ملاحظة: أمر 0x18 بنطاق 1024B أرجع 0x05 — التبديل إلى قراءة 4 صفحات × 256B بأمر 0x18.")
                         }
+                        is Read0x18Result.CommandUnsupported -> {
+                            directRead0x18Unsupported = true
+                            onLog("ملاحظة: أمر القراءة المباشر 0x18 غير مدعوم (${fullReadRes.statusLabel}) — التحويل إلى مسار 0x32/0xB0/0x13...")
+                        }
                         is Read0x18Result.TransportLost -> {
                             blockFailureIsUsb = fullReadRes.isUsbDetached
                             blockFailureReason = fullReadRes.reason
@@ -1013,7 +1021,7 @@ object Nec78k0ProtocolEngine {
                     }
                 }
 
-                if (!readFailed && supports1024Read == false) {
+                if (!directRead0x18Unsupported && !readFailed && supports1024Read == false) {
                     for (pageIdx in 0 until PAGES_PER_BLOCK) {
                         val pStart = blockStart + (pageIdx * PAGE_SIZE)
                         val pEnd = pStart + PAGE_SIZE - 1
@@ -1035,9 +1043,10 @@ object Nec78k0ProtocolEngine {
                             is Read0x18Result.Success -> {
                                 System.arraycopy(pageReadRes.bytes, 0, readBytes, pageIdx * PAGE_SIZE, PAGE_SIZE)
                             }
-                            is Read0x18Result.ParameterUnsupported -> {
-                                blockFailureReason = "رفض المعالج أمر القراءة 0x18 لنطاق 256B أيضاً (0x05 Parameter Error)."
-                                readFailed = true
+                            is Read0x18Result.ParameterUnsupported,
+                            is Read0x18Result.CommandUnsupported -> {
+                                directRead0x18Unsupported = true
+                                onLog("ملاحظة: أمر القراءة 0x18 مرفوض على 256B أيضاً — التحويل إلى مسار 0x32 Blank Check + 0xB0 Checksum + 0x13 Verify...")
                                 break
                             }
                             is Read0x18Result.TransportLost -> {
@@ -1051,6 +1060,40 @@ object Nec78k0ProtocolEngine {
                                 readFailed = true
                                 break
                             }
+                        }
+                    }
+                }
+
+                if (directRead0x18Unsupported) {
+                    when (val bypassRes = tryExtractUniformBlockVia0x32And0x13(
+                        transport = transport,
+                        startAddr = blockStart,
+                        endAddr = blockEnd,
+                        clockFreqMhzText = clockFreqMhzText,
+                        requireTwoVectorVerify = !twoVectorVerifyPassedInExtraction,
+                        onLog = onLog
+                    )) {
+                        is NonStandardBlockOutcome.VerifiedBytes -> {
+                            System.arraycopy(bypassRes.bytes, 0, readBytes, 0, BLOCK_SIZE)
+                            if (bypassRes.twoVectorConfirmed) {
+                                twoVectorVerifyPassedInExtraction = true
+                            }
+                        }
+                        is NonStandardBlockOutcome.LockedNonUniform -> {
+                            onLog("تنبيه أمني: الكتلة Block $blockIdx تحتوي بيانات غير فارغة وأمر 0x18 مقفول على الشريحة — استعادة Block 0 الأصلي فوراً لحماية المعالج...")
+                            restoreOriginalBlock0Safely(
+                                transport = transport,
+                                block0Bytes = fullBuffer.copyOfRange(0, BLOCK_SIZE),
+                                clockFreqMhzText = clockFreqMhzText,
+                                onLog = onLog
+                            )
+                            Nec78k0RecoveryManager.markCompletedAndCleanup(context, detectedInfo.deviceName)
+                            return FlashOperationResult.Failure(bypassRes.reason)
+                        }
+                        is NonStandardBlockOutcome.TransportLost -> {
+                            blockFailureIsUsb = bypassRes.isUsbDetached
+                            blockFailureReason = bypassRes.reason
+                            readFailed = true
                         }
                     }
                 }
@@ -1342,6 +1385,35 @@ object Nec78k0ProtocolEngine {
             )
         }
 
+        // Anti-Dummy Rule 1 & 3: Reject >= 99% 0x00/0xFF dumps unless Two-Vector 0x13 Verify confirms authentic silicon match
+        if (Nec78k0ProtocolRegistry.isDummyAllZeroOrFf(fullBuffer) && !twoVectorVerifyPassedInExtraction) {
+            val probeBlockIdx = if (blockCount > 1) 1 else 0
+            val probeStart = probeBlockIdx * BLOCK_SIZE
+            val probeEnd = probeStart + BLOCK_SIZE - 1
+            val probeSlice = fullBuffer.copyOfRange(probeStart, probeStart + BLOCK_SIZE)
+            onLog(String.format(Locale.US, "فحص ضد البيانات الوهمية (Two-Vector 0x13) على Block %d (0x%06X..0x%06X)...", probeBlockIdx, probeStart, probeEnd))
+            val twoVecOk = verifyTwoVector0x13Block(
+                transport = transport,
+                startAddr = probeStart,
+                endAddr = probeEnd,
+                expectedBlock = probeSlice,
+                clockFreqMhzText = clockFreqMhzText,
+                onLog = onLog
+            )
+            if (!twoVecOk) {
+                return pauseWithWatchdog(
+                    context = context,
+                    session = session,
+                    info = detectedInfo,
+                    partialBuffer = fullBuffer,
+                    lastGoodBlock = blockCount - 1,
+                    blockCount = blockCount,
+                    reason = "تم رفض البيانات المسحوبة (نسبة 0x00/0xFF >= 99% ولم تجتز اختبار التحقق ثنائي المتجهات 0x13 داخل المعالج).",
+                    isUsbDetached = !transport.isDeviceAttached()
+                )
+            }
+        }
+
         // Clean up checkpoint files ONLY once full checksum matches 100%
         Nec78k0RecoveryManager.markCompletedAndCleanup(context, detectedInfo.deviceName)
         onProgress(totalSize, totalSize, "تم سحب السوفت وير واستعادة المعالج الأصلي بنجاح 100%")
@@ -1349,7 +1421,8 @@ object Nec78k0ProtocolEngine {
         return FlashOperationResult.Success(
             message = "تم سحب السوفت وير واستعادة المعالج الأصلي بنجاح 100% (FullCS=${detectedInfo.fullFlashChecksumHex})",
             bytesTransferred = fullBuffer,
-            baseAddress = 0
+            baseAddress = 0,
+            isMcuVerified = true
         )
     }
 
@@ -1509,8 +1582,15 @@ object Nec78k0ProtocolEngine {
     private sealed class Read0x18Result {
         data class Success(val bytes: ByteArray) : Read0x18Result()
         data object ParameterUnsupported : Read0x18Result()
+        data class CommandUnsupported(val statusCode: Int, val statusLabel: String) : Read0x18Result()
         data class ProtocolError(val statusCode: Int, val statusLabel: String) : Read0x18Result()
         data class TransportLost(val reason: String, val isUsbDetached: Boolean) : Read0x18Result()
+    }
+
+    private sealed class NonStandardBlockOutcome {
+        data class VerifiedBytes(val bytes: ByteArray, val twoVectorConfirmed: Boolean) : NonStandardBlockOutcome()
+        data class LockedNonUniform(val reason: String) : NonStandardBlockOutcome()
+        data class TransportLost(val reason: String, val isUsbDetached: Boolean) : NonStandardBlockOutcome()
     }
 
     internal sealed class ChecksumQueryResult {
@@ -1723,6 +1803,7 @@ object Nec78k0ProtocolEngine {
                 is Nec78k0TransceiveResult.ProtocolError -> {
                     return when (cmdRes.statusCode) {
                         STS_PARAMETER_ERROR -> Read0x18Result.ParameterUnsupported
+                        STS_COMMAND_ERROR -> Read0x18Result.CommandUnsupported(cmdRes.statusCode, cmdRes.statusLabel)
                         else -> Read0x18Result.ProtocolError(cmdRes.statusCode, cmdRes.statusLabel)
                     }
                 }
@@ -1747,7 +1828,7 @@ object Nec78k0ProtocolEngine {
                     return Read0x18Result.TransportLost("انقطع اتصال USB OTG أثناء استلام بيانات $label", isUsbDetached = true)
                 }
 
-                // Wait first 600ms silently for back-to-back STX data frames; if ETB pauses, send host ACK [01 01 06 F9 03]
+                // Wait first 650ms silently for back-to-back STX data frames; if ETB pauses, send host ACK [01 01 06 F9 03]
                 var rxFrame = readOneRxFrame(transport, if (out.size() == 0) PAGE_ACK_TIMEOUT_MS else 650) { stray ->
                     onLog("RX Raw Live ($label): $stray")
                 }
@@ -1771,13 +1852,23 @@ object Nec78k0ProtocolEngine {
                     break
                 }
 
+                // Anti-Dummy Rule 2: Reject RX payload that echoes back TX command frame bytes
+                if (rxFrame.rawFrame.contentEquals(readCmd) ||
+                    (rxFrame.payload.size >= readCmd.size && rxFrame.payload.copyOfRange(0, readCmd.size).contentEquals(readCmd))
+                ) {
+                    onLog("تحذير (Echo Rejection): تم رفض إطار استقبال مطابق لإطار الإرسال TX في $label.")
+                    lastTimeoutReason = "صدى إرسال مرفوض (TX Echo Rejection) في $label"
+                    frameBadCs = true
+                    break
+                }
+
                 // Handle trailing short protocol error frame if MCU aborts mid-read
                 if (rxFrame.payload.size <= 2 && rxFrame.endByte == ETX && out.size() + rxFrame.payload.size < expectedLength) {
                     val errCode = rxFrame.sts1
-                    return if (errCode == STS_PARAMETER_ERROR) {
-                        Read0x18Result.ParameterUnsupported
-                    } else {
-                        Read0x18Result.ProtocolError(errCode, statusDescription(errCode))
+                    return when (errCode) {
+                        STS_PARAMETER_ERROR -> Read0x18Result.ParameterUnsupported
+                        STS_COMMAND_ERROR -> Read0x18Result.CommandUnsupported(errCode, statusDescription(errCode))
+                        else -> Read0x18Result.ProtocolError(errCode, statusDescription(errCode))
                     }
                 }
 
@@ -1791,7 +1882,12 @@ object Nec78k0ProtocolEngine {
 
             if (!frameTimedOut && !frameBadCs && out.size() >= expectedLength) {
                 val full = out.toByteArray()
-                return Read0x18Result.Success(if (full.size == expectedLength) full else full.copyOfRange(0, expectedLength))
+                val sliced = if (full.size == expectedLength) full else full.copyOfRange(0, expectedLength)
+                if (sliced.size >= readCmd.size && sliced.copyOfRange(0, readCmd.size).contentEquals(readCmd)) {
+                    lastTimeoutReason = "تم رفض البيانات لأنها تطابق بايتات أمر الإرسال (Echo Rejection)"
+                    continue
+                }
+                return Read0x18Result.Success(sliced)
             }
         }
 
@@ -1932,7 +2028,7 @@ object Nec78k0ProtocolEngine {
                 }
             }
 
-            delay(10)
+            delay(Nec78k0ProtocolRegistry.COMMAND_TO_DATA_DELAY_MS)
             transport.flushInputBuffer()
 
             var pageTimedOut = false
@@ -1944,6 +2040,9 @@ object Nec78k0ProtocolEngine {
                 when (val ackRes = sendStxDataPageAndAwaitAck(transport, dataFrame, PAGE_ACK_TIMEOUT_MS, "0x13 صفحة ${page + 1}/$PAGES_PER_BLOCK", onLog)) {
                     is FrameAckOutcome.AckSuccess -> {
                         onPageProgress?.invoke((page + 1) * PAGE_SIZE)
+                        if (!isLast) {
+                            delay(Nec78k0ProtocolRegistry.FRAME_TO_FRAME_DELAY_MS)
+                        }
                     }
                     is FrameAckOutcome.FrameError -> {
                         return VerifyOutcome.Mismatch(ackRes.description, ackRes.errorCode, page + 1)
@@ -1968,6 +2067,189 @@ object Nec78k0ProtocolEngine {
             lastTimeoutPage,
             isUsbDetached = false
         )
+    }
+
+    internal suspend fun verifyPageVia0x13(
+        transport: Serial78k0Transport,
+        startAddr: Int,
+        endAddr: Int,
+        pageBytes: ByteArray,
+        clockFreqMhzText: String = "8 MHz",
+        onLog: (String) -> Unit
+    ): VerifyOutcome {
+        require(pageBytes.size == PAGE_SIZE) { "78K0 verify page must be 256 bytes" }
+        val verifyCmd = buildAddressRangeFrame(CMD_VERIFY, startAddr, endAddr)
+        var lastTimeoutReason = "انتهت مهلة Verify 0x13 (صفحة)"
+        for (attempt in 0..MAX_TIMEOUT_RETRIES) {
+            if (attempt > 0) {
+                if (!transport.isDeviceAttached()) {
+                    return VerifyOutcome.TransportLost("انقطع اتصال USB OTG أثناء Verify 0x13", 1, isUsbDetached = true)
+                }
+                val resync = resync78k0Bootloader(transport, clockFreqMhzText, onLog)
+                if (resync is Nec78k0TransceiveResult.DisconnectedOrTimeout) {
+                    if (resync.isUsbDetached) return VerifyOutcome.TransportLost(resync.reason, 1, isUsbDetached = true)
+                    lastTimeoutReason = resync.reason
+                    continue
+                }
+            }
+            when (val cmdRes = transceiveSingleFrame(transport, verifyCmd, HEADER_ACK_TIMEOUT_MS, onLog, verboseLog = false)) {
+                is Nec78k0TransceiveResult.Success -> Unit
+                is Nec78k0TransceiveResult.ProtocolError -> return VerifyOutcome.Mismatch(cmdRes.statusLabel, cmdRes.statusCode, 0)
+                is Nec78k0TransceiveResult.DisconnectedOrTimeout -> {
+                    if (cmdRes.isUsbDetached) return VerifyOutcome.TransportLost(cmdRes.reason, 0, isUsbDetached = true)
+                    lastTimeoutReason = cmdRes.reason
+                    continue
+                }
+            }
+            delay(Nec78k0ProtocolRegistry.COMMAND_TO_DATA_DELAY_MS)
+            transport.flushInputBuffer()
+            val dataFrame = buildDataFrame(pageBytes, isLast = true)
+            when (val ackRes = sendStxDataPageAndAwaitAck(transport, dataFrame, PAGE_ACK_TIMEOUT_MS, "0x13 صفحة مفردة", onLog, verboseLog = false)) {
+                is FrameAckOutcome.AckSuccess -> return VerifyOutcome.Match
+                is FrameAckOutcome.FrameError -> return VerifyOutcome.Mismatch(ackRes.description, ackRes.errorCode, 1)
+                is FrameAckOutcome.UsbDetached -> return VerifyOutcome.TransportLost(ackRes.reason, 1, isUsbDetached = true)
+                is FrameAckOutcome.Timeout -> lastTimeoutReason = ackRes.reason
+            }
+        }
+        return VerifyOutcome.TransportLost(lastTimeoutReason, 1, isUsbDetached = false)
+    }
+
+    /**
+     * Anti-Dummy Rule 3: Two-vector 0x13 Verify validation.
+     * Unmodified bytes MUST return ACK (0x06), and a 1-byte mutated copy MUST return Mismatch (0x0F/0x1C).
+     */
+    internal suspend fun verifyTwoVector0x13Block(
+        transport: Serial78k0Transport,
+        startAddr: Int,
+        endAddr: Int,
+        expectedBlock: ByteArray,
+        clockFreqMhzText: String,
+        onLog: (String) -> Unit
+    ): Boolean {
+        val unmodifiedOutcome = verifyBlockVia0x13(
+            transport = transport,
+            startAddr = startAddr,
+            endAddr = endAddr,
+            blockBytes = expectedBlock,
+            clockFreqMhzText = clockFreqMhzText,
+            onLog = onLog
+        )
+        if (unmodifiedOutcome !is VerifyOutcome.Match) {
+            onLog("فشل التحقق ثنائي المتجهات (Vector 1: البيانات الأصلية لم ترجع ACK 0x06).")
+            return false
+        }
+        val mutatedBlock = expectedBlock.copyOf()
+        mutatedBlock[0] = (mutatedBlock[0].toInt() xor 0x01).toByte()
+        val mutatedOutcome = verifyBlockVia0x13(
+            transport = transport,
+            startAddr = startAddr,
+            endAddr = endAddr,
+            blockBytes = mutatedBlock,
+            clockFreqMhzText = clockFreqMhzText,
+            onLog = onLog
+        )
+        return when (mutatedOutcome) {
+            is VerifyOutcome.Mismatch -> {
+                onLog("نجح التحقق ثنائي المتجهات (0x13 Two-Vector): الأصل=0x06 ACK • المعدّل 1B=${mutatedOutcome.detail}")
+                true
+            }
+            is VerifyOutcome.Match -> {
+                onLog("تحذير أمني: المعالج أرجع ACK لبايت معدل — فشل اختبار Two-Vector 0x13!")
+                false
+            }
+            is VerifyOutcome.TransportLost -> {
+                onLog("انقطاع/مهلة أثناء المتجه الثاني 0x13: ${mutatedOutcome.reason}")
+                false
+            }
+        }
+    }
+
+    private suspend fun tryExtractUniformBlockVia0x32And0x13(
+        transport: Serial78k0Transport,
+        startAddr: Int,
+        endAddr: Int,
+        clockFreqMhzText: String,
+        requireTwoVectorVerify: Boolean,
+        onLog: (String) -> Unit
+    ): NonStandardBlockOutcome {
+        val csRes = queryChecksum16WithRetry(
+            transport = transport,
+            startAddr = startAddr,
+            endAddr = endAddr,
+            clockFreqMhzText = clockFreqMhzText,
+            opLabel = String.format(Locale.US, "0xB0 مسار بديل (0x%06X)", startAddr),
+            maxRetries = 2,
+            verboseLog = false,
+            onLog = onLog
+        )
+        val hwCs = when (csRes) {
+            is ChecksumQueryResult.Success -> csRes.checksum16 and 0xFFFF
+            is ChecksumQueryResult.TransportLost -> return NonStandardBlockOutcome.TransportLost(csRes.reason, csRes.isUsbDetached)
+            is ChecksumQueryResult.ProtocolError -> return NonStandardBlockOutcome.LockedNonUniform("فشل 0xB0 عند 0x%06X: ${csRes.statusLabel}".format(Locale.US, startAddr))
+            is ChecksumQueryResult.ParameterError -> return NonStandardBlockOutcome.LockedNonUniform("خطأ معاملات 0xB0 عند 0x%06X".format(Locale.US, startAddr))
+        }
+
+        val blankRes = transceiveWithTimeoutRetry(
+            transport = transport,
+            txFrame = buildAddressRangeFrame(CMD_BLANK_CHECK, startAddr, endAddr),
+            timeoutMs = HEADER_ACK_TIMEOUT_MS,
+            clockFreqMhzText = clockFreqMhzText,
+            opLabel = String.format(Locale.US, "فحص الفراغ 0x32 (0x%06X)", startAddr),
+            onLog = onLog
+        )
+        val isBlankAck = blankRes is Nec78k0TransceiveResult.Success
+        val allFf = ByteArray(BLOCK_SIZE) { 0xFF.toByte() }
+        val allFfCs = Nec78k0Block0Reconstructor.compute78k0Checksum16(allFf) and 0xFFFF
+        val allZero = ByteArray(BLOCK_SIZE) { 0x00 }
+        val allZeroCs = Nec78k0Block0Reconstructor.compute78k0Checksum16(allZero) and 0xFFFF
+
+        val candidate = when {
+            isBlankAck && hwCs == allFfCs -> allFf
+            hwCs == allZeroCs -> allZero
+            else -> null
+        }
+
+        if (candidate != null) {
+            val verified = if (requireTwoVectorVerify) {
+                verifyTwoVector0x13Block(transport, startAddr, endAddr, candidate, clockFreqMhzText, onLog)
+            } else {
+                verifyBlockVia0x13(transport, startAddr, endAddr, candidate, clockFreqMhzText, onLog = onLog) is VerifyOutcome.Match
+            }
+            if (verified) {
+                return NonStandardBlockOutcome.VerifiedBytes(candidate, twoVectorConfirmed = requireTwoVectorVerify)
+            }
+        }
+
+        return NonStandardBlockOutcome.LockedNonUniform(
+            String.format(
+                Locale.US,
+                "الشريحة محمية ومقفولة عن القراءة المباشرة (أمر 0x18 مرفوض والكتلة 0x%06X..0x%06X مبرمجة ببصمة 0xB0=%04X). تم الحفاظ على Block 0 واستعادته بأمان.",
+                startAddr, endAddr, hwCs
+            )
+        )
+    }
+
+    private suspend fun restoreOriginalBlock0Safely(
+        transport: Serial78k0Transport,
+        block0Bytes: ByteArray,
+        clockFreqMhzText: String,
+        onLog: (String) -> Unit
+    ) {
+        if (!transport.isDeviceAttached()) return
+        val eraseCmd = buildAddressRangeFrame(CMD_BLOCK_ERASE, 0x000000, BLOCK_SIZE - 1)
+        val eraseRes = transceiveWithTimeoutRetry(transport, eraseCmd, HEADER_ACK_TIMEOUT_MS, clockFreqMhzText, "استعادة Block 0 (0x22)", onLog)
+        if (eraseRes is Nec78k0TransceiveResult.Success) {
+            delay(Nec78k0ProtocolRegistry.ERASE_WRITE_BUSY_WAIT_MS)
+            programBlockFromBuffer(
+                transport = transport,
+                startAddr = 0x000000,
+                endAddr = BLOCK_SIZE - 1,
+                blockData = block0Bytes,
+                clockFreqMhzText = clockFreqMhzText,
+                eraseBlockBeforeRetry = true,
+                onLog = onLog
+            )
+        }
     }
 
     /**
@@ -2009,7 +2291,7 @@ object Nec78k0ProtocolEngine {
                 if (eraseBlockBeforeRetry) {
                     val eraseCmd = buildAddressRangeFrame(CMD_BLOCK_ERASE, startAddr, endAddr)
                     when (val eraseRes = transceiveSingleFrame(transport, eraseCmd, HEADER_ACK_TIMEOUT_MS, onLog)) {
-                        is Nec78k0TransceiveResult.Success -> delay(15)
+                        is Nec78k0TransceiveResult.Success -> delay(Nec78k0ProtocolRegistry.ERASE_WRITE_BUSY_WAIT_MS)
                         is Nec78k0TransceiveResult.ProtocolError -> {
                             if (eraseRes.statusCode == STS_PROTECT_ERROR) {
                                 return ProgramOutcome.ProtocolError("الشريحة محمية (ERR_PROTECT 0x10): أمر البرمجة مرفوض.", isProtected = true)
@@ -2046,8 +2328,8 @@ object Nec78k0ProtocolEngine {
                 }
             }
 
-            // Allow 78K0 bootloader to switch cleanly from SOH command mode to STX data frame reception mode
-            delay(10)
+            // Allow 78K0 bootloader to switch cleanly from SOH command mode to STX data frame reception mode (commandToDataDelayMs = 23ms)
+            delay(Nec78k0ProtocolRegistry.COMMAND_TO_DATA_DELAY_MS)
             transport.flushInputBuffer()
 
             var pageTimedOut = false
@@ -2059,6 +2341,9 @@ object Nec78k0ProtocolEngine {
                 when (val ackRes = sendStxDataPageAndAwaitAck(transport, dataFrame, PAGE_ACK_TIMEOUT_MS, "0x40 صفحة ${page + 1}/$PAGES_PER_BLOCK", onLog)) {
                     is FrameAckOutcome.AckSuccess -> {
                         onPageProgress?.invoke((page + 1) * PAGE_SIZE)
+                        if (!isLast) {
+                            delay(Nec78k0ProtocolRegistry.FRAME_TO_FRAME_DELAY_MS)
+                        }
                     }
                     is FrameAckOutcome.UsbDetached -> {
                         return ProgramOutcome.TransportFailure(ackRes.reason, isUsbDetached = true)
@@ -2236,22 +2521,32 @@ object Nec78k0ProtocolEngine {
         catalog: List<McuProcessor>
     ): Nec78k0DetectedInfo {
         val payload = sigFrame.payload
-        val ascii = payload.filter { it in 32..126 }.map { it.toInt().toChar() }.joinToString("")
-        val deviceMatch = Regex("""(?:uPD|D)?78F[0-9]{4}[A-Z0-9]{0,3}""", RegexOption.IGNORE_CASE).find(ascii)
+        val isSampleKeyMatch = Nec78k0ProtocolRegistry.matchesSampleDatabaseKey(sigFrame.rawFrame) ||
+            Nec78k0ProtocolRegistry.matchesSampleDatabaseKey(payload)
+        val parityAscii = Nec78k0ProtocolRegistry.decodeParityAsciiSignature(payload)
+        val rawAscii = payload.filter { it in 32..126 }.map { it.toInt().toChar() }.joinToString("")
+        val deviceRegex = Regex("""(?:uPD|D)?78F[0-9]{4}[A-Z0-9]{0,3}""", RegexOption.IGNORE_CASE)
+        val deviceMatch = deviceRegex.find(parityAscii) ?: deviceRegex.find(rawAscii)
         val rawDeviceName = deviceMatch?.value?.trim()?.uppercase()
-            ?: fallbackChip?.partNumber?.uppercase()
-            ?: "D78F0513A"
+            ?: if (isSampleKeyMatch) Nec78k0ProtocolRegistry.SAMPLE_CHIP_PART_NUMBER.uppercase()
+            else fallbackChip?.partNumber?.uppercase()
+            ?: "uPD78F0513A"
 
-        val matched = findMatchingCatalogProcessor(rawDeviceName, catalog) ?: fallbackChip
+        val matched = findMatchingCatalogProcessor(rawDeviceName, catalog)
+            ?: if (isSampleKeyMatch) findMatchingCatalogProcessor("uPD78F0513", catalog) else null
+            ?: fallbackChip
         val canonicalDeviceName = matched?.partNumber ?: rawDeviceName
 
         // Parse 3-byte Last Code Flash Address from Silicon Signature payload if valid
         val parsedEndAddress = extractEndAddressFromSignature(payload)
-            ?: ((matched?.flashSizeBytes ?: (32 * 1024)) - 1)
+            ?: ((matched?.flashSizeBytes ?: Nec78k0ProtocolRegistry.FLASH_SIZE_BYTES) - 1)
         val alignedFlashBytes = (matched?.flashSizeBytes ?: (parsedEndAddress + 1)).coerceAtLeast(BLOCK_SIZE)
         val blockCount = alignedFlashBytes / BLOCK_SIZE
         val familyGroup = infer78k0SubFamily(canonicalDeviceName, matched)
         val hasDf = matched?.chipConfig?.hasDataFlash ?: false
+        val prefersBlock0x22 = isSampleKeyMatch ||
+            canonicalDeviceName.contains("78F0513", ignoreCase = true) ||
+            rawAscii.contains("78F1", ignoreCase = true)
 
         return Nec78k0DetectedInfo(
             deviceName = canonicalDeviceName,
@@ -2263,7 +2558,9 @@ object Nec78k0ProtocolEngine {
             fullFlashChecksum16 = 0,
             block0Checksum16 = 0,
             rawSignatureHex = toHex(sigFrame.rawFrame),
-            matchedProcessor = matched
+            matchedProcessor = matched,
+            protocolId = Nec78k0ProtocolRegistry.PROTOCOL_ID,
+            prefersBlockErase0x22 = prefersBlock0x22
         )
     }
 
@@ -2293,6 +2590,10 @@ object Nec78k0ProtocolEngine {
 
     internal fun findMatchingCatalogProcessor(deviceName: String, catalog: List<McuProcessor>): McuProcessor? {
         val norm = normalize78k0Part(deviceName)
+        if (norm == "78F1" || norm == "D78F1") {
+            catalog.firstOrNull { normalize78k0Part(it.partNumber) == "D78F0513A" }?.let { return it }
+            catalog.firstOrNull { normalize78k0Part(it.partNumber) == "D78F0513" }?.let { return it }
+        }
         catalog.firstOrNull { normalize78k0Part(it.partNumber) == norm }?.let { return it }
         val trimmedRev = norm.trimEnd('A', 'B', 'C', 'D')
         catalog.firstOrNull { normalize78k0Part(it.partNumber) == trimmedRev }?.let { return it }

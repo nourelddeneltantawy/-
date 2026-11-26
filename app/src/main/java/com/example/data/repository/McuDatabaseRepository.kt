@@ -63,6 +63,8 @@ object McuDatabaseRepository {
             }
         }
 
+        ensurePlugAndPlayEntries(allProcessors)
+
         val result = LoadedMcuDatabaseResult(
             processors = allProcessors,
             loadedFileNames = loadedFiles,
@@ -70,6 +72,37 @@ object McuDatabaseRepository {
         )
         cachedResult = result
         result
+    }
+
+    private fun ensurePlugAndPlayEntries(allProcessors: MutableList<McuProcessor>) {
+        val has78f0513a = allProcessors.any {
+            it.partNumber.equals("uPD78F0513A", ignoreCase = true) ||
+                it.partNumber.equals("D78F0513A", ignoreCase = true)
+        }
+        if (!has78f0513a) {
+            val baseSample = allProcessors.firstOrNull {
+                it.partNumber.equals("uPD78F0513", ignoreCase = true)
+            }
+            val manufacturer = baseSample?.manufacturer ?: "Renesas"
+            allProcessors.add(
+                McuProcessor(
+                    id = "renesas_78k0_upd78f0513a_44",
+                    manufacturer = manufacturer,
+                    mainFamily = "78K0",
+                    subFamily = "78K0/Kx2",
+                    partNumber = "uPD78F0513A",
+                    pins = 44,
+                    flashKb = 32,
+                    displayLabel = "uPD78F0513A / 78F1 (44-Pin - 32KB)",
+                    recommendedVoltage = McuProtocolDefaults.defaultVoltage("78K0"),
+                    protocolName = McuProtocolDefaults.defaultProtocolName("78K0", "78K0/Kx2"),
+                    protocolType = McuProtocolDefaults.resolveProtocolType("78K0"),
+                    sourceFile = "plug_and_play_registry",
+                    programStartOverride = com.example.util.Nec78k0ProtocolRegistry.FLASH_START_ADDRESS,
+                    programEndOverride = com.example.util.Nec78k0ProtocolRegistry.FLASH_END_ADDRESS
+                )
+            )
+        }
     }
 
     private fun parseDatabaseJson(reader: JsonReader, fileName: String): List<McuProcessor> {

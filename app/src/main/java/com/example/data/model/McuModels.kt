@@ -253,7 +253,7 @@ object McuProtocolDefaults {
             fam.contains("RL78") -> "RL78 Single-Wire TOOL0 / 2-Wire UART Programming"
             fam.startsWith("RX") -> "RX SCI Boot Mode (MD + RESET + TXD/RXD)"
             fam.contains("78K0R") -> "78K0R Serial Programming (FLMD0 + TOOL0/UART)"
-            fam.contains("78K0") -> "78K0 UART6 Serial Flash Programming (FLMD0 + X1/Clock)"
+            fam.contains("78K0") -> "NEC / Renesas 78K0 (uPD78F) Framed Bootloader (9600 8N1 • FLMD0 +5V • SOH/STX)"
             else -> "Universal Serial Bootloader ($subFamily)"
         }
     }
@@ -282,9 +282,9 @@ object McuProtocolDefaults {
                 McuPinMapping("VCC / GND", "VDD / VSS", "تغذية وأرضي", "تغذية مشتركة", "${mcu.recommendedVoltage} + مكثف REGC")
             )
             fam.contains("78K0") -> listOf(
-                McuPinMapping("FT232 RTS", "MCU RESET#", "نبضة Reset 50ms", "خرج Reset مباشر", "توصيل مباشر: RTS=LOW لمدة 50ms ثم HIGH تلقائياً"),
-                McuPinMapping("FT232 DTR", "MCU FLMD0", "HIGH تلقائي (5V/3.3V)", "تفعيل وضع البرمجة", "توصيل مباشر: DTR=HIGH لإبقاء المعالج في وضع الفلاش"),
-                McuPinMapping("FT232 TX", "MCU RX (RXD6)", "حسب الباكج (${mcu.pins}P)", "UART TX مباشر بدون دايود", "خط إرسال مستقل تماماً إلى RXD6 في المعالج بدون دايود"),
+                McuPinMapping("FT232 RTS", "MCU RESET#", "نبضة Reset 100ms -> 150ms", "خرج Reset مباشر", "توصيل مباشر: RTS=true (0V LOW) لمدة 100ms ثم RTS=false (+5V HIGH) + انتظار 150ms"),
+                McuPinMapping("FT232 DTR", "MCU FLMD0", "HIGH +5V (DTR=false)", "تفعيل وضع البرمجة", "توصيل مباشر: DTR=false (+5V HIGH) لإبقاء المعالج في وضع الفلاش طوال الجلسة"),
+                McuPinMapping("FT232 TX", "MCU RX (RXD6)", "حسب الباكج (${mcu.pins}P)", "UART TX مباشر بدون دايود", "خط إرسال مستقل تماماً (9600 bps 8N1) إلى RXD6 في المعالج بدون دايود"),
                 McuPinMapping("FT232 RX", "MCU TX (TXD6)", "حسب الباكج (${mcu.pins}P)", "UART RX مباشر بدون دايود", "خط استقبال مستقل تماماً من TXD6 بدون دايود (Echo Cancel = OFF)"),
                 McuPinMapping("FT232 VCC / GND", "MCU VCC / GND", "تغذية 5V وأرضي", "تغذية مشتركة", "${mcu.recommendedVoltage}")
             )

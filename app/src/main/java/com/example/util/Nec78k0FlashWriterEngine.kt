@@ -2,6 +2,7 @@ package com.example.util
 
 import android.content.Context
 import com.example.data.model.McuProcessor
+import kotlinx.coroutines.delay
 import java.util.Locale
 
 /**
@@ -43,7 +44,8 @@ object Nec78k0FlashWriterEngine {
 
         val totalSize = info.flashSizeBytes
         val blockCount = info.blockCount.coerceAtLeast(1)
-        val useBlockErase = eraseMode.contains("بلوك", ignoreCase = true) ||
+        val useBlockErase = info.prefersBlockErase0x22 ||
+            eraseMode.contains("بلوك", ignoreCase = true) ||
             eraseMode.contains("Block", ignoreCase = true)
 
         val eraseErr = executeEraseInternal(
@@ -111,7 +113,8 @@ object Nec78k0FlashWriterEngine {
         var flashWasJustErased = false
         if (autoEraseBeforeWrite) {
             onLog("مرحلة 1 (Write): تنفيذ مسح الفلاش قبل الكتابة على ${info.deviceName} (${blockCount} بلوك × 1 KB)...")
-            val useBlockErase = eraseMode.contains("بلوك", ignoreCase = true) ||
+            val useBlockErase = info.prefersBlockErase0x22 ||
+                eraseMode.contains("بلوك", ignoreCase = true) ||
                 eraseMode.contains("Block", ignoreCase = true)
             val eraseErr = executeEraseInternal(
                 transport = transport,
@@ -251,7 +254,8 @@ object Nec78k0FlashWriterEngine {
         onProgress(totalSize, totalSize, "اكتملت البرمجة بنجاح 100%")
         val verifySuffix = if (autoVerifyAfterWrite) " + مطابقة $verifiedBlocks بلوك عبر 0x13" else ""
         return FlashOperationResult.Success(
-            message = "تم شحن ${info.deviceName} بنجاح ($writtenBlocks بلوك مكتوب، $skippedBlocks بلوك فارغ متخطى$verifySuffix$csSummary)."
+            message = "تم شحن ${info.deviceName} بنجاح ($writtenBlocks بلوك مكتوب، $skippedBlocks بلوك فارغ متخطى$verifySuffix$csSummary).",
+            isMcuVerified = autoVerifyAfterWrite
         )
     }
 
@@ -328,7 +332,57 @@ object Nec78k0FlashWriterEngine {
 
         onProgress(totalSize, totalSize, "اكتملت المطابقة بنسبة 100%")
         return FlashOperationResult.Success(
-            message = "تمت مطابقة ${info.deviceName} بالكامل ($verifiedBlocks/$blockCount بلوك • ${totalSize / 1024} KB) بنسبة 100%$csSummary."
+            message = "تمت مطابقة ${info.deviceName} بالكامل ($verifiedBlocks/$blockCount بلوك • ${totalSize / 1024} KB) بنسبة 100%$csSummary.",
+            isMcuVerified = true
+        )
+    }
+
+    /**
+     * Anti-Dummy Rule 4: Closed-loop blank-chip proof.
+     * Writes the 16-byte proof vector [55 AA 12 34 56 78 9A BC DE F0 11 22 33 44 55 66]
+     * at (End_Addr - PageSize + 1) and confirms 100% match via Two-Vector 0x13 Verify.
+     */
+    suspend fun runClosedLoopBlankChipProof(
+        transport: Nec78k0ProtocolEngine.Serial78k0Transport,
+        info: Nec78k0ProtocolEngine.Nec78k0DetectedInfo,
+        clockFreqMhzText: String,
+        onLog: (String) -> Unit
+    ): Boolean {
+        val testPageStart = Nec78k0ProtocolRegistry.closedLoopTestPageStartAddress(info.lastAddress, Nec78k0ProtocolEngine.PAGE_SIZE)
+        val testBlockStart = (testPageStart / BLOCK_SIZE) * BLOCK_SIZE
+        val testBlockEnd = testBlockStart + BLOCK_SIZE - 1
+        val offsetInBlock = (testPageStart - testBlockStart).coerceIn(0, BLOCK_SIZE - Nec78k0ProtocolRegistry.CLOSED_LOOP_PROOF_VECTOR.size)
+
+        val testBlock = ByteArray(BLOCK_SIZE) { 0xFF.toByte() }
+        System.arraycopy(
+            Nec78k0ProtocolRegistry.CLOSED_LOOP_PROOF_VECTOR,
+            0,
+            testBlock,
+            offsetInBlock,
+            Nec78k0ProtocolRegistry.CLOSED_LOOP_PROOF_VECTOR.size
+        )
+
+        onLog(String.format(Locale.US, "تنفيذ اختبار الحلقة المغلقة على الصفحة الأخيرة (0x%06X)...", testPageStart))
+        val progOutcome = Nec78k0ProtocolEngine.programBlockFromBuffer(
+            transport = transport,
+            startAddr = testBlockStart,
+            endAddr = testBlockEnd,
+            blockData = testBlock,
+            clockFreqMhzText = clockFreqMhzText,
+            eraseBlockBeforeRetry = true,
+            onLog = onLog
+        )
+        if (progOutcome !is Nec78k0ProtocolEngine.ProgramOutcome.Success) {
+            onLog("فشل كتابة متجه الحلقة المغلقة عند 0x%06X.".format(Locale.US, testPageStart))
+            return false
+        }
+        return Nec78k0ProtocolEngine.verifyTwoVector0x13Block(
+            transport = transport,
+            startAddr = testBlockStart,
+            endAddr = testBlockEnd,
+            expectedBlock = testBlock,
+            clockFreqMhzText = clockFreqMhzText,
+            onLog = onLog
         )
     }
 
@@ -352,6 +406,7 @@ object Nec78k0FlashWriterEngine {
             when (val res = Nec78k0ProtocolEngine.transceiveSingleFrame(transport, chipEraseCmd, COMMAND_TIMEOUT_MS, onLog)) {
                 is Nec78k0ProtocolEngine.Nec78k0TransceiveResult.Success -> {
                     onLog("RX (Chip Erase ACK): ${Nec78k0ProtocolEngine.toHex(res.frame.rawFrame)}")
+                    delay(Nec78k0ProtocolRegistry.ERASE_WRITE_BUSY_WAIT_MS)
                     return null
                 }
                 is Nec78k0ProtocolEngine.Nec78k0TransceiveResult.ProtocolError -> {
@@ -364,9 +419,11 @@ object Nec78k0FlashWriterEngine {
                     if (res.isUsbDetached) {
                         return "انقطع اتصال USB OTG أثناء المسح الشامل (0x20)."
                     }
-                    onLog("ملاحظة: انتهت مهلة 0x20 — التبديل التلقائي إلى مسح البلوكات بالتتابع (0x22)...")
+                    onLog("ملاحظة: لم يستجب المعالج لأمر 0x20 — إعادة المزامنة ثم التبديل التلقائي إلى مسح البلوكات (0x22)...")
+                    Nec78k0ProtocolEngine.resync78k0Bootloader(transport, clockFreqMhzText, onLog)
                 }
             }
+            delay(Nec78k0ProtocolRegistry.ERASE_WRITE_BUSY_WAIT_MS)
         }
 
         onLog("بدء مسح الفلاش بالتتابع عبر Block Erase (0x22) لـ $blockCount بلوك (1024 Byte/Block)...")
@@ -413,6 +470,7 @@ object Nec78k0FlashWriterEngine {
                 String.format(Locale.US, "مسح بلوك %d/%d (0x%06X)", blockIdx + 1, blockCount, startAddr)
             )
         }
+        delay(Nec78k0ProtocolRegistry.ERASE_WRITE_BUSY_WAIT_MS)
         return null
     }
 

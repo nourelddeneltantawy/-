@@ -60,7 +60,8 @@ sealed class FlashOperationResult {
         val bytesTransferred: ByteArray? = null,
         val baseAddress: Int = 0,
         val dataFlashBytes: ByteArray? = null,
-        val dataFlashBaseAddress: Int = 0
+        val dataFlashBaseAddress: Int = 0,
+        val isMcuVerified: Boolean = false
     ) : FlashOperationResult()
     data class Failure(val reason: String) : FlashOperationResult()
 }
@@ -298,6 +299,8 @@ object UsbOtgProgrammerService {
             val targetDevice = devices.firstOrNull {
                 preferredChip != null && it.vendorId in preferredChip.vendorIds
             } ?: devices.firstOrNull {
+                Nec78k0ProtocolRegistry.isSupportedAdapter(it.vendorId, it.productId)
+            } ?: devices.firstOrNull {
                 ProgrammerChipType.fromVendorId(it.vendorId) != null
             } ?: devices.first()
 
@@ -479,13 +482,13 @@ object UsbOtgProgrammerService {
             val dtrFlmd0High = nec78k0InvertDtrRtsPolarity
             val rtsResetLow = !nec78k0InvertDtrRtsPolarity
             val rtsResetHigh = nec78k0InvertDtrRtsPolarity
-            onLog("2) تتابع 78K0 (FLMD0): setDTR($dtrFlmd0High) [FLMD0=+5V] + setRTS($rtsResetLow) [RESET=0V] -> انتظار 100ms...")
+            onLog("2) تتابع 78K0 (FLMD0): setDTR($dtrFlmd0High) [FLMD0=+5V] + setRTS($rtsResetLow) [RESET=0V] -> انتظار ${Nec78k0ProtocolRegistry.RESET_PULSE_MS}ms...")
             setControlLines(conn, dev, activeChipType, dtr = dtrFlmd0High, rts = rtsResetLow, onLog = onLog)
-            delay(100)
+            delay(Nec78k0ProtocolRegistry.RESET_PULSE_MS)
 
-            onLog("3) تحرير RESET: setRTS($rtsResetHigh) [RESET=+5V] مع إبقاء setDTR($dtrFlmd0High) -> انتظار 150ms...")
+            onLog("3) تحرير RESET: setRTS($rtsResetHigh) [RESET=+5V] مع إبقاء setDTR($dtrFlmd0High) -> انتظار ${Nec78k0ProtocolRegistry.POST_RESET_DELAY_MS}ms...")
             setControlLines(conn, dev, activeChipType, dtr = dtrFlmd0High, rts = rtsResetHigh, onLog = onLog)
-            delay(150)
+            delay(Nec78k0ProtocolRegistry.POST_RESET_DELAY_MS)
             flushRxBuffer()
         } else {
             onLog("2) سحب RTS=true (RESET=LOW عبر D2) + تفعيل TX Break LOW (سحب TOOL0/MODE=LOW عبر D1) -> 50ms...")
@@ -521,13 +524,13 @@ object UsbOtgProgrammerService {
                 true
             }
             BootSyncMode.FLMD0_78K0 -> {
-                onLog("4) إرسال نبضة المزامنة 78K0 ([0x00] ← 10ms ← [0x00]) ثم انتظار 50ms...")
+                onLog("4) إرسال نبضة المزامنة 78K0 ([0x00] ← ${Nec78k0ProtocolRegistry.SYNC_BYTE_GAP_MS}ms ← [0x00]) ثم انتظار 50ms...")
                 val err1 = writeWithEchoCancel(byteArrayOf(0x00), clearStaleRx = true, onLog = onLog)
                 if (err1 != null) {
                     onLog("TX ERROR (78K0 Sync #1): $err1")
                     return false
                 }
-                delay(10)
+                delay(Nec78k0ProtocolRegistry.SYNC_BYTE_GAP_MS)
                 val err2 = writeWithEchoCancel(byteArrayOf(0x00), clearStaleRx = true, onLog = onLog)
                 if (err2 != null) {
                     onLog("TX ERROR (78K0 Sync #2): $err2")

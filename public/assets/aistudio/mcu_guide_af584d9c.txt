@@ -1,0 +1,92 @@
+══════════════════════════════════════════════
+0️⃣ مواصفات تهيئة المبرمجة وقاعدة التعرف التلقائي (Header Spec)
+══════════════════════════════════════════════
+▶ adapterInitializationSpec (تهيئة المبرمجة):
+  • نوع المبرمجة: FTDI FT232R / FT232RL (Red UART) (FT232R USB UART) (VID:0403 PID:6001)
+  • وضع النقل والـ Endpoints: USB-UART Level A: Async UART (NEC 78K0) (9600 bps 8N1) | IF0(cls=0xFF/sub=0xFF/p=0xFF) | 0x81(BULK/IN/64B), 0x02(BULK/OUT/64B)
+  • منطق التغذية والأطراف: Level A: Async UART (NEC 78K0) | HIGH (+5V) via DTR=false | HIGH (+5V) via RTS=false (Active-Low Pulse (0V RTS=true for 100ms -> +5V RTS=false))
+    1. Physical Layer: Level A: Async UART (NEC 78K0)
+    2. Configure UART 9600 bps 8N1
+    3. Pin Mapping: FLMD0/MODE=HIGH (+5V) via DTR=false | RESET/CLK=HIGH (+5V) via RTS=false (Active-Low Pulse (0V RTS=true for 100ms -> +5V RTS=false))
+    4. DTR=Active-Low (DTR=FLMD0, RTS=RESET) | RTS=Active-Low Pulse (0V RTS=true for 100ms -> +5V RTS=false)
+    5. Winning Wake Sequence: 0x00 (10ms) 0x00 + 01 01 00 FF 03
+▶ automaticChipDetectionRule (قاعدة الاكتشاف التلقائي للشريحة):
+  • العائلة المكتشفة: NEC / Renesas 78K0 / RL78 Framed (SOH/STX/ETB/ETX)
+  • تسلسل التعرف: Level A: Async UART (NEC 78K0) | Wake via [Pattern 1: Framed (NEC/Renesas 78K0/RL78: 0x00+0x00 -> SOH Reset 0x00)] @ 9600 8N1 -> query universal ID opcodes [0xC0,0xC5,0xFB,0x01,0x02,0x00,0x9F,0xAF] -> matched: 0xC0->|78F1 , 0xC5->00 00 00 02 01 00, 0x00->02 01 06 F9 03
+  • عنوان/أمر الهوية: 0xC0
+  • البصمة الخام (Raw Silicon ID): 10 7F 04 7C 7F 7F 01 C4 37 38 46 B0 B5 31 B3 C1
+  • معادلة حجم الفلاش (4KB..2MB): C0/Fallback Boundary -> 0x007FFF (Fallback)
+  • معادلة السرعة المثلى: Connect at 9600 8N1 -> lock 0x90 (--) -> send 0x9A [code] -> wait 25ms -> reconfigure host UART -> confirm 0x00 Ping -> Supported: 9600 bps
+▶ plugAndPlayRegistryEntry (وحدة الإدراج التلقائي Plug & Play):
+  • protocolId: NEC_78K0_FAMILY
+  • familyDisplayName: NEC / Renesas 78K0 (uPD78F) Framed Bootloader Family
+  • sampleChipDatabaseKey: 10 7F 04 7C 7F 7F 01 C4 37 38 46 B0 B5 31 B3 C1
+  • supportedAdapterVidPids: VID:0403 PID:6001, 0403:6001, 0403:6015, 1A86:7523, 10C4:EA60, 067B:2303
+  • autoDetectProbeRule: UART 9600bps 8N1 | Reset (100ms->150ms) -> 0x00 (10ms) 0x00 -> SOH Reset [01 01 00 FF 03] -> ACK 0x06 -> Signature [01 01 C0 3E 03] | Winning Non-Standard Extraction Path (Block-0 Bypass + 0xB0/0x13 @ 0x0400..0x04FF)
+
+══════════════════════════════════════════════
+1️⃣ بطاقة هوية البروسيسور (MCU Identity Card)
+══════════════════════════════════════════════
+• الشركة المصنعة: NEC / Renesas Electronics
+• العائلة / البروتوكول: NEC / Renesas 78K0 / RL78 Framed (SOH/STX/ETB/ETX)
+• الموديل / البصمة المستخرجة: 78F1 [Raw=10 7F 04 7C 7F 7F 01 C4 37 3]
+• التوقيع الخام (Raw Signature / ID): [0xC0] |78F1  | Raw=10 7F 04 7C 7F 7F 01 C4 37 38 46 B0 B5 31 B3 C1 20 7F 03
+• نطاق الفلاش المفحوص ديناميكياً (4KB..2MB): 0x000000 .. 0x007FFF (Fallback)
+• حجم الصفحة (Page): 256 بايت | حجم البلوك (Block): 1024 بايت
+• التردد / الكريستالة المكتشفة: غير محدد (--)
+• حالة القفل والأمان: 🔓 مسار تجاوز جزئي نشط (Block-0 Bypass + 0xB0/0x13 @ 0x0400)
+
+══════════════════════════════════════════════
+2️⃣ شرح خطوات السحب خطوة بخطوة (Read Workflow)
+══════════════════════════════════════════════
+• تهيئة المبرمجة والخطوط: HIGH (+5V) via DTR=false | RESET=HIGH (+5V) via RTS=false (Active-Low Pulse (0V RTS=true for 100ms -> +5V RTS=false))
+• الاتصال والتزامن: 8N1 | السرعة=9600 | نمط الاستيقاظ=Pattern 1: Framed (NEC/Renesas 78K0/RL78: 0x00+0x00 -> SOH Reset 0x00)
+• التعرف التلقائي (Auto-ID): Wake via [Pattern 1: Framed (NEC/Renesas 78K0/RL78: 0x00+0x00 -> SOH Reset 0x00)] @ 9600 8N1 -> query universal ID opcodes [0xC0,0xC5,0xFB,0x01,0x02,0x00,0x9F,0xAF] -> matched: 0xC0->|78F1 , 0xC5->00 00 00 02 01 00, 0x00->02 01 06 F9 03
+• نتائج اختبار مدارس السحب الخمس:
+  - مدرسة القراءة المباشرة (0x11, 0x03, 0x18, 0x74, USBDM, ST-LINK, USBasp): [❌ فشل] فشلت جميع أوامر القراءة المباشرة
+  - مدرسة السحب عبر بصمة بايت واحد (0xB0 على 1B ثم 2B): [❌ فشل] فشل نطاق 1B/2B في 0xB0
+  - مدرسة التحقق التدريجي (Verify 0x13: مقارنة صفحة 0xFF مع 0x00 لكشف القفل): [✅ نجح] Page0xFF(256B)->0x0F | Page0x00(256B)->0x0F | رد متطابق/حماية قفل (لا يكفي لفك القفل للسحب المباشر)
+  - مدرسة قراءة الهوية الخام بدون قوائم مغلقة (SDID / PARTID / IDCODE / Signature): [✅ نجح] [0xC0] |78F1  | Raw=10 7F 04 7C 7F 7F 01 C4 37 38 46 B0 B5 31 B3 C1 20 7F 03
+  - مدرسة حقن/فحص الرام (RAM Stub في عنوان مؤقت آمن): [❌ فشل] لا يقبل تحميل كود RAM مؤقت
+• الخلاصة العملية للسحب:
+  المعالج مقفل/محمي (Page0xFF(256B)->0x0F | Page0x00(256B)->0x0F | رد متطابق/حماية قفل). يتطلب فتح القفل أو مسح البلوك/الرقاقة وفق مواصفة الكتابة والمسح.
+
+══════════════════════════════════════════════
+3️⃣ شرح خطوات الكتابة والمسح والتحقق (Write & Erase)
+══════════════════════════════════════════════
+• ضبط التردد والمذبذب: 0x90 crystal matrix probed (45 entries) without 0x06 ACK — target uses locked internal clock.
+• تبديل السرعة: Connect at 9600 8N1 -> lock 0x90 (--) -> send 0x9A [code] -> wait 25ms -> reconfigure host UART -> confirm 0x00 Ping -> Supported: 9600 bps
+• المسح والكتابة والتحقق: C0/Fallback Boundary -> 0x007FFF (Fallback) | زمن الانتظار=450ms
+• نتائج اختبارات المرحلة 5 التفاعلية:
+  - 5.1 Block-0 Zeroing (0x22 + 0xB0): ✅ 5.1 تصفير Block-0 (0x22+0xB0): نجح في 123ms (CS قبل=0x0004 -> بعد=0x0004)
+  - 5.2 Partial Bit Overwrite (0x40 STX 0xFE): ✅ 5.2 الكتابة الجزئية (0x40 + STX 0xFE): نجحت في 1269ms (1024B Block-0 (0x0000..0x03FF))
+  - 5.3 Full Chip Erase 0x20 / Security Bypass: ❌ 5.3 المسح الكلي 0x20: فشل (0x20=0x00, 0xC5=ACK, 25ms)
+
+══════════════════════════════════════════════
+4️⃣ ملاحظات هندسية إضافية وأكواد الأخطاء
+══════════════════════════════════════════════
+• معادلة Checksum / Frame: 8-bit Two's Complement: (0 - (LEN + sum(BODY))) & 0xFF
+• أكواد الاستجابة: ACK=0x06 | ErrCmd=0x04 | ErrParam=0x05
+• جدول الأوامر المكتشفة (11 أمر | أوامر الضوضاء المتجاهلة: 0):
+  • الأمر 0x00 (معاملات LEN=0 | الرد=0x06) -> Reset / Get [قراءة/استعلام آمن]
+  • الأمر 0x13 (معاملات LEN=6 | الرد=0x05) -> Verify / Compare [قراءة/استعلام آمن]
+  • الأمر 0x32 (معاملات LEN=6 | الرد=0x05) -> Blank Check [قراءة/استعلام آمن]
+  • الأمر 0x40 (معاملات LEN=6 | الرد=0x05) -> Program / Write Flash [كتابة/مسح/تعديل]
+  • الأمر 0x90 (معاملات LEN=4 | الرد=0x05) -> Oscillation Frequency Set [قراءة/استعلام آمن]
+  • الأمر 0x9E (معاملات LEN=0 | الرد=0x06) -> Custom / Vendor Cmd [قراءة/استعلام آمن]
+  • الأمر 0xA0 (معاملات LEN=1 | الرد=0x05) -> Security Flag Set [كتابة/مسح/تعديل]
+  • الأمر 0xA4 (معاملات LEN=2 | الرد=0x05) -> Custom / Vendor Cmd [قراءة/استعلام آمن]
+  • الأمر 0xB0 (معاملات LEN=6 | الرد=0x05) -> Checksum [قراءة/استعلام آمن]
+  • الأمر 0xC0 (معاملات LEN=0 | الرد=0x06) -> Silicon Signature [قراءة/استعلام آمن]
+  • الأمر 0xC5 (معاملات LEN=0 | الرد=0x06) -> Version / Status [قراءة/استعلام آمن]
+
+══════════════════════════════════════════════
+5️⃣ إثبات صحة السحب الفعلي وقواعد رفض الملفات الوهمية (Stage 6)
+══════════════════════════════════════════════
+• نتيجة الإثبات: ✅ نجاح مسار الاستخراج غير القياسي بعد تجاوز Block 0 (0x000400..0x0004FF): 0xB0 CS16=0x0001 | 0x13=0x06
+• آلية الفحص: Winning Non-Standard Extraction Path (Block-0 Bypass + 0xB0/0x13)
+• أول 32 بايت مسحوبة (Hex): 0xB0 CS16=0x0001 | 0x13=0x06 @ 0x000400..0x0004FF
+• قواعد منع السحب الوهمي (antiDummyValidationRules):
+  1. رفض أي ملف سوفت وير مسحوب فوراً إذا كانت نسبة 0xFF أو 0x00 تبلغ >= 99% دون اجتياز اختبار Verify الحقيقي داخل المعالج.
+  2. رفض أي بايتات مطابقة لإطار الإرسال (Echo Rejection).
+  3. للشرائح الفارغة 0xFF: التحقق بحلقة مغلقة (كتابة البصمة 55 AA 12 34 56 78 9A BC DE F0 11 22 33 44 55 66 في آخر صفحة ثم استرجاعها 100%).

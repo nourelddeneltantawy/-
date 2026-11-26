@@ -234,7 +234,7 @@ fun Nec78k0AutoDetectInfoCard(
                         color = MaterialTheme.colorScheme.onSurface
                     )
                     Text(
-                        text = "${info.deviceName} • ${info.familyGroup}",
+                        text = "${info.deviceName} • ${info.familyGroup} (${info.protocolId})",
                         fontSize = 11.5.sp,
                         fontWeight = FontWeight.SemiBold,
                         color = okGreen
@@ -326,13 +326,13 @@ fun Nec78k0ZeroTouchStatusCard(
             ) {
                 InfoBadgePill(
                     label = "التحكم والأطراف",
-                    value = "DTR=FLMD0 • RTS=RST",
+                    value = "FLMD0=DTR(false) • RST=RTS",
                     accent = Color(0xFF10B981),
                     modifier = Modifier.weight(1f)
                 )
                 InfoBadgePill(
                     label = "الاتصال والسرعة",
-                    value = "9600 8N1 • بدون دايود",
+                    value = "9600 8N1 • Echo=OFF",
                     accent = autoColor,
                     modifier = Modifier.weight(1f)
                 )
