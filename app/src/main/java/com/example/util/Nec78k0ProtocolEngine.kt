@@ -608,10 +608,37 @@ object Nec78k0ProtocolEngine {
 
             if (!alreadyBlankLegacy && session?.block0OriginalExtracted != true) {
                 val startByteIdx = (session?.block0DiffNextIndex ?: 0).coerceIn(0, BLOCK_SIZE)
-                if (startByteIdx < BLOCK_SIZE) {
+                var b0ExtractedNonDestructively = false
+
+                if (startByteIdx == 0 && session?.block0Touched != true) {
+                    val cumOutcome = tryExtractBlock0ViaCumulative0xB0(
+                        context = context,
+                        transport = transport,
+                        detectedInfo = detectedInfo,
+                        fullBuffer = fullBuffer,
+                        blockCount = blockCount,
+                        clockFreqMhzText = clockFreqMhzText,
+                        existingSession = session,
+                        onProgress = onProgress,
+                        onLog = onLog
+                    )
+                    when (cumOutcome) {
+                        is Cumulative0xB0Outcome.Extracted -> {
+                            session = cumOutcome.updatedSession
+                            b0ExtractedNonDestructively = true
+                        }
+                        is Cumulative0xB0Outcome.UnsupportedFallback -> {
+                            onLog(cumOutcome.reason)
+                        }
+                        is Cumulative0xB0Outcome.Paused -> return cumOutcome.failure
+                        is Cumulative0xB0Outcome.Fatal -> return FlashOperationResult.Failure(cumOutcome.reason)
+                    }
+                }
+
+                if (!b0ExtractedNonDestructively && startByteIdx < BLOCK_SIZE) {
                     onLog(
                         if (startByteIdx == 0) {
-                            "المرحلة 2: استخراج Original_Byte[0..1023] في Block 0 عبر فرق Checksum (0x40 كتابة 0x00 + 0xB0)..."
+                            "المرحلة 2: استخراج Original_Byte[0..1023] في Block 0 عبر فرق Checksum (0x40 كتابة 0x00 + 0xB0 إطار 11 بايت)..."
                         } else {
                             "المرحلة 2: استئناف استخراج Block 0 عبر فرق 0xB0 من البايت $startByteIdx/1023..."
                         }
@@ -750,7 +777,7 @@ object Nec78k0ProtocolEngine {
                                 context, session, detectedInfo, fullBuffer, -1, blockCount,
                                 String.format(
                                     Locale.US,
-                                    "فرق Checksum غير متسق عند بايت %d (CS_prev=%04X -> CS_curr=%04X, Δ=%04X).",
+                                    "فرق Checksum غير متسق عند بايت %d (CS_prev=%04X -> CS_curr=%04X, Δ=%04X > 0xFF). اضغط «استئناف نظيف من بداية الكتلة» لإعادة المزامنة من البايت 0.",
                                     byteIdx, csPrev, csCurr, delta
                                 ),
                                 isUsbDetached = false,
@@ -1732,8 +1759,12 @@ object Nec78k0ProtocolEngine {
                                 paramUnsupported = true
                                 break
                             }
-                            // In multi-byte mask writes (0xFF over existing code bytes), internal post-write verify may return 0x1C after programming 0x00
+                            // In multi-byte mask writes (0xFF over existing code bytes), internal post-write verify may return 0x1C after programming 0x00.
+                            // If aborted before sending the final ETX page, resync the bootloader so subsequent 0xB0 does not hit an incomplete 0x40 stream.
                             if (isVerifyMismatchCode(ack.errorCode) && mode != ZeroWriteGranularity.ONE_BYTE) {
+                                if (pIdx < pages.lastIndex) {
+                                    resync78k0Bootloader(transport, clockFreqMhzText, onLog)
+                                }
                                 outcome = DiffWriteOutcome.ProceedToChecksum
                                 break
                             }
@@ -2482,10 +2513,14 @@ object Nec78k0ProtocolEngine {
             }
 
             // Depending on silicon, 0xB0 either attaches the 2 checksum bytes after STS1 or sends a 2nd frame
-            if (firstFrame.payload.size >= 3) {
+            if (firstFrame.payload.size == 3 && firstFrame.endByte == ETX) {
                 return ChecksumQueryResult.Success(
                     Nec78k0Block0Reconstructor.decodeChecksumBytes(firstFrame.payload.copyOfRange(1, 3))
                 )
+            }
+            if (firstFrame.payload.size != 1 || firstFrame.endByte != ETX) {
+                onLog("Checksum 0xB0 Header Frame Invalid: LEN=${firstFrame.payload.size}, END=0x%02X [${toHex(firstFrame.rawFrame)}]".format(firstFrame.endByte))
+                return ChecksumQueryResult.ProtocolError(STS_CHECKSUM_ERROR, "إطار استجابة 0xB0 غير صالح")
             }
             val dataFrame = readOneRxFrame(transport, 1500) { stray ->
                 if (verboseLog) onLog("RX Raw Live (0xB0 Data): $stray")
@@ -2493,14 +2528,231 @@ object Nec78k0ProtocolEngine {
                 "وصل ACK لأمر 0xB0 لكن إطار بيانات البصمة لم يصل.",
                 isUsbDetached = !transport.isDeviceAttached()
             )
-            if (!dataFrame.checksumValid || dataFrame.payload.size < 2) {
-                onLog("Checksum 0xB0 Data Frame Invalid: [${toHex(dataFrame.rawFrame)}]")
-                return ChecksumQueryResult.ProtocolError(STS_CHECKSUM_ERROR, "بيانات إطار Checksum 0xB0 غير مكتملة")
+            if (!dataFrame.checksumValid) {
+                onLog("Checksum 0xB0 Data Frame CS Invalid: [${toHex(dataFrame.rawFrame)}]")
+                return ChecksumQueryResult.ProtocolError(STS_CHECKSUM_ERROR, "خطأ Checksum في إطار بيانات 0xB0")
+            }
+            if (dataFrame.payload.size == 1 && dataFrame.sts1 != STS_ACK) {
+                val desc = statusDescription(dataFrame.sts1)
+                if (verboseLog || dataFrame.sts1 != STS_PARAMETER_ERROR) {
+                    onLog("Checksum 0xB0 Status Error: $desc [${toHex(dataFrame.rawFrame)}]")
+                }
+                return if (dataFrame.sts1 == STS_PARAMETER_ERROR) {
+                    ChecksumQueryResult.ParameterError
+                } else {
+                    ChecksumQueryResult.ProtocolError(dataFrame.sts1, desc)
+                }
+            }
+            if (dataFrame.payload.size != 2 || dataFrame.endByte != ETX) {
+                onLog("Checksum 0xB0 Data Frame Invalid: LEN=${dataFrame.payload.size}, END=0x%02X [${toHex(dataFrame.rawFrame)}]".format(dataFrame.endByte))
+                return ChecksumQueryResult.ProtocolError(STS_CHECKSUM_ERROR, "بيانات إطار Checksum 0xB0 غير صالحة (LEN=${dataFrame.payload.size})")
             }
             return ChecksumQueryResult.Success(Nec78k0Block0Reconstructor.decodeChecksumBytes(dataFrame.payload))
         } finally {
             transport.setRawRxMonitor(false)
         }
+    }
+
+    private sealed class Cumulative0xB0Outcome {
+        data class Extracted(val updatedSession: Nec78k0RecoveryManager.Nec78k0RecoverySession) : Cumulative0xB0Outcome()
+        data class UnsupportedFallback(val reason: String) : Cumulative0xB0Outcome()
+        data class Paused(val failure: FlashOperationResult.Failure) : Cumulative0xB0Outcome()
+        data class Fatal(val reason: String) : Cumulative0xB0Outcome()
+    }
+
+    /**
+     * Attempts non-destructive 11-byte cumulative 0xB0 extraction ([01 07 B0 00 00 00 00 End_M End_L CS 03])
+     * across Block 0 (0..1023) before falling back to 0x40 differential zeroing.
+     * Byte[N] = ((CS(N-1) - CS(N)) + 0x10000) & 0xFF with CS(-1) = 0 and LE CS16 = (CS_High << 8) | CS_Low.
+     */
+    private suspend fun tryExtractBlock0ViaCumulative0xB0(
+        context: Context,
+        transport: Serial78k0Transport,
+        detectedInfo: Nec78k0DetectedInfo,
+        fullBuffer: ByteArray,
+        blockCount: Int,
+        clockFreqMhzText: String,
+        existingSession: Nec78k0RecoveryManager.Nec78k0RecoverySession?,
+        onProgress: (Int, Int, String) -> Unit,
+        onLog: (String) -> Unit
+    ): Cumulative0xB0Outcome {
+        onLog("المرحلة 2: فحص السحب التراكمي غير التدميري عبر 0xB0 (إطار 11 بايت: 0x000000..N)...")
+        val totalSize = detectedInfo.flashSizeBytes
+        val b0Working = ByteArray(BLOCK_SIZE)
+        var csPrev = 0
+        val startMs = System.currentTimeMillis()
+        var sessionRef = existingSession
+
+        for (n in 0 until BLOCK_SIZE) {
+            currentCoroutineContext().ensureActive()
+            if (!transport.isDeviceAttached()) {
+                if (n > 0) {
+                    System.arraycopy(b0Working, 0, fullBuffer, 0, BLOCK_SIZE)
+                }
+                return Cumulative0xB0Outcome.Paused(
+                    pauseWithWatchdog(
+                        context, sessionRef, detectedInfo, fullBuffer, -1, blockCount,
+                        "انقطع كابل USB OTG أثناء السحب التراكمي 0xB0 عند البايت $n/1023",
+                        isUsbDetached = true,
+                        block0OriginalExtracted = false,
+                        block0DiffNextIndex = 0,
+                        block0DiffPrevCs = -1
+                    )
+                )
+            }
+
+            val csRes = queryChecksum16WithRetry(
+                transport = transport,
+                startAddr = 0x000000,
+                endAddr = n,
+                clockFreqMhzText = clockFreqMhzText,
+                opLabel = "0xB0 تراكمي 11B [0..$n]",
+                maxRetries = 1,
+                verboseLog = (n < 2),
+                onLog = onLog
+            )
+
+            val csCurr = when (csRes) {
+                is ChecksumQueryResult.Success -> csRes.checksum16 and 0xFFFF
+                is ChecksumQueryResult.ParameterError -> {
+                    return if (n < 16) {
+                        Cumulative0xB0Outcome.UnsupportedFallback(
+                            "أمر 0xB0 لا يقبل نطاق 1B/N (0x05) عند N=$n — التحويل تلقائياً إلى الاستخراج التفاضلي للبلوك 0 (0x40 + 0xB0)..."
+                        )
+                    } else {
+                        Cumulative0xB0Outcome.Paused(
+                            pauseWithWatchdog(
+                                context, sessionRef, detectedInfo, fullBuffer, -1, blockCount,
+                                "خطأ معاملات (0x05) أثناء 0xB0 التراكمي عند البايت $n",
+                                isUsbDetached = false,
+                                block0OriginalExtracted = false,
+                                block0DiffNextIndex = 0,
+                                block0DiffPrevCs = -1
+                            )
+                        )
+                    }
+                }
+                is ChecksumQueryResult.ProtocolError -> {
+                    if (csRes.statusCode == STS_PROTECT_ERROR) {
+                        Nec78k0RecoveryManager.markCompletedAndCleanup(context, detectedInfo.deviceName)
+                        return Cumulative0xB0Outcome.Fatal("المعالج محمي برمجياً (ERR_PROTECT 0x10).")
+                    }
+                    if (n < 2 && csRes.statusCode == STS_BLANK_CHECK_ERROR) {
+                        return Cumulative0xB0Outcome.UnsupportedFallback(
+                            "رفض 0xB0 النطاق الجزئي (0x1B) عند N=$n — التحويل إلى الاستخراج التفاضلي للبلوك 0 (0x40 + 0xB0)..."
+                        )
+                    }
+                    return Cumulative0xB0Outcome.Paused(
+                        pauseWithWatchdog(
+                            context, sessionRef, detectedInfo, fullBuffer, -1, blockCount,
+                            "فشل 0xB0 التراكمي عند البايت $n: ${csRes.statusLabel}",
+                            isUsbDetached = false,
+                            block0OriginalExtracted = false,
+                            block0DiffNextIndex = 0,
+                            block0DiffPrevCs = -1
+                        )
+                    )
+                }
+                is ChecksumQueryResult.TransportLost -> {
+                    return Cumulative0xB0Outcome.Paused(
+                        pauseWithWatchdog(
+                            context, sessionRef, detectedInfo, fullBuffer, -1, blockCount,
+                            csRes.reason,
+                            isUsbDetached = csRes.isUsbDetached,
+                            block0OriginalExtracted = false,
+                            block0DiffNextIndex = 0,
+                            block0DiffPrevCs = -1
+                        )
+                    )
+                }
+            }
+
+            val delta16 = ((csPrev - csCurr) + 0x10000) and 0xFFFF
+            if (delta16 > 0xFF) {
+                val msg = String.format(
+                    Locale.US,
+                    "تجاوز فرق Checksum التراكمي 0xB0 عند N=%d: CS_prev=%04X -> CS_curr=%04X (Δ=%04X > 0xFF).",
+                    n, csPrev, csCurr, delta16
+                )
+                return if (n < 2) {
+                    Cumulative0xB0Outcome.UnsupportedFallback("$msg التحويل للاستخراج التفاضلي (0x40 + 0xB0)...")
+                } else {
+                    Cumulative0xB0Outcome.Paused(
+                        pauseWithWatchdog(
+                            context, sessionRef, detectedInfo, fullBuffer, -1, blockCount,
+                            msg,
+                            isUsbDetached = false,
+                            block0OriginalExtracted = false,
+                            block0DiffNextIndex = 0,
+                            block0DiffPrevCs = -1
+                        )
+                    )
+                }
+            }
+
+            b0Working[n] = (delta16 and 0xFF).toByte()
+            csPrev = csCurr
+
+            if (n == 15) {
+                val first16Hex = (0 until 16).joinToString(" ") { "%02X".format(b0Working[it].toInt() and 0xFF) }
+                onLog("تم التحقق الفيزيائي من أول 16 بايت عبر 0xB0 (11B LE): $first16Hex")
+            }
+
+            if (n % 8 == 0 || n == BLOCK_SIZE - 1) {
+                val eta = formatEtaSuffix(n + 1, 0, BLOCK_SIZE, startMs)
+                val label = String.format(
+                    Locale.US,
+                    "سحب Block 0 عبر 0xB0 التراكمي: %d/1024 (0x%02X)%s",
+                    n + 1, delta16 and 0xFF, eta
+                )
+                onProgress(n + 1, totalSize, label)
+                ProgrammerForegroundService.renewSessionLock(context, label)
+            }
+        }
+
+        val verifiedB0Cs = Nec78k0Block0Reconstructor.compute78k0Checksum16(b0Working)
+        val targetB0Cs = detectedInfo.block0Checksum16 and 0xFFFF
+        if (targetB0Cs != 0 && verifiedB0Cs != targetB0Cs) {
+            return Cumulative0xB0Outcome.UnsupportedFallback(
+                String.format(
+                    Locale.US,
+                    "مجموع السحب التراكمي 0xB0 (%04X) لم يطابق Block0_Checksum (%04X) — التحويل إلى الاستخراج التفاضلي...",
+                    verifiedB0Cs, targetB0Cs
+                )
+            )
+        }
+
+        System.arraycopy(b0Working, 0, fullBuffer, 0, BLOCK_SIZE)
+        Nec78k0RecoveryManager.savePartialBlocksAtomically(context, detectedInfo.deviceName, fullBuffer)
+        val savedSession = (sessionRef ?: Nec78k0RecoveryManager.Nec78k0RecoverySession(
+            chipName = detectedInfo.deviceName,
+            subFamily = detectedInfo.familyGroup,
+            lastAddress = detectedInfo.lastAddress,
+            blockCount = blockCount,
+            hasDataFlash = detectedInfo.hasDataFlash,
+            fullFlashChecksum = detectedInfo.fullFlashChecksum16,
+            block0Checksum = detectedInfo.block0Checksum16,
+            signatureHex = detectedInfo.rawSignatureHex,
+            stage = Nec78k0RecoveryManager.RecoveryStage.DETECTED,
+            lastCompletedBlock = -1,
+            updatedAtMs = System.currentTimeMillis(),
+            partialBlocksPath = Nec78k0RecoveryManager.partialBlocksFile(context, detectedInfo.deviceName).absolutePath,
+            block0Touched = false
+        )).copy(
+            updatedAtMs = System.currentTimeMillis(),
+            block0OriginalExtracted = true,
+            block0DiffNextIndex = BLOCK_SIZE,
+            block0DiffPrevCs = csPrev
+        )
+        Nec78k0RecoveryManager.saveSessionCheckpoint(context, savedSession)
+        onLog(
+            String.format(
+                Locale.US,
+                "✅ اكتمل استخراج Block 0 غير التدميري عبر 0xB0 (11B LE) وتطابقت بصمته %04X بنسبة 100%%.",
+                verifiedB0Cs
+            )
+        )
+        return Cumulative0xB0Outcome.Extracted(savedSession)
     }
 
     internal fun buildAddressRangeFrame(cmd: Int, startAddr: Int, endAddr: Int): ByteArray {

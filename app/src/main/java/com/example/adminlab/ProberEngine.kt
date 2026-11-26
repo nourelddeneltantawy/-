@@ -2994,7 +2994,7 @@ class ProberEngine(context: Context) {
     }
 
     private suspend fun testChecksum1ByteAttack(sync: SyncLock): ChecklistStepItem {
-        updateStep("stage2_checksum_1b", ChecklistStepStatus.RUNNING, "اختبار 0xB0 على 1 بايت ثم 2 بايت...")
+        updateStep("stage2_checksum_1b", ChecklistStepStatus.RUNNING, "استخراج أول 16 بايت فعلياً عبر 0xB0 التراكمي (11-Byte Frame)...")
         if (sync.framing == DetectedFraming.USBDM_BDM) {
             val directPassed = _state.value.checklist.firstOrNull { it.id == "stage2_direct_read" }?.status == ChecklistStepStatus.PASSED
             return if (directPassed) {
@@ -3012,23 +3012,60 @@ class ProberEngine(context: Context) {
             }
         }
 
-        val c1 = buildNecCommandFrame(0xB0, byteArrayOf(0x00, 0x00, 0x00, 0x00, 0x00, 0x00))
-        val rx1 = transport.transceive(c1, 16, 300, "Checksum 1B [0xB0]", stopOnCompleteNecFrame = true)
-        val cs1 = parseChecksum16(rx1) ?: run {
-            if (parseNecStatus(rx1) == ACK_NEC) parseChecksum16(transport.readFollowUp(12, 280, true)) else null
+        // Strict Real-Hardware Verification Gate: extract first 16 real bytes (N=0..15)
+        // using exclusively 11-byte [01 07 B0 00 00 00 00 00 N Frame_CS 03]
+        val extracted16 = ByteArray(16)
+        var csPrev = 0
+        var lastTxSample = ByteArray(0)
+        for (n in 0 until 16) {
+            currentCoroutineContext().ensureActive()
+            val pkt = buildNecCommandFrame(0xB0, addrRangeBytes(0x000000, n))
+            lastTxSample = pkt
+            val rx1 = transport.transceive(pkt, 16, 300, "Checksum 11B [0xB0 0x000000..0x%06X]".format(n), stopOnCompleteNecFrame = true, logTxRx = (n < 2))
+            var parsed = parseStrictChecksum16Frames(rx1)
+            if (parsed.checksum16 == null && parsed.errorStatus == null && parsed.sawAck) {
+                val rxFollow = transport.readFollowUp(12, 280, true)
+                parsed = parseStrictChecksum16Frames(rx1 + rxFollow)
+            }
+
+            if (parsed.errorStatus != null) {
+                val errCode = parsed.errorStatus
+                val errHint = if (errCode == STS_BLANK_CHECK_ERROR) "STS_BLANK_CHECK_ERROR (0x1B)" else "Status 0x%02X".format(errCode)
+                val failDetail = "❌ فشل 0xB0 عند N=$n ($errHint) | الإطار المرسل=[${pkt.toHexStr()}] | الرد الخام=[${parsed.rawFrameHex.ifBlank { rx1.toHexStr() }}]"
+                appendLog(ProberLogDirection.WARN, failDetail)
+                return updateAndReturn("stage2_checksum_1b", ChecklistStepStatus.FAILED, failDetail)
+            }
+
+            val csCurr = parsed.checksum16
+            if (csCurr == null) {
+                val reason = parsed.invalidReason ?: "إطار رد Checksum غير مكتمل أو تالف"
+                val failDetail = "❌ فشل تحليل رد 0xB0 عند N=$n ($reason) | RX=[${rx1.toHexStr()}]"
+                appendLog(ProberLogDirection.WARN, failDetail)
+                return updateAndReturn("stage2_checksum_1b", ChecklistStepStatus.FAILED, failDetail)
+            }
+
+            val delta16 = ((csPrev - csCurr) + 0x10000) and 0xFFFF
+            if (delta16 > 0xFF) {
+                val failDetail = "❌ تجاوز فرق Checksum التراكمي عند N=$n: CS_prev=0x%04X -> CS_curr=0x%04X (Δ=0x%04X > 0xFF) | RX=[${parsed.rawFrameHex}]".format(csPrev, csCurr, delta16)
+                appendLog(ProberLogDirection.ERROR, failDetail)
+                return updateAndReturn("stage2_checksum_1b", ChecklistStepStatus.FAILED, failDetail)
+            }
+
+            extracted16[n] = (delta16 and 0xFF).toByte()
+            csPrev = csCurr
         }
 
-        val c2 = buildNecCommandFrame(0xB0, byteArrayOf(0x00, 0x00, 0x00, 0x00, 0x00, 0x01))
-        val rx2 = transport.transceive(c2, 16, 300, "Checksum 2B [0xB0]", stopOnCompleteNecFrame = true)
-        val cs2 = parseChecksum16(rx2) ?: run {
-            if (parseNecStatus(rx2) == ACK_NEC) parseChecksum16(transport.readFollowUp(12, 280, true)) else null
+        if (isEchoPayload(extracted16, lastTxSample)) {
+            val echoMsg = "❌ فشل 0xB0: البايتات المستخرجة مطابقة لصدى الإرسال TX Echo (${extracted16.toHexStr()})"
+            appendLog(ProberLogDirection.ERROR, echoMsg)
+            return updateAndReturn("stage2_checksum_1b", ChecklistStepStatus.FAILED, echoMsg)
         }
 
-        return if (cs1 != null && cs2 != null) {
-            updateAndReturn("stage2_checksum_1b", ChecklistStepStatus.PASSED, "الأمر [0xB0] -> CS(1B)=0x%04X | CS(2B)=0x%04X".format(cs1, cs2))
-        } else {
-            updateAndReturn("stage2_checksum_1b", ChecklistStepStatus.FAILED, "فشل نطاق 1B/2B في 0xB0")
-        }
+        return updateAndReturn(
+            "stage2_checksum_1b",
+            ChecklistStepStatus.PASSED,
+            "✅ استخراج 16 بايت فعلياً عبر 0xB0 (11B LE): ${extracted16.toHexStr()} | CS(16B)=0x%04X".format(csPrev)
+        )
     }
 
     private suspend fun testVerify0x13Probe(sync: SyncLock): Pair<ChecklistStepItem, String> {
@@ -4511,9 +4548,11 @@ class ProberEngine(context: Context) {
                 hardwareResetAndResync(sync, "5.1 0xB0 Before Timeout", relockOsc = true)
                 csBeforeRx = transport.transceive(buildNecCommandFrame(0xB0, b0Range), 16, 400, "5.1 Block-0 CS Before Retry [0xB0]", stopOnCompleteNecFrame = true)
             }
-            val csBefore = parseChecksum16(csBeforeRx) ?: run {
-                if (parseNecStatus(csBeforeRx) == ACK_NEC) parseChecksum16(transport.readFollowUp(12, 300, true)) else null
+            var csBeforeParse = parseStrictChecksum16Frames(csBeforeRx)
+            if (csBeforeParse.checksum16 == null && csBeforeParse.errorStatus == null && csBeforeParse.sawAck) {
+                csBeforeParse = parseStrictChecksum16Frames(csBeforeRx + transport.readFollowUp(12, 300, true))
             }
+            val csBefore = csBeforeParse.checksum16
 
             var eraseRx = transport.transceive(buildNecCommandFrame(0x22, b0Range), 12, 1300, "5.1 Block-0 Erase [0x22]", stopOnCompleteNecFrame = true)
             if (eraseRx.isEmpty()) {
@@ -4522,6 +4561,7 @@ class ProberEngine(context: Context) {
             }
             val eraseSts = parseNecStatus(eraseRx)
             var csAfter: Int? = null
+            var csAfterErr: Int? = null
             if (eraseSts == ACK_NEC) {
                 delay(20)
                 var csAfterRx = transport.transceive(buildNecCommandFrame(0xB0, b0Range), 16, 400, "5.1 Block-0 CS After [0xB0]", stopOnCompleteNecFrame = true)
@@ -4529,16 +4569,24 @@ class ProberEngine(context: Context) {
                     hardwareResetAndResync(sync, "5.1 0xB0 After Timeout", relockOsc = true)
                     csAfterRx = transport.transceive(buildNecCommandFrame(0xB0, b0Range), 16, 400, "5.1 Block-0 CS After Retry [0xB0]", stopOnCompleteNecFrame = true)
                 }
-                csAfter = parseChecksum16(csAfterRx) ?: run {
-                    if (parseNecStatus(csAfterRx) == ACK_NEC) parseChecksum16(transport.readFollowUp(12, 300, true)) else null
+                var csAfterParse = parseStrictChecksum16Frames(csAfterRx)
+                if (csAfterParse.checksum16 == null && csAfterParse.errorStatus == null && csAfterParse.sawAck) {
+                    csAfterParse = parseStrictChecksum16Frames(csAfterRx + transport.readFollowUp(12, 300, true))
                 }
+                csAfter = csAfterParse.checksum16
+                csAfterErr = csAfterParse.errorStatus
             }
             val dt = (System.currentTimeMillis() - t0).coerceAtLeast(1L)
-            val passed = (eraseSts == ACK_NEC) && (csBefore != null || csAfter != null)
+            val passed = (eraseSts == ACK_NEC) && (csBefore != null && csAfter != null)
             val detail = if (passed) {
-                "✅ 5.1 تصفير Block-0 (0x22+0xB0): نجح في ${dt}ms (CS قبل=${csBefore?.let { "0x%04X".format(it) } ?: "--"} -> بعد=${csAfter?.let { "0x%04X".format(it) } ?: "--"})"
+                "✅ 5.1 تصفير Block-0 (0x22+0xB0): نجح في ${dt}ms (CS قبل=0x%04X -> بعد=0x%04X)".format(csBefore, csAfter)
             } else {
-                "❌ 5.1 تصفير Block-0 (0x22+0xB0): فشل (${dt}ms, 0x22=${formatByte(eraseSts)})"
+                val errSuffix = when {
+                    csBeforeParse.errorStatus != null -> " | 0xB0 قبل=${formatByte(csBeforeParse.errorStatus)}"
+                    csAfterErr != null -> " | 0xB0 بعد=${formatByte(csAfterErr)}"
+                    else -> ""
+                }
+                "❌ 5.1 تصفير Block-0 (0x22+0xB0): فشل (${dt}ms, 0x22=${formatByte(eraseSts)}$errSuffix)"
             }
             return Stage5StepResult("5.1 Block-0 Zeroing (0x22 + 0xB0)", passed, true, dt, detail)
         } else if (sync.framing == DetectedFraming.USBDM_BDM) {
@@ -4927,9 +4975,9 @@ class ProberEngine(context: Context) {
                         val (secondRead, _, _) = readFlashPageForProof(sync, summary, b2Start, pageSize)
                         secondRead != null && secondRead.contentEquals(b2Bytes)
                     }
-                    if (verifiedOk || !b2Bytes.all { (it.toInt() and 0xFF) == 0xFF }) {
+                    if (verifiedOk) {
                         val winningPath = "Winning Non-Standard Extraction Path (Block-0 Bypass @ $b2RangeHex | $b2Method)"
-                        val reportMsg = "✅ إثبات المرحلة 6 بعد تجاوز البلوك الأول ($b2RangeHex): نجح السحب والتحقق ($b2Method | $verifyDetail)"
+                        val reportMsg = "✅ إثبات المرحلة 6 بعد تجاوز البلوك الأول ($b2RangeHex): نجح السحب الفعلي والتحقق ($b2Method | $verifyDetail)"
                         appendLog(ProberLogDirection.SUCCESS, "$reportMsg | أول 32B: $first32Hex")
                         updateStep("stage6_live_read_proof", ChecklistStepStatus.PASSED, "$reportMsg | أول 32B: $first32Hex")
                         return summary.copy(
@@ -4940,87 +4988,57 @@ class ProberEngine(context: Context) {
                             liveReadProofStatus = reportMsg,
                             liveReadProofFirst32Hex = first32Hex
                         )
-                    }
-                }
-            }
-
-            // 2) NEC 78K0 / Renesas Locked ROM: 0xB0 Checksum + 0x13 Verify directly on post-Block-1 (0x0400 / 0x0800)
-            if (sync.framing == DetectedFraming.NEC_STX_ETX || sync.framing == DetectedFraming.RENESAS_RAW) {
-                resyncLight(sync)
-                var b0Rx = transport.transceive(
-                    buildNecCommandFrame(0xB0, b2Range),
-                    16, 400, "Stage6 Bypass Checksum [0xB0 $b2RangeHex]",
-                    stopOnCompleteNecFrame = true
-                )
-                if (b0Rx.isEmpty()) {
-                    hardwareResetAndResync(sync, "Stage6 Bypass 0xB0 Timeout", relockOsc = true)
-                    b0Rx = transport.transceive(
-                        buildNecCommandFrame(0xB0, b2Range),
-                        16, 400, "Stage6 Bypass Checksum Retry [0xB0 $b2RangeHex]",
-                        stopOnCompleteNecFrame = true
-                    )
-                }
-                val cs16 = parseChecksum16(b0Rx) ?: run {
-                    if (parseNecStatus(b0Rx) == ACK_NEC) parseChecksum16(transport.readFollowUp(12, 300, true)) else null
-                }
-                val b0Sts = parseNecStatus(b0Rx)
-                val b0Ok = (cs16 != null || b0Sts == ACK_NEC)
-
-                var vHdrRx = transport.transceive(
-                    buildNecCommandFrame(0x13, b2Range),
-                    12, 350, "Stage6 Bypass Verify Header [0x13 $b2RangeHex]",
-                    stopOnCompleteNecFrame = true
-                )
-                if (vHdrRx.isEmpty()) {
-                    hardwareResetAndResync(sync, "Stage6 Bypass 0x13 Header Timeout", relockOsc = true)
-                    vHdrRx = transport.transceive(
-                        buildNecCommandFrame(0x13, b2Range),
-                        12, 350, "Stage6 Bypass Verify Header Retry [0x13 $b2RangeHex]",
-                        stopOnCompleteNecFrame = true
-                    )
-                }
-                val vHdrSts = parseNecStatus(vHdrRx)
-                var vDataSts: Int? = null
-                if (vHdrSts == ACK_NEC) {
-                    val vDataRx = transport.transceive(
-                        buildNecDataFrame(ByteArray(pageSize) { 0xFF.toByte() }, isLast = true),
-                        16, 550, "Stage6 Bypass Verify Data [0x13 $b2RangeHex]",
-                        stopOnCompleteNecFrame = true, paced64B = true
-                    )
-                    if (vDataRx.isEmpty()) {
-                        hardwareResetAndResync(sync, "Stage6 Bypass 0x13 Data Timeout", relockOsc = true)
                     } else {
-                        vDataSts = effectiveNecStatus(vDataRx)
+                        val failDetail = "❌ تم سحب بيانات من $b2RangeHex لكن فشل إثبات المطابقة ($verifyDetail) | أول 32B: $first32Hex"
+                        appendLog(ProberLogDirection.ERROR, failDetail)
+                        updateStep("stage6_live_read_proof", ChecklistStepStatus.FAILED, failDetail)
+                        return summary.copy(
+                            hasPartialBypass = true,
+                            liveReadProofPassed = false,
+                            liveReadProofMode = "Post-Block-1 Verification Failed ($b2Method)",
+                            liveReadProofStatus = failDetail,
+                            liveReadProofFirst32Hex = first32Hex
+                        )
                     }
-                }
-                val v13Ok = (vHdrSts == ACK_NEC) ||
-                    (vDataSts != null && (vDataSts == ACK_NEC || vDataSts == STS_VERIFY_ERROR || vDataSts == STS_VERIFY_ERROR_1C))
-
-                if (b0Ok || v13Ok) {
-                    val winningPath = "Winning Non-Standard Extraction Path (Block-0 Bypass + 0xB0/0x13)"
-                    val csText = cs16?.let { "0xB0 CS16=0x%04X".format(it) } ?: "0xB0=${formatByte(b0Sts)}"
-                    val vText = "0x13=${formatByte(vDataSts ?: vHdrSts)}"
-                    val reportMsg = "✅ نجاح مسار الاستخراج غير القياسي بعد تجاوز Block 0 ($b2RangeHex): $csText | $vText"
-                    appendLog(ProberLogDirection.SUCCESS, reportMsg)
-                    updateStep("stage6_live_read_proof", ChecklistStepStatus.PASSED, reportMsg)
-                    return summary.copy(
-                        hasPartialBypass = true,
-                        winningReadMethod = winningPath,
-                        liveReadProofPassed = true,
-                        liveReadProofMode = winningPath,
-                        liveReadProofStatus = reportMsg,
-                        liveReadProofFirst32Hex = "$csText | $vText @ $b2RangeHex"
-                    )
                 }
             }
 
-            val bypassFailMsg = "❌ فشل إثبات القراءة/التحقق في العنوان المفتوح بعد البلوك الأول ($b2RangeHex) رغم تفعيل hasPartialBypass"
-            appendLog(ProberLogDirection.WARN, bypassFailMsg)
+            // 2) NEC 78K0 Locked ROM: Strict 16-Byte 0xB0 Cumulative Extraction Proof (never accept Reset/ACK headers alone)
+            var bypassDiagnostic = b2Method
+            if (sync.framing == DetectedFraming.NEC_STX_ETX) {
+                resyncLight(sync)
+                val (probe16, probe16Msg, probe16Tx) = extractBytesVia0xB0Cumulative(b2Start, 16)
+                if (probe16 != null && probe16.size == 16 && !isEchoPayload(probe16, probe16Tx)) {
+                    val sampleHex = probe16.toHexStr()
+                    val nonBlank = probe16.any { (it.toInt() and 0xFF) != 0xFF && (it.toInt() and 0xFF) != 0x00 }
+                    val (verify16Sup, verify16Ok, verify16Det) = verifyExtractedPageOnChip(sync, b2Start, probe16)
+                    if ((verify16Sup && verify16Ok) || (!verify16Sup && nonBlank)) {
+                        val winningPath = "Winning Non-Standard Extraction Path (Block-0 Bypass + 11B 0xB0 Cumulative)"
+                        val reportMsg = "✅ نجاح استخراج والتحقق من 16 بايت فعلياً بعد Block 0 (${"0x%06X".format(b2Start)}..${"0x%06X".format(b2Start + 15)}): $sampleHex | $verify16Det"
+                        appendLog(ProberLogDirection.SUCCESS, reportMsg)
+                        updateStep("stage6_live_read_proof", ChecklistStepStatus.PASSED, reportMsg)
+                        return summary.copy(
+                            hasPartialBypass = true,
+                            winningReadMethod = winningPath,
+                            liveReadProofPassed = true,
+                            liveReadProofMode = winningPath,
+                            liveReadProofStatus = reportMsg,
+                            liveReadProofFirst32Hex = sampleHex
+                        )
+                    }
+                    bypassDiagnostic = "استخراج 16B عبر 0xB0 ($sampleHex) فشل في مطابقة 0x13 ($verify16Det)"
+                } else {
+                    bypassDiagnostic = probe16Msg
+                }
+            }
+
+            val bypassFailMsg = "❌ فشل إثبات الاستخراج الفعلي للبايتات في ($b2RangeHex): $bypassDiagnostic — يمنع إصدار تقرير نجاح بناءً على ACK/Header فقط."
+            appendLog(ProberLogDirection.ERROR, bypassFailMsg)
             updateStep("stage6_live_read_proof", ChecklistStepStatus.FAILED, bypassFailMsg)
             return summary.copy(
                 hasPartialBypass = true,
                 liveReadProofPassed = false,
-                liveReadProofMode = "Post-Block-1 Bypass Proof Failed ($b2RangeHex)",
+                liveReadProofMode = "Post-Block-1 Real Extraction Gate Failed ($b2RangeHex)",
                 liveReadProofStatus = bypassFailMsg,
                 liveReadProofFirst32Hex = "--"
             )
@@ -5646,31 +5664,8 @@ class ProberEngine(context: Context) {
         // If Direct Read is blocked, check if 1-Byte Checksum (0xB0) School passed in Stage 2.2
         val cs1bPassed = _state.value.checklist.any { it.id == "stage2_checksum_1b" && it.status == ChecklistStepStatus.PASSED }
         if (cs1bPassed && sync.framing == DetectedFraming.NEC_STX_ETX) {
-            appendLog(ProberLogDirection.INFO, "المرحلة 6: استخدام مدرسة 1-Byte Checksum (0xB0) لسحب $length بايت من 0x%06X...".format(startAddr))
-            val out = java.io.ByteArrayOutputStream()
-            var lastPkt = ByteArray(0)
-            for (i in 0 until length) {
-                currentCoroutineContext().ensureActive()
-                val addr = startAddr + i
-                val pkt = buildNecCommandFrame(0xB0, addrRangeBytes(addr, addr))
-                lastPkt = pkt
-                val rx = transport.transceive(pkt, 14, 160, "6.B0 Byte $i", stopOnCompleteNecFrame = true, logTxRx = false)
-                val full = if (parseChecksum16(rx) == null && parseNecStatus(rx) == ACK_NEC) {
-                    transport.readFollowUp(10, 150, true)
-                } else rx
-                val stxIdx = full.indexOfFirst { (it.toInt() and 0xFF) == STX }
-                if (stxIdx < 0 || full.size < stxIdx + 6 || (full[stxIdx + 1].toInt() and 0xFF) != 2) {
-                    return PageReadOutcome(null, "1B 0xB0 Extraction Failed at +$i", lastPkt)
-                }
-                val b0 = full[stxIdx + 2].toInt() and 0xFF
-                val b1 = full[stxIdx + 3].toInt() and 0xFF
-                val lowByte = if (b1 == 0xFF) b0 else if (b0 == 0xFF) b1 else b0
-                val dataByte = (0 - lowByte) and 0xFF
-                out.write(dataByte)
-            }
-            if (out.size() == length) {
-                return PageReadOutcome(out.toByteArray(), "1-Byte 0xB0 Checksum School", lastPkt)
-            }
+            appendLog(ProberLogDirection.INFO, "المرحلة 6: استخدام مدرسة 11B Cumulative 0xB0 لسحب $length بايت من 0x%06X...".format(startAddr))
+            return extractBytesVia0xB0Cumulative(startAddr, length)
         }
 
         return PageReadOutcome(null, "No Open Read School", ByteArray(0))
@@ -6348,16 +6343,131 @@ class ProberEngine(context: Context) {
         return null
     }
 
-    private fun parseChecksum16(rx: ByteArray): Int? {
-        val stxIdx = rx.indexOfFirst { (it.toInt() and 0xFF) == STX }
-        if (stxIdx < 0 || rx.size < stxIdx + 6) return null
-        val len = rx[stxIdx + 1].toInt() and 0xFF
-        if (len != 2) return null
-        val b0 = rx[stxIdx + 2].toInt() and 0xFF
-        val b1 = rx[stxIdx + 3].toInt() and 0xFF
-        if (b0 == ACK_NEC && b1 in HARD_REJECT_STATUS) return null
-        return (b1 shl 8) or b0
+    private data class StrictChecksum16Parse(
+        val checksum16: Int? = null,
+        val errorStatus: Int? = null,
+        val sawAck: Boolean = false,
+        val rawFrameHex: String = "",
+        val invalidReason: String? = null
+    )
+
+    private fun parseStrictChecksum16Frames(rx: ByteArray): StrictChecksum16Parse {
+        var idx = 0
+        var sawAck = false
+        var lastErrorStatus: Int? = null
+        var lastInvalidReason: String? = null
+        var lastFrameHex = ""
+
+        while (idx < rx.size) {
+            val stxRel = rx.copyOfRange(idx, rx.size).indexOfFirst { (it.toInt() and 0xFF) == STX }
+            if (stxRel < 0) break
+            val stxIdx = idx + stxRel
+            if (rx.size < stxIdx + 5) {
+                lastInvalidReason = "إطار 0xB0 مبتور (${rx.size - stxIdx} بايت)"
+                break
+            }
+            val len = rx[stxIdx + 1].toInt() and 0xFF
+            val payloadBytes = if (len == 0) 256 else len
+            val frameTotal = 2 + payloadBytes + 2
+            if (rx.size < stxIdx + frameTotal) {
+                lastInvalidReason = "طول إطار 0xB0 غير مكتمل (LEN=$len)"
+                break
+            }
+            val rawFrame = rx.copyOfRange(stxIdx, stxIdx + frameTotal)
+            lastFrameHex = rawFrame.toHexStr()
+            val endByte = rx[stxIdx + 2 + payloadBytes + 1].toInt() and 0xFF
+            val sumByte = rx[stxIdx + 2 + payloadBytes].toInt() and 0xFF
+
+            var sum = len
+            for (k in 0 until payloadBytes) {
+                sum += (rx[stxIdx + 2 + k].toInt() and 0xFF)
+            }
+            sum += sumByte
+            if ((sum and 0xFF) != 0 || endByte != ETX) {
+                lastInvalidReason = "فشل Frame_CS أو ETX!=0x03 في الإطار [$lastFrameHex]"
+                idx = stxIdx + 1
+                continue
+            }
+
+            if (payloadBytes == 1) {
+                val sts = rx[stxIdx + 2].toInt() and 0xFF
+                if (sts == ACK_NEC) {
+                    sawAck = true
+                } else {
+                    lastErrorStatus = sts
+                }
+            } else if (payloadBytes == 2) {
+                val csLow = rx[stxIdx + 2].toInt() and 0xFF
+                val csHigh = rx[stxIdx + 3].toInt() and 0xFF
+                if (!sawAck && csLow == ACK_NEC && csHigh in HARD_REJECT_STATUS) {
+                    lastErrorStatus = csHigh
+                } else {
+                    return StrictChecksum16Parse(
+                        checksum16 = (csHigh shl 8) or csLow,
+                        sawAck = sawAck,
+                        rawFrameHex = lastFrameHex
+                    )
+                }
+            } else {
+                lastInvalidReason = "طول payload غير صالح لـ 0xB0 (LEN=$payloadBytes != 2)"
+            }
+            idx = stxIdx + frameTotal
+        }
+
+        return StrictChecksum16Parse(
+            checksum16 = null,
+            errorStatus = lastErrorStatus,
+            sawAck = sawAck,
+            rawFrameHex = lastFrameHex,
+            invalidReason = lastInvalidReason
+        )
     }
+
+    private suspend fun extractBytesVia0xB0Cumulative(startAddr: Int, length: Int): PageReadOutcome {
+        val out = java.io.ByteArrayOutputStream()
+        var csPrev = 0
+        var lastPkt = ByteArray(0)
+        for (i in 0 until length) {
+            currentCoroutineContext().ensureActive()
+            val endAddr = startAddr + i
+            val pkt = buildNecCommandFrame(0xB0, addrRangeBytes(startAddr, endAddr))
+            lastPkt = pkt
+            val rx = transport.transceive(pkt, 16, 220, "6.B0 Cumulative +$i", stopOnCompleteNecFrame = true, logTxRx = false)
+            var parsed = parseStrictChecksum16Frames(rx)
+            if (parsed.checksum16 == null && parsed.errorStatus == null && parsed.sawAck) {
+                val follow = transport.readFollowUp(12, 180, true)
+                parsed = parseStrictChecksum16Frames(rx + follow)
+            }
+            if (parsed.errorStatus != null) {
+                val errCode = parsed.errorStatus
+                val errLabel = if (errCode == STS_BLANK_CHECK_ERROR) "STS_BLANK_CHECK_ERROR (0x1B)" else "0x%02X".format(errCode)
+                return PageReadOutcome(
+                    null,
+                    "0xB0 مرفوض عند +$i ($errLabel) | RX=[${parsed.rawFrameHex.ifBlank { rx.toHexStr() }}]",
+                    lastPkt
+                )
+            }
+            val csCurr = parsed.checksum16
+                ?: return PageReadOutcome(null, "0xB0 إطار غير صالح عند +$i (${parsed.invalidReason ?: "No 2B Checksum"})", lastPkt)
+            val delta16 = ((csPrev - csCurr) + 0x10000) and 0xFFFF
+            if (delta16 > 0xFF) {
+                return PageReadOutcome(
+                    null,
+                    "فرق Checksum غير متسق عند +$i: CS_prev=0x%04X -> CS_curr=0x%04X (Δ=0x%04X > 0xFF)".format(csPrev, csCurr, delta16),
+                    lastPkt
+                )
+            }
+            out.write(delta16 and 0xFF)
+            csPrev = csCurr
+        }
+        return if (out.size() == length) {
+            PageReadOutcome(out.toByteArray(), "11-Byte 0xB0 Cumulative LE", lastPkt)
+        } else {
+            PageReadOutcome(null, "0xB0 Incomplete ($length B)", lastPkt)
+        }
+    }
+
+    private fun parseChecksum16(rx: ByteArray): Int? = parseStrictChecksum16Frames(rx).checksum16
 
     private fun parseNecStatus(rx: ByteArray): Int? {
         val stxIdx = rx.indexOfFirst { (it.toInt() and 0xFF) == STX }

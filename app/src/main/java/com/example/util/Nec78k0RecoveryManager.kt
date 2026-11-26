@@ -178,6 +178,26 @@ object Nec78k0RecoveryManager {
             .firstOrNull { chipsMatch(it.chipName, chipName) }
     }
 
+    fun resetBlockOffsetForCleanResume(
+        context: Context,
+        session: Nec78k0RecoverySession
+    ): Nec78k0RecoverySession {
+        val resetStage = if (session.lastCompletedBlock >= 0) {
+            RecoveryStage.READING_BLOCKS
+        } else {
+            RecoveryStage.DETECTED
+        }
+        val updated = session.copy(
+            stage = resetStage,
+            updatedAtMs = System.currentTimeMillis(),
+            block0OriginalExtracted = if (session.lastCompletedBlock >= 0) session.block0OriginalExtracted else false,
+            block0DiffNextIndex = 0,
+            block0DiffPrevCs = -1
+        )
+        saveSessionCheckpoint(context, updated)
+        return updated
+    }
+
     fun markCompletedAndCleanup(context: Context, chipName: String) {
         listOf(
             sessionFile(context, chipName),

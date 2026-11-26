@@ -16,6 +16,7 @@ import androidx.compose.material.icons.filled.BuildCircle
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Memory
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
@@ -26,6 +27,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -46,6 +48,7 @@ fun Nec78k0RescueBannerCard(
     sessions: List<Nec78k0RecoveryManager.Nec78k0RecoverySession>,
     isBusy: Boolean,
     onRescueClick: (Nec78k0RecoveryManager.Nec78k0RecoverySession) -> Unit,
+    onCleanResumeClick: (Nec78k0RecoveryManager.Nec78k0RecoverySession) -> Unit = {},
     onDismissClick: (Nec78k0RecoveryManager.Nec78k0RecoverySession) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
@@ -101,7 +104,11 @@ fun Nec78k0RescueBannerCard(
             ) {
                 InfoBadgePill(
                     label = "الكتل المنجزة",
-                    value = "${latest.lastCompletedBlock.coerceAtLeast(0)} / ${latest.blockCount}",
+                    value = if (!latest.block0OriginalExtracted && latest.block0DiffNextIndex > 0) {
+                        "${latest.lastCompletedBlock.coerceAtLeast(0)}/${latest.blockCount} • B0=${latest.block0DiffNextIndex}/1024"
+                    } else {
+                        "${latest.lastCompletedBlock.coerceAtLeast(0)} / ${latest.blockCount}"
+                    },
                     accent = warningColor,
                     modifier = Modifier.weight(1f)
                 )
@@ -131,6 +138,26 @@ fun Nec78k0RescueBannerCard(
                     fontSize = 13.sp
                 )
             }
+
+            OutlinedButton(
+                onClick = { onCleanResumeClick(latest) },
+                enabled = !isBusy,
+                shape = RoundedCornerShape(12.dp),
+                border = BorderStroke(1.dp, warningColor.copy(alpha = 0.75f)),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 48.dp)
+                    .testTag("nec78k0_clean_resume_button")
+            ) {
+                Icon(Icons.Default.Refresh, contentDescription = null, tint = warningColor, modifier = Modifier.size(18.dp))
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "استئناف نظيف من بداية الكتلة (Reset Offset)",
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+            }
         }
     }
 }
@@ -140,6 +167,7 @@ fun Nec78k0WatchdogAlertCard(
     alertMessage: String,
     isBusy: Boolean,
     onResumeClick: () -> Unit,
+    onCleanResumeClick: () -> Unit = {},
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -200,6 +228,25 @@ fun Nec78k0WatchdogAlertCard(
                 ) {
                     Text("إخفاء", fontSize = 12.sp)
                 }
+            }
+
+            OutlinedButton(
+                onClick = onCleanResumeClick,
+                enabled = !isBusy,
+                shape = RoundedCornerShape(12.dp),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.65f)),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 48.dp)
+                    .testTag("nec78k0_watchdog_clean_resume_button")
+            ) {
+                Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "استئناف نظيف من بداية الكتلة (Reset Offset)",
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 12.sp
+                )
             }
         }
     }

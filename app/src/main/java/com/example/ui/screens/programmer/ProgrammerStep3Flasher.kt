@@ -133,8 +133,10 @@ fun ProgrammerStep3Flasher(
     onVerifyFlash: () -> Unit,
     onClearLogs: () -> Unit,
     onRescue78k0Session: (com.example.util.Nec78k0RecoveryManager.Nec78k0RecoverySession) -> Unit = {},
+    onCleanResume78k0Session: (com.example.util.Nec78k0RecoveryManager.Nec78k0RecoverySession) -> Unit = {},
     onDismiss78k0Session: (com.example.util.Nec78k0RecoveryManager.Nec78k0RecoverySession) -> Unit = {},
     onResumeFromWatchdog: () -> Unit = {},
+    onCleanResumeFromWatchdog: () -> Unit = {},
     onDismissWatchdog: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
@@ -181,6 +183,7 @@ fun ProgrammerStep3Flasher(
                 sessions = state.pendingRescueSessions,
                 isBusy = state.isBusy,
                 onRescueClick = onRescue78k0Session,
+                onCleanResumeClick = onCleanResume78k0Session,
                 onDismissClick = onDismiss78k0Session
             )
         }
@@ -190,6 +193,7 @@ fun ProgrammerStep3Flasher(
                 alertMessage = state.watchdogAlertMessage,
                 isBusy = state.isBusy,
                 onResumeClick = onResumeFromWatchdog,
+                onCleanResumeClick = onCleanResumeFromWatchdog,
                 onDismiss = onDismissWatchdog
             )
         }

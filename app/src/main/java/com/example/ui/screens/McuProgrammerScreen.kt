@@ -233,8 +233,10 @@ fun McuProgrammerScreen(
                     onVerifyFlash = programmerViewModel::verifyChipFlash,
                     onClearLogs = programmerViewModel::clearLogs,
                     onRescue78k0Session = { session -> programmerViewModel.rescueOrResume78k0Flash(session) },
+                    onCleanResume78k0Session = { session -> programmerViewModel.reset78k0BlockOffsetAndResume(session) },
                     onDismiss78k0Session = { session -> programmerViewModel.dismiss78k0RescueSession(session) },
                     onResumeFromWatchdog = { programmerViewModel.rescueOrResume78k0Flash(null) },
+                    onCleanResumeFromWatchdog = { programmerViewModel.reset78k0BlockOffsetAndResume(null) },
                     onDismissWatchdog = programmerViewModel::dismissWatchdogAlert
                 )
             }

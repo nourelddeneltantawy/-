@@ -1015,6 +1015,35 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
         execute78k0OrStandardRead(resumeSession = target)
     }
 
+    fun reset78k0BlockOffsetAndResume(session: Nec78k0RecoveryManager.Nec78k0RecoverySession? = null) {
+        if (_uiState.value.isBusy) return
+        val selectedPart = _uiState.value.selectedProcessor?.partNumber
+        val target = session
+            ?: selectedPart?.let { Nec78k0RecoveryManager.findSessionForChip(appContext, it) }
+            ?: _uiState.value.pendingRescueSessions.firstOrNull()
+            ?: Nec78k0RecoveryManager.findAnyPendingSession(appContext, selectedPart)
+
+        if (target == null) {
+            _uiState.update { it.copy(currentStep = 3, watchdogAlertMessage = null) }
+            addLog("لا توجد جلسة محفوظة — بدء قراءة نظيفة من بداية الكتلة (Offset=0)...", LogLevel.INFO)
+            execute78k0OrStandardRead(resumeSession = null)
+            return
+        }
+
+        val resetSession = Nec78k0RecoveryManager.resetBlockOffsetForCleanResume(appContext, target)
+        refresh78k0RescueSessions()
+        val matchedProc = Nec78k0ProtocolEngine.findMatchingCatalogProcessor(resetSession.chipName, allProcessors)
+        if (matchedProc != null) {
+            applySelectedMcuHierarchy(matchedProc, clearSearch = true, markUserSelected = true)
+        }
+        _uiState.update { it.copy(currentStep = 3, watchdogAlertMessage = null, watchdogPausedBlock = null) }
+        addLog(
+            "تصفير إزاحة البايت للكتلة (Byte Offset -> 0) مع الاحتفاظ بـ FullCS=${resetSession.fullChecksumHex} و Block0CS=${resetSession.block0ChecksumHex} والكتل المنجزة (${resetSession.lastCompletedBlock.coerceAtLeast(0)})...",
+            LogLevel.INFO
+        )
+        execute78k0OrStandardRead(resumeSession = resetSession)
+    }
+
     private fun execute78k0OrStandardRead(resumeSession: Nec78k0RecoveryManager.Nec78k0RecoverySession?) {
         val mcu = _uiState.value.selectedProcessor ?: return
         if (_uiState.value.isBusy) return
