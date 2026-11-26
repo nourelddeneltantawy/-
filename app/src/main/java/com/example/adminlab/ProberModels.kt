@@ -384,16 +384,16 @@ enum class DetectedFraming(
         checksumFormula = "FT232 TX+1kΩ+RX -> BKGD Single-Wire @ 1,500,000 bps (8N1)"
     ),
     SAMSUNG_ISP(
-        label = "Samsung S3F8 / S3F9 / S3P ISP Bootloader",
-        sohHex = "0xAA 0x55 / 0x80 Sync",
-        stxHex = "Samsung ISP Page",
-        etbHex = "N/A",
-        etxHex = "ACK / CS",
-        ackHex = "0xAA / 0x06",
+        label = "Samsung S3F8 / S3F9 / S3P Synchronous Serial ISP",
+        sohHex = "0xAA 0x55 -> 0x80 / 0xC0 Sync",
+        stxHex = "0x05 Read / 0x06 Prog",
+        etbHex = "0x08 Sector Erase (1KB)",
+        etxHex = "0x09 0xAA 0x55 Chip Erase",
+        ackHex = "0xAA / 0x06 / ID",
         errCmdHex = "0x15 / Timeout",
-        errParamHex = "0xFF",
-        endianness = "Big-Endian (16-bit)",
-        checksumFormula = "8-bit Sum Checksum (Samsung ISP)"
+        errParamHex = "0x00 / 0xFF",
+        endianness = "Big-Endian (16-bit Addr)",
+        checksumFormula = "DTR=Vpp/TEST (+5V) | RTS=SCLK | SDAT=TX(1N4148)+RX"
     ),
     CUSTOM_RAW(
         label = "بروتوكول قياسي / نصي / مبرمجة غير مسجلة (Custom / Unknown)",
@@ -632,18 +632,20 @@ private fun buildWorkflows(state: ProberUiState): Pair<List<String>, List<String
 
     if (framing == DetectedFraming.SAMSUNG_ISP) {
         val readWf = listOf(
-            "1. Hold DTR (Vpp/TEST)=LOW & RTS (SCLK)=LOW (50ms) -> Raise DTR=+5V (20ms) -> 16 SCLK pulses (2ms) -> Send 0xAA 0x55 over SDAT (TX+1N4148+RX).",
-            "2. Query Samsung Raw Chip ID (0x80 / 0xC0 / 0x01) -> ${s.chipSignature} (${s.inferredModel}).",
+            "1. Locked Pin Map: DTR=Vpp/TEST (LOW 50ms -> HIGH +5V stayed ON all session) | RTS=SCLK (16x 2ms) | SDAT=TX(1N4148)+RX; send 0xAA 0x55 -> ID (0x80/0xC0).",
+            "2. Read Smart Option (0x003E..0x003F) & Chip ID -> ${s.chipSignature} (${s.inferredModel}).",
             if (!isLocked) {
-                "3. Extract Flash ${s.flashStartAddressHex}..${s.flashEndAddressHex} via ${s.winningReadMethod} in ${s.pageSizeBytes ?: 256}B pages."
+                "3. Extract Flash ${s.flashStartAddressHex}..${s.flashEndAddressHex} via [0x05, Addr_H, Addr_L, Len] / [0x04] in ${s.pageSizeBytes ?: 256}B pages."
+            } else if (s.hasPartialBypass) {
+                "3. Smart Option Bypass Active: Erase Sector 0 [0x08 0x00 0x00] (clears 0x003E..0x003F) -> Quick Re-Sync (DTR=HIGH) -> Extract 0x0400..${s.flashEndAddressHex} via [0x05]."
             } else {
-                "3. Target Readout Protected: Execute Samsung S3F8/S3F9 Erase/Unprotect before reprogramming."
+                "3. Target Readout Protected (Smart Option 0x003E..0x003F): Run Sector-0 Erase [0x08 0x00 0x00] or Chip Erase [0x09 0xAA 0x55]."
             }
         )
         val writeWf = listOf(
-            "1. Enter Samsung S3F8/S3F9 Sync ISP (DTR=Vpp/TEST, RTS=SCLK, SDAT=TX/RX) & confirm ${s.syncPulseHex}.",
-            "2. Erase Sectors/Chip via Samsung ISP Erase command (wait ${tm.eraseWriteBusyWaitMs}ms).",
-            "3. Stream ${s.pageSizeBytes ?: 256}B pages with SCLK sync and verify against Flash."
+            "1. Keep DTR=Vpp/TEST (HIGH +5V), clock RTS=SCLK & sync 0xAA 0x55 (${s.syncPulseHex}).",
+            "2. Erase 1KB Sector via [0x08, Addr_H, Addr_L] or Full Chip via [0x09, 0xAA, 0x55] (wait ${tm.eraseWriteBusyWaitMs}ms).",
+            "3. Program bytes/pages via [0x06, Addr_H, Addr_L, Data...] and verify read-back via [0x05, Addr_H, Addr_L, Len]."
         )
         return readWf to writeWf
     }

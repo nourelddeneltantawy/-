@@ -318,7 +318,10 @@ class ProberUsbTransport(
                         activeConnection?.controlTransfer(0xC0, 0x02, 0, 0, ByteArray(4), 4, 250)
                     }
                     ProberUsbChip.FT232R, ProberUsbChip.CH340G, ProberUsbChip.CP2102, ProberUsbChip.PL2303, ProberUsbChip.CDC_ACM -> {
-                        if (isBitBangActive) exitFtdiBitBangMode()
+                        if (isBitBangActive) {
+                            writeBytesRaw(byteArrayOf(0x00))
+                            exitFtdiBitBangMode()
+                        }
                         setControlLines(dtr = false, rts = false)
                     }
                     else -> {}
@@ -613,6 +616,52 @@ class ProberUsbTransport(
             delay(2)
             if (sclkOnRts) setRts(sclkLowPin) else setDtr(sclkLowPin)
             delay(2)
+        }
+        flushRx()
+        return true
+    }
+
+    /**
+     * Fast Samsung S3F8/S3F9 Re-Sync keeping DTR (Vpp/TEST) strictly HIGH (+5V) throughout the session
+     * without dropping DTR to LOW, while emitting RTS (SCLK) sync clock pulses.
+     */
+    suspend fun samsungQuickResyncKeepTestHigh(
+        testActiveHigh: Boolean = true,
+        pulseClocks: Int = 8,
+        forceUartModemLines: Boolean = false
+    ): Boolean {
+        currentCoroutineContext().ensureActive()
+        if (activeConnection == null) return false
+        if (activeChip == ProberUsbChip.FT232R && !forceUartModemLines) {
+            if (!isBitBangActive) {
+                configureUart(4800, evenParity = false)
+            }
+            val txdMask = 0x01
+            val sclkMask = 0x04 // RTS = SCLK (locked)
+            val testMask = 0x10 // DTR = Vpp/TEST (locked)
+            val dirMask = txdMask or sclkMask or testMask
+            if (!setFtdiBitBangDirection(dirMask)) return false
+            val testHighState = if (testActiveHigh) testMask else 0x00
+            writeBytesRaw(byteArrayOf((testHighState or txdMask).toByte()))
+            for (i in 0 until pulseClocks) {
+                currentCoroutineContext().ensureActive()
+                writeBytesRaw(byteArrayOf((testHighState or txdMask or sclkMask).toByte()))
+                delay(1)
+                writeBytesRaw(byteArrayOf((testHighState or txdMask).toByte()))
+                delay(1)
+            }
+            flushRx()
+            return true
+        }
+        val testHighPin = !testActiveHigh
+        setControlLines(dtr = testHighPin, rts = true)
+        delay(2)
+        for (i in 0 until pulseClocks) {
+            currentCoroutineContext().ensureActive()
+            setRts(false)
+            delay(1)
+            setRts(true)
+            delay(1)
         }
         flushRx()
         return true
