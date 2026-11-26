@@ -579,16 +579,20 @@ class ProberEngine(context: Context) {
         val r4 = sigCapture.step
         resyncLight(sync)
         val r5 = testRamStubInjection(sync)
+        resyncLight(sync)
+        val r6 = testDifferential0x40Plus0xB0School(sync)
 
         val safeOpenReads = (if (sync.framing == DetectedFraming.NEC_STX_ETX) listOf(r1, r2, r5) else listOf(r1, r5))
             .filter { it.status == ChecklistStepStatus.PASSED }
         val isMcuOpenForSafeRead = safeOpenReads.isNotEmpty()
-        val auxNotes = listOf(r3, r4)
+        val auxNotes = listOf(r3, r4, r6)
             .filter { it.status == ChecklistStepStatus.PASSED }
             .joinToString(" + ") { it.title }
 
         val winningReadDesc = if (isMcuOpenForSafeRead) {
             safeOpenReads.joinToString(" + ") { it.title }
+        } else if (sync.framing == DetectedFraming.NEC_STX_ETX && r6.status == ChecklistStepStatus.PASSED) {
+            "Locked Bootloader — جاهز لمدرسة 2.6: الاستخراج التفاضلي (Differential 0x40 + Full-Block 0xB0) أو بوابة المرحلة 5"
         } else {
             if (auxNotes.isNotBlank()) {
                 "Locked Bootloader (محمي ومقفل — نجح فقط: $auxNotes) — يتطلب بوابة المرحلة 5"
@@ -3256,6 +3260,48 @@ class ProberEngine(context: Context) {
         return updateAndReturn("stage2_ram_stub", ChecklistStepStatus.FAILED, "لا يقبل تحميل كود RAM مؤقت")
     }
 
+    private suspend fun testDifferential0x40Plus0xB0School(sync: SyncLock): ChecklistStepItem {
+        updateStep("stage2_diff_0x40_0xb0", ChecklistStepStatus.RUNNING, "فحص بصمة Full-Block 0xB0 (1024B) لمدرسة الاستخراج التفاضلي (0x40 + 0xB0)...")
+        if (sync.framing != DetectedFraming.NEC_STX_ETX) {
+            val directPassed = _state.value.checklist.firstOrNull { it.id == "stage2_direct_read" }?.status == ChecklistStepStatus.PASSED
+            return if (directPassed) {
+                updateAndReturn("stage2_diff_0x40_0xb0", ChecklistStepStatus.PASSED, "غير مطلوب — السحب المباشر يعمل في ${sync.framing.label}")
+            } else {
+                updateAndReturn("stage2_diff_0x40_0xb0", ChecklistStepStatus.BYPASSED, "مخصص لعائلة NEC / Renesas 78K0 (Block=1024B, Page=256B)")
+            }
+        }
+
+        val block0Cmd = buildNecCommandFrame(0xB0, addrRangeBytes(0x000000, 0x0003FF))
+        var rx = transport.transceive(block0Cmd, 16, 360, "Stage 2.6 Full-Block 0xB0 [0x000000..0x0003FF]", stopOnCompleteNecFrame = true)
+        if (rx.isEmpty()) {
+            hardwareResetAndResync(sync, "Stage 2.6 0xB0 Timeout", relockOsc = false)
+            rx = transport.transceive(block0Cmd, 16, 360, "Stage 2.6 Full-Block 0xB0 Retry", stopOnCompleteNecFrame = true)
+        }
+        var parsed = parseStrictChecksum16Frames(rx)
+        if (parsed.checksum16 == null && parsed.errorStatus == null && parsed.sawAck) {
+            parsed = parseStrictChecksum16Frames(rx + transport.readFollowUp(12, 260, true))
+        }
+        if (parsed.errorStatus != null) {
+            return updateAndReturn(
+                "stage2_diff_0x40_0xb0",
+                ChecklistStepStatus.FAILED,
+                "❌ رفض 0xB0 على البلوك الكامل 1024B (${formatByte(parsed.errorStatus)}) | RX=[${parsed.rawFrameHex.ifBlank { rx.toHexStr() }}]"
+            )
+        }
+        val csBlock0 = parsed.checksum16
+            ?: return updateAndReturn(
+                "stage2_diff_0x40_0xb0",
+                ChecklistStepStatus.FAILED,
+                "❌ فشل قراءة بصمة 0xB0 للبلوك الكامل 0 (${parsed.invalidReason ?: rx.toHexStr()})"
+            )
+
+        return updateAndReturn(
+            "stage2_diff_0x40_0xb0",
+            ChecklistStepStatus.PASSED,
+            "✅ 0xB0 على كامل البلوك 1024B (0x000000..0x0003FF) ناجح: CS_prev=0x%04X (LE) — متاح للاستخراج التفاضلي (0x40 260B Page + 0xB0 Full-Block)".format(csBlock0)
+        )
+    }
+
     // ==================== STAGE 3: FULL 0x00..0xFF SURGICAL SWEEP ====================
 
     private suspend fun runStage3SurgicalCommandSweep(sync: SyncLock): List<DiscoveredCommandEntry> {
@@ -4211,6 +4257,9 @@ class ProberEngine(context: Context) {
                     }
                 }
             }
+            val detectedFlashSizeBytes = (boundsProbe.flashEnd - boundsProbe.flashStart + 1).coerceAtLeast(blockSize)
+            val totalBlocks = (detectedFlashSizeBytes / blockSize).coerceAtLeast(1)
+            flashRule = "${boundsProbe.ruleDetail} | Block=${blockSize}B, Page=${pageSize}B, totalBlocks=$totalBlocks | Differential 0x40 (260B STX [02 00 ... 03]) + Full-Block 0xB0"
         } else if (sync.framing == DetectedFraming.USBDM_BDM || sync.framing == DetectedFraming.FREESCALE_SINGLE_WIRE_BDM) {
             val isUsbdm = (sync.framing == DetectedFraming.USBDM_BDM)
             val arch = sync.usbdmTargetArch ?: detectedUsbdmTargetArch
@@ -5003,7 +5052,8 @@ class ProberEngine(context: Context) {
                 }
             }
 
-            // 2) NEC 78K0 Locked ROM: Strict 16-Byte 0xB0 Cumulative Extraction Proof (never accept Reset/ACK headers alone)
+            // 2) NEC 78K0 Locked ROM: Try 11B Cumulative 0xB0, and if sub-block 0xB0 is rejected (0x05 Parameter Error),
+            //    run the 6th School: Real 8-Byte Differential Extraction (0x40 11B+260B Page + Full-Block 1024B 0xB0) at 0x000400..0x000407!
             var bypassDiagnostic = b2Method
             if (sync.framing == DetectedFraming.NEC_STX_ETX) {
                 resyncLight(sync)
@@ -5028,7 +5078,27 @@ class ProberEngine(context: Context) {
                     }
                     bypassDiagnostic = "استخراج 16B عبر 0xB0 ($sampleHex) فشل في مطابقة 0x13 ($verify16Det)"
                 } else {
-                    bypassDiagnostic = probe16Msg
+                    appendLog(
+                        ProberLogDirection.INFO,
+                        "🔬 المرحلة 6: تعذر 0xB0 الجزئي ($probe16Msg) — بدء مدرسة الاستخراج التفاضلي الحقيقي لأول 8 بايتات (0x000400..0x000407) عبر 0x40 (260B) + 0xB0 (Full Block 1024B)..."
+                    )
+                    val (diff8Bytes, diffDetail) = extract8BytesDifferentialAt0400(sync, b2Start, blockSize, pageSize)
+                    if (diff8Bytes != null && diff8Bytes.size == 8) {
+                        val hex8 = diff8Bytes.toHexStr()
+                        val winningPath = "Differential 0x40 (256B Page 260B STX) + 0xB0 (Full 1024B Block)"
+                        val reportMsg = "✅ إثبات المرحلة 6 بالاستخراج التفاضلي الحقيقي (0x000400..0x000407): تم استخراج 8 بايتات فعلية بدون 0x05/0x1B -> [$hex8]"
+                        appendLog(ProberLogDirection.SUCCESS, "$reportMsg | $diffDetail")
+                        updateStep("stage6_live_read_proof", ChecklistStepStatus.PASSED, "$reportMsg | $diffDetail")
+                        return summary.copy(
+                            hasPartialBypass = true,
+                            winningReadMethod = winningPath,
+                            liveReadProofPassed = true,
+                            liveReadProofMode = "School 6: $winningPath",
+                            liveReadProofStatus = reportMsg,
+                            liveReadProofFirst32Hex = hex8
+                        )
+                    }
+                    bypassDiagnostic = diffDetail
                 }
             }
 
@@ -5401,13 +5471,68 @@ class ProberEngine(context: Context) {
             )
         }
 
+        // Locked NEC 78K0 fallback (no direct Read, non-blank Flash): execute 8-byte Differential Extraction (0x40 + Full-Block 0xB0 at 0x000400..0x000407)
+        if (sync.framing == DetectedFraming.NEC_STX_ETX) {
+            val testAddr = if (blockSize >= 2048) 0x000800 else 0x000400
+            val allowDiffProbe = if (!userCancelledStage5) {
+                true
+            } else {
+                requestStepConfirmation(
+                    prompt = Stage5ConfirmPrompt(
+                        stepIndex = 1,
+                        totalSteps = 1,
+                        stepTitle = "إثبات الاستخراج التفاضلي (0x40 + 0xB0) لأول 8 بايتات في Block 1",
+                        impactDescription = "البوتلودر مقفل على القراءة المباشرة (0x18) ولا يقبل 0xB0 لأقل من بلوك كامل 1024B.\nلإثبات مدرسة الاستخراج التفاضلي عملياً بالمرحلة 6:\n• سيتم فحص CS_prev الحي للبلوك 1 (${"0x%06X..0x%06X".format(testAddr, testAddr + blockSize - 1)}) بأمر 0xB0.\n• ثم تصفير أول 8 بايتات (${"0x%06X..0x%06X".format(testAddr, testAddr + 7)}) بايت تلو الآخر عبر 0x40 (11B Header + 260B STX) وحساب (CS_curr - CS_prev + 0x10000) & 0xFFFF.\n\n⚠️ هذا الإجراء سيصفّر أول 8 بايتات فقط عند ${"0x%06X".format(testAddr)}."
+                    ),
+                    stepId = "stage6_live_read_proof"
+                )
+            }
+            if (allowDiffProbe) {
+                _state.value = _state.value.copy(
+                    phase = ProberStagePhase.RUNNING_STAGE5_STEP,
+                    stageBanner = "جاري تنفيذ المرحلة 6: سحب أول 8 بايتات تفاضلياً عند 0x%06X (0x40 + 0xB0)...".format(testAddr)
+                )
+                updateStep(
+                    "stage6_live_read_proof",
+                    ChecklistStepStatus.RUNNING,
+                    "الاستخراج التفاضلي لأول 8 بايتات (${"0x%06X..0x%06X".format(testAddr, testAddr + 7)})..."
+                )
+                resyncLight(sync)
+                val (diff8Bytes, diffDetail) = extract8BytesDifferentialAt0400(sync, testAddr, blockSize, pageSize)
+                if (diff8Bytes != null && diff8Bytes.size == 8) {
+                    val hex8 = diff8Bytes.toHexStr()
+                    val winningPath = "Differential 0x40 (256B Page 260B STX) + 0xB0 (Full 1024B Block)"
+                    val reportMsg = "✅ إثبات المرحلة 6 بالاستخراج التفاضلي الحقيقي (${"0x%06X..0x%06X".format(testAddr, testAddr + 7)}): [$hex8]"
+                    appendLog(ProberLogDirection.SUCCESS, "$reportMsg | $diffDetail")
+                    updateStep("stage6_live_read_proof", ChecklistStepStatus.PASSED, "$reportMsg | $diffDetail")
+                    return summary.copy(
+                        winningReadMethod = winningPath,
+                        liveReadProofPassed = true,
+                        liveReadProofMode = "School 6: $winningPath",
+                        liveReadProofStatus = reportMsg,
+                        liveReadProofFirst32Hex = hex8
+                    )
+                } else {
+                    val failMsg = "❌ فشل الاستخراج التفاضلي لأول 8 بايتات (${"0x%06X..0x%06X".format(testAddr, testAddr + 7)}): $diffDetail"
+                    appendLog(ProberLogDirection.ERROR, failMsg)
+                    updateStep("stage6_live_read_proof", ChecklistStepStatus.FAILED, failMsg)
+                    return summary.copy(
+                        liveReadProofPassed = false,
+                        liveReadProofMode = "School 6 Differential 0x40+0xB0 Failed",
+                        liveReadProofStatus = failMsg,
+                        liveReadProofFirst32Hex = "--"
+                    )
+                }
+            }
+        }
+
         // Neither direct extraction succeeded nor chip could be verified blank (e.g. locked MCU with non-blank data and Stage 5 skipped)
-        val lockedMsg = "⚠️ المعالج مقفل ويحتوي على بيانات محمية (تعذر القراءة المباشرة لـ Page 0 دون إتمام فك القفل أو تصفير Block 0 بالمرحلة 5)"
+        val lockedMsg = "⚠️ المعالج مقفل ويحتوي على بيانات محمية (تعذر القراءة المباشرة لـ Page 0 دون إتمام الاستخراج التفاضلي أو المرحلة 5)"
         appendLog(ProberLogDirection.WARN, lockedMsg)
         updateStep("stage6_live_read_proof", ChecklistStepStatus.BYPASSED, lockedMsg)
         return summary.copy(
             liveReadProofPassed = false,
-            liveReadProofMode = "Locked Protected Data (Requires Block-0 Zeroing / Unlock)",
+            liveReadProofMode = "Locked Protected Data (Requires Differential 0x40+0xB0 / Unlock)",
             liveReadProofStatus = lockedMsg,
             liveReadProofFirst32Hex = "--"
         )
@@ -6192,7 +6317,7 @@ class ProberEngine(context: Context) {
                     familyDisplayName = if (isRl78) "Renesas RL78 (R5F) Framed Bootloader Family" else "NEC / Renesas 78K0 (uPD78F) Framed Bootloader Family",
                     sampleChipDatabaseKey = sampleKey,
                     supportedAdapterVidPids = mergeVidPids(standardUartVidPids),
-                    autoDetectProbeRule = "UART ${summary.baudRate ?: 9600}bps ${summary.parityMode} | Reset (${tm.resetPulseMs}ms->${tm.postResetDelayMs}ms) -> 0x00 (${tm.syncByteGapMs}ms) 0x00 -> SOH Reset [01 01 00 FF 03] -> ACK 0x06 -> Signature [01 01 C0 3E 03]$bypassNote"
+                    autoDetectProbeRule = "UART ${summary.baudRate ?: 9600}bps ${summary.parityMode} | Reset (${tm.resetPulseMs}ms->${tm.postResetDelayMs}ms) -> 0x00 (${tm.syncByteGapMs}ms) 0x00 -> SOH Reset [01 01 00 FF 03] -> ACK 0x06 -> Signature [01 01 C0 3F 03] | Block=${summary.blockSizeBytes ?: 1024}B, Page=${summary.pageSizeBytes ?: 256}B$bypassNote"
                 )
             }
             DetectedFraming.RENESAS_RAW -> PlugAndPlayRegistryEntry(
@@ -6465,6 +6590,126 @@ class ProberEngine(context: Context) {
         } else {
             PageReadOutcome(null, "0xB0 Incomplete ($length B)", lastPkt)
         }
+    }
+
+    /**
+     * Stage 6 Real Differential Extraction Proof for NEC_78K0_FAMILY:
+     * Extracts the first 8 bytes at [testStartAddr]..[testStartAddr + 7] (e.g. 0x000400..0x000407)
+     * inside full Block K ([blockStart]..[blockEnd], 1024B) and target Page P ([pageStart]..[pageEnd], 256B):
+     * 1. Live CS_prev via 11B 0xB0 on Full Block K (never cached).
+     * 2. For i = 0..7:
+     *    - 11B 0x40 Page Header -> expect ACK [02 01 06 F9 03]
+     *    - Strictly 260B STX [02 00 ...256B (all 0xFF except ONLY index i = 0x00)... Data_CS 03] -> ACK
+     *    - Live CS_curr via 11B 0xB0 on Full Block K -> Extracted_Byte = (CS_curr - CS_prev + 0x10000) & 0xFFFF
+     */
+    private suspend fun extract8BytesDifferentialAt0400(
+        sync: SyncLock,
+        testStartAddr: Int,
+        blockSize: Int,
+        pageSize: Int
+    ): Pair<ByteArray?, String> {
+        val effBlockSize = blockSize.coerceAtLeast(1024)
+        val effPageSize = pageSize.coerceIn(128, 256)
+        val blockStart = (testStartAddr / effBlockSize) * effBlockSize
+        val blockEnd = blockStart + effBlockSize - 1
+        val pageStart = (testStartAddr / effPageSize) * effPageSize
+        val pageEnd = pageStart + effPageSize - 1
+        val bRange = addrRangeBytes(blockStart, blockEnd)
+        val pRange = addrRangeBytes(pageStart, pageEnd)
+
+        suspend fun queryLiveFullBlockCs(tag: String): Pair<Int?, String> {
+            val pkt = buildNecCommandFrame(0xB0, bRange)
+            var rx = transport.transceive(pkt, 16, 400, tag, stopOnCompleteNecFrame = true, logTxRx = false)
+            if (rx.isEmpty()) {
+                hardwareResetAndResync(sync, "$tag Timeout", relockOsc = true)
+                rx = transport.transceive(pkt, 16, 400, "$tag Retry", stopOnCompleteNecFrame = true, logTxRx = false)
+            }
+            var parsed = parseStrictChecksum16Frames(rx)
+            if (parsed.checksum16 == null && parsed.errorStatus == null && parsed.sawAck) {
+                parsed = parseStrictChecksum16Frames(rx + transport.readFollowUp(12, 260, true))
+            }
+            if (parsed.errorStatus != null) {
+                return null to "0xB0 مرفوض ($tag: ${formatByte(parsed.errorStatus)})"
+            }
+            val cs = parsed.checksum16
+                ?: return null to "فشل قراءة 0xB0 ($tag: ${parsed.invalidReason ?: rx.toHexStr()})"
+            return cs to "OK"
+        }
+
+        val (initialCs, initialErr) = queryLiveFullBlockCs("6.Diff CS_prev 0x%06X..0x%06X".format(blockStart, blockEnd))
+        var csPrev = initialCs ?: return null to initialErr
+
+        val extracted = ByteArray(8)
+        for (i in 0 until 8) {
+            currentCoroutineContext().ensureActive()
+            val byteAddr = testStartAddr + i
+            val offsetInPage = byteAddr - pageStart
+
+            // 1) 11-Byte 0x40 Page Header -> expect ACK
+            val hdrPkt = buildNecCommandFrame(0x40, pRange)
+            var hdrRx = transport.transceive(
+                hdrPkt, 12, 420,
+                "6.Diff 0x40 Header [0x%06X..0x%06X] byte+$i".format(pageStart, pageEnd),
+                stopOnCompleteNecFrame = true, logTxRx = (i == 0)
+            )
+            if (hdrRx.isEmpty()) {
+                hardwareResetAndResync(sync, "6.Diff 0x40 Header Timeout +$i", relockOsc = true)
+                hdrRx = transport.transceive(
+                    hdrPkt, 12, 420,
+                    "6.Diff 0x40 Header Retry [+$i]",
+                    stopOnCompleteNecFrame = true, logTxRx = false
+                )
+            }
+            val hdrSts = parseNecStatus(hdrRx)
+            if (hdrSts != ACK_NEC) {
+                return null to "فشل ترويسة 0x40 عند البايت +$i (${formatByte(hdrSts)})"
+            }
+
+            delay(10)
+            transport.flushRx()
+
+            // 2) Strictly 260-Byte STX Frame [02 00 <256B all 0xFF except ONLY target=0x00> Data_CS 03]
+            val pageBuf = ByteArray(effPageSize) { idx ->
+                if (idx == offsetInPage) 0x00 else 0xFF.toByte()
+            }
+            val stxFrame = buildNecDataFrame(pageBuf, isLast = true)
+            val dataRx = transport.transceive(
+                stxFrame, 16, 850,
+                "6.Diff 0x40 STX 260B [target=+$i @ 0x%06X]".format(byteAddr),
+                stopOnCompleteNecFrame = true, paced64B = true, logTxRx = (i == 0)
+            )
+            if (dataRx.isEmpty()) {
+                hardwareResetAndResync(sync, "6.Diff 0x40 STX Timeout +$i", relockOsc = true)
+                return null to "انتهت مهلة STX بعد كتابة البايت +$i"
+            }
+            val dataSts = effectiveNecStatus(dataRx)
+            if (dataSts == STS_PARAM_ERROR || dataSts == STS_BLANK_CHECK_ERROR || dataSts == STS_PROTECT_ERROR || dataSts == 0x04 || dataSts == 0x07) {
+                return null to "رفض STX لـ 0x40 عند +$i بالحالة ${formatByte(dataSts)}"
+            }
+            if (dataSts != ACK_NEC && dataSts != STS_VERIFY_ERROR && dataSts != STS_VERIFY_ERROR_1C) {
+                return null to "استجابة غير صالحة بعد STX عند +$i (${formatByte(dataSts)})"
+            }
+
+            delay(12)
+            // 3) Live CS_curr via 11-Byte 0xB0 on Full Block K -> Extracted_Byte = (CS_curr - CS_prev + 0x10000) & 0xFFFF
+            val (csCurrVal, csCurrErr) = queryLiveFullBlockCs("6.Diff CS_curr +$i")
+            val csCurr = csCurrVal ?: return null to csCurrErr
+
+            val delta = (csCurr - csPrev + 0x10000) and 0xFFFF
+            if (delta !in 0x00..0xFF) {
+                return null to "فرق Checksum خارج النطاق عند +$i: CS_prev=0x%04X -> CS_curr=0x%04X (Δ=0x%04X > 0xFF)".format(csPrev, csCurr, delta)
+            }
+            extracted[i] = (delta and 0xFF).toByte()
+            appendLog(
+                ProberLogDirection.INFO,
+                "  • 6.Diff Byte[$i @ 0x%06X]: CS_prev=0x%04X -> CS_curr=0x%04X => 0x%02X".format(byteAddr, csPrev, csCurr, delta and 0xFF)
+            )
+            csPrev = csCurr
+        }
+
+        return extracted to "Block=0x%06X..0x%06X (${effBlockSize}B) | Page=0x%06X..0x%06X (${effPageSize}B) | Extracted[0..7]=${extracted.toHexStr()}".format(
+            blockStart, blockEnd, pageStart, pageEnd
+        )
     }
 
     private fun parseChecksum16(rx: ByteArray): Int? = parseStrictChecksum16Frames(rx).checksum16

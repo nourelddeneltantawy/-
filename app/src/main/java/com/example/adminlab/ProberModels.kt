@@ -496,6 +496,7 @@ fun defaultChecklist(): List<ChecklistStepItem> = listOf(
     ChecklistStepItem("stage2_verify_0x13", "المرحلة 2.3", "مدرسة التحقق التدريجي (Verify 0x13: مقارنة صفحة 0xFF مع 0x00 لكشف القفل)"),
     ChecklistStepItem("stage2_signature", "المرحلة 2.4", "مدرسة قراءة الهوية الخام بدون قوائم مغلقة (SDID / PARTID / IDCODE / Signature)"),
     ChecklistStepItem("stage2_ram_stub", "المرحلة 2.5", "مدرسة حقن/فحص الرام (RAM Stub في عنوان مؤقت آمن)"),
+    ChecklistStepItem("stage2_diff_0x40_0xb0", "المرحلة 2.6", "مدرسة الاستخراج التفاضلي (Differential 0x40 + 0xB0 on Full Block)"),
     ChecklistStepItem("stage3_cmd_sweep", "المرحلة 3", "المسح الجراحي الشامل للأوامر أو أوامر المبرمجة وأطوال المعاملات"),
     ChecklistStepItem("stage4_timing_bounds", "المرحلة 4", "فحص حدود الفلاش الديناميكي (4KB..2MB) + التردد 0x90 + السرعات + 6 أزمنة"),
     ChecklistStepItem("stage5_safety_gate", "المرحلة 5", "بوابة الأمان التفاعلية (تصفير Block 0 / Mass Erase / الكتابة الجزئية)"),
@@ -654,30 +655,31 @@ private fun buildWorkflows(state: ProberUiState): Pair<List<String>, List<String
     val readWorkflow = buildList {
         add("1. Apply Pin Logic: FLMD0/MODE=${s.flmd0PinState}, RESET Idle=${s.resetPinIdleState}, Pulse=${s.resetPinPulsePolarity} (${tm.resetPulseMs}ms -> wait ${tm.postResetDelayMs}ms).")
         add("2. Open Adapter/UART (${s.baudRate ?: 9600} bps ${s.parityMode}, echoCancellation=${s.echoCancellation}); run wake-up pattern [${s.wakeUpPatternUsed}] (${s.syncPulseHex})${if (isNecFraming) " | SOH Reset=[01 01 00 FF 03] -> Expect ACK=[02 01 06 F9 03]" else ""}.")
-        add("3. Run Auto-ID (${s.universalAutoIdRule})${if (isNecFraming) " | Sig=[01 01 C0 3E 03]" else ""} -> RawID=${s.chipSignature} & Dynamic Flash Probe 4KB..2MB -> ${s.flashStartAddressHex}..${s.flashEndAddressHex}.")
+        add("3. Run Auto-ID (${s.universalAutoIdRule})${if (isNecFraming) " | Sig=[01 01 C0 3F 03]" else ""} -> RawID=${s.chipSignature} & Dynamic Flash Probe 4KB..2MB -> ${s.flashStartAddressHex}..${s.flashEndAddressHex} (Block=${s.blockSizeBytes ?: 1024}B, Page=${s.pageSizeBytes ?: 256}B).")
         add("4. Crystal/Oscillator Lock: ${s.oscillatorNegotiationRule}${if (isNecFraming) " | Osc=[01 LEN 90 ... Frame_CS 03]" else ""}")
         add("5. Speed Transition: ${s.baudStateMachineRule} (wait ${tm.baudSwitchDelayMs}ms after ACK)${if (isNecFraming) " | Baud=[01 03 9A ... Frame_CS 03]" else ""}.")
         if (isNecFraming) {
-            add("6. Verified Hex Frame Math: Frame_CS=(0-(LEN+sum(BODY)))&0xFF | 0xB0 11B Query=[01 07 B0 Start_H Start_M Start_L End_H End_M End_L Frame_CS 03] -> Resp=[02 02 CS_Low CS_High SUM 03] | CS16=(CS_High<<8)|CS_Low (LE) | Byte[N]=((CS(N-1)-CS(N))+0x10000)&0xFF (CS(-1)=0).")
+            add("6. Verified Hex Frame Math: Frame_CS=(0-(LEN+sum(BODY)))&0xFF | Full-Block 0xB0 11B=[01 07 B0 BlockStart(3B) BlockEnd(3B) Frame_CS 03] (Start=K*0x400, End=Start+0x3FF) -> Resp=[02 02 CS_Low CS_High SUM 03] | CS16=(CS_High<<8)|CS_Low (LE).")
+            add("7. School 6 (Differential 0x40 + Full-Block 0xB0): Live CS_prev=0xB0(Block K) -> 0x40 11B Page Header=[01 07 40 PageStart(3B) PageEnd(3B) Frame_CS 03] -> ACK -> 260B STX=[02 00 ...256B (all 0xFF except ONLY target byte=0x00)... Data_CS 03] -> ACK -> Live CS_curr=0xB0(Block K) -> Extracted_Byte=(CS_curr-CS_prev+0x10000)&0xFFFF.")
         }
         if (!isLocked) {
-            add("7. Safe Direct Extraction succeeded via ${s.winningReadMethod}: read ${s.flashStartAddressHex}..${s.flashEndAddressHex}${if (isNecFraming) " using [01 07 18 Start(3B) End(3B) Frame_CS 03] or 11B [01 07 B0 ...]" else ""} in ${s.pageSizeBytes ?: 256}B pages (${tm.frameToFrameDelayMs}ms frame gap).")
+            add("${if (isNecFraming) 8 else 6}. Safe Direct Extraction succeeded via ${s.winningReadMethod}: read ${s.flashStartAddressHex}..${s.flashEndAddressHex}${if (isNecFraming) " using [01 07 18 Start(3B) End(3B) Frame_CS 03] or Differential 0x40+0xB0" else ""} in ${s.pageSizeBytes ?: 256}B pages (${tm.frameToFrameDelayMs}ms frame gap).")
         } else if (s.hasPartialBypass) {
-            add("7. Winning Non-Standard Extraction Path (Block-0 Bypass + 11B 0xB0 / 0x13): Block-0 zeroed/partially bypassed (${s.verify0x13DiffResult}).")
-            add("8. Extract remaining protected Flash blocks starting at Block 2 (0x0400..${s.flashEndAddressHex}) via 11B 0xB0 [01 07 B0 ...] Checksum + 0x13 [01 07 13 ...] Verify probes.")
+            add("8. Winning Non-Standard Extraction Path (Block-0 Bypass + Differential 0x40 + Full-Block 0xB0 / 0x13): Block-0 bypassed (${s.verify0x13DiffResult}).")
+            add("9. Extract Block K (totalBlocks = flashSize / 1024) starting at 0x000400 via Full-Block 0xB0 (1024B) + 260B Page Differential 0x40 (only 1 target 0x00 byte in 256B 0xFF page) & restore extracted array.")
         } else {
-            add("7. Target is LOCKED (${s.verify0x13DiffResult}): capture Full Flash & Block-0 Checksums via 11B [01 07 B0 Start(3B) End(3B) Frame_CS 03] before any destructive step.")
-            add("8. Extract Block-0 via 11B 0xB0 (or 0x40 differential zeroing + 11B 0xB0) -> Erase Block-0 [01 07 22 ...] -> Read Block 1..N [01 07 18 ...] -> Restore Block-0 [01 07 40 ...] -> Verify Full Flash [01 07 B0 ...].")
+            add("${if (isNecFraming) 8 else 6}. Target is LOCKED (${s.verify0x13DiffResult}): capture Full Flash & Block-0 Checksums via 11B Full-Block [01 07 B0 Start(3B) End(3B) Frame_CS 03] before any destructive step.")
+            add("${if (isNecFraming) 9 else 7}. Extract Block K (0..totalBlocks-1) via School 6 Differential 0x40 (11B Header + 260B [02 00 ... 03]) + Full-Block 0xB0 -> Erase Block-0 [01 07 22 ...] -> Read/Extract Block 1..N -> Restore extracted Block-0..N [01 07 40 ...] -> Verify Full Flash [01 07 B0 ...].")
         }
     }
 
     val writeWorkflow = buildList {
         add("1. Apply Pin Logic: FLMD0/MODE=${s.flmd0PinState}, RESET Pulse=${tm.resetPulseMs}ms, settle=${tm.postResetDelayMs}ms.")
         add("2. Connect & Wake: ${s.baudRate ?: 9600} bps ${s.parityMode}; execute wake-up (${s.syncPulseHex})${if (isNecFraming) " + Reset [01 01 00 FF 03]" else ""} and confirm ACK (${framing?.ackHex ?: "0x06"}).")
-        add("3. Auto-ID & Geometry: ${s.universalAutoIdRule}${if (isNecFraming) " ([01 01 C0 3E 03])" else ""} -> Range=${s.flashStartAddressHex}..${s.flashEndAddressHex}, Block=${s.blockSizeBytes ?: 1024}B, Page=${s.pageSizeBytes ?: 256}B.")
+        add("3. Auto-ID & Geometry: ${s.universalAutoIdRule}${if (isNecFraming) " ([01 01 C0 3F 03])" else ""} -> Range=${s.flashStartAddressHex}..${s.flashEndAddressHex}, Block=${s.blockSizeBytes ?: 1024}B, Page=${s.pageSizeBytes ?: 256}B.")
         add("4. Lock Oscillator & Speed: ${s.oscillatorNegotiationRule} (winning=${s.winningOscillatorPayload}) | ${s.baudStateMachineRule}.")
         add("5. Blank Check / Erase: send ${if (isNecFraming) "0x32 [01 07 32 Start(3B) End(3B) Frame_CS 03] or Erase via 0x20 [01 01 20 DF 03] / 0x22 [01 07 22 Start(3B) End(3B) Frame_CS 03]" else "0x32 (Blank Check) or Erase via 0x20/0x22"} and wait ${tm.eraseWriteBusyWaitMs}ms busy timeout.")
-        add("6. Program Flash (0x40): send ${if (isNecFraming) "[01 07 40 Start_H Start_M Start_L End_H End_M End_L Frame_CS 03]" else "Start..End (${framing?.endianness ?: "Big-Endian"})"}, wait ${tm.commandToDataDelayMs}ms, stream STX frames [02 LEN DATA... Frame_CS 17|03] of ${s.pageSizeBytes ?: 256}B ending with ETB (0x17) on intermediate pages and ETX (0x03) on final page (${tm.frameToFrameDelayMs}ms gap).")
+        add("6. Program Flash (0x40): send ${if (isNecFraming) "[01 07 40 PageStart(3B) PageEnd(3B) Frame_CS 03]" else "Start..End (${framing?.endianness ?: "Big-Endian"})"}, wait ${tm.commandToDataDelayMs}ms, stream STX frames [02 00 DATA(256B)... Frame_CS 17|03] (${s.pageSizeBytes ?: 256}B; LEN=0x00 for 256B, ETX=0x03 on final frame, ${tm.frameToFrameDelayMs}ms gap).")
         add("7. Verify & Sign-off: verify written data via ${if (isNecFraming) "0x13 [01 07 13 Start(3B) End(3B) Frame_CS 03] + STX Data" else "0x13 (Verify)"} and confirm Full-Flash ${if (isNecFraming) "0xB0 [01 07 B0 Start(3B) End(3B) Frame_CS 03] -> LE CS16=(CS_High<<8)|CS_Low" else "0xB0 Checksum"}.")
     }
     return readWorkflow to writeWorkflow
@@ -768,15 +770,19 @@ fun formatReadBlueprintJson(state: ProberUiState): String {
         appendLine("    \"frameChecksumFormula\": \"${jsonEsc(framing?.checksumFormula ?: "--")}\",")
         if (framing == DetectedFraming.NEC_STX_ETX) {
             appendLine("    \"checksumResponseTemplate\": \"02 02 [CS_Low] [CS_High] [Frame_CS] 03\",")
-            appendLine("    \"checksumExtractionFormula\": \"CS16 = (CS_High << 8) | CS_Low; Byte[N] = ((CS(N-1) - CS(N)) + 0x10000) & 0xFF (CS(-1)=0)\",")
+            appendLine("    \"checksumExtractionFormula\": \"CS16 = (CS_High << 8) | CS_Low (LE); Differential Extracted_Byte = (CS_curr - CS_prev + 0x10000) & 0xFFFF after 0x40 single-byte 256B page zeroing\",")
+            appendLine("    \"differentialFullBlockRule\": \"BlockStart = K * 1024, BlockEnd = BlockStart + 0x3FF (totalBlocks = flashSize / 1024); zero ONLY target byte inside 256B Page P via 11B 0x40 header + 260B STX [02 00 ...all 0xFF except target=0x00... Data_CS 03]\",")
             appendLine("    \"exactHexTemplates\": {")
             appendLine("      \"resetCmd\": \"01 01 00 FF 03\",")
-            appendLine("      \"signatureCmd\": \"01 01 C0 3E 03\",")
+            appendLine("      \"signatureCmd\": \"01 01 C0 3F 03\",")
             appendLine("      \"checksumCmd11B\": \"01 07 B0 [Start_H] [Start_M] [Start_L] [End_H] [End_M] [End_L] [Frame_CS] 03\",")
+            appendLine("      \"checksumFullBlock11B\": \"01 07 B0 [K*0x400 Start(3B)] [K*0x400+0x3FF End(3B)] [Frame_CS] 03\",")
             appendLine("      \"checksumResp6B\": \"02 02 [CS_Low] [CS_High] [Frame_CS] 03\",")
+            appendLine("      \"differentialProgramHeader11B\": \"01 07 40 [PageStart_H] [PageStart_M] [PageStart_L] [PageEnd_H] [PageEnd_M] [PageEnd_L] [Header_CS] 03\",")
+            appendLine("      \"differentialStxDataFrame260B\": \"02 00 [256 Bytes: all 0xFF except ONLY target byte = 0x00] [Data_CS] 03\",")
             appendLine("      \"readCmd11B\": \"01 07 18 [Start_H] [Start_M] [Start_L] [End_H] [End_M] [End_L] [Frame_CS] 03\",")
             appendLine("      \"verifyCmd11B\": \"01 07 13 [Start_H] [Start_M] [Start_L] [End_H] [End_M] [End_L] [Frame_CS] 03\",")
-            appendLine("      \"stxDataFrame\": \"02 [LEN] [DATA...] [Frame_CS] [17=ETB | 03=ETX]\"")
+            appendLine("      \"stxDataFrame\": \"02 [LEN (0x00=256B)] [DATA...] [Frame_CS] [17=ETB | 03=ETX]\"")
             appendLine("    }")
         } else {
             appendLine("    \"checksumResponseTemplate\": \"${jsonEsc(framing?.ackHex ?: "--")}\",")
@@ -861,13 +867,15 @@ fun formatWriteBlueprintJson(state: ProberUiState): String {
         appendLine("    \"checksumFormula\": \"${jsonEsc(framing?.checksumFormula ?: "--")}\",")
         if (framing == DetectedFraming.NEC_STX_ETX) {
             appendLine("    \"exactHexTemplates\": {")
+            appendLine("      \"signatureCmd5B\": \"01 01 C0 3F 03\",")
             appendLine("      \"blankCheckCmd11B\": \"01 07 32 [Start_H] [Start_M] [Start_L] [End_H] [End_M] [End_L] [Frame_CS] 03\",")
             appendLine("      \"chipEraseCmd5B\": \"01 01 20 DF 03\",")
             appendLine("      \"blockEraseCmd11B\": \"01 07 22 [Start_H] [Start_M] [Start_L] [End_H] [End_M] [End_L] [Frame_CS] 03\",")
-            appendLine("      \"programCmd11B\": \"01 07 40 [Start_H] [Start_M] [Start_L] [End_H] [End_M] [End_L] [Frame_CS] 03\",")
+            appendLine("      \"programCmd11B\": \"01 07 40 [PageStart_H] [PageStart_M] [PageStart_L] [PageEnd_H] [PageEnd_M] [PageEnd_L] [Header_CS] 03\",")
+            appendLine("      \"stxDataFrame260B\": \"02 00 [256 Bytes] [Data_CS] 03\",")
             appendLine("      \"verifyCmd11B\": \"01 07 13 [Start_H] [Start_M] [Start_L] [End_H] [End_M] [End_L] [Frame_CS] 03\",")
             appendLine("      \"checksumCmd11B\": \"01 07 B0 [Start_H] [Start_M] [Start_L] [End_H] [End_M] [End_L] [Frame_CS] 03\",")
-            appendLine("      \"stxDataFrame\": \"02 [LEN] [DATA...] [Frame_CS] [17=ETB | 03=ETX]\"")
+            appendLine("      \"stxDataFrame\": \"02 [LEN (0x00=256B)] [DATA...] [Frame_CS] [17=ETB | 03=ETX]\"")
             appendLine("    }")
         } else {
             appendLine("    \"exactHexTemplates\": { \"syncPulseHex\": \"${jsonEsc(s.syncPulseHex)}\" }")
@@ -988,7 +996,7 @@ fun formatHumanGuideText(state: ProberUiState): String {
         appendLine("• تهيئة المبرمجة والخطوط: ${s.flmd0PinState} | RESET=${s.resetPinIdleState} (${s.resetPinPulsePolarity})")
         appendLine("• الاتصال والتزامن: ${s.parityMode} | السرعة=${s.baudRate ?: 9600} | نمط الاستيقاظ=${s.wakeUpPatternUsed}")
         appendLine("• التعرف التلقائي (Auto-ID): ${s.universalAutoIdRule}")
-        appendLine("• نتائج اختبار مدارس السحب الخمس:")
+        appendLine("• نتائج اختبار مدارس السحب الست (6 مدارس):")
         stage2List.forEach { step ->
             appendLine("  - ${step.title}: [${step.status.badgeText}] ${step.detail}")
         }

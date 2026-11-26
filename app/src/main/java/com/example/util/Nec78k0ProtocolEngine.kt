@@ -769,8 +769,8 @@ object Nec78k0ProtocolEngine {
                             }
                         }
 
-                        // 78K0 Checksum16 = (0x10000 - sum) & 0xFFFF => subtracting Original_Byte[i] increases checksum by Original_Byte[i]
-                        val delta = (csCurr - csPrev) and 0xFFFF
+                        // 78K0 Checksum16 = (0x10000 - sum) & 0xFFFF => zeroing Original_Byte[i] increases checksum by Original_Byte[i]
+                        val delta = (csCurr - csPrev + 0x10000) and 0xFFFF
                         if (delta > 0xFF) {
                             System.arraycopy(b0Working, 0, fullBuffer, 0, BLOCK_SIZE)
                             return pauseWithWatchdog(
@@ -1107,15 +1107,38 @@ object Nec78k0ProtocolEngine {
                             }
                         }
                         is NonStandardBlockOutcome.LockedNonUniform -> {
-                            onLog("تنبيه أمني: الكتلة Block $blockIdx تحتوي بيانات غير فارغة وأمر 0x18 مقفول على الشريحة — استعادة Block 0 الأصلي فوراً لحماية المعالج...")
-                            restoreOriginalBlock0Safely(
+                            onLog("الكتلة Block $blockIdx (0x%06X..0x%06X) محمية على 0x18 — تفعيل مدرسة الاستخراج التفاضلي (Differential 0x40 260B + Full-Block 0xB0)...".format(Locale.US, blockStart, blockEnd))
+                            when (val diffBlkRes = extractAndRestoreBlockViaDifferential0x40And0xB0(
                                 transport = transport,
-                                block0Bytes = fullBuffer.copyOfRange(0, BLOCK_SIZE),
+                                blockIdx = blockIdx,
+                                blockCount = blockCount,
+                                blockStart = blockStart,
+                                blockEnd = blockEnd,
+                                totalSize = totalSize,
                                 clockFreqMhzText = clockFreqMhzText,
+                                onProgress = onProgress,
                                 onLog = onLog
-                            )
-                            Nec78k0RecoveryManager.markCompletedAndCleanup(context, detectedInfo.deviceName)
-                            return FlashOperationResult.Failure(bypassRes.reason)
+                            )) {
+                                is NonStandardBlockOutcome.VerifiedBytes -> {
+                                    System.arraycopy(diffBlkRes.bytes, 0, readBytes, 0, BLOCK_SIZE)
+                                }
+                                is NonStandardBlockOutcome.TransportLost -> {
+                                    blockFailureIsUsb = diffBlkRes.isUsbDetached
+                                    blockFailureReason = diffBlkRes.reason
+                                    readFailed = true
+                                }
+                                is NonStandardBlockOutcome.LockedNonUniform -> {
+                                    onLog("تنبيه أمني: تعذر استخراج Block $blockIdx تفاضلياً (${diffBlkRes.reason}) — استعادة Block 0 الأصلي فوراً...")
+                                    restoreOriginalBlock0Safely(
+                                        transport = transport,
+                                        block0Bytes = fullBuffer.copyOfRange(0, BLOCK_SIZE),
+                                        clockFreqMhzText = clockFreqMhzText,
+                                        onLog = onLog
+                                    )
+                                    Nec78k0RecoveryManager.markCompletedAndCleanup(context, detectedInfo.deviceName)
+                                    return FlashOperationResult.Failure(diffBlkRes.reason)
+                                }
+                            }
                         }
                         is NonStandardBlockOutcome.TransportLost -> {
                             blockFailureIsUsb = bypassRes.isUsbDetached
@@ -1649,53 +1672,55 @@ object Nec78k0ProtocolEngine {
     }
 
     /**
-     * Writes 0x00 at [byteIdx] in Block 0 (leaving preceding bytes 0x00 and following bytes 0xFF/untouched)
-     * without erasing Block 0 first. Automatically detects the smallest 0x40 write granularity supported
-     * by the target bootloader (1B -> 4B -> 256B -> 1024B).
+     * Writes 0x00 ONLY at [byteIdx] within [blockStart]..[blockStart + BLOCK_SIZE - 1]
+     * (keeping all other 255 bytes in the 256B page = 0xFF per NEC 78K0 differential protocol).
+     * Tries official 256-byte page write (11B 0x40 header + 260B STX [02 00 ... 03]) FIRST to prevent 0x1B.
      */
     private suspend fun writeSingleByteZeroWithAutoGranularity(
         transport: Serial78k0Transport,
         byteIdx: Int,
         currentMode: ZeroWriteGranularity?,
         clockFreqMhzText: String,
-        onLog: (String) -> Unit
+        onLog: (String) -> Unit,
+        blockStart: Int = 0x000000
     ): Pair<ZeroWriteGranularity, DiffWriteOutcome> {
+        val byteAddr = blockStart + byteIdx
         val order = if (currentMode != null) {
             listOf(currentMode)
         } else {
             listOf(
+                ZeroWriteGranularity.PAGE_256_BYTES,
                 ZeroWriteGranularity.ONE_BYTE,
                 ZeroWriteGranularity.FOUR_BYTES,
-                ZeroWriteGranularity.PAGE_256_BYTES,
                 ZeroWriteGranularity.BLOCK_1024_BYTES
             )
         }
 
         for (mode in order) {
             val (startAddr, endAddr, pages) = when (mode) {
-                ZeroWriteGranularity.ONE_BYTE -> Triple(byteIdx, byteIdx, listOf(byteArrayOf(0x00)))
+                ZeroWriteGranularity.ONE_BYTE -> Triple(byteAddr, byteAddr, listOf(byteArrayOf(0x00)))
                 ZeroWriteGranularity.FOUR_BYTES -> {
-                    val wStart = byteIdx and 0xFFFC
+                    val wStart = byteAddr and 0xFFFFFC
                     val wEnd = wStart + 3
-                    val offsetInWord = byteIdx - wStart
-                    val buf = ByteArray(4) { idx -> if (idx <= offsetInWord) 0x00 else 0xFF.toByte() }
+                    val offsetInWord = byteAddr - wStart
+                    val buf = ByteArray(4) { idx -> if (idx == offsetInWord) 0x00 else 0xFF.toByte() }
                     Triple(wStart, wEnd, listOf(buf))
                 }
                 ZeroWriteGranularity.PAGE_256_BYTES -> {
-                    val pStart = byteIdx and 0xFF00
+                    val pStart = byteAddr and 0xFFFF00
                     val pEnd = pStart + PAGE_SIZE - 1
-                    val offsetInPage = byteIdx - pStart
-                    val buf = ByteArray(PAGE_SIZE) { idx -> if (idx <= offsetInPage) 0x00 else 0xFF.toByte() }
+                    val offsetInPage = byteAddr - pStart
+                    val buf = ByteArray(PAGE_SIZE) { idx -> if (idx == offsetInPage) 0x00 else 0xFF.toByte() }
                     Triple(pStart, pEnd, listOf(buf))
                 }
                 ZeroWriteGranularity.BLOCK_1024_BYTES -> {
                     val list = (0 until PAGES_PER_BLOCK).map { page ->
                         ByteArray(PAGE_SIZE) { pOff ->
                             val globalIdx = page * PAGE_SIZE + pOff
-                            if (globalIdx <= byteIdx) 0x00 else 0xFF.toByte()
+                            if (globalIdx == byteIdx) 0x00 else 0xFF.toByte()
                         }
                     }
-                    Triple(0x000000, BLOCK_SIZE - 1, list)
+                    Triple(blockStart, blockStart + BLOCK_SIZE - 1, list)
                 }
             }
 
@@ -2260,6 +2285,136 @@ object Nec78k0ProtocolEngine {
         )
     }
 
+    private suspend fun extractAndRestoreBlockViaDifferential0x40And0xB0(
+        transport: Serial78k0Transport,
+        blockIdx: Int,
+        blockCount: Int,
+        blockStart: Int,
+        blockEnd: Int,
+        totalSize: Int,
+        clockFreqMhzText: String,
+        onProgress: (Int, Int, String) -> Unit,
+        onLog: (String) -> Unit
+    ): NonStandardBlockOutcome {
+        val initialCsRes = queryChecksum16WithRetry(
+            transport = transport,
+            startAddr = blockStart,
+            endAddr = blockEnd,
+            clockFreqMhzText = clockFreqMhzText,
+            opLabel = String.format(Locale.US, "قراءة CS_prev للكتلة Block %d (0xB0)", blockIdx),
+            maxRetries = 2,
+            verboseLog = true,
+            onLog = onLog
+        )
+        val initialBlockCs = when (initialCsRes) {
+            is ChecksumQueryResult.Success -> initialCsRes.checksum16 and 0xFFFF
+            is ChecksumQueryResult.TransportLost -> return NonStandardBlockOutcome.TransportLost(initialCsRes.reason, initialCsRes.isUsbDetached)
+            is ChecksumQueryResult.ProtocolError -> return NonStandardBlockOutcome.LockedNonUniform("فشل 0xB0 لـ Block $blockIdx: ${initialCsRes.statusLabel}")
+            is ChecksumQueryResult.ParameterError -> return NonStandardBlockOutcome.LockedNonUniform("خطأ معاملات (0x05) في 0xB0 لـ Block $blockIdx")
+        }
+
+        var csPrev = initialBlockCs
+        var writeMode: ZeroWriteGranularity? = null
+        val blockBytes = ByteArray(BLOCK_SIZE)
+        for (byteIdx in 0 until BLOCK_SIZE) {
+            currentCoroutineContext().ensureActive()
+            if (!transport.isDeviceAttached()) {
+                return NonStandardBlockOutcome.TransportLost("انقطع اتصال USB OTG أثناء استخراج Block $blockIdx تفاضلياً عند البايت $byteIdx", true)
+            }
+            val (modeUsed, zeroRes) = writeSingleByteZeroWithAutoGranularity(
+                transport = transport,
+                byteIdx = byteIdx,
+                currentMode = writeMode,
+                clockFreqMhzText = clockFreqMhzText,
+                onLog = onLog,
+                blockStart = blockStart
+            )
+            writeMode = modeUsed
+            when (zeroRes) {
+                is DiffWriteOutcome.ProceedToChecksum -> Unit
+                is DiffWriteOutcome.Protected -> return NonStandardBlockOutcome.LockedNonUniform(zeroRes.reason)
+                is DiffWriteOutcome.ProtocolError -> return NonStandardBlockOutcome.LockedNonUniform(zeroRes.reason)
+                is DiffWriteOutcome.TransportLost -> return NonStandardBlockOutcome.TransportLost(zeroRes.reason, zeroRes.isUsbDetached)
+            }
+
+            val currCsRes = queryChecksum16WithRetry(
+                transport = transport,
+                startAddr = blockStart,
+                endAddr = blockEnd,
+                clockFreqMhzText = clockFreqMhzText,
+                opLabel = "0xB0 تفاضلي Block $blockIdx [$byteIdx]",
+                maxRetries = 2,
+                verboseLog = false,
+                onLog = onLog
+            )
+            val csCurr = when (currCsRes) {
+                is ChecksumQueryResult.Success -> currCsRes.checksum16 and 0xFFFF
+                is ChecksumQueryResult.TransportLost -> return NonStandardBlockOutcome.TransportLost(currCsRes.reason, currCsRes.isUsbDetached)
+                is ChecksumQueryResult.ProtocolError -> return NonStandardBlockOutcome.LockedNonUniform("فشل 0xB0 عند Block $blockIdx[$byteIdx]: ${currCsRes.statusLabel}")
+                is ChecksumQueryResult.ParameterError -> return NonStandardBlockOutcome.LockedNonUniform("خطأ معاملات 0xB0 عند Block $blockIdx[$byteIdx]")
+            }
+
+            val delta = (csCurr - csPrev + 0x10000) and 0xFFFF
+            if (delta > 0xFF) {
+                return NonStandardBlockOutcome.LockedNonUniform(
+                    String.format(
+                        Locale.US,
+                        "فرق Checksum غير متسق في Block %d[%d] (CS_prev=%04X -> CS_curr=%04X, Δ=%04X)",
+                        blockIdx, byteIdx, csPrev, csCurr, delta
+                    )
+                )
+            }
+            blockBytes[byteIdx] = (delta and 0xFF).toByte()
+            csPrev = csCurr
+
+            if (byteIdx % 16 == 0 || byteIdx == BLOCK_SIZE - 1) {
+                val done = minOf(blockStart + byteIdx + 1, totalSize)
+                onProgress(
+                    done,
+                    totalSize,
+                    String.format(Locale.US, "استخراج تفاضلي Block %d/%d: %d/1024", blockIdx, blockCount - 1, byteIdx + 1)
+                )
+            }
+        }
+
+        val verifiedCs = Nec78k0Block0Reconstructor.compute78k0Checksum16(blockBytes) and 0xFFFF
+        if (verifiedCs != initialBlockCs) {
+            return NonStandardBlockOutcome.LockedNonUniform(
+                String.format(Locale.US, "عدم تطابق Checksum الكتلة %d بعد الاستخراج التفاضلي (%04X != %04X)", blockIdx, verifiedCs, initialBlockCs)
+            )
+        }
+
+        // Restore extracted Block K back to chip immediately so Flash remains intact
+        val eraseRes = transceiveWithTimeoutRetry(
+            transport = transport,
+            txFrame = buildAddressRangeFrame(CMD_BLOCK_ERASE, blockStart, blockEnd),
+            timeoutMs = HEADER_ACK_TIMEOUT_MS,
+            clockFreqMhzText = clockFreqMhzText,
+            opLabel = "مسح Block $blockIdx قبل الاستعادة (0x22)",
+            onLog = onLog
+        )
+        if (eraseRes is Nec78k0TransceiveResult.DisconnectedOrTimeout) {
+            return NonStandardBlockOutcome.TransportLost(eraseRes.reason, eraseRes.isUsbDetached)
+        } else if (eraseRes is Nec78k0TransceiveResult.ProtocolError) {
+            return NonStandardBlockOutcome.LockedNonUniform("فشل مسح Block $blockIdx للاستعادة: ${eraseRes.statusLabel}")
+        }
+        delay(Nec78k0ProtocolRegistry.ERASE_WRITE_BUSY_WAIT_MS)
+        when (val progRes = programBlockFromBuffer(
+            transport = transport,
+            startAddr = blockStart,
+            endAddr = blockEnd,
+            blockData = blockBytes,
+            clockFreqMhzText = clockFreqMhzText,
+            eraseBlockBeforeRetry = true,
+            onLog = onLog
+        )) {
+            is ProgramOutcome.Success -> Unit
+            is ProgramOutcome.ProtocolError -> return NonStandardBlockOutcome.LockedNonUniform(progRes.message)
+            is ProgramOutcome.TransportFailure -> return NonStandardBlockOutcome.TransportLost(progRes.reason, progRes.isUsbDetached)
+        }
+        return NonStandardBlockOutcome.VerifiedBytes(blockBytes, twoVectorConfirmed = false)
+    }
+
     private suspend fun restoreOriginalBlock0Safely(
         transport: Serial78k0Transport,
         block0Bytes: ByteArray,
@@ -2488,6 +2643,24 @@ object Nec78k0ProtocolEngine {
                 onLog("Checksum 0xB0 Error: خطأ Checksum في إطار الاستقبال [${toHex(firstFrame.rawFrame)}]")
                 return ChecksumQueryResult.ProtocolError(STS_CHECKSUM_ERROR, "خطأ Checksum في إطار الرد")
             }
+            // Support direct 6-byte [02 02 CS_Low CS_High SUM 03] response without leading ACK frame
+            if (firstFrame.payload.size == 2 && firstFrame.endByte == ETX) {
+                val hardErrSet = setOf(STS_COMMAND_ERROR, STS_PARAMETER_ERROR, STS_CHECKSUM_ERROR, STS_PROTECT_ERROR, 0x15, STS_BLANK_CHECK_ERROR)
+                if (firstFrame.sts1 == STS_ACK && firstFrame.sts2 != null && firstFrame.sts2 in hardErrSet) {
+                    val err = firstFrame.sts2!!
+                    val desc = statusDescription(err)
+                    if (verboseLog || err != STS_PARAMETER_ERROR) {
+                        onLog("Checksum 0xB0 Error: $desc [${toHex(firstFrame.rawFrame)}]")
+                    }
+                    return if (err == STS_PARAMETER_ERROR) {
+                        ChecksumQueryResult.ParameterError
+                    } else {
+                        ChecksumQueryResult.ProtocolError(err, desc)
+                    }
+                }
+                return ChecksumQueryResult.Success(Nec78k0Block0Reconstructor.decodeChecksumBytes(firstFrame.payload))
+            }
+
             if (firstFrame.sts1 != STS_ACK) {
                 val desc = statusDescription(firstFrame.sts1)
                 if (verboseLog || firstFrame.sts1 != STS_PARAMETER_ERROR) {
