@@ -51,6 +51,10 @@ class ProberEngine(context: Context) {
         )
 
         private val UNIVERSAL_ID_CMDS = listOf(0xC0, 0xC5, 0xFB, 0x01, 0x02, 0x00, 0x9F, 0xAF)
+
+        private val SAMSUNG_SINGLE_BIT_DROP_BYTES = setOf(0xFE, 0xFD, 0xFB, 0xF7, 0xEF, 0xDF, 0xBF, 0x7F)
+        private const val SAMSUNG_FLOATING_HIGH_ALERT_MSG =
+            "تمت مزامنة السامسونج بنجاح، ولكن خط SDAT مرفوع (0xFF) — يلزم تطبيق +12.5V على رجل 9 (Vpp/TEST) لفتح بوابة الفلاش الداخلية"
     }
 
     private data class SyncLock(
@@ -2198,6 +2202,21 @@ class ProberEngine(context: Context) {
         return bytes.all { (it.toInt() and 0xFF) in uartEchoArtifacts }
     }
 
+    /**
+     * Detects Floating-High / Idle SDAT line (e.g. missing +12.5V Vpp on Pin 9):
+     * >90% of bytes are 0xFF and any remaining bytes are single-bit drops (0xFE, 0xFD, 0xFB, 0xF7, 0xEF, 0xDF, 0xBF, 0x7F).
+     */
+    private fun isFloatingHighSdatPattern(bytes: ByteArray): Boolean {
+        if (bytes.isEmpty()) return false
+        val ffCount = bytes.count { (it.toInt() and 0xFF) == 0xFF }
+        val ffPercent = (ffCount * 100.0) / bytes.size
+        if (ffPercent <= 90.0) return false
+        return bytes.all {
+            val v = it.toInt() and 0xFF
+            v == 0xFF || v in SAMSUNG_SINGLE_BIT_DROP_BYTES
+        }
+    }
+
     private fun isValidSamsungBitBangReply(txBytes: ByteArray, clean: ByteArray): Boolean {
         if (clean.isEmpty()) return false
         if (clean.contentEquals(txBytes)) return false
@@ -2911,6 +2930,28 @@ class ProberEngine(context: Context) {
                     extract16Bytes(rx, sync.framing)
                 } else null
                 if (real16 != null && !real16.all { it == 0x00.toByte() }) {
+                    if (isFloatingHighSdatPattern(real16)) {
+                        val rx2 = samsungSyncTransceive(
+                            sync,
+                            pkt,
+                            rxLen = 16,
+                            label = "Samsung S3F8 Dual-Read Check [0x%02X @ 0x0000]".format(cmd)
+                        )
+                        val second16 = if (rx2.isNotEmpty() && !rx2.all { it == 0x00.toByte() } && !isSamsungUartArtifact(rx2)) {
+                            extract16Bytes(rx2, sync.framing)
+                        } else null
+                        if (second16 == null || !real16.contentEquals(second16)) {
+                            appendLog(
+                                ProberLogDirection.WARN,
+                                "⚠️ Idle / Waiting for +12.5V Vpp on Pin 9 — $SAMSUNG_FLOATING_HIGH_ALERT_MSG"
+                            )
+                            return updateAndReturn(
+                                "stage2_direct_read",
+                                ChecklistStepStatus.FAILED,
+                                "Idle / Waiting for +12.5V Vpp on Pin 9 — $SAMSUNG_FLOATING_HIGH_ALERT_MSG"
+                            )
+                        }
+                    }
                     return updateAndReturn(
                         "stage2_direct_read",
                         ChecklistStepStatus.PASSED,
@@ -4303,9 +4344,11 @@ class ProberEngine(context: Context) {
             hardwareResetAndResync(sync, "تهيئة وإعادة تزامن للمرحلة 6 بعد المرحلة 5", relockOsc = true)
             workingSummary = runStage6UniversalLiveReadProof(sync, workingSummary, userCancelledStage5 = userCancelled)
             updateSummaryAndBlueprint(workingSummary)
-            val finalBanner = if (workingSummary.liveReadProofPassed) {
-                "$bannerMsg | ✅ المرحلة 6: ${workingSummary.liveReadProofFirst32Hex.take(23)}..."
-            } else bannerMsg
+            val finalBanner = when {
+                workingSummary.liveReadProofPassed -> "$bannerMsg | ✅ المرحلة 6: ${workingSummary.liveReadProofFirst32Hex.take(23)}..."
+                workingSummary.liveReadProofMode == "Idle / Waiting for +12.5V Vpp on Pin 9" -> "⚠️ $SAMSUNG_FLOATING_HIGH_ALERT_MSG"
+                else -> bannerMsg
+            }
             _state.value = _state.value.copy(
                 phase = ProberStagePhase.COMPLETED,
                 stageBanner = finalBanner,
@@ -4847,34 +4890,57 @@ class ProberEngine(context: Context) {
             val (b2Bytes, b2Method, b2Echo) = readFlashPageForProof(sync, summary, b2Start, pageSize)
             if (b2Bytes != null && b2Bytes.isNotEmpty() && !isEchoPayload(b2Bytes, b2Echo)) {
                 val first32Hex = b2Bytes.take(32).toByteArray().toHexStr()
-                val (verifySupported, verifyPassed, verifyDetail) = verifyExtractedPageOnChip(sync, b2Start, b2Bytes)
-                val verifiedOk = if (verifySupported) {
-                    verifyPassed
-                } else {
+                if (sync.framing == DetectedFraming.SAMSUNG_ISP) {
                     val (secondRead, _, _) = readFlashPageForProof(sync, summary, b2Start, pageSize)
-                    secondRead != null && secondRead.contentEquals(b2Bytes)
-                }
-                if (verifiedOk || !b2Bytes.all { (it.toInt() and 0xFF) == 0xFF }) {
-                    val winningPath = if (sync.framing == DetectedFraming.SAMSUNG_ISP) {
-                        "Winning Non-Standard Extraction Path (Samsung Smart Option Bypass: 0x08 @ 0x0000 -> 0x05 @ $b2RangeHex)"
-                    } else {
-                        "Winning Non-Standard Extraction Path (Block-0 Bypass @ $b2RangeHex | $b2Method)"
+                    val dualMatched = secondRead != null && secondRead.contentEquals(b2Bytes)
+                    val floatingHigh = isFloatingHighSdatPattern(b2Bytes) || (secondRead != null && isFloatingHighSdatPattern(secondRead))
+                    if (floatingHigh && !dualMatched) {
+                        appendLog(ProberLogDirection.WARN, "⚠️ Idle / Waiting for +12.5V Vpp on Pin 9 — $SAMSUNG_FLOATING_HIGH_ALERT_MSG")
+                        updateStep("stage6_live_read_proof", ChecklistStepStatus.FAILED, "$SAMSUNG_FLOATING_HIGH_ALERT_MSG | أول 32B: $first32Hex")
+                        return summary.copy(
+                            hasPartialBypass = true,
+                            liveReadProofPassed = false,
+                            liveReadProofMode = "Idle / Waiting for +12.5V Vpp on Pin 9",
+                            liveReadProofStatus = SAMSUNG_FLOATING_HIGH_ALERT_MSG,
+                            liveReadProofFirst32Hex = first32Hex
+                        )
                     }
-                    val reportMsg = if (sync.framing == DetectedFraming.SAMSUNG_ISP) {
-                        "✅ إثبات Smart Option Bypass في المرحلة 6 ($b2RangeHex): نجح استخراج باقي الفلاش بأمر 0x05 مع بقاء DTR=HIGH ($b2Method)"
-                    } else {
-                        "✅ إثبات المرحلة 6 بعد تجاوز البلوك الأول ($b2RangeHex): نجح السحب والتحقق ($b2Method | $verifyDetail)"
+                    if (dualMatched) {
+                        val winningPath = "Winning Non-Standard Extraction Path (Samsung Smart Option Bypass: 0x08 @ 0x0000 -> Dual-Read 0x05 @ $b2RangeHex)"
+                        val reportMsg = "✅ إثبات Smart Option Bypass بالقراءة المزدوجة 100% ($b2RangeHex): تطابق تام لقراءتين متتاليتين بأمر 0x05 مع بقاء DTR=HIGH ($b2Method)"
+                        appendLog(ProberLogDirection.SUCCESS, "$reportMsg | أول 32B: $first32Hex")
+                        updateStep("stage6_live_read_proof", ChecklistStepStatus.PASSED, "$reportMsg | أول 32B: $first32Hex")
+                        return summary.copy(
+                            hasPartialBypass = true,
+                            winningReadMethod = winningPath,
+                            liveReadProofPassed = true,
+                            liveReadProofMode = winningPath,
+                            liveReadProofStatus = reportMsg,
+                            liveReadProofFirst32Hex = first32Hex
+                        )
                     }
-                    appendLog(ProberLogDirection.SUCCESS, "$reportMsg | أول 32B: $first32Hex")
-                    updateStep("stage6_live_read_proof", ChecklistStepStatus.PASSED, "$reportMsg | أول 32B: $first32Hex")
-                    return summary.copy(
-                        hasPartialBypass = true,
-                        winningReadMethod = winningPath,
-                        liveReadProofPassed = true,
-                        liveReadProofMode = winningPath,
-                        liveReadProofStatus = reportMsg,
-                        liveReadProofFirst32Hex = first32Hex
-                    )
+                } else {
+                    val (verifySupported, verifyPassed, verifyDetail) = verifyExtractedPageOnChip(sync, b2Start, b2Bytes)
+                    val verifiedOk = if (verifySupported) {
+                        verifyPassed
+                    } else {
+                        val (secondRead, _, _) = readFlashPageForProof(sync, summary, b2Start, pageSize)
+                        secondRead != null && secondRead.contentEquals(b2Bytes)
+                    }
+                    if (verifiedOk || !b2Bytes.all { (it.toInt() and 0xFF) == 0xFF }) {
+                        val winningPath = "Winning Non-Standard Extraction Path (Block-0 Bypass @ $b2RangeHex | $b2Method)"
+                        val reportMsg = "✅ إثبات المرحلة 6 بعد تجاوز البلوك الأول ($b2RangeHex): نجح السحب والتحقق ($b2Method | $verifyDetail)"
+                        appendLog(ProberLogDirection.SUCCESS, "$reportMsg | أول 32B: $first32Hex")
+                        updateStep("stage6_live_read_proof", ChecklistStepStatus.PASSED, "$reportMsg | أول 32B: $first32Hex")
+                        return summary.copy(
+                            hasPartialBypass = true,
+                            winningReadMethod = winningPath,
+                            liveReadProofPassed = true,
+                            liveReadProofMode = winningPath,
+                            liveReadProofStatus = reportMsg,
+                            liveReadProofFirst32Hex = first32Hex
+                        )
+                    }
                 }
             }
 
@@ -5010,14 +5076,73 @@ class ProberEngine(context: Context) {
             val ffCount = page0Bytes.count { (it.toInt() and 0xFF) == 0xFF }
             val zeroCount = page0Bytes.count { (it.toInt() and 0xFF) == 0x00 }
             val dummyThreshold = (page0Bytes.size * 99) / 100
-            if (ffCount >= dummyThreshold || zeroCount >= dummyThreshold) {
-                isChipBlankOrZero = true
-                appendLog(
-                    ProberLogDirection.WARN,
-                    "⚠️ المرحلة 6: العينة المسحوبة من Page 0 (${page0Bytes.size}B) فارغة/متشابهة (${if (ffCount >= dummyThreshold) "0xFF" else "0x00"} >= 99%). الانتقال للحالة الثانية (الحلقة المغلقة Write-Read Proof)..."
-                )
+
+            if (sync.framing == DetectedFraming.SAMSUNG_ISP) {
+                val first32Hex = page0Bytes.take(32).toByteArray().toHexStr()
+                // Samsung S3F8 Dual-Read Compare (never use NEC 0x13 Verify)
+                val (secondRead, _, _) = readFlashPageForProof(sync, summary, page0Start, pageSize)
+                val dualMatched = secondRead != null && secondRead.contentEquals(page0Bytes)
+                val floatingHigh = isFloatingHighSdatPattern(page0Bytes) ||
+                    (secondRead != null && isFloatingHighSdatPattern(secondRead))
+
+                if (floatingHigh && !dualMatched) {
+                    appendLog(
+                        ProberLogDirection.WARN,
+                        "⚠️ Idle / Waiting for +12.5V Vpp on Pin 9 — $SAMSUNG_FLOATING_HIGH_ALERT_MSG"
+                    )
+                    updateStep(
+                        "stage6_live_read_proof",
+                        ChecklistStepStatus.FAILED,
+                        "Idle / Waiting for +12.5V Vpp on Pin 9 — $SAMSUNG_FLOATING_HIGH_ALERT_MSG | أول 32B: $first32Hex"
+                    )
+                    return summary.copy(
+                        liveReadProofPassed = false,
+                        liveReadProofMode = "Idle / Waiting for +12.5V Vpp on Pin 9",
+                        liveReadProofStatus = SAMSUNG_FLOATING_HIGH_ALERT_MSG,
+                        liveReadProofFirst32Hex = first32Hex
+                    )
+                }
+
+                if (!dualMatched) {
+                    val failMsg = "❌ فشل التحقق بالقراءة المزدوجة (Dual-Read Compare) لعائلة Samsung S3F8 (${page0Bytes.size}B) — عدم تطابق القراءتين المتتاليتين | أول 32B: $first32Hex"
+                    appendLog(ProberLogDirection.WARN, failMsg)
+                    updateStep("stage6_live_read_proof", ChecklistStepStatus.FAILED, failMsg)
+                    return summary.copy(
+                        liveReadProofPassed = false,
+                        liveReadProofMode = "Samsung S3F8 Dual-Read Compare Mismatch ($readMethodUsed)",
+                        liveReadProofStatus = failMsg,
+                        liveReadProofFirst32Hex = first32Hex
+                    )
+                }
+
+                if (ffCount >= dummyThreshold || zeroCount >= dummyThreshold) {
+                    isChipBlankOrZero = true
+                    appendLog(
+                        ProberLogDirection.WARN,
+                        "⚠️ المرحلة 6: العينة المسحوبة من Page 0 (${page0Bytes.size}B) فارغة/متشابهة (${if (ffCount >= dummyThreshold) "0xFF" else "0x00"} >= 99%). الانتقال للحالة الثانية (الحلقة المغلقة Write-Read Proof)..."
+                    )
+                } else {
+                    val reportMsg = "✅ إثبات السحب الحقيقي 100% (Samsung Dual-Read Compare): تم سحب ${page0Bytes.size}B مرتين متتاليتين وتطابقتا بايت ببايت"
+                    val fullDetail = "$reportMsg ($readMethodUsed) | أول 32B: $first32Hex"
+                    appendLog(ProberLogDirection.SUCCESS, fullDetail)
+                    updateStep("stage6_live_read_proof", ChecklistStepStatus.PASSED, fullDetail)
+                    return summary.copy(
+                        liveReadProofPassed = true,
+                        liveReadProofMode = "Case 1: Samsung S3F8 Dual-Read Compare 100% ($readMethodUsed)",
+                        liveReadProofStatus = reportMsg,
+                        liveReadProofFirst32Hex = first32Hex
+                    )
+                }
             } else {
-                detectedHasRealData = true
+                if (ffCount >= dummyThreshold || zeroCount >= dummyThreshold) {
+                    isChipBlankOrZero = true
+                    appendLog(
+                        ProberLogDirection.WARN,
+                        "⚠️ المرحلة 6: العينة المسحوبة من Page 0 (${page0Bytes.size}B) فارغة/متشابهة (${if (ffCount >= dummyThreshold) "0xFF" else "0x00"} >= 99%). الانتقال للحالة الثانية (الحلقة المغلقة Write-Read Proof)..."
+                    )
+                } else {
+                    detectedHasRealData = true
+                }
             }
         } else if (sync.framing == DetectedFraming.NEC_STX_ETX) {
             // Locked bootloader (no direct Read / no 1B 0xB0): probe blank vs non-blank safely using 0x32 & 0x13
@@ -5049,7 +5174,7 @@ class ProberEngine(context: Context) {
                     hardwareResetAndResync(sync, "6.0 Verify 0x13 Header Timeout", relockOsc = true)
                     hdr = transport.transceive(
                         buildNecCommandFrame(0x13, addrRangeBytes(0x000000, pageSize - 1)),
-                        12, 280, "6.0 Verify 0xFF Probe Retry [0x13 Page 0]", stopOnCompleteNecFrame = true
+                        12, 280, "6.0 Verify 0x13 Page 0", stopOnCompleteNecFrame = true
                     )
                 }
                 if (parseNecStatus(hdr) == ACK_NEC) {
@@ -5556,6 +5681,9 @@ class ProberEngine(context: Context) {
         startAddr: Int,
         pageData: ByteArray
     ): Triple<Boolean, Boolean, String> {
+        if (sync.framing == DetectedFraming.SAMSUNG_ISP) {
+            return Triple(false, false, "عائلة Samsung S3F8 تستخدم القراءة المزدوجة (Dual-Read Compare) بدلاً من 0x13")
+        }
         val verifySupportedInDiscovery = summaryHasVerifyCommand()
         if (sync.framing != DetectedFraming.NEC_STX_ETX && !verifySupportedInDiscovery) {
             return Triple(false, false, "لا يوجد أمر Verify داخلي في هذا البروتوكول")
