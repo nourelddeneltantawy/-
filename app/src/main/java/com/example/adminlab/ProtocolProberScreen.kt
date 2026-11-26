@@ -322,19 +322,34 @@ fun ProtocolProberScreen(
                     }
                 }
 
-                // Current Stage Banner
+                // Current Stage Banner (highlights hardware alerts clearly in ERROR state)
+                val isErrorBanner = uiState.phase == ProberStagePhase.ERROR
                 Surface(
                     shape = RoundedCornerShape(10.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+                    color = if (isErrorBanner) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+                    border = if (isErrorBanner) BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.6f)) else null,
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text(
-                        text = uiState.stageBanner,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp)
-                    )
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        if (isErrorBanner) {
+                            Icon(
+                                imageVector = Icons.Default.Warning,
+                                contentDescription = "تنبيه خطأ أو هاردوير",
+                                tint = MaterialTheme.colorScheme.onErrorContainer,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                        Text(
+                            text = uiState.stageBanner,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = if (isErrorBanner) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onSurface
+                        )
+                    }
                 }
 
                 // BYPASS SYNC BUTTON (shown when Stage 1 sync fails)

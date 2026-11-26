@@ -632,7 +632,7 @@ private fun buildWorkflows(state: ProberUiState): Pair<List<String>, List<String
 
     if (framing == DetectedFraming.SAMSUNG_ISP) {
         val readWf = listOf(
-            "1. Locked Pin Map: DTR=Vpp/TEST (LOW 50ms -> HIGH +5V stayed ON all session) | RTS=SCLK (16x 2ms) | SDAT=TX(1N4148)+RX; send 0xAA 0x55 -> ID (0x80/0xC0).",
+            "1. Locked Pin Map (Bit-Bang Sync Shift MSB-First): DTR=Vpp/TEST (LOW 50ms -> HIGH +5V/+12.5V stayed ON all session) | RTS=SCLK (16x 2ms, Rising Edge) | SDAT=TX(1N4148)+RX; send 0xAA 0x55 -> ID (0x01/0x80/0xC0).",
             "2. Read Smart Option (0x003E..0x003F) & Chip ID -> ${s.chipSignature} (${s.inferredModel}).",
             if (!isLocked) {
                 "3. Extract Flash ${s.flashStartAddressHex}..${s.flashEndAddressHex} via [0x05, Addr_H, Addr_L, Len] / [0x04] in ${s.pageSizeBytes ?: 256}B pages."

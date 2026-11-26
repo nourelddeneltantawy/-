@@ -668,9 +668,142 @@ class ProberUsbTransport(
     }
 
     /**
-     * Synchronous Clocked Bit-by-Bit Transceiver (FT232R Bit-Bang SCLK/SDAT + non-FT232 fallback):
-     * Keeps DTR (TEST) HIGH (+5V), clocks txBytes MSB-first on TXD (SDAT) with paced RTS (SCLK) edges,
-     * then switches TXD to High-Z input and samples rxLen bytes bit-by-bit from RXD (SDAT) via SIO_READ_PINS (0x0C).
+     * True Bit-by-Bit Synchronous Shift Byte Transfer (MSB First, i = 7 downTo 0) on FT232R Bit-Bang:
+     * - Keeps DTR (bit 4 = 0x10 = Vpp/TEST, Pin 9) HIGH throughout the active session.
+     * - For each bit i from 7 downTo 0:
+     *   1) Drives TXD (bit 0 = 0x01 = SDAT) to (txByte >> i) & 1 with RTS (bit 2 = 0x04 = SCLK) LOW.
+     *   2) Raises RTS (SCLK) from LOW to HIGH (rising edge for S3F8419 capture).
+     *   3) Captures RXD (bit 1 = 0x02 = SDAT) instant state via SIO_READ_PINS (0x0C) to assemble rxByte.
+     *   4) Returns RTS (SCLK) to LOW.
+     */
+    suspend fun samsungS3F8TransferByte(
+        txByte: Int,
+        testHighState: Boolean = true
+    ): Int {
+        currentCoroutineContext().ensureActive()
+        if (activeConnection == null || activeChip != ProberUsbChip.FT232R) return 0
+        val txdMask = 0x01
+        val rxdMask = 0x02
+        val sclkMask = 0x04 // RTS = SCLK (locked)
+        val testMask = 0x10 // DTR = Vpp/TEST (locked HIGH during session)
+        val txDirMask = txdMask or sclkMask or testMask
+        val baseTestBit = if (testHighState) testMask else 0x00
+
+        if (!isBitBangActive) {
+            configureUart(4800, evenParity = false)
+        }
+        if (!setFtdiBitBangDirection(txDirMask)) return 0
+
+        var rxByte = 0
+        for (i in 7 downTo 0) {
+            currentCoroutineContext().ensureActive()
+            val bitOut = (txByte ushr i) and 0x01
+            val dBit = if (bitOut != 0) txdMask else 0x00
+
+            // 1) Set TXD data bit with SCLK (RTS) LOW and DTR (Vpp/TEST) HIGH
+            writeBytesRaw(byteArrayOf((baseTestBit or dBit).toByte()))
+            delay(1)
+
+            // 2) Raise RTS (SCLK) from LOW to HIGH (Rising Edge)
+            writeBytesRaw(byteArrayOf((baseTestBit or dBit or sclkMask).toByte()))
+            delay(1)
+
+            // 3) Sample RXD (SDAT) instant pin state via SIO_READ_PINS (0x0C)
+            val pins = readFtdiInstantPins()
+            val rxBit = if (pins >= 0 && (pins and rxdMask) != 0) 1 else 0
+            rxByte = (rxByte shl 1) or rxBit
+
+            // 4) Return RTS (SCLK) to LOW
+            writeBytesRaw(byteArrayOf((baseTestBit or dBit).toByte()))
+        }
+        return rxByte and 0xFF
+    }
+
+    /**
+     * Reads 8 bits (MSB First) from SDAT (RXD bit 1) on FT232R Bit-Bang while holding TXD High-Z
+     * (input) so S3F8419 drives SDAT freely without contention, pulsing RTS (SCLK) LOW -> HIGH -> LOW
+     * and keeping DTR (Vpp/TEST) HIGH.
+     */
+    suspend fun samsungS3F8ReadByte(testHighState: Boolean = true): Int {
+        currentCoroutineContext().ensureActive()
+        if (activeConnection == null || activeChip != ProberUsbChip.FT232R) return 0
+        val rxdMask = 0x02
+        val sclkMask = 0x04 // RTS = SCLK
+        val testMask = 0x10 // DTR = Vpp/TEST
+        val rxDirMask = sclkMask or testMask // TXD (0x01) intentionally omitted -> High-Z input
+        val baseTestBit = if (testHighState) testMask else 0x00
+
+        if (!setFtdiBitBangDirection(rxDirMask)) return 0
+
+        var rxByte = 0
+        for (i in 7 downTo 0) {
+            currentCoroutineContext().ensureActive()
+            // Ensure SCLK LOW before rising edge
+            writeBytesRaw(byteArrayOf(baseTestBit.toByte()))
+            delay(1)
+
+            // Rising edge on RTS (SCLK)
+            writeBytesRaw(byteArrayOf((baseTestBit or sclkMask).toByte()))
+            delay(1)
+
+            // Capture RXD (SDAT) at rising edge
+            val pins = readFtdiInstantPins()
+            val rxBit = if (pins >= 0 && (pins and rxdMask) != 0) 1 else 0
+            rxByte = (rxByte shl 1) or rxBit
+
+            // Return SCLK LOW
+            writeBytesRaw(byteArrayOf(baseTestBit.toByte()))
+        }
+        return rxByte and 0xFF
+    }
+
+    /**
+     * True Bit-by-Bit Synchronous Shift Transceiver for Samsung S3F8 / S3F9 (S3F8419) over FT232R Bit-Bang:
+     * Never falls back to asynchronous UART (38400/9600 bps).
+     */
+    suspend fun samsungS3F8Transceive(
+        txBytes: ByteArray,
+        rxLen: Int,
+        testHighState: Boolean = true
+    ): ByteArray {
+        currentCoroutineContext().ensureActive()
+        if (activeConnection == null || activeChip != ProberUsbChip.FT232R) return ByteArray(0)
+        val txdMask = 0x01
+        val sclkMask = 0x04
+        val testMask = 0x10
+        val txDirMask = txdMask or sclkMask or testMask
+        val baseTestBit = if (testHighState) testMask else 0x00
+
+        if (!isBitBangActive) {
+            configureUart(4800, evenParity = false)
+        }
+        if (!setFtdiBitBangDirection(txDirMask)) return ByteArray(0)
+
+        for (b in txBytes) {
+            samsungS3F8TransferByte(b.toInt() and 0xFF, testHighState = testHighState)
+        }
+
+        val rxOut = if (rxLen > 0) {
+            val out = ByteArray(rxLen)
+            for (idx in 0 until rxLen) {
+                out[idx] = samsungS3F8ReadByte(testHighState = testHighState).toByte()
+            }
+            out
+        } else {
+            ByteArray(0)
+        }
+
+        // Restore idle state: TXD HIGH (reverse-biased 1N4148), SCLK LOW, DTR (Vpp/TEST) HIGH
+        if (setFtdiBitBangDirection(txDirMask)) {
+            writeBytesRaw(byteArrayOf((baseTestBit or txdMask).toByte()))
+        }
+        flushRx()
+        return rxOut
+    }
+
+    /**
+     * Synchronous Clocked Bit-by-Bit Transceiver wrapper delegating strictly to true FT232R Bit-Bang
+     * (never falls back to UART 38400 bps).
      */
     suspend fun syncBitBangTransceive(
         txBytes: ByteArray,
@@ -680,81 +813,10 @@ class ProberUsbTransport(
         clkHalfPeriodMs: Long = 1L,
         sampleOnFallingEdge: Boolean = false
     ): ByteArray {
-        currentCoroutineContext().ensureActive()
-        if (activeConnection == null) return ByteArray(0)
-        if (activeChip == ProberUsbChip.FT232R) {
-            val txdMask = 0x01
-            val rxdMask = 0x02
-            val sclkMask = if (sclkOnRts) 0x04 else 0x10
-            val testMask = if (sclkOnRts) 0x10 else 0x04
-            val baseTestBit = if (testHighState) testMask else 0x00
-
-            if (txBytes.isNotEmpty()) {
-                val txDirMask = txdMask or sclkMask or testMask
-                if (!setFtdiBitBangDirection(txDirMask)) return ByteArray(0)
-                val txWave = ByteArrayOutputStream()
-                val phaseRepeat = 16 // ~208us per phase @ 4800 baud Bit-Bang (76.8 kHz) -> ~1.6 kHz crisp SCLK
-                for (b in txBytes) {
-                    val v = b.toInt() and 0xFF
-                    for (bit in 7 downTo 0) {
-                        val dBit = if (((v ushr bit) and 0x01) != 0) txdMask else 0x00
-                        val lowClk = baseTestBit or dBit
-                        val highClk = baseTestBit or dBit or sclkMask
-                        repeat(phaseRepeat) { txWave.write(lowClk) }
-                        repeat(phaseRepeat) { txWave.write(highClk) }
-                        repeat(phaseRepeat) { txWave.write(lowClk) }
-                    }
-                }
-                // Release SDAT idle HIGH (1N4148 diode reverse-biased) with SCLK LOW
-                txWave.write(baseTestBit or txdMask)
-                val waveBytes = txWave.toByteArray()
-                val err = writeBytesRaw(waveBytes)
-                if (err != null) return ByteArray(0)
-                val drainWaitMs = ((waveBytes.size / 70L) + 5L).coerceIn(6L, 1200L)
-                delay(drainWaitMs)
-            }
-
-            if (rxLen <= 0) return ByteArray(0)
-
-            // Switch TXD (bit 0) to High-Z input so MCU can drive SDAT (RXD bit 1) cleanly without contention
-            val rxDirMask = sclkMask or testMask
-            if (!setFtdiBitBangDirection(rxDirMask)) return ByteArray(0)
-
-            val rxOut = ByteArray(rxLen)
-            for (byteIdx in 0 until rxLen) {
-                currentCoroutineContext().ensureActive()
-                var acc = 0
-                for (bit in 7 downTo 0) {
-                    if (!sampleOnFallingEdge) {
-                        writeBytesRaw(byteArrayOf((baseTestBit or sclkMask).toByte()))
-                        if (clkHalfPeriodMs > 0) delay(clkHalfPeriodMs)
-                        val pins = readFtdiInstantPins()
-                        val bitVal = if (pins >= 0 && (pins and rxdMask) != 0) 1 else 0
-                        acc = (acc shl 1) or bitVal
-                        writeBytesRaw(byteArrayOf(baseTestBit.toByte()))
-                        if (clkHalfPeriodMs > 0) delay(clkHalfPeriodMs)
-                    } else {
-                        writeBytesRaw(byteArrayOf((baseTestBit or sclkMask).toByte()))
-                        if (clkHalfPeriodMs > 0) delay(clkHalfPeriodMs)
-                        writeBytesRaw(byteArrayOf(baseTestBit.toByte()))
-                        if (clkHalfPeriodMs > 0) delay(clkHalfPeriodMs)
-                        val pins = readFtdiInstantPins()
-                        val bitVal = if (pins >= 0 && (pins and rxdMask) != 0) 1 else 0
-                        acc = (acc shl 1) or bitVal
-                    }
-                }
-                rxOut[byteIdx] = acc.toByte()
-            }
-            return rxOut
-        }
-
-        // Non-FT232R fallback
-        return uartCoupledSyncTransceive(
+        return samsungS3F8Transceive(
             txBytes = txBytes,
             rxLen = rxLen,
-            sclkOnRts = sclkOnRts,
-            testActiveHigh = testHighState,
-            baudRate = 38400
+            testHighState = testHighState
         )
     }
 
