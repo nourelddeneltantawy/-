@@ -632,18 +632,18 @@ private fun buildWorkflows(state: ProberUiState): Pair<List<String>, List<String
 
     if (framing == DetectedFraming.SAMSUNG_ISP) {
         val readWf = listOf(
-            "1. Pulse RESET and open UART at ${s.baudRate ?: 9600} bps ${s.parityMode}; send Samsung ISP Sync (0xAA 0x55 / 0x80).",
-            "2. Query Samsung Raw Chip ID -> ${s.chipSignature} (${s.inferredModel}).",
+            "1. Hold DTR (Vpp/TEST)=LOW & RTS (SCLK)=LOW (50ms) -> Raise DTR=+5V (20ms) -> 16 SCLK pulses (2ms) -> Send 0xAA 0x55 over SDAT (TX+1N4148+RX).",
+            "2. Query Samsung Raw Chip ID (0x80 / 0xC0 / 0x01) -> ${s.chipSignature} (${s.inferredModel}).",
             if (!isLocked) {
                 "3. Extract Flash ${s.flashStartAddressHex}..${s.flashEndAddressHex} via ${s.winningReadMethod} in ${s.pageSizeBytes ?: 256}B pages."
             } else {
-                "3. Target Readout Protected: Execute Samsung ISP Erase/Unprotect before reprogramming."
+                "3. Target Readout Protected: Execute Samsung S3F8/S3F9 Erase/Unprotect before reprogramming."
             }
         )
         val writeWf = listOf(
-            "1. Sync Samsung ISP at ${s.baudRate ?: 9600} bps (${s.syncPulseHex}).",
+            "1. Enter Samsung S3F8/S3F9 Sync ISP (DTR=Vpp/TEST, RTS=SCLK, SDAT=TX/RX) & confirm ${s.syncPulseHex}.",
             "2. Erase Sectors/Chip via Samsung ISP Erase command (wait ${tm.eraseWriteBusyWaitMs}ms).",
-            "3. Stream ${s.pageSizeBytes ?: 256}B pages with 8-bit checksum and verify against Flash."
+            "3. Stream ${s.pageSizeBytes ?: 256}B pages with SCLK sync and verify against Flash."
         )
         return readWf to writeWf
     }

@@ -535,83 +535,99 @@ class ProberUsbTransport(
     }
 
     /**
-     * Samsung S3F8 / S3F9 Serial Programming Mode Entry:
-     * 1) Hold RESET = LOW (0V) + TEST/VPP active, emit 16 initial SCLK pulses.
-     * 2) Raise RESET = HIGH (+5V) while maintaining programming mode.
+     * Samsung S3F8 / S3F9 (e.g. S3F8419) Serial Programming Mode Entry:
+     * Hardware Wiring (Default sclkOnRts = true):
+     *   DTR = Vpp/TEST (Pin 9), RTS = SCLK (Pin 4), TXD(1N4148)+RXD = SDAT (Pin 3)
+     * Sequence:
+     *   1) Hold DTR (TEST) = LOW (0V) & RTS (SCLK) = LOW (0V) for 50ms.
+     *   2) Raise DTR (TEST) = HIGH (+5V), wait 20ms.
+     *   3) Emit 16 SCLK pulses on RTS (SCLK) (HIGH 2ms -> LOW 2ms).
      */
     suspend fun runSamsungBitBangResetEntry(
-        sclkOnDtr: Boolean = true,
-        resetActiveLow: Boolean = true,
-        initialClocks: Int = 16
+        sclkOnRts: Boolean = true,
+        testActiveHigh: Boolean = true,
+        initialClocks: Int = 16,
+        forceUartModemLines: Boolean = false
     ): Boolean {
         currentCoroutineContext().ensureActive()
-        val conn = activeConnection ?: return false
-        if (activeChip == ProberUsbChip.FT232R) {
+        if (activeConnection == null) return false
+        if (activeChip == ProberUsbChip.FT232R && !forceUartModemLines) {
             if (!isBitBangActive) {
-                configureUart(38400, evenParity = false)
+                configureUart(4800, evenParity = false)
             }
-            val txdMask = 0x01 // SDAT out (idle HIGH via isolation diode)
-            val sclkMask = if (sclkOnDtr) 0x10 else 0x04
-            val resetMask = if (sclkOnDtr) 0x04 else 0x10
-            val dirMask = txdMask or sclkMask or resetMask
+            val txdMask = 0x01 // SDAT out (idle HIGH via 1N4148 isolation diode)
+            val sclkMask = if (sclkOnRts) 0x04 else 0x10 // RTS (0x04) = SCLK by default
+            val testMask = if (sclkOnRts) 0x10 else 0x04 // DTR (0x10) = Vpp/TEST by default
+            val dirMask = txdMask or sclkMask or testMask
             if (!setFtdiBitBangDirection(dirMask)) return false
 
-            val resetLowState = if (resetActiveLow) 0x00 else resetMask
-            val resetHighState = if (resetActiveLow) resetMask else 0x00
+            val testLowState = if (testActiveHigh) 0x00 else testMask
+            val testHighState = if (testActiveHigh) testMask else 0x00
 
-            val seq = ByteArrayOutputStream()
-            // Step 1: RESET = LOW (0V), SDAT/TEST HIGH, emit 16 initial SCLK pulses
-            seq.write(resetLowState or txdMask)
-            for (i in 0 until initialClocks) {
-                seq.write(resetLowState or txdMask or sclkMask)
-                seq.write(resetLowState or txdMask)
-            }
-            writeBytesRaw(seq.toByteArray())
-            delay(25)
+            // Step 1: DTR (TEST) = LOW (0V) & RTS (SCLK) = LOW (0V) for 50ms
+            writeBytesRaw(byteArrayOf((testLowState or txdMask).toByte()))
+            delay(50)
 
-            // Step 2: Raise RESET = HIGH (+5V) while keeping TEST/programming mode steady
-            writeBytesRaw(byteArrayOf((resetHighState or txdMask).toByte()))
+            // Step 2: Raise DTR (TEST) = HIGH (+5V), keep SCLK LOW, wait 20ms
+            writeBytesRaw(byteArrayOf((testHighState or txdMask).toByte()))
             delay(20)
+
+            // Step 3: 16 initial SCLK pulses on RTS (SCLK): HIGH 2ms -> LOW 2ms
+            for (i in 0 until initialClocks) {
+                currentCoroutineContext().ensureActive()
+                writeBytesRaw(byteArrayOf((testHighState or txdMask or sclkMask).toByte()))
+                delay(2)
+                writeBytesRaw(byteArrayOf((testHighState or txdMask).toByte()))
+                delay(2)
+            }
             flushRx()
             return true
         }
 
-        // Non-FT232R fallback (CH340G / CP2102 / PL2303) using control lines
-        val resetLow = resetActiveLow
-        val resetHigh = !resetActiveLow
-        if (sclkOnDtr) {
-            setControlLines(dtr = false, rts = resetLow)
+        // Non-FT232R / Modem-Control fallback (UART DTR#/RTS# are active-low IC pins unless inverted)
+        val testLowPin = testActiveHigh
+        val testHighPin = !testActiveHigh
+        val sclkLowPin = true
+        val sclkHighPin = false
+
+        // Step 1: TEST = LOW (0V), SCLK = LOW (0V) for 50ms
+        if (sclkOnRts) {
+            setControlLines(dtr = testLowPin, rts = sclkLowPin)
         } else {
-            setControlLines(dtr = resetLow, rts = false)
+            setControlLines(dtr = sclkLowPin, rts = testLowPin)
         }
-        delay(25)
-        for (i in 0 until initialClocks) {
-            currentCoroutineContext().ensureActive()
-            if (sclkOnDtr) setDtr(true) else setRts(true)
-            delay(1)
-            if (sclkOnDtr) setDtr(false) else setRts(false)
-            delay(1)
-        }
-        if (sclkOnDtr) {
-            setControlLines(dtr = false, rts = resetHigh)
+        delay(50)
+
+        // Step 2: TEST = HIGH (+5V), wait 20ms
+        if (sclkOnRts) {
+            setControlLines(dtr = testHighPin, rts = sclkLowPin)
         } else {
-            setControlLines(dtr = resetHigh, rts = false)
+            setControlLines(dtr = sclkLowPin, rts = testHighPin)
         }
         delay(20)
+
+        // Step 3: 16 SCLK pulses (HIGH 2ms -> LOW 2ms)
+        for (i in 0 until initialClocks) {
+            currentCoroutineContext().ensureActive()
+            if (sclkOnRts) setRts(sclkHighPin) else setDtr(sclkHighPin)
+            delay(2)
+            if (sclkOnRts) setRts(sclkLowPin) else setDtr(sclkLowPin)
+            delay(2)
+        }
         flushRx()
         return true
     }
 
     /**
      * Synchronous Clocked Bit-by-Bit Transceiver (FT232R Bit-Bang SCLK/SDAT + non-FT232 fallback):
-     * Clocks txBytes MSB-first on TXD (SDAT) with SCLK edges, then switches TXD to High-Z input
-     * and samples rxLen bytes bit-by-bit from RXD (SDAT) on clock edges via SIO_READ_PINS (0x0C).
+     * Keeps DTR (TEST) HIGH (+5V), clocks txBytes MSB-first on TXD (SDAT) with paced RTS (SCLK) edges,
+     * then switches TXD to High-Z input and samples rxLen bytes bit-by-bit from RXD (SDAT) via SIO_READ_PINS (0x0C).
      */
     suspend fun syncBitBangTransceive(
         txBytes: ByteArray,
         rxLen: Int,
-        sclkOnDtr: Boolean = true,
-        resetHighState: Boolean = true,
+        sclkOnRts: Boolean = true,
+        testHighState: Boolean = true,
         clkHalfPeriodMs: Long = 1L,
         sampleOnFallingEdge: Boolean = false
     ): ByteArray {
@@ -620,34 +636,39 @@ class ProberUsbTransport(
         if (activeChip == ProberUsbChip.FT232R) {
             val txdMask = 0x01
             val rxdMask = 0x02
-            val sclkMask = if (sclkOnDtr) 0x10 else 0x04
-            val resetMask = if (sclkOnDtr) 0x04 else 0x10
-            val baseResetBit = if (resetHighState) resetMask else 0x00
+            val sclkMask = if (sclkOnRts) 0x04 else 0x10
+            val testMask = if (sclkOnRts) 0x10 else 0x04
+            val baseTestBit = if (testHighState) testMask else 0x00
 
             if (txBytes.isNotEmpty()) {
-                val txDirMask = txdMask or sclkMask or resetMask
+                val txDirMask = txdMask or sclkMask or testMask
                 if (!setFtdiBitBangDirection(txDirMask)) return ByteArray(0)
                 val txWave = ByteArrayOutputStream()
+                val phaseRepeat = 16 // ~208us per phase @ 4800 baud Bit-Bang (76.8 kHz) -> ~1.6 kHz crisp SCLK
                 for (b in txBytes) {
                     val v = b.toInt() and 0xFF
                     for (bit in 7 downTo 0) {
                         val dBit = if (((v ushr bit) and 0x01) != 0) txdMask else 0x00
-                        txWave.write(baseResetBit or dBit)
-                        txWave.write(baseResetBit or dBit or sclkMask)
-                        txWave.write(baseResetBit or dBit)
+                        val lowClk = baseTestBit or dBit
+                        val highClk = baseTestBit or dBit or sclkMask
+                        repeat(phaseRepeat) { txWave.write(lowClk) }
+                        repeat(phaseRepeat) { txWave.write(highClk) }
+                        repeat(phaseRepeat) { txWave.write(lowClk) }
                     }
                 }
-                // Release SDAT idle HIGH (isolation diode safe) with SCLK LOW
-                txWave.write(baseResetBit or txdMask)
-                val err = writeBytesRaw(txWave.toByteArray())
+                // Release SDAT idle HIGH (1N4148 diode reverse-biased) with SCLK LOW
+                txWave.write(baseTestBit or txdMask)
+                val waveBytes = txWave.toByteArray()
+                val err = writeBytesRaw(waveBytes)
                 if (err != null) return ByteArray(0)
-                delay((txBytes.size * 2L).coerceIn(2L, 12L))
+                val drainWaitMs = ((waveBytes.size / 70L) + 5L).coerceIn(6L, 1200L)
+                delay(drainWaitMs)
             }
 
             if (rxLen <= 0) return ByteArray(0)
 
-            // Switch TXD (bit 0) to input so MCU can drive SDAT (RXD bit 1) cleanly without contention
-            val rxDirMask = sclkMask or resetMask
+            // Switch TXD (bit 0) to High-Z input so MCU can drive SDAT (RXD bit 1) cleanly without contention
+            val rxDirMask = sclkMask or testMask
             if (!setFtdiBitBangDirection(rxDirMask)) return ByteArray(0)
 
             val rxOut = ByteArray(rxLen)
@@ -656,14 +677,17 @@ class ProberUsbTransport(
                 var acc = 0
                 for (bit in 7 downTo 0) {
                     if (!sampleOnFallingEdge) {
-                        writeBytesRaw(byteArrayOf((baseResetBit or sclkMask).toByte()))
+                        writeBytesRaw(byteArrayOf((baseTestBit or sclkMask).toByte()))
                         if (clkHalfPeriodMs > 0) delay(clkHalfPeriodMs)
                         val pins = readFtdiInstantPins()
                         val bitVal = if (pins >= 0 && (pins and rxdMask) != 0) 1 else 0
                         acc = (acc shl 1) or bitVal
-                        writeBytesRaw(byteArrayOf(baseResetBit.toByte()))
+                        writeBytesRaw(byteArrayOf(baseTestBit.toByte()))
+                        if (clkHalfPeriodMs > 0) delay(clkHalfPeriodMs)
                     } else {
-                        writeBytesRaw(byteArrayOf((baseResetBit or sclkMask).toByte(), baseResetBit.toByte()))
+                        writeBytesRaw(byteArrayOf((baseTestBit or sclkMask).toByte()))
+                        if (clkHalfPeriodMs > 0) delay(clkHalfPeriodMs)
+                        writeBytesRaw(byteArrayOf(baseTestBit.toByte()))
                         if (clkHalfPeriodMs > 0) delay(clkHalfPeriodMs)
                         val pins = readFtdiInstantPins()
                         val bitVal = if (pins >= 0 && (pins and rxdMask) != 0) 1 else 0
@@ -676,18 +700,63 @@ class ProberUsbTransport(
         }
 
         // Non-FT232R fallback
+        return uartCoupledSyncTransceive(
+            txBytes = txBytes,
+            rxLen = rxLen,
+            sclkOnRts = sclkOnRts,
+            testActiveHigh = testHighState,
+            baudRate = 38400
+        )
+    }
+
+    /**
+     * UART-Coupled Clocked Serial Transceiver (DTR=Vpp/TEST, RTS=SCLK, TX/RX=SDAT via 1N4148):
+     * Performs Samsung 50ms TEST=LOW -> 20ms TEST=HIGH -> 16x SCLK wakeup (when enterSequence=true),
+     * then sends UART bytes coupled with RTS clock toggles and drains the target reply.
+     */
+    suspend fun uartCoupledSyncTransceive(
+        txBytes: ByteArray,
+        rxLen: Int,
+        sclkOnRts: Boolean = true,
+        testActiveHigh: Boolean = true,
+        baudRate: Int = 38400,
+        enterSequence: Boolean = false
+    ): ByteArray {
+        currentCoroutineContext().ensureActive()
+        if (activeConnection == null) return ByteArray(0)
+        if (isBitBangActive) exitFtdiBitBangMode()
+        configureUart(baudRate, evenParity = false)
+
+        if (enterSequence) {
+            runSamsungBitBangResetEntry(
+                sclkOnRts = sclkOnRts,
+                testActiveHigh = testActiveHigh,
+                initialClocks = 16,
+                forceUartModemLines = true
+            )
+        } else {
+            val testHighPin = !testActiveHigh
+            if (sclkOnRts) {
+                setControlLines(dtr = testHighPin, rts = true)
+            } else {
+                setControlLines(dtr = true, rts = testHighPin)
+            }
+            delay(4)
+        }
+
         flushRx()
         if (txBytes.isNotEmpty()) {
             writeBytesRaw(txBytes)
-            for (i in 0 until (txBytes.size * 8)) {
+            val totalCycles = ((txBytes.size + rxLen.coerceAtLeast(1)) * 8).coerceIn(8, 64)
+            for (i in 0 until totalCycles) {
                 currentCoroutineContext().ensureActive()
-                if (sclkOnDtr) setDtr(true) else setRts(true)
+                if (sclkOnRts) setRts(false) else setDtr(false)
                 delay(1)
-                if (sclkOnDtr) setDtr(false) else setRts(false)
+                if (sclkOnRts) setRts(true) else setDtr(true)
                 delay(1)
             }
         }
-        return if (rxLen > 0) drainAvailableRaw(waitMs = 60L) else ByteArray(0)
+        return if (rxLen > 0) drainAvailableRaw(waitMs = 75L) else ByteArray(0)
     }
 
     fun writeRawBytes(data: ByteArray): String? = writeBytesRaw(data)
