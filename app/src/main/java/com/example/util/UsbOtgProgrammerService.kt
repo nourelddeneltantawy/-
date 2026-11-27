@@ -702,7 +702,7 @@ object UsbOtgProgrammerService {
                 bytes: ByteArray,
                 timeoutMs: Int,
                 onLog: (String) -> Unit
-            ): String? = writeFrame64BytePackets(bytes, timeoutMs, onLog)
+            ): String? = writeFrame32BytePackets(bytes, timeoutMs, onLog)
 
             override suspend fun discardEcho(expectedCount: Int, baudRate: Int): Int {
                 return if (echoCancellationEnabled) discardEchoBytes(expectedCount) else 0
@@ -1742,7 +1742,7 @@ object UsbOtgProgrammerService {
         }
     }
 
-    private suspend fun writeFrame64BytePackets(
+    private suspend fun writeFrame32BytePackets(
         data: ByteArray,
         timeoutMs: Int = 1000,
         onLog: (String) -> Unit
@@ -1753,7 +1753,7 @@ object UsbOtgProgrammerService {
             var offset = 0
             var totalSent = 0
             while (offset < data.size) {
-                val chunkLen = minOf(64, data.size - offset)
+                val chunkLen = minOf(32, data.size - offset)
                 val chunk = data.copyOfRange(offset, offset + chunkLen)
                 val written = conn.bulkTransfer(out, chunk, chunk.size, timeoutMs)
                 if (written <= 0) {
@@ -1762,16 +1762,16 @@ object UsbOtgProgrammerService {
                         disconnect()
                         return "USB_DETACHED:انفصل كابل USB OTG عن الهاتف أثناء الإرسال ($totalSent/${data.size})"
                     }
-                    return "bulkTransfer(OUT 64B packet) returned $written at offset=$offset ($totalSent/${data.size}, len=${chunk.size}, ep=0x%02X, attached=$attached, chip=$activeChipType)"
+                    return "bulkTransfer(OUT 32B packet) returned $written at offset=$offset ($totalSent/${data.size}, len=${chunk.size}, ep=0x%02X, attached=$attached, chip=$activeChipType)"
                         .format(out.address)
                 }
                 totalSent += written
                 offset += written
                 if (offset < data.size) {
-                    delay(65L) // 65ms pacing matches 9600 bps physical wire drain (66.6ms/64B) so 260B STX frames never overflow FT232R 128B TX FIFO
+                    delay(20L) // 32B / 20ms FT232R pacing prevents USB-UART FIFO overflow during 260B STX frame transfers
                 }
             }
-            onLog("تم إرسال $totalSent/${data.size} بايت بنجاح")
+            onLog("تم إرسال $totalSent/${data.size} بايت بنجاح (32B/20ms)")
             null
         } catch (e: Throwable) {
             val attached = activeDevice?.deviceName?.let { usbManager?.deviceList?.containsKey(it) } ?: false

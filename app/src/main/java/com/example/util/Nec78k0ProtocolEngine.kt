@@ -59,6 +59,9 @@ object Nec78k0ProtocolEngine {
     const val PAGE_ACK_TIMEOUT_MS = 2500
     const val FRAME_PACKET_WRITE_TIMEOUT_MS = 1000
     const val MAX_TIMEOUT_RETRIES = 3
+    const val MAX_STX_PAGE_RETRIES = 5
+    const val STX_RETRY_WAIT_MS = 50L
+    const val POST_BLOCK_PROGRAM_SETTLE_MS = 30L
 
     interface Serial78k0Transport {
         fun configureUart96008N1(onLog: (String) -> Unit): Boolean
@@ -2023,21 +2026,28 @@ object Nec78k0ProtocolEngine {
             var paramUnsupported = false
             var outcome: DiffWriteOutcome = DiffWriteOutcome.ProceedToChecksum
             val progCmd = buildAddressRangeFrame(CMD_PROGRAM, startAddr, endAddr)
+            var attempt = 1
+            var headerResyncNeeded = false
 
-            for (attempt in 0..MAX_TIMEOUT_RETRIES) {
-                if (attempt > 0) {
+            while (attempt <= MAX_STX_PAGE_RETRIES) {
+                if (headerResyncNeeded) {
                     if (!transport.isDeviceAttached()) {
                         return mode to DiffWriteOutcome.TransportLost("انقطع اتصال USB OTG أثناء كتابة 0x00 عند بايت $byteIdx", true)
                     }
-                    onLog("إعادة المزامنة أثناء تصفير البايت $byteIdx في Block 0 (محاولة $attempt/$MAX_TIMEOUT_RETRIES)...")
+                    onLog("إعادة المزامنة أثناء تصفير البايت $byteIdx (محاولة $attempt/$MAX_STX_PAGE_RETRIES)...")
                     val rs = resync78k0Bootloader(transport, clockFreqMhzText, onLog)
                     if (rs is Nec78k0TransceiveResult.DisconnectedOrTimeout) {
                         if (rs.isUsbDetached) {
                             return mode to DiffWriteOutcome.TransportLost(rs.reason, true)
                         }
                         outcome = DiffWriteOutcome.TransportLost(rs.reason, false)
+                        if (attempt >= MAX_STX_PAGE_RETRIES) break
+                        transport.flushInputBuffer()
+                        delay(STX_RETRY_WAIT_MS)
+                        attempt++
                         continue
                     }
+                    headerResyncNeeded = false
                 }
 
                 when (val hdrRes = transceiveSingleFrame(transport, progCmd, HEADER_ACK_TIMEOUT_MS, onLog, verboseLog = false)) {
@@ -2050,6 +2060,14 @@ object Nec78k0ProtocolEngine {
                         if (hdrRes.statusCode == STS_PROTECT_ERROR) {
                             return mode to DiffWriteOutcome.Protected("الشريحة محمية (ERR_PROTECT 0x10): أمر 0x40 مرفوض عند البايت $byteIdx.")
                         }
+                        if (hdrRes.statusCode == STS_CHECKSUM_ERROR && attempt < MAX_STX_PAGE_RETRIES) {
+                            outcome = DiffWriteOutcome.ProtocolError("رفض المعالج أمر 0x40 للبايت $byteIdx: ${hdrRes.statusLabel}")
+                            transport.flushInputBuffer()
+                            delay(STX_RETRY_WAIT_MS)
+                            headerResyncNeeded = (attempt >= 2)
+                            attempt++
+                            continue
+                        }
                         return mode to DiffWriteOutcome.ProtocolError("رفض المعالج أمر 0x40 للبايت $byteIdx: ${hdrRes.statusLabel}")
                     }
                     is Nec78k0TransceiveResult.DisconnectedOrTimeout -> {
@@ -2057,6 +2075,11 @@ object Nec78k0ProtocolEngine {
                             return mode to DiffWriteOutcome.TransportLost(hdrRes.reason, true)
                         }
                         outcome = DiffWriteOutcome.TransportLost(hdrRes.reason, false)
+                        if (attempt >= MAX_STX_PAGE_RETRIES) break
+                        transport.flushInputBuffer()
+                        delay(STX_RETRY_WAIT_MS)
+                        headerResyncNeeded = true
+                        attempt++
                         continue
                     }
                 }
@@ -2064,45 +2087,89 @@ object Nec78k0ProtocolEngine {
                 delay(if (mode == ZeroWriteGranularity.ONE_BYTE || mode == ZeroWriteGranularity.FOUR_BYTES) 5L else 10L)
                 transport.flushInputBuffer()
 
-                var timedOut = false
+                var needHeaderRestart = false
+                var stopPageLoop = false
                 for (pIdx in pages.indices) {
                     val isLast = (pIdx == pages.lastIndex)
                     val frame = buildVariableDataFrame(pages[pIdx], isLast = isLast)
-                    when (val ack = sendStxDataPageAndAwaitAck(transport, frame, PAGE_ACK_TIMEOUT_MS, "0x40 B0[$byteIdx]", onLog, verboseLog = false)) {
-                        is FrameAckOutcome.AckSuccess -> {
-                            outcome = DiffWriteOutcome.ProceedToChecksum
-                        }
-                        is FrameAckOutcome.FrameError -> {
-                            if (ack.errorCode == STS_PROTECT_ERROR) {
-                                return mode to DiffWriteOutcome.Protected("الشريحة محمية (ERR_PROTECT 0x10) عند بايت $byteIdx.")
-                            }
-                            if (ack.errorCode == STS_PARAMETER_ERROR && currentMode == null) {
-                                paramUnsupported = true
-                                break
-                            }
-                            // In multi-byte mask writes (0xFF over existing code bytes), internal post-write verify may return 0x1C after programming 0x00.
-                            // If aborted before sending the final ETX page, resync the bootloader so subsequent 0xB0 does not hit an incomplete 0x40 stream.
-                            if (isVerifyMismatchCode(ack.errorCode) && mode != ZeroWriteGranularity.ONE_BYTE) {
-                                if (pIdx < pages.lastIndex) {
-                                    resync78k0Bootloader(transport, clockFreqMhzText, onLog)
-                                }
+                    var directStxRetried = false
+
+                    while (true) {
+                        when (val ack = sendStxDataPageAndAwaitAck(transport, frame, PAGE_ACK_TIMEOUT_MS, "0x40 B0[$byteIdx]", onLog, verboseLog = false)) {
+                            is FrameAckOutcome.AckSuccess -> {
                                 outcome = DiffWriteOutcome.ProceedToChecksum
                                 break
                             }
-                            return mode to DiffWriteOutcome.ProtocolError("فشل كتابة 0x00 للبايت $byteIdx: ${ack.description}")
-                        }
-                        is FrameAckOutcome.UsbDetached -> {
-                            return mode to DiffWriteOutcome.TransportLost(ack.reason, true)
-                        }
-                        is FrameAckOutcome.Timeout -> {
-                            outcome = DiffWriteOutcome.TransportLost(ack.reason, false)
-                            timedOut = true
-                            break
+                            is FrameAckOutcome.FrameError -> {
+                                if (ack.errorCode == STS_PROTECT_ERROR) {
+                                    return mode to DiffWriteOutcome.Protected("الشريحة محمية (ERR_PROTECT 0x10) عند بايت $byteIdx.")
+                                }
+                                if (ack.errorCode == STS_PARAMETER_ERROR && currentMode == null) {
+                                    paramUnsupported = true
+                                    break
+                                }
+                                // In multi-byte mask writes (0xFF over existing code bytes), internal post-write verify may return 0x1C after programming 0x00.
+                                // If aborted before sending the final ETX page, resync the bootloader so subsequent 0xB0 does not hit an incomplete 0x40 stream.
+                                if (isVerifyMismatchCode(ack.errorCode) && mode != ZeroWriteGranularity.ONE_BYTE) {
+                                    if (pIdx < pages.lastIndex) {
+                                        resync78k0Bootloader(transport, clockFreqMhzText, onLog)
+                                    }
+                                    outcome = DiffWriteOutcome.ProceedToChecksum
+                                    needHeaderRestart = false
+                                    stopPageLoop = true
+                                    break
+                                }
+                                if (ack.errorCode == STS_CHECKSUM_ERROR) {
+                                    outcome = DiffWriteOutcome.ProtocolError("فشل كتابة 0x00 للبايت $byteIdx: ${ack.description}")
+                                    if (attempt >= MAX_STX_PAGE_RETRIES) {
+                                        return mode to outcome
+                                    }
+                                    transport.flushInputBuffer()
+                                    delay(STX_RETRY_WAIT_MS)
+                                    attempt++
+                                    if (!directStxRetried && attempt == 2) {
+                                        directStxRetried = true
+                                        onLog("خطأ نقل 0x07 (Checksum Error) أثناء تصفير البايت $byteIdx — تفريغ RX والانتظار 50ms ثم إعادة إرسال STX (محاولة $attempt/$MAX_STX_PAGE_RETRIES)...")
+                                        continue
+                                    } else {
+                                        onLog("استمر خطأ 0x07 أثناء تصفير البايت $byteIdx — إعادة إرسال ترويسة 0x40 ثم الصفحة (محاولة $attempt/$MAX_STX_PAGE_RETRIES)...")
+                                        needHeaderRestart = true
+                                        headerResyncNeeded = false
+                                        break
+                                    }
+                                }
+                                return mode to DiffWriteOutcome.ProtocolError("فشل كتابة 0x00 للبايت $byteIdx: ${ack.description}")
+                            }
+                            is FrameAckOutcome.UsbDetached -> {
+                                return mode to DiffWriteOutcome.TransportLost(ack.reason, true)
+                            }
+                            is FrameAckOutcome.Timeout -> {
+                                outcome = DiffWriteOutcome.TransportLost(ack.reason, false)
+                                if (attempt >= MAX_STX_PAGE_RETRIES) {
+                                    needHeaderRestart = true
+                                    attempt = MAX_STX_PAGE_RETRIES + 1
+                                    break
+                                }
+                                transport.flushInputBuffer()
+                                delay(STX_RETRY_WAIT_MS)
+                                attempt++
+                                if (!directStxRetried && attempt == 2) {
+                                    directStxRetried = true
+                                    onLog("مهلة رد STX أثناء تصفير البايت $byteIdx — تفريغ RX والانتظار 50ms ثم إعادة إرسال STX (محاولة $attempt/$MAX_STX_PAGE_RETRIES)...")
+                                    continue
+                                } else {
+                                    onLog("استمرت مهلة STX أثناء تصفير البايت $byteIdx — إعادة المزامنة وترويسة 0x40 (محاولة $attempt/$MAX_STX_PAGE_RETRIES)...")
+                                    needHeaderRestart = true
+                                    headerResyncNeeded = true
+                                    break
+                                }
+                            }
                         }
                     }
+                    if (paramUnsupported || needHeaderRestart || stopPageLoop) break
                 }
                 if (paramUnsupported) break
-                if (!timedOut) {
+                if (!needHeaderRestart) {
                     if (currentMode == null && byteIdx == 0) {
                         onLog("نمط الكتابة التفاضلية النشط لـ Block 0 (0x40): ${mode.name}")
                     }
@@ -2250,8 +2317,8 @@ object Nec78k0ProtocolEngine {
     }
 
     /**
-     * Sends an STX data frame ([0x02, LEN, ...DATA..., CS_Data, ETB/ETX]) via Paced 64B/65ms
-     * USB loop (or single write for <= 64B frames), keeps RX Raw Live monitoring active, and
+     * Sends an STX data frame ([0x02, LEN, ...DATA..., CS_Data, ETB/ETX]) via Paced 32B/20ms
+     * USB loop (or single write for <= 32B frames), keeps RX Raw Live monitoring active, and
      * waits up to [timeoutMs] (2500ms) for ACK/status after EVERY page.
      */
     private suspend fun sendStxDataPageAndAwaitAck(
@@ -2273,7 +2340,7 @@ object Nec78k0ProtocolEngine {
             onLog(
                 String.format(
                     Locale.US,
-                    "TX %dB (%s • STX=0x02 LEN=0x%02X • Paced 64B/65ms • END=%02X %s): [%s ... CS=%02X END=%02X] • مهلة الرد %dms",
+                    "TX %dB (%s • STX=0x02 LEN=0x%02X • Paced 32B/20ms • END=%02X %s): [%s ... CS=%02X END=%02X] • مهلة الرد %dms",
                     dataFrame.size,
                     label,
                     dataFrame[1].toInt() and 0xFF,
@@ -2290,7 +2357,7 @@ object Nec78k0ProtocolEngine {
         transport.flushInputBuffer()
         transport.setRawRxMonitor(verboseLog)
         try {
-            val txErr = if (dataFrame.size <= 64) {
+            val txErr = if (dataFrame.size <= 32) {
                 transport.writeRaw(dataFrame)
             } else {
                 transport.writeFrameBytes(dataFrame, FRAME_PACKET_WRITE_TIMEOUT_MS, onLog)
@@ -2332,7 +2399,7 @@ object Nec78k0ProtocolEngine {
      * Standard NEC 78K0 Two-Stage 0x13 Verify (1024B Block = 4 x 260B STX Frames):
      * Step 1: Send 11-byte 0x13 Header starting with SOH (0x01) -> await [02 01 06 F9 03].
      * Step 2: Send 4 Data Frames of 260B starting with STX (0x02), LEN=0x00:
-     *         Pages 1..3 END=0x17 (ETB), Page 4 END=0x03 (ETX), Paced 64B/65ms -> await ACK (2500ms) after each page.
+     *         Pages 1..3 END=0x17 (ETB), Page 4 END=0x03 (ETX), Paced 32B/20ms -> await ACK (2500ms) after each page.
      */
     internal suspend fun verifyBlockVia0x13(
         transport: Serial78k0Transport,
@@ -2347,21 +2414,28 @@ object Nec78k0ProtocolEngine {
         val verifyCmd = buildAddressRangeFrame(CMD_VERIFY, startAddr, endAddr)
         var lastTimeoutReason = "انتهت مهلة Verify 0x13"
         var lastTimeoutPage = 0
+        var attempt = 1
+        var needResync = false
 
-        for (attempt in 0..MAX_TIMEOUT_RETRIES) {
-            if (attempt > 0) {
-                if (!transport.isDeviceAttached()) {
-                    return VerifyOutcome.TransportLost("انقطع اتصال USB OTG أثناء Verify 0x13", lastTimeoutPage, isUsbDetached = true)
-                }
-                onLog(String.format(Locale.US, "انتهت مهلة 0x13 عند 0x%06X (USB متصل) — إعادة المزامنة ثم المحاولة %d/%d...", startAddr, attempt, MAX_TIMEOUT_RETRIES))
+        while (attempt <= MAX_STX_PAGE_RETRIES) {
+            if (!transport.isDeviceAttached()) {
+                return VerifyOutcome.TransportLost("انقطع اتصال USB OTG أثناء Verify 0x13", lastTimeoutPage, isUsbDetached = true)
+            }
+            if (needResync) {
+                onLog(String.format(Locale.US, "إعادة المزامنة لـ 0x13 عند 0x%06X (محاولة %d/%d)...", startAddr, attempt, MAX_STX_PAGE_RETRIES))
                 val resync = resync78k0Bootloader(transport, clockFreqMhzText, onLog)
                 if (resync is Nec78k0TransceiveResult.DisconnectedOrTimeout) {
                     if (resync.isUsbDetached) {
                         return VerifyOutcome.TransportLost(resync.reason, lastTimeoutPage, isUsbDetached = true)
                     }
                     lastTimeoutReason = resync.reason
+                    if (attempt >= MAX_STX_PAGE_RETRIES) break
+                    transport.flushInputBuffer()
+                    delay(STX_RETRY_WAIT_MS)
+                    attempt++
                     continue
                 }
+                needResync = false
             }
 
             onLog("TX (0x13 Header 11B): ${toHex(verifyCmd)}")
@@ -2369,13 +2443,27 @@ object Nec78k0ProtocolEngine {
                 is Nec78k0TransceiveResult.Success -> {
                     onLog("RX (0x13 Header ACK): ${toHex(cmdRes.frame.rawFrame)}")
                 }
-                is Nec78k0TransceiveResult.ProtocolError -> return VerifyOutcome.Mismatch(cmdRes.statusLabel, cmdRes.statusCode, 0)
+                is Nec78k0TransceiveResult.ProtocolError -> {
+                    if (cmdRes.statusCode == STS_CHECKSUM_ERROR && attempt < MAX_STX_PAGE_RETRIES) {
+                        transport.flushInputBuffer()
+                        delay(STX_RETRY_WAIT_MS)
+                        needResync = (attempt >= 2)
+                        attempt++
+                        continue
+                    }
+                    return VerifyOutcome.Mismatch(cmdRes.statusLabel, cmdRes.statusCode, 0)
+                }
                 is Nec78k0TransceiveResult.DisconnectedOrTimeout -> {
                     if (cmdRes.isUsbDetached) {
                         return VerifyOutcome.TransportLost(cmdRes.reason, 0, isUsbDetached = true)
                     }
                     lastTimeoutReason = cmdRes.reason
                     lastTimeoutPage = 0
+                    if (attempt >= MAX_STX_PAGE_RETRIES) break
+                    transport.flushInputBuffer()
+                    delay(STX_RETRY_WAIT_MS)
+                    needResync = true
+                    attempt++
                     continue
                 }
             }
@@ -2383,39 +2471,76 @@ object Nec78k0ProtocolEngine {
             delay(Nec78k0ProtocolRegistry.COMMAND_TO_DATA_DELAY_MS)
             transport.flushInputBuffer()
 
-            var pageTimedOut = false
+            var restartHeader = false
             for (page in 0 until PAGES_PER_BLOCK) {
                 val offset = page * PAGE_SIZE
                 val slice = blockBytes.copyOfRange(offset, offset + PAGE_SIZE)
                 val isLast = (page == PAGES_PER_BLOCK - 1)
                 val dataFrame = buildDataFrame(slice, isLast = isLast)
-                when (val ackRes = sendStxDataPageAndAwaitAck(transport, dataFrame, PAGE_ACK_TIMEOUT_MS, "0x13 صفحة ${page + 1}/$PAGES_PER_BLOCK", onLog)) {
-                    is FrameAckOutcome.AckSuccess -> {
-                        onPageProgress?.invoke((page + 1) * PAGE_SIZE)
-                        if (!isLast) {
-                            delay(Nec78k0ProtocolRegistry.FRAME_TO_FRAME_DELAY_MS)
+                var directStxRetried = false
+
+                while (true) {
+                    when (val ackRes = sendStxDataPageAndAwaitAck(transport, dataFrame, PAGE_ACK_TIMEOUT_MS, "0x13 صفحة ${page + 1}/$PAGES_PER_BLOCK", onLog)) {
+                        is FrameAckOutcome.AckSuccess -> {
+                            onPageProgress?.invoke((page + 1) * PAGE_SIZE)
+                            if (!isLast) {
+                                delay(Nec78k0ProtocolRegistry.FRAME_TO_FRAME_DELAY_MS)
+                            }
+                            break
+                        }
+                        is FrameAckOutcome.FrameError -> {
+                            if (ackRes.errorCode == STS_CHECKSUM_ERROR) {
+                                lastTimeoutReason = ackRes.description
+                                lastTimeoutPage = page + 1
+                                if (attempt >= MAX_STX_PAGE_RETRIES) {
+                                    return VerifyOutcome.TransportLost("${ackRes.description} (بعد $MAX_STX_PAGE_RETRIES محاولات)", page + 1, isUsbDetached = false)
+                                }
+                                transport.flushInputBuffer()
+                                delay(STX_RETRY_WAIT_MS)
+                                attempt++
+                                if (!directStxRetried && attempt == 2) {
+                                    directStxRetried = true
+                                    onLog("خطأ نقل 0x07 (Checksum Error) في 0x13 صفحة ${page + 1}/$PAGES_PER_BLOCK — إعادة إرسال STX (محاولة $attempt/$MAX_STX_PAGE_RETRIES)...")
+                                    continue
+                                } else {
+                                    restartHeader = true
+                                    needResync = false
+                                    break
+                                }
+                            }
+                            return VerifyOutcome.Mismatch(ackRes.description, ackRes.errorCode, page + 1)
+                        }
+                        is FrameAckOutcome.UsbDetached -> {
+                            return VerifyOutcome.TransportLost(ackRes.reason, page + 1, isUsbDetached = true)
+                        }
+                        is FrameAckOutcome.Timeout -> {
+                            lastTimeoutReason = ackRes.reason
+                            lastTimeoutPage = page + 1
+                            if (attempt >= MAX_STX_PAGE_RETRIES) {
+                                return VerifyOutcome.TransportLost("$lastTimeoutReason (بعد $MAX_STX_PAGE_RETRIES محاولات)", lastTimeoutPage, isUsbDetached = false)
+                            }
+                            transport.flushInputBuffer()
+                            delay(STX_RETRY_WAIT_MS)
+                            attempt++
+                            if (!directStxRetried && attempt == 2) {
+                                directStxRetried = true
+                                continue
+                            } else {
+                                restartHeader = true
+                                needResync = true
+                                break
+                            }
                         }
                     }
-                    is FrameAckOutcome.FrameError -> {
-                        return VerifyOutcome.Mismatch(ackRes.description, ackRes.errorCode, page + 1)
-                    }
-                    is FrameAckOutcome.UsbDetached -> {
-                        return VerifyOutcome.TransportLost(ackRes.reason, page + 1, isUsbDetached = true)
-                    }
-                    is FrameAckOutcome.Timeout -> {
-                        lastTimeoutReason = ackRes.reason
-                        lastTimeoutPage = page + 1
-                        pageTimedOut = true
-                        break
-                    }
                 }
+                if (restartHeader) break
             }
-            if (!pageTimedOut) {
+            if (!restartHeader) {
                 return VerifyOutcome.Match
             }
         }
         return VerifyOutcome.TransportLost(
-            "$lastTimeoutReason (بعد $MAX_TIMEOUT_RETRIES محاولات إعادة مزامنة)",
+            "$lastTimeoutReason (بعد $MAX_STX_PAGE_RETRIES محاولات)",
             lastTimeoutPage,
             isUsbDetached = false
         )
@@ -2432,36 +2557,98 @@ object Nec78k0ProtocolEngine {
         require(pageBytes.size == PAGE_SIZE) { "78K0 verify page must be 256 bytes" }
         val verifyCmd = buildAddressRangeFrame(CMD_VERIFY, startAddr, endAddr)
         var lastTimeoutReason = "انتهت مهلة Verify 0x13 (صفحة)"
-        for (attempt in 0..MAX_TIMEOUT_RETRIES) {
-            if (attempt > 0) {
-                if (!transport.isDeviceAttached()) {
-                    return VerifyOutcome.TransportLost("انقطع اتصال USB OTG أثناء Verify 0x13", 1, isUsbDetached = true)
-                }
+        var attempt = 1
+        var needResync = false
+
+        while (attempt <= MAX_STX_PAGE_RETRIES) {
+            if (!transport.isDeviceAttached()) {
+                return VerifyOutcome.TransportLost("انقطع اتصال USB OTG أثناء Verify 0x13", 1, isUsbDetached = true)
+            }
+            if (needResync) {
                 val resync = resync78k0Bootloader(transport, clockFreqMhzText, onLog)
                 if (resync is Nec78k0TransceiveResult.DisconnectedOrTimeout) {
                     if (resync.isUsbDetached) return VerifyOutcome.TransportLost(resync.reason, 1, isUsbDetached = true)
                     lastTimeoutReason = resync.reason
+                    if (attempt >= MAX_STX_PAGE_RETRIES) break
+                    transport.flushInputBuffer()
+                    delay(STX_RETRY_WAIT_MS)
+                    attempt++
                     continue
                 }
+                needResync = false
             }
             when (val cmdRes = transceiveSingleFrame(transport, verifyCmd, HEADER_ACK_TIMEOUT_MS, onLog, verboseLog = false)) {
                 is Nec78k0TransceiveResult.Success -> Unit
-                is Nec78k0TransceiveResult.ProtocolError -> return VerifyOutcome.Mismatch(cmdRes.statusLabel, cmdRes.statusCode, 0)
+                is Nec78k0TransceiveResult.ProtocolError -> {
+                    if (cmdRes.statusCode == STS_CHECKSUM_ERROR && attempt < MAX_STX_PAGE_RETRIES) {
+                        transport.flushInputBuffer()
+                        delay(STX_RETRY_WAIT_MS)
+                        needResync = (attempt >= 2)
+                        attempt++
+                        continue
+                    }
+                    return VerifyOutcome.Mismatch(cmdRes.statusLabel, cmdRes.statusCode, 0)
+                }
                 is Nec78k0TransceiveResult.DisconnectedOrTimeout -> {
                     if (cmdRes.isUsbDetached) return VerifyOutcome.TransportLost(cmdRes.reason, 0, isUsbDetached = true)
                     lastTimeoutReason = cmdRes.reason
+                    if (attempt >= MAX_STX_PAGE_RETRIES) break
+                    transport.flushInputBuffer()
+                    delay(STX_RETRY_WAIT_MS)
+                    needResync = true
+                    attempt++
                     continue
                 }
             }
             delay(Nec78k0ProtocolRegistry.COMMAND_TO_DATA_DELAY_MS)
             transport.flushInputBuffer()
             val dataFrame = buildDataFrame(pageBytes, isLast = true)
-            when (val ackRes = sendStxDataPageAndAwaitAck(transport, dataFrame, PAGE_ACK_TIMEOUT_MS, "0x13 صفحة مفردة", onLog, verboseLog = false)) {
-                is FrameAckOutcome.AckSuccess -> return VerifyOutcome.Match
-                is FrameAckOutcome.FrameError -> return VerifyOutcome.Mismatch(ackRes.description, ackRes.errorCode, 1)
-                is FrameAckOutcome.UsbDetached -> return VerifyOutcome.TransportLost(ackRes.reason, 1, isUsbDetached = true)
-                is FrameAckOutcome.Timeout -> lastTimeoutReason = ackRes.reason
+            var directStxRetried = false
+            var restartHeader = false
+            while (true) {
+                when (val ackRes = sendStxDataPageAndAwaitAck(transport, dataFrame, PAGE_ACK_TIMEOUT_MS, "0x13 صفحة مفردة", onLog, verboseLog = false)) {
+                    is FrameAckOutcome.AckSuccess -> return VerifyOutcome.Match
+                    is FrameAckOutcome.FrameError -> {
+                        if (ackRes.errorCode == STS_CHECKSUM_ERROR) {
+                            lastTimeoutReason = ackRes.description
+                            if (attempt >= MAX_STX_PAGE_RETRIES) {
+                                return VerifyOutcome.TransportLost("${ackRes.description} (بعد $MAX_STX_PAGE_RETRIES محاولات)", 1, isUsbDetached = false)
+                            }
+                            transport.flushInputBuffer()
+                            delay(STX_RETRY_WAIT_MS)
+                            attempt++
+                            if (!directStxRetried && attempt == 2) {
+                                directStxRetried = true
+                                continue
+                            } else {
+                                restartHeader = true
+                                needResync = false
+                                break
+                            }
+                        }
+                        return VerifyOutcome.Mismatch(ackRes.description, ackRes.errorCode, 1)
+                    }
+                    is FrameAckOutcome.UsbDetached -> return VerifyOutcome.TransportLost(ackRes.reason, 1, isUsbDetached = true)
+                    is FrameAckOutcome.Timeout -> {
+                        lastTimeoutReason = ackRes.reason
+                        if (attempt >= MAX_STX_PAGE_RETRIES) {
+                            return VerifyOutcome.TransportLost("$lastTimeoutReason (بعد $MAX_STX_PAGE_RETRIES محاولات)", 1, isUsbDetached = false)
+                        }
+                        transport.flushInputBuffer()
+                        delay(STX_RETRY_WAIT_MS)
+                        attempt++
+                        if (!directStxRetried && attempt == 2) {
+                            directStxRetried = true
+                            continue
+                        } else {
+                            restartHeader = true
+                            needResync = true
+                            break
+                        }
+                    }
+                }
             }
+            if (!restartHeader) break
         }
         return VerifyOutcome.TransportLost(lastTimeoutReason, 1, isUsbDetached = false)
     }
@@ -3014,7 +3201,9 @@ object Nec78k0ProtocolEngine {
      * Standard NEC 78K0 Two-Stage 0x40 Program (1024B Block = 4 x 260B STX Frames):
      * Step 1: Send 11-byte 0x40 Header starting with SOH (0x01) -> await [02 01 06 F9 03].
      * Step 2: Send 4 Data Frames of 260B starting with STX (0x02), LEN=0x00:
-     *         Pages 1..3 END=0x17 (ETB), Page 4 END=0x03 (ETX), Paced 64B/65ms -> await ACK (2500ms) after each page.
+     *         Pages 1..3 END=0x17 (ETB), Page 4 END=0x03 (ETX), Paced 32B/20ms -> await ACK (2500ms) after each page.
+     *         Auto-retries up to 5 times on 0x07 (Checksum Error) or Timeout (flush RX + 50ms + resend 260B STX,
+     *         and re-sends 0x40 block header on attempts 3..5), followed by a 30ms post-block settle delay after ETX.
      */
     internal suspend fun programBlockFromBuffer(
         transport: Serial78k0Transport,
@@ -3028,42 +3217,57 @@ object Nec78k0ProtocolEngine {
     ): ProgramOutcome {
         require(blockData.size == BLOCK_SIZE) { "78K0 program block must be 1024 bytes" }
         val progCmd = buildAddressRangeFrame(CMD_PROGRAM, startAddr, endAddr)
-        var lastTimeoutReason = "انتهت مهلة حزمة 0x40"
+        var lastOutcome: ProgramOutcome = ProgramOutcome.TransportFailure("انتهت مهلة حزمة 0x40", isUsbDetached = false)
+        var attempt = 1
+        var needResync = false
+        var anyPageAckedInAttempt = false
 
-        for (attempt in 0..MAX_TIMEOUT_RETRIES) {
-            if (attempt > 0) {
-                if (!transport.isDeviceAttached()) {
-                    return ProgramOutcome.TransportFailure("انقطع كابل USB OTG قبل إعادة محاولة 0x40", isUsbDetached = true)
-                }
-                onLog(String.format(Locale.US, "انتهت مهلة 0x40 عند 0x%06X (USB متصل) — إعادة المزامنة ثم المحاولة %d/%d...", startAddr, attempt, MAX_TIMEOUT_RETRIES))
+        while (attempt <= MAX_STX_PAGE_RETRIES) {
+            if (!transport.isDeviceAttached()) {
+                return ProgramOutcome.TransportFailure("انقطع كابل USB OTG قبل إرسال 0x40", isUsbDetached = true)
+            }
+            if (needResync) {
+                onLog(String.format(Locale.US, "إعادة المزامنة لـ 0x40 عند 0x%06X (محاولة %d/%d)...", startAddr, attempt, MAX_STX_PAGE_RETRIES))
                 val resync = resync78k0Bootloader(transport, clockFreqMhzText, onLog)
                 if (resync is Nec78k0TransceiveResult.DisconnectedOrTimeout) {
                     if (resync.isUsbDetached) {
                         return ProgramOutcome.TransportFailure(resync.reason, isUsbDetached = true)
                     }
-                    lastTimeoutReason = resync.reason
+                    lastOutcome = ProgramOutcome.TransportFailure(resync.reason, isUsbDetached = false)
+                    if (attempt >= MAX_STX_PAGE_RETRIES) break
+                    transport.flushInputBuffer()
+                    delay(STX_RETRY_WAIT_MS)
+                    attempt++
                     continue
                 } else if (resync is Nec78k0TransceiveResult.ProtocolError) {
                     return ProgramOutcome.ProtocolError("رفض المعالج إعادة المزامنة قبل 0x40: ${resync.statusLabel}")
                 }
-                if (eraseBlockBeforeRetry) {
-                    val eraseCmd = buildAddressRangeFrame(CMD_BLOCK_ERASE, startAddr, endAddr)
-                    when (val eraseRes = transceiveSingleFrame(transport, eraseCmd, HEADER_ACK_TIMEOUT_MS, onLog)) {
-                        is Nec78k0TransceiveResult.Success -> delay(Nec78k0ProtocolRegistry.ERASE_WRITE_BUSY_WAIT_MS)
-                        is Nec78k0TransceiveResult.ProtocolError -> {
-                            if (eraseRes.statusCode == STS_PROTECT_ERROR) {
-                                return ProgramOutcome.ProtocolError("الشريحة محمية (ERR_PROTECT 0x10): أمر البرمجة مرفوض.", isProtected = true)
-                            }
-                        }
-                        is Nec78k0TransceiveResult.DisconnectedOrTimeout -> {
-                            if (eraseRes.isUsbDetached) {
-                                return ProgramOutcome.TransportFailure(eraseRes.reason, isUsbDetached = true)
-                            }
-                            lastTimeoutReason = eraseRes.reason
-                            continue
+                needResync = false
+            }
+
+            if (anyPageAckedInAttempt && eraseBlockBeforeRetry) {
+                val eraseCmd = buildAddressRangeFrame(CMD_BLOCK_ERASE, startAddr, endAddr)
+                when (val eraseRes = transceiveSingleFrame(transport, eraseCmd, HEADER_ACK_TIMEOUT_MS, onLog)) {
+                    is Nec78k0TransceiveResult.Success -> delay(Nec78k0ProtocolRegistry.ERASE_WRITE_BUSY_WAIT_MS)
+                    is Nec78k0TransceiveResult.ProtocolError -> {
+                        if (eraseRes.statusCode == STS_PROTECT_ERROR) {
+                            return ProgramOutcome.ProtocolError("الشريحة محمية (ERR_PROTECT 0x10): أمر البرمجة مرفوض.", isProtected = true)
                         }
                     }
+                    is Nec78k0TransceiveResult.DisconnectedOrTimeout -> {
+                        if (eraseRes.isUsbDetached) {
+                            return ProgramOutcome.TransportFailure(eraseRes.reason, isUsbDetached = true)
+                        }
+                        lastOutcome = ProgramOutcome.TransportFailure(eraseRes.reason, isUsbDetached = false)
+                        if (attempt >= MAX_STX_PAGE_RETRIES) break
+                        transport.flushInputBuffer()
+                        delay(STX_RETRY_WAIT_MS)
+                        needResync = true
+                        attempt++
+                        continue
+                    }
                 }
+                anyPageAckedInAttempt = false
             }
 
             onLog("TX (0x40 Header 11B): ${toHex(progCmd)}")
@@ -3075,13 +3279,26 @@ object Nec78k0ProtocolEngine {
                     if (res.statusCode == STS_PROTECT_ERROR) {
                         return ProgramOutcome.ProtocolError("الشريحة محمية (ERR_PROTECT 0x10): أمر البرمجة 0x40 مرفوض.", isProtected = true)
                     }
+                    if (res.statusCode == STS_CHECKSUM_ERROR && attempt < MAX_STX_PAGE_RETRIES) {
+                        lastOutcome = ProgramOutcome.ProtocolError("رفض المعالج أمر الكتابة 0x40: ${res.statusLabel}")
+                        transport.flushInputBuffer()
+                        delay(STX_RETRY_WAIT_MS)
+                        needResync = (attempt >= 2)
+                        attempt++
+                        continue
+                    }
                     return ProgramOutcome.ProtocolError("رفض المعالج أمر الكتابة 0x40: ${res.statusLabel}")
                 }
                 is Nec78k0TransceiveResult.DisconnectedOrTimeout -> {
                     if (res.isUsbDetached) {
                         return ProgramOutcome.TransportFailure(res.reason, isUsbDetached = true)
                     }
-                    lastTimeoutReason = res.reason
+                    lastOutcome = ProgramOutcome.TransportFailure(res.reason, isUsbDetached = false)
+                    if (attempt >= MAX_STX_PAGE_RETRIES) break
+                    transport.flushInputBuffer()
+                    delay(STX_RETRY_WAIT_MS)
+                    needResync = true
+                    attempt++
                     continue
                 }
             }
@@ -3090,43 +3307,87 @@ object Nec78k0ProtocolEngine {
             delay(Nec78k0ProtocolRegistry.COMMAND_TO_DATA_DELAY_MS)
             transport.flushInputBuffer()
 
-            var pageTimedOut = false
+            var restartBlockHeader = false
             for (page in 0 until PAGES_PER_BLOCK) {
                 val offset = page * PAGE_SIZE
                 val slice = blockData.copyOfRange(offset, offset + PAGE_SIZE)
                 val isLast = (page == PAGES_PER_BLOCK - 1)
                 val dataFrame = buildDataFrame(slice, isLast = isLast)
-                when (val ackRes = sendStxDataPageAndAwaitAck(transport, dataFrame, PAGE_ACK_TIMEOUT_MS, "0x40 صفحة ${page + 1}/$PAGES_PER_BLOCK", onLog)) {
-                    is FrameAckOutcome.AckSuccess -> {
-                        onPageProgress?.invoke((page + 1) * PAGE_SIZE)
-                        if (!isLast) {
-                            delay(Nec78k0ProtocolRegistry.FRAME_TO_FRAME_DELAY_MS)
+                var directPageRetried = false
+
+                while (true) {
+                    when (val ackRes = sendStxDataPageAndAwaitAck(transport, dataFrame, PAGE_ACK_TIMEOUT_MS, "0x40 صفحة ${page + 1}/$PAGES_PER_BLOCK", onLog)) {
+                        is FrameAckOutcome.AckSuccess -> {
+                            anyPageAckedInAttempt = true
+                            onPageProgress?.invoke((page + 1) * PAGE_SIZE)
+                            if (!isLast) {
+                                delay(Nec78k0ProtocolRegistry.FRAME_TO_FRAME_DELAY_MS)
+                            }
+                            break
                         }
-                    }
-                    is FrameAckOutcome.UsbDetached -> {
-                        return ProgramOutcome.TransportFailure(ackRes.reason, isUsbDetached = true)
-                    }
-                    is FrameAckOutcome.Timeout -> {
-                        lastTimeoutReason = ackRes.reason
-                        pageTimedOut = true
-                        break
-                    }
-                    is FrameAckOutcome.FrameError -> {
-                        if (ackRes.errorCode == STS_PROTECT_ERROR) {
-                            return ProgramOutcome.ProtocolError("الشريحة محمية (ERR_PROTECT 0x10): تم إيقاف الكتابة عند البلوك.", isProtected = true)
+                        is FrameAckOutcome.UsbDetached -> {
+                            return ProgramOutcome.TransportFailure(ackRes.reason, isUsbDetached = true)
                         }
-                        return ProgramOutcome.ProtocolError("فشل حرق البلوك (0x40 صفحة ${page + 1}/$PAGES_PER_BLOCK): ${ackRes.description}")
+                        is FrameAckOutcome.Timeout -> {
+                            lastOutcome = ProgramOutcome.TransportFailure(
+                                "${ackRes.reason} (بعد $MAX_STX_PAGE_RETRIES محاولات)",
+                                isUsbDetached = false
+                            )
+                            if (attempt >= MAX_STX_PAGE_RETRIES) {
+                                return lastOutcome
+                            }
+                            transport.flushInputBuffer()
+                            delay(STX_RETRY_WAIT_MS)
+                            attempt++
+                            if (!directPageRetried && attempt == 2) {
+                                directPageRetried = true
+                                onLog("انتهت المهلة في 0x40 صفحة ${page + 1}/$PAGES_PER_BLOCK — تفريغ RX والانتظار 50ms ثم إعادة إرسال 260B STX (محاولة $attempt/$MAX_STX_PAGE_RETRIES)...")
+                                continue
+                            } else {
+                                onLog("استمرت المهلة في 0x40 صفحة ${page + 1}/$PAGES_PER_BLOCK — إعادة المزامنة وترويسة 0x40 للبلوك (محاولة $attempt/$MAX_STX_PAGE_RETRIES)...")
+                                restartBlockHeader = true
+                                needResync = true
+                                break
+                            }
+                        }
+                        is FrameAckOutcome.FrameError -> {
+                            if (ackRes.errorCode == STS_PROTECT_ERROR) {
+                                return ProgramOutcome.ProtocolError("الشريحة محمية (ERR_PROTECT 0x10): تم إيقاف الكتابة عند البلوك.", isProtected = true)
+                            }
+                            if (ackRes.errorCode == STS_CHECKSUM_ERROR) {
+                                lastOutcome = ProgramOutcome.ProtocolError(
+                                    "فشل حرق البلوك (0x40 صفحة ${page + 1}/$PAGES_PER_BLOCK) بعد $MAX_STX_PAGE_RETRIES محاولات: ${ackRes.description}"
+                                )
+                                if (attempt >= MAX_STX_PAGE_RETRIES) {
+                                    return lastOutcome
+                                }
+                                transport.flushInputBuffer()
+                                delay(STX_RETRY_WAIT_MS)
+                                attempt++
+                                if (!directPageRetried && attempt == 2) {
+                                    directPageRetried = true
+                                    onLog("خطأ نقل 0x07 (Checksum Error) في 0x40 صفحة ${page + 1}/$PAGES_PER_BLOCK — تفريغ RX والانتظار 50ms ثم إعادة إرسال 260B STX (محاولة $attempt/$MAX_STX_PAGE_RETRIES)...")
+                                    continue
+                                } else {
+                                    onLog("استمر خطأ 0x07 في 0x40 صفحة ${page + 1}/$PAGES_PER_BLOCK — إعادة إرسال ترويسة 0x40 للبلوك ثم الصفحات (محاولة $attempt/$MAX_STX_PAGE_RETRIES)...")
+                                    restartBlockHeader = true
+                                    needResync = false
+                                    break
+                                }
+                            }
+                            return ProgramOutcome.ProtocolError("فشل حرق البلوك (0x40 صفحة ${page + 1}/$PAGES_PER_BLOCK): ${ackRes.description}")
+                        }
                     }
                 }
+                if (restartBlockHeader) break
             }
-            if (!pageTimedOut) {
+            if (!restartBlockHeader) {
+                // 30ms inter-block settle delay after END=03 ETX before sending next block's 0x40 header
+                delay(POST_BLOCK_PROGRAM_SETTLE_MS)
                 return ProgramOutcome.Success
             }
         }
-        return ProgramOutcome.TransportFailure(
-            "$lastTimeoutReason (بعد $MAX_TIMEOUT_RETRIES محاولات إعادة مزامنة)",
-            isUsbDetached = false
-        )
+        return lastOutcome
     }
 
     internal suspend fun queryChecksum16(
