@@ -123,6 +123,7 @@ fun ProgrammerStep3Flasher(
     onToggleViewingDataFlash: (Boolean) -> Unit,
     onToggleAutoEraseBeforeWrite: (Boolean) -> Unit,
     onToggleAutoVerifyAfterWrite: (Boolean) -> Unit,
+    onToggleAutoRestoreChip: (Boolean) -> Unit = {},
     onJumpToFirstData: () -> Unit,
     onLoadFirmwareUri: (android.net.Uri) -> Unit,
     onSaveDumpUri: (android.net.Uri, Boolean) -> Unit,
@@ -798,6 +799,38 @@ fun ProgrammerStep3Flasher(
                                     enabled = !state.isBusy,
                                     modifier = Modifier.testTag("auto_verify_after_write_switch")
                                 )
+                            }
+
+                            if (is78k0) {
+                                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .heightIn(min = 48.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = "الاستعادة التلقائية الفورية للمعالج (Auto-Restore)",
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.onSurface
+                                        )
+                                        Text(
+                                            text = "إعادة كتابة وتوثيق كل بلوك (0x22+0x40+0x13+0xB0) فور سحبه لضمان مطابقة 100%",
+                                            fontSize = 10.sp,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                    Switch(
+                                        checked = state.autoRestoreChip,
+                                        onCheckedChange = onToggleAutoRestoreChip,
+                                        enabled = !state.isBusy,
+                                        modifier = Modifier.testTag("nec78k0_auto_restore_switch")
+                                    )
+                                }
                             }
                         }
                     }

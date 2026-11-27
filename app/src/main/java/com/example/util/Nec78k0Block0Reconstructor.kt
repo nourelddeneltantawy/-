@@ -101,27 +101,21 @@ object Nec78k0Block0Reconstructor {
 
     /**
      * Extracts the original flash byte (0x00..0xFF) after zeroing a single byte at [offset]
-     * and reading CS_prev -> CS_curr via 0xB0:
-     * - If delta16 == 0x0000 -> 0x00
-     * - If only Low Byte changed -> delta16 & 0xFF (covers even offsets in Word-Sum and all offsets in Byte-Sum)
-     * - If only High Byte changed -> (delta16 >> 8) & 0xFF (covers odd offsets in Word-Sum, e.g. 0x0004 -> 0xFF04 => Δ=0xFF00 => 0xFF)
-     * - General carry-safe rule: even offset -> delta16 & 0xFF; odd offset -> ((delta16 + carry) >> 8) & 0xFF
+     * and reading CS_prev -> CS_curr via 0xB0 (16-bit Little-Endian Word-Sum):
+     * - Even offset (`offset % 2 == 0`): `(CS_curr - CS_prev + 0x10000) & 0xFF`
+     * - Odd offset (`offset % 2 == 1`):
+     *   `lowCarry = if ((CS_curr & 0xFF) < (CS_prev & 0xFF)) 1 else 0`
+     *   `(((CS_curr >> 8) & 0xFF) - ((CS_prev >> 8) & 0xFF) + lowCarry + 0x100) & 0xFF`
      */
     fun extractDifferentialByteFromChecksumDelta(csPrev: Int, csCurr: Int, offset: Int): Int {
         val prev = csPrev and 0xFFFF
         val curr = csCurr and 0xFFFF
-        val delta16 = (curr - prev + 0x10000) and 0xFFFF
-        val lowDelta = delta16 and 0xFF
-        val highDelta = (delta16 ushr 8) and 0xFF
-        return when {
-            delta16 == 0x0000 -> 0x00
-            lowDelta != 0 && highDelta == 0 -> lowDelta
-            highDelta != 0 && lowDelta == 0 -> highDelta
-            (offset and 1) == 0 -> lowDelta
-            else -> {
-                val carry = if ((curr and 0xFF) < (prev and 0xFF)) 0x0100 else 0
-                ((delta16 + carry) ushr 8) and 0xFF
-            }
+        if (curr == prev) return 0x00
+        return if ((offset and 1) == 0) {
+            (curr - prev + 0x10000) and 0xFF
+        } else {
+            val lowCarry = if ((curr and 0xFF) < (prev and 0xFF)) 1 else 0
+            (((curr ushr 8) and 0xFF) - ((prev ushr 8) and 0xFF) + lowCarry + 0x100) and 0xFF
         }
     }
 

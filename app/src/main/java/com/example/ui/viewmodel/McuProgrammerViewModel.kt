@@ -92,6 +92,7 @@ data class McuProgrammerUiState(
 
     // NEC / Renesas 78K0 Engine State
     val invert78k0DtrRtsPolarity: Boolean = false,
+    val autoRestoreChip: Boolean = true,
     val nec78k0DetectedInfo: Nec78k0ProtocolEngine.Nec78k0DetectedInfo? = null,
     val pendingRescueSessions: List<Nec78k0RecoveryManager.Nec78k0RecoverySession> = emptyList(),
     val watchdogAlertMessage: String? = null,
@@ -646,6 +647,15 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
         )
     }
 
+    fun setAutoRestoreChip(enabled: Boolean) {
+        _uiState.update { it.copy(autoRestoreChip = enabled) }
+        addLog(
+            if (enabled) "تم تفعيل الاستعادة التلقائية الفورية للمعالج (Block-by-Block 0x22 + 0x40 + 0x13 + 0xB0)."
+            else "تم إيقاف الاستعادة التلقائية للمعالج بعد السحب (سيتم حفظ الملف على الهاتف فقط).",
+            LogLevel.INFO
+        )
+    }
+
     fun triggerJumpToFirstData() {
         _uiState.update { it.copy(hexJumpSequence = it.hexJumpSequence + 1) }
     }
@@ -1093,6 +1103,7 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                     catalog = allProcessors,
                     resumeSession = activeResume,
                     preDetected78k0Info = _uiState.value.nec78k0DetectedInfo,
+                    autoRestoreChip = _uiState.value.autoRestoreChip,
                     on78k0DetectedInfo = { info ->
                         info.matchedProcessor?.let { matched ->
                             if (_uiState.value.selectedProcessor?.partNumber != matched.partNumber) {

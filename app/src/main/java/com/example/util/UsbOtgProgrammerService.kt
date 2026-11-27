@@ -847,6 +847,7 @@ object UsbOtgProgrammerService {
         catalog: List<McuProcessor> = emptyList(),
         resumeSession: Nec78k0RecoveryManager.Nec78k0RecoverySession? = null,
         preDetected78k0Info: Nec78k0ProtocolEngine.Nec78k0DetectedInfo? = null,
+        autoRestoreChip: Boolean = true,
         on78k0DetectedInfo: (Nec78k0ProtocolEngine.Nec78k0DetectedInfo) -> Unit = {},
         onLog: (String) -> Unit,
         onProgress: (bytesDone: Int, totalBytes: Int, label: String) -> Unit
@@ -890,6 +891,7 @@ object UsbOtgProgrammerService {
                     catalog = catalog,
                     existingResumeSession = resumeSession,
                     preDetectedInfo = preDetected78k0Info,
+                    autoRestoreChip = autoRestoreChip,
                     onDetectedInfo = on78k0DetectedInfo,
                     onLog = onLog,
                     onProgress = trackedProgress

@@ -46,7 +46,11 @@ object Nec78k0RecoveryManager {
         val block0Touched: Boolean = false,
         val block0OriginalExtracted: Boolean = false,
         val block0DiffNextIndex: Int = 0,
-        val block0DiffPrevCs: Int = -1
+        val block0DiffPrevCs: Int = -1,
+        val block0Restored: Boolean = false,
+        val activeDiffBlockIndex: Int = -1,
+        val activeDiffByteIndex: Int = 0,
+        val activeDiffBlockOrigCs: Int = -1
     ) {
         val flashSizeBytes: Int
             get() = lastAddress + 1
@@ -107,6 +111,10 @@ object Nec78k0RecoveryManager {
             put("block0OriginalExtracted", session.block0OriginalExtracted)
             put("block0DiffNextIndex", session.block0DiffNextIndex)
             put("block0DiffPrevCs", session.block0DiffPrevCs)
+            put("block0Restored", session.block0Restored)
+            put("activeDiffBlockIndex", session.activeDiffBlockIndex)
+            put("activeDiffByteIndex", session.activeDiffByteIndex)
+            put("activeDiffBlockOrigCs", session.activeDiffBlockOrigCs)
         }
         writeBytesAtomically(target, json.toString(2).toByteArray(Charsets.UTF_8))
         return target
@@ -192,7 +200,10 @@ object Nec78k0RecoveryManager {
             updatedAtMs = System.currentTimeMillis(),
             block0OriginalExtracted = if (session.lastCompletedBlock >= 0) session.block0OriginalExtracted else false,
             block0DiffNextIndex = 0,
-            block0DiffPrevCs = -1
+            block0DiffPrevCs = -1,
+            activeDiffBlockIndex = -1,
+            activeDiffByteIndex = 0,
+            activeDiffBlockOrigCs = -1
         )
         saveSessionCheckpoint(context, updated)
         return updated
@@ -217,24 +228,31 @@ object Nec78k0RecoveryManager {
             val obj = JSONObject(file.readText(Charsets.UTF_8))
             val stage = RecoveryStage.fromWireName(obj.optString("stage", "DETECTED"))
             val lastDone = obj.optInt("lastCompletedBlock", -1)
-            Nec78k0RecoverySession(
-                chipName = obj.getString("chipName"),
-                subFamily = obj.optString("subFamily", "78K0"),
-                lastAddress = obj.getInt("lastAddress"),
-                blockCount = obj.getInt("blockCount"),
-                hasDataFlash = obj.optBoolean("hasDataFlash", false),
-                fullFlashChecksum = obj.getInt("fullFlashChecksum"),
-                block0Checksum = obj.getInt("block0Checksum"),
-                signatureHex = obj.optString("signatureHex", ""),
-                stage = stage,
-                lastCompletedBlock = lastDone,
-                updatedAtMs = obj.optLong("updatedAtMs", file.lastModified()),
-                partialBlocksPath = obj.optString("partialBlocksPath", ""),
-                block0Touched = obj.optBoolean("block0Touched", stage != RecoveryStage.DETECTED || lastDone >= 0),
-                block0OriginalExtracted = obj.optBoolean("block0OriginalExtracted", false),
-                block0DiffNextIndex = obj.optInt("block0DiffNextIndex", 0),
-                block0DiffPrevCs = obj.optInt("block0DiffPrevCs", -1)
-            )
+                val legacyB0Next = obj.optInt("block0DiffNextIndex", 0)
+                val activeBlk = obj.optInt("activeDiffBlockIndex", if (legacyB0Next > 0) 0 else -1)
+                val activeByte = obj.optInt("activeDiffByteIndex", if (activeBlk == 0) legacyB0Next else 0)
+                Nec78k0RecoverySession(
+                    chipName = obj.getString("chipName"),
+                    subFamily = obj.optString("subFamily", "78K0"),
+                    lastAddress = obj.getInt("lastAddress"),
+                    blockCount = obj.getInt("blockCount"),
+                    hasDataFlash = obj.optBoolean("hasDataFlash", false),
+                    fullFlashChecksum = obj.getInt("fullFlashChecksum"),
+                    block0Checksum = obj.getInt("block0Checksum"),
+                    signatureHex = obj.optString("signatureHex", ""),
+                    stage = stage,
+                    lastCompletedBlock = lastDone,
+                    updatedAtMs = obj.optLong("updatedAtMs", file.lastModified()),
+                    partialBlocksPath = obj.optString("partialBlocksPath", ""),
+                    block0Touched = obj.optBoolean("block0Touched", stage != RecoveryStage.DETECTED || lastDone >= 0),
+                    block0OriginalExtracted = obj.optBoolean("block0OriginalExtracted", false),
+                    block0DiffNextIndex = legacyB0Next,
+                    block0DiffPrevCs = obj.optInt("block0DiffPrevCs", -1),
+                    block0Restored = obj.optBoolean("block0Restored", false),
+                    activeDiffBlockIndex = activeBlk,
+                    activeDiffByteIndex = activeByte,
+                    activeDiffBlockOrigCs = obj.optInt("activeDiffBlockOrigCs", -1)
+                )
         } catch (_: Throwable) {
             null
         }
