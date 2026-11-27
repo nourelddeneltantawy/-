@@ -1,5 +1,6 @@
 package com.example.util
 
+import android.content.Context
 import com.example.data.model.ChipConfig
 import com.example.data.model.DataFlashExportMode
 import com.example.data.model.McuProcessor
@@ -68,6 +69,7 @@ object R8cProtocolEngine {
         fun setDtr(enabled: Boolean, onLog: (String) -> Unit)
         fun setRts(enabled: Boolean, onLog: (String) -> Unit)
         fun flushInputBuffer()
+        fun isDeviceAttached(): Boolean = true
         suspend fun writeRaw(bytes: ByteArray): String?
         suspend fun waitForByteInRxQueue(expectedByte: Byte, timeoutMs: Int): Boolean
         suspend fun sendAndReceiveR8C(
@@ -735,6 +737,8 @@ object R8cProtocolEngine {
         baudRate: Int,
         idBytes: ByteArray,
         dataFlashMode: DataFlashExportMode = DataFlashExportMode.EXCLUDE,
+        context: Context? = null,
+        resumeFromCheckpoint: UniversalCheckpointManager.UniversalCheckpoint? = null,
         onLog: (String) -> Unit,
         onProgress: (bytesDone: Int, totalBytes: Int, label: String) -> Unit
     ): FlashOperationResult {
@@ -775,24 +779,62 @@ object R8cProtocolEngine {
             return FlashOperationResult.Failure(LOCKED_CHIP_MESSAGE)
         }
 
-        // Allocate dump buffer to exact selectedChip.flashSizeBytes initialized with 0xFF
-        val resultBuffer = FirmwareParser.createEmptyBuffer(flashSizeBytes)
+        // Allocate dump buffer to exact selectedChip.flashSizeBytes initialized with 0xFF (or restore from hot-plug checkpoint)
+        val preloaded = if (context != null &&
+            resumeFromCheckpoint != null &&
+            resumeFromCheckpoint.operation == UniversalCheckpointManager.OperationKind.READ &&
+            resumeFromCheckpoint.partNumber == selectedChip.partNumber
+        ) {
+            UniversalCheckpointManager.loadBuffer(context, selectedChip.partNumber, flashSizeBytes)
+        } else null
+        val resultBuffer = preloaded ?: FirmwareParser.createEmptyBuffer(flashSizeBytes)
         val totalPages = ((programEndAddress - programStartAddress + pageSize) / pageSize).coerceAtLeast(1)
-        var actualBytesRead = 0
-        var totalDoneBytes = 0
-        var lastSuccessEndAddr = programStartAddress - 1
+        val startPageIdx = if (preloaded != null && resumeFromCheckpoint != null) {
+            resumeFromCheckpoint.blockOrPageIndex.coerceIn(0, totalPages - 1)
+        } else 0
+        var actualBytesRead = if (preloaded != null) (startPageIdx * pageSize).coerceAtMost(flashSizeBytes) else 0
+        var totalDoneBytes = actualBytesRead
+        var lastSuccessEndAddr = if (actualBytesRead > 0) (programStartAddress + actualBytesRead - 1) else (programStartAddress - 1)
         var stoppedAtChipEnd = false
 
         transport.setRawRxMonitor(false)
-        onProgress(0, overallTotalBytes, "قراءة ${selectedChip.partNumber}: 0% (${fmtAddr(programStartAddress)})...")
+        if (startPageIdx > 0) {
+            onLog("استكمال قراءة R8C من الصفحة ${startPageIdx + 1}/$totalPages (${actualBytesRead / 1024} KB محفوظة)...")
+        }
+        onProgress(totalDoneBytes, overallTotalBytes, "قراءة ${selectedChip.partNumber}: ${if (overallTotalBytes > 0) (totalDoneBytes * 100 / overallTotalBytes) else 0}% (${fmtAddr(programStartAddress + startPageIdx * pageSize)})...")
 
         var dataFlashBuffer: ByteArray? = null
         var dfBytesRead = 0
 
         try {
-            var addr = programStartAddress
-            var pageIdx = 0
+            var addr = programStartAddress + (startPageIdx * pageSize)
+            var pageIdx = startPageIdx
             while (addr <= programEndAddress) {
+                ProgrammerForegroundService.awaitIfPaused()
+                if (!transport.isDeviceAttached()) {
+                    if (context != null) {
+                        UniversalCheckpointManager.saveCheckpoint(
+                            context,
+                            UniversalCheckpointManager.UniversalCheckpoint(
+                                partNumber = selectedChip.partNumber,
+                                mainFamily = selectedChip.mainFamily,
+                                protocolTypeName = selectedChip.protocolType.name,
+                                operation = UniversalCheckpointManager.OperationKind.READ,
+                                completedBytes = totalDoneBytes,
+                                totalBytes = overallTotalBytes,
+                                blockOrPageIndex = pageIdx,
+                                totalBlocksOrPages = totalPages,
+                                fileName = "Dump_${selectedChip.partNumber}.bin",
+                                baudRate = baudRate,
+                                flashBaseAddress = programStartAddress,
+                                updatedAtMs = System.currentTimeMillis()
+                            ),
+                            resultBuffer
+                        )
+                    }
+                    return FlashOperationResult.Failure("انقطع كابل USB OTG عند الصفحة ${pageIdx + 1}/$totalPages — تم حفظ التقدم للاستكمال الفوري.")
+                }
+
                 val physicalAddr = addr and 0xFFFFFF00.toInt()
                 val chunk = readPage(
                     transport = transport,
@@ -801,12 +843,32 @@ object R8cProtocolEngine {
                     verboseFrameLog = false
                 )
                 if (chunk == null) {
-                    if (actualBytesRead > 0) {
+                    if (!transport.isDeviceAttached() && context != null) {
+                        UniversalCheckpointManager.saveCheckpoint(
+                            context,
+                            UniversalCheckpointManager.UniversalCheckpoint(
+                                partNumber = selectedChip.partNumber,
+                                mainFamily = selectedChip.mainFamily,
+                                protocolTypeName = selectedChip.protocolType.name,
+                                operation = UniversalCheckpointManager.OperationKind.READ,
+                                completedBytes = totalDoneBytes,
+                                totalBytes = overallTotalBytes,
+                                blockOrPageIndex = pageIdx,
+                                totalBlocksOrPages = totalPages,
+                                fileName = "Dump_${selectedChip.partNumber}.bin",
+                                baudRate = baudRate,
+                                flashBaseAddress = programStartAddress,
+                                updatedAtMs = System.currentTimeMillis()
+                            ),
+                            resultBuffer
+                        )
+                    }
+                    if (actualBytesRead > 0 && transport.isDeviceAttached()) {
                         stoppedAtChipEnd = true
                         break
                     } else {
                         return FlashOperationResult.Failure(
-                            "فشلت قراءة الصفحة الأولى عند العنوان ${fmtAddr(physicalAddr)} بعد 3 محاولات."
+                            "فشلت قراءة الصفحة عند العنوان ${fmtAddr(physicalAddr)} بعد 3 محاولات."
                         )
                     }
                 }
@@ -826,6 +888,26 @@ object R8cProtocolEngine {
                     overallTotalBytes,
                     "قراءة ${selectedChip.partNumber}: $pct% (${fmtAddr(physicalAddr)})"
                 )
+                if (context != null && (pageIdx + 1) % 8 == 0 && addr + pageSize <= programEndAddress) {
+                    UniversalCheckpointManager.saveCheckpoint(
+                        context,
+                        UniversalCheckpointManager.UniversalCheckpoint(
+                            partNumber = selectedChip.partNumber,
+                            mainFamily = selectedChip.mainFamily,
+                            protocolTypeName = selectedChip.protocolType.name,
+                            operation = UniversalCheckpointManager.OperationKind.READ,
+                            completedBytes = totalDoneBytes,
+                            totalBytes = overallTotalBytes,
+                            blockOrPageIndex = pageIdx + 1,
+                            totalBlocksOrPages = totalPages,
+                            fileName = "Dump_${selectedChip.partNumber}.bin",
+                            baudRate = baudRate,
+                            flashBaseAddress = programStartAddress,
+                            updatedAtMs = System.currentTimeMillis()
+                        ),
+                        resultBuffer
+                    )
+                }
                 if (pageIdx == 0 || (pageIdx + 1) % 8 == 0 || addr + pageSize > programEndAddress) {
                     onLog("قراءة الفلاش: صفحة ${pageIdx + 1}/$totalPages (${fmtAddr(physicalAddr)}) — $pct% (${actualBytesRead / 1024} KB)")
                 }
@@ -885,6 +967,9 @@ object R8cProtocolEngine {
             transport.setRawRxMonitor(false)
         }
 
+        if (context != null) {
+            UniversalCheckpointManager.clearCheckpoint(context, selectedChip.partNumber)
+        }
         val actualEndAddr = if (lastSuccessEndAddr >= programStartAddress) lastSuccessEndAddr else programEndAddress
         val dfSuffix = if (dataFlashBuffer != null) " + Data Flash ($dfBytesRead بايت)" else ""
         val completionMsg = "اكتملت قراءة الفلاش المتاح بنجاح حتى العنوان ${fmtAddr(actualEndAddr)}$dfSuffix"
@@ -1053,6 +1138,9 @@ object R8cProtocolEngine {
         dataFlashBytes: ByteArray? = null,
         autoEraseBeforeWrite: Boolean = true,
         autoVerifyAfterWrite: Boolean = false,
+        context: Context? = null,
+        resumeFromCheckpoint: UniversalCheckpointManager.UniversalCheckpoint? = null,
+        fileName: String = "",
         onLog: (String) -> Unit,
         onProgress: (bytesDone: Int, totalBytes: Int, label: String) -> Unit
     ): FlashOperationResult = programOrVerifyFlash(
@@ -1067,6 +1155,9 @@ object R8cProtocolEngine {
         dataFlashBytes = dataFlashBytes,
         autoEraseBeforeWrite = autoEraseBeforeWrite,
         autoVerifyAfterWrite = autoVerifyAfterWrite,
+        context = context,
+        resumeFromCheckpoint = resumeFromCheckpoint,
+        fileName = fileName,
         onLog = onLog,
         onProgress = onProgress
     )
@@ -1206,6 +1297,9 @@ object R8cProtocolEngine {
         dataFlashBytes: ByteArray? = null,
         autoEraseBeforeWrite: Boolean = true,
         autoVerifyAfterWrite: Boolean = false,
+        context: Context? = null,
+        resumeFromCheckpoint: UniversalCheckpointManager.UniversalCheckpoint? = null,
+        fileName: String = "",
         onLog: (String) -> Unit,
         onProgress: (bytesDone: Int, totalBytes: Int, label: String) -> Unit
     ): FlashOperationResult {
@@ -1273,8 +1367,16 @@ object R8cProtocolEngine {
                 )
             }
 
+            val resumeWritePage = if (!verifyOnly &&
+                resumeFromCheckpoint != null &&
+                resumeFromCheckpoint.operation == UniversalCheckpointManager.OperationKind.WRITE &&
+                resumeFromCheckpoint.partNumber == processor.partNumber
+            ) {
+                resumeFromCheckpoint.blockOrPageIndex.coerceIn(0, (allPages.size - 1).coerceAtLeast(0))
+            } else 0
+
             // Optional full chip erase [0xA7, 0xD0] + 4000ms wait + [0x70] -> SRD == 0x80 before writing
-            if (autoEraseBeforeWrite) {
+            if (autoEraseBeforeWrite && resumeWritePage == 0) {
                 onLog("بدء المسح الشامل التلقائي (0xA7 0xD0) قبل الكتابة...")
                 val eraseErr = performFullChipErase(
                     transport = transport,
@@ -1286,6 +1388,8 @@ object R8cProtocolEngine {
                 if (eraseErr != null) {
                     return FlashOperationResult.Failure(eraseErr)
                 }
+            } else if (resumeWritePage > 0) {
+                onLog("استكمال كتابة ${processor.partNumber} من الصفحة ${resumeWritePage + 1}/${allPages.size} بدون مسح الصفحات المكتوبة...")
             }
 
             if (nonEmptyIndices.isEmpty()) {
@@ -1303,10 +1407,35 @@ object R8cProtocolEngine {
             val lockedDfAddresses = mutableListOf<Int>()
             val totalWrittenTarget = nonEmptyIndices.size
 
-            for (idx in allPages.indices) {
+            for (idx in resumeWritePage until allPages.size) {
+                ProgrammerForegroundService.awaitIfPaused()
                 val page = allPages[idx]
                 val doneBytes = (idx + 1) * 256
                 val pct = ((doneBytes * 100L) / totalSpanBytes.coerceAtLeast(1)).toInt()
+
+                if (!transport.isDeviceAttached()) {
+                    if (context != null) {
+                        UniversalCheckpointManager.saveCheckpoint(
+                            context,
+                            UniversalCheckpointManager.UniversalCheckpoint(
+                                partNumber = processor.partNumber,
+                                mainFamily = processor.mainFamily,
+                                protocolTypeName = processor.protocolType.name,
+                                operation = UniversalCheckpointManager.OperationKind.WRITE,
+                                completedBytes = idx * 256,
+                                totalBytes = totalSpanBytes,
+                                blockOrPageIndex = idx,
+                                totalBlocksOrPages = allPages.size,
+                                fileName = fileName,
+                                baudRate = baudRate,
+                                flashBaseAddress = firmwareStartAddress,
+                                updatedAtMs = System.currentTimeMillis()
+                            ),
+                            firmwareBytes
+                        )
+                    }
+                    return FlashOperationResult.Failure("انقطع كابل USB OTG أثناء الكتابة عند الصفحة ${idx + 1}/${allPages.size} — تم حفظ التقدم للاستكمال الفوري.")
+                }
 
                 if (page.data256.all { it == 0xFF.toByte() }) {
                     skippedPageCount++
@@ -1331,10 +1460,51 @@ object R8cProtocolEngine {
                         lockedDfAddresses.add(page.physicalAddress)
                         onLog("تنبيه: تعذرت كتابة صفحة Data Flash الإضافية عند ${fmtAddr(page.physicalAddress)} (قد تكون محمية في هذا الموديل) — متابعة البرنامج الأساسي.")
                     } else {
+                        if (context != null) {
+                            UniversalCheckpointManager.saveCheckpoint(
+                                context,
+                                UniversalCheckpointManager.UniversalCheckpoint(
+                                    partNumber = processor.partNumber,
+                                    mainFamily = processor.mainFamily,
+                                    protocolTypeName = processor.protocolType.name,
+                                    operation = UniversalCheckpointManager.OperationKind.WRITE,
+                                    completedBytes = idx * 256,
+                                    totalBytes = totalSpanBytes,
+                                    blockOrPageIndex = idx,
+                                    totalBlocksOrPages = allPages.size,
+                                    fileName = fileName,
+                                    baudRate = baudRate,
+                                    flashBaseAddress = firmwareStartAddress,
+                                    updatedAtMs = System.currentTimeMillis()
+                                ),
+                                firmwareBytes
+                            )
+                        }
                         return FlashOperationResult.Failure("فشلت كتابة صفحة فلاش البرنامج (Program Flash) عند العنوان ${fmtAddr(page.physicalAddress)}.")
                     }
                 } else {
                     writtenPageCount++
+                }
+
+                if (context != null && (idx + 1) % 8 == 0 && idx < allPages.lastIndex) {
+                    UniversalCheckpointManager.saveCheckpoint(
+                        context,
+                        UniversalCheckpointManager.UniversalCheckpoint(
+                            partNumber = processor.partNumber,
+                            mainFamily = processor.mainFamily,
+                            protocolTypeName = processor.protocolType.name,
+                            operation = UniversalCheckpointManager.OperationKind.WRITE,
+                            completedBytes = doneBytes,
+                            totalBytes = totalSpanBytes,
+                            blockOrPageIndex = idx + 1,
+                            totalBlocksOrPages = allPages.size,
+                            fileName = fileName,
+                            baudRate = baudRate,
+                            flashBaseAddress = firmwareStartAddress,
+                            updatedAtMs = System.currentTimeMillis()
+                        ),
+                        firmwareBytes
+                    )
                 }
 
                 onProgress(
@@ -1348,6 +1518,9 @@ object R8cProtocolEngine {
                             "(${fmtAddr(page.physicalAddress)}) — $pct% (تخطي فارغة: $skippedPageCount)"
                     )
                 }
+            }
+            if (context != null) {
+                UniversalCheckpointManager.clearCheckpoint(context, processor.partNumber)
             }
 
             if (autoVerifyAfterWrite) {
@@ -1438,6 +1611,7 @@ object R8cProtocolEngine {
         var dfReadErrorPages = 0
 
         for (i in orderedPages.indices) {
+            ProgrammerForegroundService.awaitIfPaused()
             val page = orderedPages[i]
             var chipPage = readPage(
                 transport = transport,

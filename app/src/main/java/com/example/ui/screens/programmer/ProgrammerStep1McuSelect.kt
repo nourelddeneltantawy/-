@@ -25,18 +25,17 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Bolt
-import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DeveloperBoard
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Usb
 import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuBox
@@ -46,7 +45,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.MenuAnchorType
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
@@ -65,8 +63,13 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.data.McuCatalogLockManager
 import com.example.data.model.McuProcessor
 import com.example.data.model.ProtocolFamilyType
+import com.example.ui.theme.LocalIsDarkTheme
+import com.example.ui.theme.LocalIsSoftNeumorphismTheme
+import com.example.ui.theme.NeuPillButton
+import com.example.ui.theme.neuCard
 import com.example.ui.viewmodel.McuProgrammerUiState
 
 @Composable
@@ -79,12 +82,14 @@ fun ProgrammerStep1McuSelect(
     onSelectSubFamily: (String) -> Unit,
     onSelectPartNumber: (McuProcessor) -> Unit,
     onToggleDtrRtsReset: (Boolean) -> Unit,
-    onAutoDetectChipId: () -> Unit,
-    onResetUniversalAutoDetect: () -> Unit = {},
+    onToggleManufacturerLock: (String) -> Unit = {},
+    onToggleMainFamilyLock: (String, String) -> Unit = { _, _ -> },
     onNextStep: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val scrollState = rememberScrollState()
+    val isNeu = LocalIsSoftNeumorphismTheme.current
+    val isDark = LocalIsDarkTheme.current
 
     Column(
         modifier = modifier
@@ -200,12 +205,15 @@ fun ProgrammerStep1McuSelect(
                                 verticalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
                                 items(state.searchMatches, key = { it.id }) { mcu ->
+                                    val isMatchLocked = (mcu.manufacturer in state.lockedManufacturers) ||
+                                        (McuCatalogLockManager.familyKey(mcu.manufacturer, mcu.mainFamily) in state.lockedMainFamilies)
+                                    val matchBlocked = isMatchLocked && !state.isAdmin
                                     Surface(
                                         shape = RoundedCornerShape(10.dp),
                                         color = MaterialTheme.colorScheme.surface,
                                         modifier = Modifier
                                             .fillMaxWidth()
-                                            .clickable { onSelectSearchMatch(mcu) }
+                                            .clickable(enabled = !matchBlocked) { onSelectSearchMatch(mcu) }
                                     ) {
                                         Row(
                                             modifier = Modifier
@@ -219,7 +227,7 @@ fun ProgrammerStep1McuSelect(
                                                     text = mcu.partNumber,
                                                     fontWeight = FontWeight.Bold,
                                                     fontSize = 14.sp,
-                                                    color = MaterialTheme.colorScheme.primary
+                                                    color = if (matchBlocked) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.primary
                                                 )
                                                 Text(
                                                     text = "${mcu.manufacturer} • ${mcu.mainFamily} • ${mcu.subFamily}",
@@ -229,17 +237,43 @@ fun ProgrammerStep1McuSelect(
                                                     overflow = TextOverflow.Ellipsis
                                                 )
                                             }
-                                            Surface(
-                                                shape = RoundedCornerShape(8.dp),
-                                                color = Color(0xFF10B981).copy(alpha = 0.14f)
-                                            ) {
-                                                Text(
-                                                    text = "${mcu.pins}P • ${mcu.flashKb}KB",
-                                                    fontSize = 11.sp,
-                                                    fontWeight = FontWeight.Bold,
-                                                    color = Color(0xFF10B981),
-                                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                                                )
+                                            if (matchBlocked) {
+                                                Surface(
+                                                    shape = RoundedCornerShape(8.dp),
+                                                    color = Color(0xFFEF4444).copy(alpha = 0.14f)
+                                                ) {
+                                                    Row(
+                                                        verticalAlignment = Alignment.CenterVertically,
+                                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                                    ) {
+                                                        Icon(
+                                                            imageVector = Icons.Default.Lock,
+                                                            contentDescription = "مقفل",
+                                                            tint = Color(0xFFEF4444),
+                                                            modifier = Modifier.size(12.dp)
+                                                        )
+                                                        Spacer(modifier = Modifier.width(4.dp))
+                                                        Text(
+                                                            text = "مقفل",
+                                                            fontSize = 11.sp,
+                                                            fontWeight = FontWeight.Bold,
+                                                            color = Color(0xFFEF4444)
+                                                        )
+                                                    }
+                                                }
+                                            } else {
+                                                Surface(
+                                                    shape = RoundedCornerShape(8.dp),
+                                                    color = Color(0xFF10B981).copy(alpha = 0.14f)
+                                                ) {
+                                                    Text(
+                                                        text = "${mcu.pins}P • ${mcu.flashKb}KB",
+                                                        fontSize = 11.sp,
+                                                        fontWeight = FontWeight.Bold,
+                                                        color = Color(0xFF10B981),
+                                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                                    )
+                                                }
                                             }
                                         }
                                     }
@@ -347,74 +381,6 @@ fun ProgrammerStep1McuSelect(
                             )
                         }
                     }
-                } else {
-                    // Auto-Detect Chip ID Button (RL78 / 78K0)
-                    OutlinedButton(
-                        onClick = onAutoDetectChipId,
-                        enabled = !state.isAutoDetecting && !state.isLoadingDb,
-                        shape = RoundedCornerShape(14.dp),
-                        border = BorderStroke(1.2.dp, MaterialTheme.colorScheme.secondary),
-                        colors = ButtonDefaults.outlinedButtonColors(
-                            contentColor = MaterialTheme.colorScheme.secondary
-                        ),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(min = 48.dp)
-                            .testTag("auto_detect_chip_button")
-                    ) {
-                        if (state.isAutoDetecting) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(18.dp),
-                                strokeWidth = 2.dp,
-                                color = MaterialTheme.colorScheme.secondary
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("جاري الفحص عبر USB OTG...", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                        } else {
-                            Icon(Icons.Default.Usb, contentDescription = "فحص USB OTG", modifier = Modifier.size(20.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(
-                                text = "قراءة تلقائية للمعالج (Auto-Detect)",
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 13.sp,
-                                maxLines = 1
-                            )
-                        }
-                    }
-
-                    // Auto-Detect Status Feedback Banner
-                    if (!state.autoDetectStatus.isNullOrBlank()) {
-                        val accent = if (state.autoDetectIsSuccess) Color(0xFF10B981) else Color(0xFFF59E0B)
-                        Surface(
-                            shape = RoundedCornerShape(12.dp),
-                            color = accent.copy(alpha = 0.12f),
-                            border = BorderStroke(1.dp, accent.copy(alpha = 0.45f)),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(10.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Icon(
-                                    imageVector = if (state.autoDetectIsSuccess) Icons.Default.CheckCircle else Icons.Default.Info,
-                                    contentDescription = null,
-                                    tint = accent,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text(
-                                    text = state.autoDetectStatus,
-                                    fontSize = 12.sp,
-                                    color = MaterialTheme.colorScheme.onSurface,
-                                    lineHeight = 17.sp
-                                )
-                            }
-                        }
-                    }
-
-                    state.nec78k0DetectedInfo?.let { info ->
-                        Nec78k0AutoDetectInfoCard(info = info)
-                    }
                 }
 
                 // Live TX / RX Raw Hex Diagnostic Panel on Step 1
@@ -464,22 +430,42 @@ fun ProgrammerStep1McuSelect(
 
         // 4 Cascading Dropdowns Card
         Card(
-            shape = RoundedCornerShape(18.dp),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f))
+            shape = RoundedCornerShape(if (isNeu) 20.dp else 18.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = if (isNeu) Color.Transparent else MaterialTheme.colorScheme.surface
+            ),
+            border = if (isNeu) null else BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f)),
+            modifier = if (isNeu) Modifier.neuCard(cornerRadius = 20.dp, isDark = isDark) else Modifier
         ) {
             Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text(
-                    text = "الاختيار المتدرج للمعالج",
-                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
-                    color = MaterialTheme.colorScheme.onSurface
-                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "الاختيار المتدرج للمعالج",
+                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    if (state.isAdmin) {
+                        Text(
+                            text = "وضع المشرف: يمكنك قفل/فتح الشركات والعائلات",
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
 
                 CascadingDropdownField(
                     label = "1. الشركة المصنعة (Manufacturer)",
                     selectedValue = state.selectedManufacturer,
                     options = state.manufacturers,
                     onSelect = onSelectManufacturer,
+                    isAdmin = state.isAdmin,
+                    isLocked = { man -> man in state.lockedManufacturers },
+                    onToggleLock = onToggleManufacturerLock,
                     testTag = "dropdown_manufacturer"
                 )
 
@@ -488,6 +474,14 @@ fun ProgrammerStep1McuSelect(
                     selectedValue = state.selectedMainFamily,
                     options = state.mainFamilies,
                     onSelect = onSelectMainFamily,
+                    isAdmin = state.isAdmin,
+                    isLocked = { fam ->
+                        (state.selectedManufacturer in state.lockedManufacturers) ||
+                            (McuCatalogLockManager.familyKey(state.selectedManufacturer, fam) in state.lockedMainFamilies)
+                    },
+                    onToggleLock = { fam ->
+                        onToggleMainFamilyLock(state.selectedManufacturer, fam)
+                    },
                     testTag = "dropdown_main_family"
                 )
 
@@ -575,22 +569,49 @@ fun ProgrammerStep1McuSelect(
         }
 
         // Next Action Button
-        Button(
-            onClick = onNextStep,
-            enabled = state.selectedProcessor != null,
-            shape = RoundedCornerShape(16.dp),
-            modifier = Modifier
-                .fillMaxWidth()
-                .heightIn(min = 52.dp)
-                .testTag("step1_next_button")
-        ) {
-            Text(
-                text = "التالي: اختيار المبرمجة ومخطط التوصيل",
-                fontWeight = FontWeight.Bold,
-                fontSize = 15.sp
-            )
-            Spacer(modifier = Modifier.width(8.dp))
-            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = null)
+        if (isNeu) {
+            NeuPillButton(
+                onClick = onNextStep,
+                enabled = state.selectedProcessor != null,
+                isActive = state.selectedProcessor != null,
+                isDark = isDark,
+                accentColor = MaterialTheme.colorScheme.primary,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 52.dp)
+                    .testTag("step1_next_button")
+            ) {
+                Text(
+                    text = "التالي: اختيار المبرمجة",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 15.sp,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Icon(
+                    Icons.AutoMirrored.Filled.ArrowBack,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary
+                )
+            }
+        } else {
+            Button(
+                onClick = onNextStep,
+                enabled = state.selectedProcessor != null,
+                shape = RoundedCornerShape(16.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 52.dp)
+                    .testTag("step1_next_button")
+            ) {
+                Text(
+                    text = "التالي: اختيار المبرمجة",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 15.sp
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = null)
+            }
         }
 
         Spacer(modifier = Modifier.height(12.dp))
@@ -604,7 +625,10 @@ private fun CascadingDropdownField(
     selectedValue: String,
     options: List<String>,
     onSelect: (String) -> Unit,
-    testTag: String
+    testTag: String,
+    isAdmin: Boolean = false,
+    isLocked: (String) -> Boolean = { false },
+    onToggleLock: ((String) -> Unit)? = null
 ) {
     var expanded by remember { mutableStateOf(false) }
 
@@ -631,17 +655,75 @@ private fun CascadingDropdownField(
             modifier = Modifier.heightIn(max = 280.dp)
         ) {
             options.forEach { option ->
+                val locked = isLocked(option)
+                val blockedForUser = locked && !isAdmin
                 DropdownMenuItem(
+                    enabled = !blockedForUser,
                     text = {
-                        Text(
-                            text = option,
-                            fontWeight = if (option == selectedValue) FontWeight.Bold else FontWeight.Normal,
-                            color = if (option == selectedValue) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
-                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = option,
+                                fontWeight = if (option == selectedValue) FontWeight.Bold else FontWeight.Normal,
+                                color = when {
+                                    blockedForUser -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f)
+                                    option == selectedValue -> MaterialTheme.colorScheme.primary
+                                    else -> MaterialTheme.colorScheme.onSurface
+                                },
+                                modifier = Modifier.weight(1f),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            if (locked && !isAdmin) {
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Surface(
+                                    shape = RoundedCornerShape(6.dp),
+                                    color = Color(0xFFEF4444).copy(alpha = 0.14f)
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Lock,
+                                            contentDescription = "مقفل",
+                                            tint = Color(0xFFEF4444),
+                                            modifier = Modifier.size(12.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(3.dp))
+                                        Text(
+                                            text = "مقفل",
+                                            fontSize = 10.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = Color(0xFFEF4444)
+                                        )
+                                    }
+                                }
+                            } else if (isAdmin && onToggleLock != null) {
+                                IconButton(
+                                    onClick = { onToggleLock(option) },
+                                    modifier = Modifier
+                                        .size(36.dp)
+                                        .testTag("lock_toggle_$option")
+                                ) {
+                                    Icon(
+                                        imageVector = if (locked) Icons.Default.Lock else Icons.Default.LockOpen,
+                                        contentDescription = if (locked) "فتح القفل" else "قفل عن المستخدمين",
+                                        tint = if (locked) Color(0xFFEF4444) else Color(0xFF10B981),
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+                            }
+                        }
                     },
                     onClick = {
-                        expanded = false
-                        onSelect(option)
+                        if (!blockedForUser) {
+                            expanded = false
+                            onSelect(option)
+                        }
                     }
                 )
             }

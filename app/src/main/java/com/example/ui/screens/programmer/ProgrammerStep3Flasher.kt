@@ -40,13 +40,15 @@ import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CleaningServices
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Key
-import androidx.compose.material.icons.filled.Power
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material.icons.filled.Upload
@@ -101,7 +103,14 @@ import androidx.compose.ui.unit.sp
 import com.example.data.model.DataFlashExportMode
 import com.example.data.model.LogLevel
 import com.example.data.model.ProtocolFamilyType
+import com.example.ui.theme.LocalIsDarkTheme
+import com.example.ui.theme.LocalIsSoftNeumorphismTheme
+import com.example.ui.theme.NeuBadge
+import com.example.ui.theme.NeuPillButton
+import com.example.ui.theme.neuCard
+import com.example.ui.theme.neuRecessed
 import com.example.ui.viewmodel.McuProgrammerUiState
+import com.example.util.UniversalCheckpointManager
 import kotlinx.coroutines.launch
 import java.util.Locale
 import kotlin.math.min
@@ -132,6 +141,7 @@ fun ProgrammerStep3Flasher(
     onWriteFlash: () -> Unit,
     onEraseFlash: () -> Unit,
     onVerifyFlash: () -> Unit,
+    onTogglePauseResume: () -> Unit = {},
     onClearLogs: () -> Unit,
     onRescue78k0Session: (com.example.util.Nec78k0RecoveryManager.Nec78k0RecoverySession) -> Unit = {},
     onCleanResume78k0Session: (com.example.util.Nec78k0RecoveryManager.Nec78k0RecoverySession) -> Unit = {},
@@ -139,6 +149,8 @@ fun ProgrammerStep3Flasher(
     onResumeFromWatchdog: () -> Unit = {},
     onCleanResumeFromWatchdog: () -> Unit = {},
     onDismissWatchdog: () -> Unit = {},
+    onResumeUniversalCheckpoint: (UniversalCheckpointManager.UniversalCheckpoint) -> Unit = {},
+    onDismissUniversalCheckpoint: (UniversalCheckpointManager.UniversalCheckpoint) -> Unit = {},
     keepScreenOnEnabled: Boolean = true,
     onToggleKeepScreenOn: (Boolean) -> Unit = {},
     modifier: Modifier = Modifier
@@ -147,6 +159,8 @@ fun ProgrammerStep3Flasher(
     val chipConfig = mcu.chipConfig
     val is78k0 = mcu.is78k0Flmd0Mode()
     val scrollState = rememberScrollState()
+    val isNeu = LocalIsSoftNeumorphismTheme.current
+    val isDark = LocalIsDarkTheme.current
 
     val openFirmwareLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
@@ -181,31 +195,14 @@ fun ProgrammerStep3Flasher(
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        if (state.pendingRescueSessions.isNotEmpty()) {
-            Nec78k0RescueBannerCard(
-                sessions = state.pendingRescueSessions,
-                isBusy = state.isBusy,
-                onRescueClick = onRescue78k0Session,
-                onCleanResumeClick = onCleanResume78k0Session,
-                onDismissClick = onDismiss78k0Session
-            )
-        }
-
-        if (!state.watchdogAlertMessage.isNullOrBlank()) {
-            Nec78k0WatchdogAlertCard(
-                alertMessage = state.watchdogAlertMessage,
-                isBusy = state.isBusy,
-                onResumeClick = onResumeFromWatchdog,
-                onCleanResumeClick = onCleanResumeFromWatchdog,
-                onDismiss = onDismissWatchdog
-            )
-        }
-
         // 1. Target MCU & USB Connection Card
         Card(
-            shape = RoundedCornerShape(18.dp),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f))
+            shape = RoundedCornerShape(if (isNeu) 20.dp else 18.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = if (isNeu) Color.Transparent else MaterialTheme.colorScheme.surface
+            ),
+            border = if (isNeu) null else BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f)),
+            modifier = if (isNeu) Modifier.neuCard(cornerRadius = 20.dp, isDark = isDark) else Modifier
         ) {
             Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Row(
@@ -275,36 +272,43 @@ fun ProgrammerStep3Flasher(
 
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Button(
-                        onClick = onToggleConnection,
-                        enabled = !state.isBusy,
+                    Surface(
                         shape = RoundedCornerShape(12.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = if (state.isConnected) Color(0xFFEF4444) else MaterialTheme.colorScheme.primary
-                        ),
+                        color = if (isNeu) Color.Transparent else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
                         modifier = Modifier
                             .weight(1f)
-                            .heightIn(min = 48.dp)
-                            .testTag("usb_connect_toggle_button")
+                            .then(if (isNeu) Modifier.neuRecessed(cornerRadius = 14.dp, isDark = isDark) else Modifier)
                     ) {
-                        Icon(Icons.Default.Power, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(
-                            text = if (state.isConnected) "قطع الاتصال" else "اتصال USB OTG",
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 13.sp,
-                            maxLines = 1
-                        )
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 10.dp, vertical = 4.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "اتصال USB OTG",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 12.sp,
+                                color = if (state.isConnected) Color(0xFF10B981) else MaterialTheme.colorScheme.onSurface
+                            )
+                            Switch(
+                                checked = state.isConnected,
+                                onCheckedChange = { onToggleConnection() },
+                                enabled = !state.isBusy,
+                                modifier = Modifier.testTag("usb_connect_toggle_switch")
+                            )
+                        }
                     }
 
                     BaudRateSelector(
                         selectedBaud = state.baudRate,
                         enabled = !state.isConnected && !state.isBusy && !is78k0,
                         onSelect = onBaudRateChange,
-                        modifier = Modifier.weight(0.85f)
+                        modifier = Modifier.weight(0.95f)
                     )
                 }
 
@@ -444,22 +448,17 @@ fun ProgrammerStep3Flasher(
                     onEraseModeChange = onEraseModeChange
                 )
             }
-            ProtocolFamilyType.SEVEN_EIGHT_K -> {
-                if (is78k0) {
-                    Nec78k0ZeroTouchStatusCard()
-                    state.nec78k0DetectedInfo?.let { info ->
-                        Nec78k0AutoDetectInfoCard(info = info)
-                    }
-                }
-            }
             else -> Unit
         }
 
         // 3. Firmware File Loader & Export Card (Clean non-wrapping button rows)
         Card(
-            shape = RoundedCornerShape(18.dp),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f))
+            shape = RoundedCornerShape(if (isNeu) 20.dp else 18.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = if (isNeu) Color.Transparent else MaterialTheme.colorScheme.surface
+            ),
+            border = if (isNeu) null else BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f)),
+            modifier = if (isNeu) Modifier.neuCard(cornerRadius = 20.dp, isDark = isDark) else Modifier
         ) {
             Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
@@ -633,11 +632,14 @@ fun ProgrammerStep3Flasher(
             onJumpToDataClick = onJumpToFirstData
         )
 
-        // 5. Flash Operations Grid + Linear Progress Bar with Percentage & KB Counter
+        // 5. Flash Operations Grid + Linear Progress Bar with Percentage, KB Counter, ETA & Checkpoint Banner
         Card(
-            shape = RoundedCornerShape(18.dp),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f))
+            shape = RoundedCornerShape(if (isNeu) 20.dp else 18.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = if (isNeu) Color.Transparent else MaterialTheme.colorScheme.surface
+            ),
+            border = if (isNeu) null else BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f)),
+            modifier = if (isNeu) Modifier.neuCard(cornerRadius = 20.dp, isDark = isDark) else Modifier
         ) {
             Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text(
@@ -693,6 +695,59 @@ fun ProgrammerStep3Flasher(
                         testTag = "flash_verify_button",
                         modifier = Modifier.weight(1f)
                     )
+                }
+
+                if (state.isBusy) {
+                    val pauseColor = if (state.isPaused) Color(0xFF10B981) else Color(0xFFF59E0B)
+                    if (isNeu) {
+                        NeuPillButton(
+                            onClick = onTogglePauseResume,
+                            isActive = state.isPaused,
+                            isDark = isDark,
+                            accentColor = pauseColor,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 48.dp)
+                                .testTag("flash_pause_resume_button")
+                        ) {
+                            Icon(
+                                imageVector = if (state.isPaused) Icons.Default.PlayArrow else Icons.Default.Pause,
+                                contentDescription = null,
+                                tint = pauseColor,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = if (state.isPaused) "استكمال العملية (Resume)" else "إيقاف مؤقت (Pause)",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp,
+                                color = pauseColor
+                            )
+                        }
+                    } else {
+                        OutlinedButton(
+                            onClick = onTogglePauseResume,
+                            shape = RoundedCornerShape(14.dp),
+                            border = BorderStroke(1.2.dp, pauseColor),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = pauseColor),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 48.dp)
+                                .testTag("flash_pause_resume_button")
+                        ) {
+                            Icon(
+                                imageVector = if (state.isPaused) Icons.Default.PlayArrow else Icons.Default.Pause,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = if (state.isPaused) "استكمال العملية (Resume)" else "إيقاف مؤقت (Pause)",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp
+                            )
+                        }
+                    }
                 }
 
                 if (mcu.protocolType == ProtocolFamilyType.R8C_M16C || is78k0) {
@@ -890,6 +945,28 @@ fun ProgrammerStep3Flasher(
                                     .testTag("flash_linear_progress_bar")
                             )
 
+                            if (state.isBusy && state.etaRemainingText.isNotBlank()) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = if (state.isPaused) "الحالة: متوقف مؤقتاً" else "جاري العمل في الخلفية...",
+                                        fontSize = 10.5.sp,
+                                        color = if (state.isPaused) Color(0xFFF59E0B) else MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    Text(
+                                        text = "الوقت المتبقي: ${state.etaRemainingText}",
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        fontFamily = FontFamily.Monospace,
+                                        color = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.testTag("flash_eta_text")
+                                    )
+                                }
+                            }
+
                             if (!state.isBusy && state.progress >= 1f && state.loadedFormat == "Chip Read") {
                                 Button(
                                     onClick = { saveBinLauncher.launch("${mcu.partNumber}_dump.bin") },
@@ -911,6 +988,113 @@ fun ProgrammerStep3Flasher(
                                         fontSize = 13.sp,
                                         fontWeight = FontWeight.Bold
                                     )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Compact Checkpoint / Disconnect Resume Banner directly below Progress Bar
+                val activeCp = state.activeUniversalCheckpoint
+                val active78k0Session = state.pendingRescueSessions.firstOrNull()
+                val hasWatchdogAlert = !state.watchdogAlertMessage.isNullOrBlank()
+                if (!state.isBusy && (activeCp != null || active78k0Session != null || hasWatchdogAlert)) {
+                    val bannerTitle: String
+                    val bannerDetail: String
+                    val onResumeAction: () -> Unit
+                    val onDismissAction: () -> Unit
+                    if (activeCp != null) {
+                        val opAr = if (activeCp.operation == UniversalCheckpointManager.OperationKind.READ) "القراءة" else "الكتابة"
+                        bannerTitle = "تم حفظ نقطة استكمال ($opAr ${activeCp.partNumber})"
+                        bannerDetail = "توقف عند ${activeCp.progressPercent}% (كتلة/صفحة ${activeCp.blockOrPageIndex}/${activeCp.totalBlocksOrPages}) — استكمال آمن دون مسح ما سبق"
+                        onResumeAction = { onResumeUniversalCheckpoint(activeCp) }
+                        onDismissAction = { onDismissUniversalCheckpoint(activeCp) }
+                    } else if (active78k0Session != null) {
+                        bannerTitle = "تم حفظ نقطة استكمال 78K0 (${active78k0Session.chipName})"
+                        bannerDetail = "الكتل المكتملة: ${active78k0Session.lastCompletedBlock.coerceAtLeast(0)}/${active78k0Session.blockCount} • FullCS=${active78k0Session.fullChecksumHex}"
+                        onResumeAction = { onRescue78k0Session(active78k0Session) }
+                        onDismissAction = { onDismiss78k0Session(active78k0Session) }
+                    } else {
+                        bannerTitle = "توقف مؤقت آمن (يمكن الاستكمال)"
+                        bannerDetail = state.watchdogAlertMessage.orEmpty()
+                        onResumeAction = onResumeFromWatchdog
+                        onDismissAction = onDismissWatchdog
+                    }
+
+                    Surface(
+                        shape = RoundedCornerShape(14.dp),
+                        color = Color(0xFFF59E0B).copy(alpha = 0.10f),
+                        border = BorderStroke(1.dp, Color(0xFFF59E0B).copy(alpha = 0.45f)),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("checkpoint_resume_banner")
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(10.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = bannerTitle,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color(0xFFF59E0B)
+                                    )
+                                    Text(
+                                        text = bannerDetail,
+                                        fontSize = 10.5.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        lineHeight = 14.sp
+                                    )
+                                }
+                                IconButton(
+                                    onClick = onDismissAction,
+                                    modifier = Modifier.size(36.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Close,
+                                        contentDescription = "تجاهل وحذف نقطة الاستكمال",
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                }
+                            }
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Button(
+                                    onClick = onResumeAction,
+                                    shape = RoundedCornerShape(12.dp),
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = Color(0xFF10B981),
+                                        contentColor = Color.White
+                                    ),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .heightIn(min = 48.dp)
+                                        .testTag("resume_checkpoint_button")
+                                ) {
+                                    Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("استكمال العملية", fontSize = 12.5.sp, fontWeight = FontWeight.Bold)
+                                }
+                                if (hasWatchdogAlert || active78k0Session != null) {
+                                    OutlinedButton(
+                                        onClick = {
+                                            if (active78k0Session != null) onCleanResume78k0Session(active78k0Session)
+                                            else onCleanResumeFromWatchdog()
+                                        },
+                                        shape = RoundedCornerShape(12.dp),
+                                        modifier = Modifier.heightIn(min = 48.dp)
+                                    ) {
+                                        Text("من بداية الكتلة", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                                    }
                                 }
                             }
                         }
@@ -1662,20 +1846,49 @@ private fun FlashActionButton(
     testTag: String,
     modifier: Modifier = Modifier
 ) {
-    Button(
-        onClick = onClick,
-        enabled = enabled,
-        shape = RoundedCornerShape(14.dp),
-        colors = ButtonDefaults.buttonColors(
-            containerColor = color,
-            contentColor = Color.White
-        ),
-        modifier = modifier
-            .heightIn(min = 50.dp)
-            .testTag(testTag)
-    ) {
-        Icon(imageVector = icon, contentDescription = null, modifier = Modifier.size(18.dp))
-        Spacer(modifier = Modifier.width(6.dp))
-        Text(text = title, fontWeight = FontWeight.Bold, fontSize = 12.sp, maxLines = 1)
+    val isNeu = LocalIsSoftNeumorphismTheme.current
+    val isDark = LocalIsDarkTheme.current
+    if (isNeu) {
+        NeuPillButton(
+            onClick = onClick,
+            enabled = enabled,
+            isDark = isDark,
+            accentColor = color,
+            modifier = modifier
+                .heightIn(min = 50.dp)
+                .testTag(testTag)
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = if (enabled) color else color.copy(alpha = 0.45f),
+                modifier = Modifier.size(18.dp)
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+            Text(
+                text = title,
+                fontWeight = FontWeight.Bold,
+                fontSize = 12.sp,
+                color = if (enabled) color else color.copy(alpha = 0.45f),
+                maxLines = 1
+            )
+        }
+    } else {
+        Button(
+            onClick = onClick,
+            enabled = enabled,
+            shape = RoundedCornerShape(14.dp),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = color,
+                contentColor = Color.White
+            ),
+            modifier = modifier
+                .heightIn(min = 50.dp)
+                .testTag(testTag)
+        ) {
+            Icon(imageVector = icon, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(modifier = Modifier.width(6.dp))
+            Text(text = title, fontWeight = FontWeight.Bold, fontSize = 12.sp, maxLines = 1)
+        }
     }
 }

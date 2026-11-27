@@ -60,14 +60,23 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.ui.screens.programmer.ProgrammerStep1McuSelect
 import com.example.ui.screens.programmer.ProgrammerStep2Pinout
 import com.example.ui.screens.programmer.ProgrammerStep3Flasher
+import com.example.ui.theme.LocalIsDarkTheme
+import com.example.ui.theme.LocalIsSoftNeumorphismTheme
+import com.example.ui.theme.NeuTokens
+import com.example.ui.theme.neuCard
+import com.example.ui.theme.neuRecessed
 import com.example.ui.viewmodel.McuProgrammerViewModel
 
 @Composable
 fun McuProgrammerScreen(
     onBackClick: () -> Unit,
     modifier: Modifier = Modifier,
+    isAdmin: Boolean = false,
     programmerViewModel: McuProgrammerViewModel = viewModel()
 ) {
+    LaunchedEffect(isAdmin) {
+        programmerViewModel.setIsAdmin(isAdmin)
+    }
     val state by programmerViewModel.uiState.collectAsState()
     val context = LocalContext.current
     var keepScreenOnEnabled by remember { mutableStateOf(true) }
@@ -117,28 +126,44 @@ fun McuProgrammerScreen(
         handleStepBack()
     }
 
+    val isNeu = LocalIsSoftNeumorphismTheme.current
+    val isDark = LocalIsDarkTheme.current
+
     Column(
         modifier = modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
+            .background(if (isNeu) NeuTokens.bg(isDark) else MaterialTheme.colorScheme.background)
             .testTag("mcu_programmer_screen")
     ) {
         // Curved Professional Header with 3-Step Indicator
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .clip(RoundedCornerShape(bottomStart = 24.dp, bottomEnd = 24.dp))
-                .background(
-                    Brush.verticalGradient(
-                        colors = listOf(
-                            MaterialTheme.colorScheme.primary,
-                            MaterialTheme.colorScheme.primaryContainer
-                        )
-                    )
+                .then(
+                    if (isNeu) {
+                        Modifier
+                            .padding(horizontal = 12.dp, vertical = 6.dp)
+                            .statusBarsPadding()
+                            .neuCard(cornerRadius = 24.dp, isDark = isDark)
+                            .padding(horizontal = 16.dp, vertical = 12.dp)
+                    } else {
+                        Modifier
+                            .clip(RoundedCornerShape(bottomStart = 24.dp, bottomEnd = 24.dp))
+                            .background(
+                                Brush.verticalGradient(
+                                    colors = listOf(
+                                        MaterialTheme.colorScheme.primary,
+                                        MaterialTheme.colorScheme.primaryContainer
+                                    )
+                                )
+                            )
+                            .statusBarsPadding()
+                            .padding(horizontal = 16.dp, vertical = 12.dp)
+                    }
                 )
-                .statusBarsPadding()
-                .padding(horizontal = 16.dp, vertical = 12.dp)
         ) {
+            val headerContentColor = if (isNeu) MaterialTheme.colorScheme.onSurface else Color.White
+            val headerSubColor = if (isNeu) MaterialTheme.colorScheme.onSurfaceVariant else Color.White.copy(alpha = 0.85f)
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -149,13 +174,16 @@ fun McuProgrammerScreen(
                             onClick = handleStepBack,
                             modifier = Modifier
                                 .size(40.dp)
-                                .background(Color.White.copy(alpha = 0.16f), CircleShape)
+                                .then(
+                                    if (isNeu) Modifier.neuRecessed(cornerRadius = 20.dp, isDark = isDark)
+                                    else Modifier.background(Color.White.copy(alpha = 0.16f), CircleShape)
+                                )
                                 .testTag("mcu_programmer_back_button")
                         ) {
                             Icon(
                                 imageVector = Icons.AutoMirrored.Filled.ArrowForward,
                                 contentDescription = "الخطوة السابقة",
-                                tint = Color.White
+                                tint = if (isNeu) MaterialTheme.colorScheme.primary else Color.White
                             )
                         }
                         Spacer(modifier = Modifier.width(10.dp))
@@ -163,13 +191,16 @@ fun McuProgrammerScreen(
                         Box(
                             modifier = Modifier
                                 .size(40.dp)
-                                .background(Color.White.copy(alpha = 0.16f), CircleShape),
+                                .then(
+                                    if (isNeu) Modifier.neuRecessed(cornerRadius = 20.dp, isDark = isDark)
+                                    else Modifier.background(Color.White.copy(alpha = 0.16f), CircleShape)
+                                ),
                             contentAlignment = Alignment.Center
                         ) {
                             Icon(
                                 imageVector = Icons.Default.Memory,
                                 contentDescription = "مبرمجة المعالجات",
-                                tint = Color.White
+                                tint = if (isNeu) MaterialTheme.colorScheme.primary else Color.White
                             )
                         }
                         Spacer(modifier = Modifier.width(10.dp))
@@ -180,19 +211,19 @@ fun McuProgrammerScreen(
                             text = "مبرمجة المعالجات الاحترافية",
                             style = MaterialTheme.typography.titleMedium.copy(
                                 fontWeight = FontWeight.Bold,
-                                color = Color.White
+                                color = headerContentColor
                             ),
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
                         Text(
                             text = when (state.currentStep) {
-                                1 -> "الخطوة 1: اختيار المعالج أو الفحص التلقائي"
-                                2 -> "الخطوة 2: اختيار المبرمجة ومخطط التوصيل"
+                                1 -> "الخطوة 1: اختيار المعالج والبحث الذكي"
+                                2 -> "الخطوة 2: اختيار المبرمجة"
                                 else -> "الخطوة 3: واجهة البرمجة وقراءة/كتابة الفلاش"
                             },
                             fontSize = 11.sp,
-                            color = Color.White.copy(alpha = 0.85f)
+                            color = headerSubColor
                         )
                     }
                 }
@@ -249,8 +280,8 @@ fun McuProgrammerScreen(
                     onSelectSubFamily = programmerViewModel::selectSubFamily,
                     onSelectPartNumber = programmerViewModel::selectPartNumber,
                     onToggleDtrRtsReset = programmerViewModel::setEnableDtrRtsReset,
-                    onAutoDetectChipId = programmerViewModel::autoDetectChipId,
-                    onResetUniversalAutoDetect = programmerViewModel::clearFamilySelectionForUniversalAutoDetect,
+                    onToggleManufacturerLock = programmerViewModel::toggleManufacturerLock,
+                    onToggleMainFamilyLock = programmerViewModel::toggleMainFamilyLock,
                     onNextStep = { programmerViewModel.goToStep(2) }
                 )
                 2 -> ProgrammerStep2Pinout(
@@ -283,6 +314,7 @@ fun McuProgrammerScreen(
                     onWriteFlash = programmerViewModel::writeChipFlash,
                     onEraseFlash = programmerViewModel::eraseChipFlash,
                     onVerifyFlash = programmerViewModel::verifyChipFlash,
+                    onTogglePauseResume = programmerViewModel::togglePauseResume,
                     onClearLogs = programmerViewModel::clearLogs,
                     onRescue78k0Session = { session -> programmerViewModel.rescueOrResume78k0Flash(session) },
                     onCleanResume78k0Session = { session -> programmerViewModel.reset78k0BlockOffsetAndResume(session) },
@@ -290,6 +322,8 @@ fun McuProgrammerScreen(
                     onResumeFromWatchdog = { programmerViewModel.rescueOrResume78k0Flash(null) },
                     onCleanResumeFromWatchdog = { programmerViewModel.reset78k0BlockOffsetAndResume(null) },
                     onDismissWatchdog = programmerViewModel::dismissWatchdogAlert,
+                    onResumeUniversalCheckpoint = programmerViewModel::resumeUniversalCheckpoint,
+                    onDismissUniversalCheckpoint = programmerViewModel::dismissUniversalCheckpoint,
                     keepScreenOnEnabled = keepScreenOnEnabled,
                     onToggleKeepScreenOn = { keepScreenOnEnabled = it }
                 )
@@ -314,22 +348,35 @@ private fun StepPill(
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val isNeu = LocalIsSoftNeumorphismTheme.current
+    val isDark = LocalIsDarkTheme.current
     val bgColor = when {
+        isNeu -> NeuTokens.surface(isDark)
         isActive -> Color.White
         isCompleted -> Color(0xFF10B981).copy(alpha = 0.25f)
         else -> Color.White.copy(alpha = 0.14f)
     }
     val textColor = when {
+        isNeu && isActive -> MaterialTheme.colorScheme.primary
+        isNeu && isCompleted -> Color(0xFF10B981)
+        isNeu -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = if (enabled) 1f else 0.45f)
         isActive -> MaterialTheme.colorScheme.primary
         isCompleted -> Color(0xFF6EE7B7)
         else -> Color.White.copy(alpha = if (enabled) 0.9f else 0.45f)
     }
 
     Surface(
-        shape = RoundedCornerShape(12.dp),
-        color = bgColor,
-        border = if (isCompleted && !isActive) BorderStroke(1.dp, Color(0xFF10B981)) else null,
-        modifier = modifier.clickable(enabled = enabled, onClick = onClick)
+        shape = RoundedCornerShape(if (isNeu) 50.dp else 12.dp),
+        color = if (isNeu) Color.Transparent else bgColor,
+        border = if (isCompleted && !isActive && !isNeu) BorderStroke(1.dp, Color(0xFF10B981)) else null,
+        modifier = modifier
+            .then(
+                if (isNeu) {
+                    if (isActive) Modifier.neuRecessed(cornerRadius = 50.dp, isDark = isDark, accentBorder = MaterialTheme.colorScheme.primary)
+                    else Modifier.neuCard(cornerRadius = 50.dp, isDark = isDark)
+                } else Modifier
+            )
+            .clickable(enabled = enabled, onClick = onClick)
     ) {
         Row(
             modifier = Modifier.padding(horizontal = 8.dp, vertical = 7.dp),

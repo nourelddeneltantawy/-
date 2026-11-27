@@ -86,6 +86,8 @@ object Nec78k0FlashWriterEngine {
         clockFreqMhzText: String,
         catalog: List<McuProcessor>,
         preDetectedInfo: Nec78k0ProtocolEngine.Nec78k0DetectedInfo?,
+        resumeStartBlock: Int = 0,
+        fileName: String = "",
         onDetectedInfo: (Nec78k0ProtocolEngine.Nec78k0DetectedInfo) -> Unit,
         onLog: (String) -> Unit,
         onProgress: (bytesDone: Int, totalBytes: Int, label: String) -> Unit
@@ -107,11 +109,12 @@ object Nec78k0FlashWriterEngine {
 
         val totalSize = info.flashSizeBytes
         val blockCount = info.blockCount.coerceAtLeast(1)
+        val startBlockIdx = resumeStartBlock.coerceIn(0, blockCount - 1)
         val paddedFirmware = preparePaddedFirmwareBuffer(firmwareBytes, firmwareStartAddress, totalSize)
         val expectedSwChecksum = Nec78k0Block0Reconstructor.compute78k0Checksum16(paddedFirmware)
 
         var flashWasJustErased = false
-        if (autoEraseBeforeWrite) {
+        if (autoEraseBeforeWrite && startBlockIdx == 0) {
             onLog("مرحلة 1 (Write): تنفيذ مسح الفلاش قبل الكتابة على ${info.deviceName} (${blockCount} بلوك × 1 KB)...")
             val useBlockErase = info.prefersBlockErase0x22 ||
                 eraseMode.contains("بلوك", ignoreCase = true) ||
@@ -129,14 +132,35 @@ object Nec78k0FlashWriterEngine {
                 return FlashOperationResult.Failure(eraseErr)
             }
             flashWasJustErased = true
+        } else if (startBlockIdx > 0) {
+            onLog("استكمال كتابة 78K0 بأمان من البلوك ${startBlockIdx + 1}/$blockCount بدون إعادة مسح البلوكات المكتوبة...")
         }
 
         var writtenBlocks = 0
         var skippedBlocks = 0
         onLog("مرحلة 2 (Write): بدء شحن السوفت وير على $blockCount بلوك (1024 Byte/Block)...")
 
-        for (blockIdx in 0 until blockCount) {
+        for (blockIdx in startBlockIdx until blockCount) {
+            ProgrammerForegroundService.awaitIfPaused()
             if (!transport.isDeviceAttached()) {
+                UniversalCheckpointManager.saveCheckpoint(
+                    context,
+                    UniversalCheckpointManager.UniversalCheckpoint(
+                        partNumber = selectedChip.partNumber,
+                        mainFamily = selectedChip.mainFamily,
+                        protocolTypeName = selectedChip.protocolType.name,
+                        operation = UniversalCheckpointManager.OperationKind.WRITE,
+                        completedBytes = (blockIdx * BLOCK_SIZE).coerceAtMost(totalSize),
+                        totalBytes = totalSize,
+                        blockOrPageIndex = blockIdx,
+                        totalBlocksOrPages = blockCount,
+                        fileName = fileName,
+                        baudRate = 9600,
+                        flashBaseAddress = firmwareStartAddress,
+                        updatedAtMs = System.currentTimeMillis()
+                    ),
+                    paddedFirmware
+                )
                 return FlashOperationResult.Failure(
                     disconnectMessage("الكتابة", blockIdx, blockCount, "فُصل كابل USB OTG عن الهاتف")
                 )
@@ -187,6 +211,24 @@ object Nec78k0FlashWriterEngine {
                     return FlashOperationResult.Failure(progOutcome.message)
                 }
                 is Nec78k0ProtocolEngine.ProgramOutcome.TransportFailure -> {
+                    UniversalCheckpointManager.saveCheckpoint(
+                        context,
+                        UniversalCheckpointManager.UniversalCheckpoint(
+                            partNumber = selectedChip.partNumber,
+                            mainFamily = selectedChip.mainFamily,
+                            protocolTypeName = selectedChip.protocolType.name,
+                            operation = UniversalCheckpointManager.OperationKind.WRITE,
+                            completedBytes = (blockIdx * BLOCK_SIZE).coerceAtMost(totalSize),
+                            totalBytes = totalSize,
+                            blockOrPageIndex = blockIdx,
+                            totalBlocksOrPages = blockCount,
+                            fileName = fileName,
+                            baudRate = 9600,
+                            flashBaseAddress = firmwareStartAddress,
+                            updatedAtMs = System.currentTimeMillis()
+                        ),
+                        paddedFirmware
+                    )
                     val failureText = if (progOutcome.isUsbDetached) {
                         disconnectMessage("الكتابة", blockIdx, blockCount, progOutcome.reason)
                     } else {
@@ -198,6 +240,26 @@ object Nec78k0FlashWriterEngine {
 
             writtenBlocks++
             val done = minOf((blockIdx + 1) * BLOCK_SIZE, totalSize)
+            if ((blockIdx + 1) % 4 == 0 && blockIdx + 1 < blockCount) {
+                UniversalCheckpointManager.saveCheckpoint(
+                    context,
+                    UniversalCheckpointManager.UniversalCheckpoint(
+                        partNumber = selectedChip.partNumber,
+                        mainFamily = selectedChip.mainFamily,
+                        protocolTypeName = selectedChip.protocolType.name,
+                        operation = UniversalCheckpointManager.OperationKind.WRITE,
+                        completedBytes = done,
+                        totalBytes = totalSize,
+                        blockOrPageIndex = blockIdx + 1,
+                        totalBlocksOrPages = blockCount,
+                        fileName = fileName,
+                        baudRate = 9600,
+                        flashBaseAddress = firmwareStartAddress,
+                        updatedAtMs = System.currentTimeMillis()
+                    ),
+                    paddedFirmware
+                )
+            }
             onProgress(
                 done,
                 totalSize,
@@ -207,6 +269,7 @@ object Nec78k0FlashWriterEngine {
                 onLog(String.format(Locale.US, "تم حرق البلوك %d/%d (0x%06X)", blockIdx + 1, blockCount, startAddr))
             }
         }
+        UniversalCheckpointManager.clearCheckpoint(context, selectedChip.partNumber)
 
         // Optional Auto-Verify immediately after writing
         var verifiedBlocks = 0
@@ -432,6 +495,7 @@ object Nec78k0FlashWriterEngine {
 
         onLog("بدء مسح الفلاش بالتتابع عبر Block Erase (0x22) لـ $blockCount بلوك (1024 Byte/Block)...")
         for (blockIdx in 0 until blockCount) {
+            ProgrammerForegroundService.awaitIfPaused()
             if (!transport.isDeviceAttached()) {
                 return disconnectMessage("المسح", blockIdx, blockCount, "فُصل كابل USB OTG عن الهاتف")
             }
@@ -491,6 +555,7 @@ object Nec78k0FlashWriterEngine {
     ): String? {
         var verified = 0
         for (blockIdx in 0 until blockCount) {
+            ProgrammerForegroundService.awaitIfPaused()
             if (!transport.isDeviceAttached()) {
                 return disconnectMessage("المطابقة", blockIdx, blockCount, "فُصل كابل USB OTG عن الهاتف")
             }

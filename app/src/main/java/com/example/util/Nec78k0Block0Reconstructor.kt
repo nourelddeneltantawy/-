@@ -101,22 +101,15 @@ object Nec78k0Block0Reconstructor {
 
     /**
      * Extracts the original flash byte (0x00..0xFF) after zeroing a single byte at [offset]
-     * and reading CS_prev -> CS_curr via 0xB0 (16-bit Little-Endian Word-Sum):
-     * - Even offset (`offset % 2 == 0`): `(CS_curr - CS_prev + 0x10000) & 0xFF`
-     * - Odd offset (`offset % 2 == 1`):
-     *   `lowCarry = if ((CS_curr & 0xFF) < (CS_prev & 0xFF)) 1 else 0`
-     *   `(((CS_curr >> 8) & 0xFF) - ((CS_prev >> 8) & 0xFF) + lowCarry + 0x100) & 0xFF`
+     * and reading CS_prev -> CS_curr via 0xB0 (8-bit Byte-Sum Two's Complement for ALL offsets):
+     * - If CS_curr == CS_prev -> 0x00
+     * - Otherwise (both even and odd offsets): `(CS_curr - CS_prev + 0x10000) & 0xFF`
      */
     fun extractDifferentialByteFromChecksumDelta(csPrev: Int, csCurr: Int, offset: Int): Int {
         val prev = csPrev and 0xFFFF
         val curr = csCurr and 0xFFFF
         if (curr == prev) return 0x00
-        return if ((offset and 1) == 0) {
-            (curr - prev + 0x10000) and 0xFF
-        } else {
-            val lowCarry = if ((curr and 0xFF) < (prev and 0xFF)) 1 else 0
-            (((curr ushr 8) and 0xFF) - ((prev ushr 8) and 0xFF) + lowCarry + 0x100) and 0xFF
-        }
+        return (curr - prev + 0x10000) and 0xFF
     }
 
     /**

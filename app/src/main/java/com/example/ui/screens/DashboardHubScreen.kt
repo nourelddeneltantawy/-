@@ -44,6 +44,11 @@ import androidx.compose.material.icons.filled.Cable
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.CleaningServices
 import com.example.ui.theme.LocalIsClayTheme
+import com.example.ui.theme.LocalIsDarkTheme
+import com.example.ui.theme.LocalIsSoftNeumorphismTheme
+import com.example.ui.theme.NeuTokens
+import com.example.ui.theme.neuCard
+import com.example.ui.theme.neuRecessed
 import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.ContactPhone
 import androidx.compose.material.icons.filled.Edit
@@ -211,7 +216,11 @@ fun DashboardHubScreen(
         )
     )
 
+    val isNeu = LocalIsSoftNeumorphismTheme.current
+    val isDark = LocalIsDarkTheme.current
+
     Scaffold(
+        containerColor = if (isNeu) NeuTokens.bg(isDark) else MaterialTheme.colorScheme.background,
         modifier = modifier.fillMaxSize().testTag("dashboard_hub_screen")
     ) { innerPadding ->
         Column(
@@ -220,34 +229,46 @@ fun DashboardHubScreen(
                 .padding(bottom = innerPadding.calculateBottomPadding())
         ) {
             val isClay = LocalIsClayTheme.current
-            // TOP HEADER: Curved gradient banner matching the user's screenshot
+            val lightHeader = isClay || isNeu
+            // TOP HEADER: Curved gradient or Soft Neumorphism banner
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(bottomStart = 32.dp, bottomEnd = 32.dp))
-                    .background(
-                        if (isClay) {
-                            Brush.verticalGradient(
-                                listOf(
-                                    Color(0xFFFFFFFF),
-                                    Color(0xFFEFF2F6)
-                                )
-                            )
+                    .then(
+                        if (isNeu) {
+                            Modifier
+                                .padding(horizontal = 14.dp)
+                                .padding(top = innerPadding.calculateTopPadding() + 8.dp)
+                                .neuCard(cornerRadius = 26.dp, isDark = isDark)
+                                .padding(vertical = 18.dp, horizontal = 18.dp)
                         } else {
-                            Brush.verticalGradient(
-                                listOf(
-                                    MaterialTheme.colorScheme.primary,
-                                    MaterialTheme.colorScheme.primaryContainer
+                            Modifier
+                                .clip(RoundedCornerShape(bottomStart = 32.dp, bottomEnd = 32.dp))
+                                .background(
+                                    if (isClay) {
+                                        Brush.verticalGradient(
+                                            listOf(
+                                                Color(0xFFFFFFFF),
+                                                Color(0xFFEFF2F6)
+                                            )
+                                        )
+                                    } else {
+                                        Brush.verticalGradient(
+                                            listOf(
+                                                MaterialTheme.colorScheme.primary,
+                                                MaterialTheme.colorScheme.primaryContainer
+                                            )
+                                        )
+                                    }
                                 )
-                            )
+                                .then(
+                                    if (isClay) {
+                                        Modifier.border(1.2.dp, Color(0xFFD6DFEA), RoundedCornerShape(bottomStart = 32.dp, bottomEnd = 32.dp))
+                                    } else Modifier
+                                )
+                                .padding(top = innerPadding.calculateTopPadding() + 8.dp, bottom = 24.dp, start = 20.dp, end = 20.dp)
                         }
                     )
-                    .then(
-                        if (isClay) {
-                            Modifier.border(1.2.dp, Color(0xFFD6DFEA), RoundedCornerShape(bottomStart = 32.dp, bottomEnd = 32.dp))
-                        } else Modifier
-                    )
-                    .padding(top = innerPadding.calculateTopPadding() + 8.dp, bottom = 24.dp, start = 20.dp, end = 20.dp)
             ) {
                 Column(modifier = Modifier.fillMaxWidth()) {
                 Row(
@@ -268,7 +289,7 @@ fun DashboardHubScreen(
                             modifier = Modifier
                                 .size(48.dp)
                                 .clip(CircleShape)
-                                .border(2.dp, if (isClay) Color(0xFFD6DFEA) else Color.White.copy(alpha = 0.8f), CircleShape)
+                                .border(2.dp, if (lightHeader) Color(0xFFD6DFEA) else Color.White.copy(alpha = 0.8f), CircleShape)
                         ) {
                             Image(
                                 painter = painterResource(id = R.drawable.logo_albaraa),
@@ -282,14 +303,14 @@ fun DashboardHubScreen(
                             Text(
                                 text = "مرحباً بك،",
                                 style = MaterialTheme.typography.bodyMedium.copy(
-                                    color = if (isClay) Color(0xFF64748B) else Color.White.copy(alpha = 0.85f),
+                                    color = if (isNeu) MaterialTheme.colorScheme.onSurfaceVariant else if (isClay) Color(0xFF64748B) else Color.White.copy(alpha = 0.85f),
                                     fontSize = 13.sp
                                 )
                             )
                             Text(
                                 text = if (isSuperAdmin) "م. البراء إلكترونيك (Super Admin)" else if (isAdmin) "م. البراء إلكترونيك (مشرف)" else if (isGuest) "الزائر الكريم" else (userEmail ?: "مهندس الصيانة"),
                                 style = MaterialTheme.typography.titleLarge.copy(
-                                    color = if (isClay) Color(0xFF0F172A) else Color.White,
+                                    color = if (isNeu) MaterialTheme.colorScheme.onSurface else if (isClay) Color(0xFF0F172A) else Color.White,
                                     fontWeight = FontWeight.Bold,
                                     fontSize = 18.sp
                                 )
@@ -298,12 +319,13 @@ fun DashboardHubScreen(
                     }
 
                     Row(verticalAlignment = Alignment.CenterVertically) {
+                        val actionTint = if (lightHeader) MaterialTheme.colorScheme.primary else Color.White
                         // Check for updates
                         IconButton(onClick = onCheckForUpdates) {
                             Icon(
                                 imageVector = Icons.Default.SystemUpdate,
                                 contentDescription = "التحقق من وجود تحديثات",
-                                tint = if (isClay) MaterialTheme.colorScheme.primary else Color.White
+                                tint = actionTint
                             )
                         }
 
@@ -312,7 +334,7 @@ fun DashboardHubScreen(
                             Icon(
                                 imageVector = Icons.Default.Palette,
                                 contentDescription = "مظهر التطبيق والسمة",
-                                tint = if (isClay) MaterialTheme.colorScheme.primary else Color.White
+                                tint = actionTint
                             )
                         }
 
@@ -322,7 +344,7 @@ fun DashboardHubScreen(
                                 Icon(
                                     imageVector = Icons.Default.CloudUpload,
                                     contentDescription = "نشر تحديث جديد للتطبيق",
-                                    tint = if (isClay) MaterialTheme.colorScheme.primary else Color.White
+                                    tint = actionTint
                                 )
                             }
 
@@ -330,7 +352,7 @@ fun DashboardHubScreen(
                                 Icon(
                                     imageVector = Icons.Default.Tune,
                                     contentDescription = "إدارة الشريط السفلي والتبويبات",
-                                    tint = if (isClay) MaterialTheme.colorScheme.primary else Color.White
+                                    tint = actionTint
                                 )
                             }
                         }
@@ -341,7 +363,7 @@ fun DashboardHubScreen(
                                 Icon(
                                     imageVector = Icons.Default.AdminPanelSettings,
                                     contentDescription = "إدارة المشرفين",
-                                    tint = Color.White
+                                    tint = actionTint
                                 )
                             }
                         }
@@ -351,7 +373,7 @@ fun DashboardHubScreen(
                             Icon(
                                 imageVector = if (isGuest) Icons.AutoMirrored.Filled.Login else Icons.AutoMirrored.Filled.Logout,
                                 contentDescription = if (isGuest) "تسجيل الدخول" else "تسجيل الخروج",
-                                tint = Color.White
+                                tint = actionTint
                             )
                         }
                     }
@@ -508,17 +530,27 @@ fun DashboardHubScreen(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .height(172.dp)
-                                .shadow(
-                                    elevation = 8.dp,
-                                    shape = RoundedCornerShape(24.dp),
-                                    spotColor = Color(0x1F000000),
-                                    ambientColor = Color(0x12000000)
-                                )
-                                .clip(RoundedCornerShape(24.dp))
-                                .border(
-                                    width = 1.2.dp,
-                                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f),
-                                    shape = RoundedCornerShape(24.dp)
+                                .then(
+                                    if (isNeu) {
+                                        Modifier.neuCard(
+                                            cornerRadius = 20.dp,
+                                            isDark = isDark
+                                        )
+                                    } else {
+                                        Modifier
+                                            .shadow(
+                                                elevation = 8.dp,
+                                                shape = RoundedCornerShape(24.dp),
+                                                spotColor = Color(0x1F000000),
+                                                ambientColor = Color(0x12000000)
+                                            )
+                                            .clip(RoundedCornerShape(24.dp))
+                                            .border(
+                                                width = 1.2.dp,
+                                                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f),
+                                                shape = RoundedCornerShape(24.dp)
+                                            )
+                                    }
                                 )
                                 .clickable {
                                     if (!isAdmin && isCategoryLocked) {
@@ -530,9 +562,13 @@ fun DashboardHubScreen(
                                     }
                                 }
                                 .testTag("hub_card_${item.id}"),
-                            shape = RoundedCornerShape(24.dp),
+                            shape = RoundedCornerShape(if (isNeu) 20.dp else 24.dp),
                             colors = CardDefaults.cardColors(
-                                containerColor = if (isCategoryLocked && !isAdmin) MaterialTheme.colorScheme.surface.copy(alpha = 0.6f) else MaterialTheme.colorScheme.surface
+                                containerColor = when {
+                                    isNeu -> Color.Transparent
+                                    isCategoryLocked && !isAdmin -> MaterialTheme.colorScheme.surface.copy(alpha = 0.6f)
+                                    else -> MaterialTheme.colorScheme.surface
+                                }
                             ),
                             elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
                         ) {
@@ -546,11 +582,13 @@ fun DashboardHubScreen(
                                 // Circular Icon / Custom Image Container
                                 Surface(
                                     shape = CircleShape,
-                                    color = item.circleBackground,
+                                    color = if (isNeu) Color.Transparent else item.circleBackground,
                                     modifier = Modifier
                                         .size(62.dp)
-                                        .shadow(4.dp, CircleShape)
-                                        .clip(CircleShape)
+                                        .then(
+                                            if (isNeu) Modifier.neuRecessed(cornerRadius = 31.dp, isDark = isDark)
+                                            else Modifier.shadow(4.dp, CircleShape).clip(CircleShape)
+                                        )
                                 ) {
                                     Box(contentAlignment = Alignment.Center) {
                                         if (finalImageUrl.isNotBlank()) {

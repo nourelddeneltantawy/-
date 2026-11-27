@@ -10,11 +10,25 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Cable
 import androidx.compose.material.icons.filled.GridView
@@ -67,7 +81,12 @@ import com.example.ui.screens.MotorDetailScreen
 import com.example.ui.screens.PartsListScreen
 import com.example.ui.screens.SplashScreen
 import com.example.ui.screens.SystemIntegratorScreen
+import com.example.ui.theme.LocalIsDarkTheme
+import com.example.ui.theme.LocalIsSoftNeumorphismTheme
 import com.example.ui.theme.MyApplicationTheme
+import com.example.ui.theme.NeuTokens
+import com.example.ui.theme.neuCard
+import com.example.ui.theme.neuRecessed
 import com.example.ui.viewmodel.AiStudioViewModel
 import com.example.ui.viewmodel.MotorViewModel
 import com.example.ui.viewmodel.MotorsUiState
@@ -147,8 +166,7 @@ class MainActivity : ComponentActivity() {
             val isDark = when (themeMode) {
                 com.example.util.AppThemeMode.SYSTEM -> isSystemDark
                 com.example.util.AppThemeMode.DARK -> true
-                com.example.util.AppThemeMode.LIGHT,
-                com.example.util.AppThemeMode.CLAY -> false
+                com.example.util.AppThemeMode.LIGHT -> false
             }
 
             MyApplicationTheme(darkTheme = isDark) {
@@ -558,23 +576,129 @@ fun AppContent(
         Screen.COMMUNITY_HUB
     )
 
+    val isNeu = LocalIsSoftNeumorphismTheme.current
+    val isDark = LocalIsDarkTheme.current
+
     Scaffold(
+        containerColor = if (isNeu) NeuTokens.bg(isDark) else MaterialTheme.colorScheme.background,
         bottomBar = {
             if (showBottomBar) {
-                Surface(
-                    shape = RoundedCornerShape(26.dp),
-                    color = MaterialTheme.colorScheme.surface,
-                    tonalElevation = 0.dp,
-                    shadowElevation = 8.dp,
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(start = 12.dp, end = 12.dp, bottom = 10.dp)
-                ) {
-                    NavigationBar(
-                        containerColor = Color.Transparent,
-                        tonalElevation = 0.dp
+                if (isNeu) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .navigationBarsPadding()
+                            .padding(horizontal = 14.dp, vertical = 10.dp)
+                            .neuCard(cornerRadius = 50.dp, isDark = isDark)
+                            .padding(horizontal = 8.dp, vertical = 6.dp),
+                        horizontalArrangement = Arrangement.SpaceEvenly,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
+                        if (isHomeVisible) {
+                            val isHomeHidden = BottomNavManager.isTabHiddenForUsers(BottomNavManager.TAB_HOME)
+                            NeuNavBarPillItem(
+                                selected = false,
+                                icon = Icons.Default.Home,
+                                label = if (isAdmin && isHomeHidden) "البدء (مخفية)" else "البدء",
+                                accentColor = if (isAdmin && isHomeHidden) Color(0xFFEF4444) else MaterialTheme.colorScheme.primary,
+                                isDark = isDark,
+                                onClick = { onOpenWelcomeProfile() },
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                        if (isDashboardVisible) {
+                            NeuNavBarPillItem(
+                                selected = currentScreen == Screen.DASHBOARD,
+                                icon = Icons.Default.GridView,
+                                label = "الأقسام",
+                                accentColor = MaterialTheme.colorScheme.primary,
+                                isDark = isDark,
+                                onClick = { selectTab(Screen.DASHBOARD) },
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                        if (isToolsVisible) {
+                            val locked = isAdmin && isToolsHiddenForUsers
+                            NeuNavBarPillItem(
+                                selected = currentScreen == Screen.TOOLS,
+                                icon = if (locked) Icons.Default.Lock else Icons.Default.Bolt,
+                                label = if (locked) "الأدوات (مغلق)" else "الأدوات",
+                                accentColor = if (locked) Color(0xFFEF4444) else MaterialTheme.colorScheme.primary,
+                                isDark = isDark,
+                                onClick = {
+                                    if (isToolsHiddenForUsers && !isAdmin) {
+                                        Toast.makeText(context, "قسم الأدوات مغلق حالياً من قبل الإدارة للصيانة", Toast.LENGTH_SHORT).show()
+                                    } else {
+                                        selectTab(Screen.TOOLS)
+                                    }
+                                },
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                        if (isMcuProgrammerVisible) {
+                            val locked = isAdmin && isMcuProgrammerHiddenForUsers
+                            NeuNavBarPillItem(
+                                selected = currentScreen == Screen.MCU_PROGRAMMER,
+                                icon = if (locked) Icons.Default.Lock else Icons.Default.Memory,
+                                label = if (locked) "البرمجة (مغلق)" else "البرمجة",
+                                accentColor = if (locked) Color(0xFFEF4444) else MaterialTheme.colorScheme.primary,
+                                isDark = isDark,
+                                onClick = {
+                                    if (isMcuProgrammerHiddenForUsers && !isAdmin) {
+                                        Toast.makeText(context, "قسم البرمجة مغلق حالياً من قبل الإدارة للصيانة", Toast.LENGTH_SHORT).show()
+                                    } else {
+                                        selectTab(Screen.MCU_PROGRAMMER)
+                                    }
+                                },
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                        if (isCommunityVisible) {
+                            val locked = isAdmin && isCommunityHiddenForUsers
+                            NeuNavBarPillItem(
+                                selected = currentScreen == Screen.COMMUNITY_HUB || currentScreen == Screen.MARKETPLACE || currentScreen == Screen.COMMUNITY_GROUP,
+                                icon = if (locked) Icons.Default.Lock else Icons.Default.Groups,
+                                label = if (locked) "المجتمع (مغلق)" else "المجتمع",
+                                accentColor = if (locked) Color(0xFFEF4444) else MaterialTheme.colorScheme.primary,
+                                isDark = isDark,
+                                onClick = {
+                                    if (isCommunityHiddenForUsers && !isAdmin) {
+                                        Toast.makeText(context, "قسم المجتمع مغلق حالياً من قبل الإدارة للصيانة", Toast.LENGTH_SHORT).show()
+                                    } else {
+                                        selectTab(Screen.COMMUNITY_HUB)
+                                    }
+                                },
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                        if (isAdmin) {
+                            NeuNavBarPillItem(
+                                selected = false,
+                                icon = Icons.Default.Tune,
+                                label = "الشريط",
+                                accentColor = Color(0xFFF59E0B),
+                                isDark = isDark,
+                                onClick = { showAdminBottomNavDialog = true },
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    }
+                } else {
+                    Surface(
+                        shape = RoundedCornerShape(26.dp),
+                        color = MaterialTheme.colorScheme.surface,
+                        tonalElevation = 0.dp,
+                        shadowElevation = 8.dp,
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .navigationBarsPadding()
+                            .padding(start = 12.dp, end = 12.dp, bottom = 10.dp)
+                    ) {
+                        NavigationBar(
+                            containerColor = Color.Transparent,
+                            tonalElevation = 0.dp
+                        ) {
                     // Item 1: شاشة البدء
                     if (isHomeVisible) {
                         val isHomeHidden = BottomNavManager.isTabHiddenForUsers(BottomNavManager.TAB_HOME)
@@ -769,6 +893,7 @@ fun AppContent(
             }
         }
     }
+        }
     ) { innerPadding ->
         Box(
             modifier = Modifier
@@ -1057,6 +1182,7 @@ fun AppContent(
 
                     Screen.MCU_PROGRAMMER -> {
                         McuProgrammerScreen(
+                            isAdmin = isAdmin,
                             onBackClick = { selectTab(Screen.DASHBOARD) }
                         )
                     }
@@ -1339,3 +1465,58 @@ fun AppContent(
         }
     }
 }
+
+@Composable
+private fun NeuNavBarPillItem(
+    selected: Boolean,
+    icon: ImageVector,
+    label: String,
+    accentColor: Color,
+    isDark: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Column(
+        modifier = modifier
+            .heightIn(min = 48.dp)
+            .clip(RoundedCornerShape(24.dp))
+            .clickable(onClick = onClick)
+            .padding(vertical = 4.dp, horizontal = 2.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Box(
+            modifier = Modifier
+                .size(width = 46.dp, height = 30.dp)
+                .then(
+                    if (selected) {
+                        Modifier.neuRecessed(
+                            cornerRadius = 15.dp,
+                            isDark = isDark,
+                            accentBorder = accentColor.copy(alpha = 0.45f)
+                        )
+                    } else {
+                        Modifier
+                    }
+                ),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = label,
+                tint = if (selected) accentColor else MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(20.dp)
+            )
+        }
+        Spacer(modifier = Modifier.height(2.dp))
+        Text(
+            text = label,
+            fontSize = 10.sp,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+            color = if (selected) accentColor else MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
+

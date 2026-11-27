@@ -762,6 +762,7 @@ object Nec78k0ProtocolEngine {
 
                         for (byteIdx in startByteIdx until BLOCK_SIZE) {
                             currentCoroutineContext().ensureActive()
+                            ProgrammerForegroundService.awaitIfPaused()
                             if (!transport.isDeviceAttached()) {
                                 System.arraycopy(b0Working, 0, fullBuffer, 0, BLOCK_SIZE)
                                 return pauseWithWatchdog(
@@ -1110,6 +1111,7 @@ object Nec78k0ProtocolEngine {
 
         for (blockIdx in startBlock until blockCount) {
             currentCoroutineContext().ensureActive()
+            ProgrammerForegroundService.awaitIfPaused()
             if (!transport.isDeviceAttached()) {
                 return pauseWithWatchdog(
                     context, session, detectedInfo, fullBuffer, blockIdx - 1, blockCount,
@@ -2317,8 +2319,8 @@ object Nec78k0ProtocolEngine {
     }
 
     /**
-     * Sends an STX data frame ([0x02, LEN, ...DATA..., CS_Data, ETB/ETX]) via Paced 32B/20ms
-     * USB loop (or single write for <= 32B frames), keeps RX Raw Live monitoring active, and
+     * Sends an STX data frame ([0x02, LEN, ...DATA..., CS_Data, ETB/ETX]) via Paced 64B/15ms
+     * USB loop (or single write for <= 64B frames), keeps RX Raw Live monitoring active, and
      * waits up to [timeoutMs] (2500ms) for ACK/status after EVERY page.
      */
     private suspend fun sendStxDataPageAndAwaitAck(
@@ -2340,7 +2342,7 @@ object Nec78k0ProtocolEngine {
             onLog(
                 String.format(
                     Locale.US,
-                    "TX %dB (%s • STX=0x02 LEN=0x%02X • Paced 32B/20ms • END=%02X %s): [%s ... CS=%02X END=%02X] • مهلة الرد %dms",
+                    "TX %dB (%s • STX=0x02 LEN=0x%02X • Paced 64B/15ms • END=%02X %s): [%s ... CS=%02X END=%02X] • مهلة الرد %dms",
                     dataFrame.size,
                     label,
                     dataFrame[1].toInt() and 0xFF,
@@ -2357,7 +2359,7 @@ object Nec78k0ProtocolEngine {
         transport.flushInputBuffer()
         transport.setRawRxMonitor(verboseLog)
         try {
-            val txErr = if (dataFrame.size <= 32) {
+            val txErr = if (dataFrame.size <= 64) {
                 transport.writeRaw(dataFrame)
             } else {
                 transport.writeFrameBytes(dataFrame, FRAME_PACKET_WRITE_TIMEOUT_MS, onLog)
@@ -2399,7 +2401,7 @@ object Nec78k0ProtocolEngine {
      * Standard NEC 78K0 Two-Stage 0x13 Verify (1024B Block = 4 x 260B STX Frames):
      * Step 1: Send 11-byte 0x13 Header starting with SOH (0x01) -> await [02 01 06 F9 03].
      * Step 2: Send 4 Data Frames of 260B starting with STX (0x02), LEN=0x00:
-     *         Pages 1..3 END=0x17 (ETB), Page 4 END=0x03 (ETX), Paced 32B/20ms -> await ACK (2500ms) after each page.
+     *         Pages 1..3 END=0x17 (ETB), Page 4 END=0x03 (ETX), Paced 64B/15ms -> await ACK (2500ms) after each page.
      */
     internal suspend fun verifyBlockVia0x13(
         transport: Serial78k0Transport,
@@ -2880,6 +2882,7 @@ object Nec78k0ProtocolEngine {
         var workingSession = sessionRef
         for (byteIdx in safeResumeIdx until BLOCK_SIZE) {
             currentCoroutineContext().ensureActive()
+            ProgrammerForegroundService.awaitIfPaused()
             if (!transport.isDeviceAttached()) {
                 System.arraycopy(blockBytes, 0, fullBuffer, blockStart, BLOCK_SIZE)
                 return NonStandardBlockOutcome.TransportLost(
@@ -3201,7 +3204,7 @@ object Nec78k0ProtocolEngine {
      * Standard NEC 78K0 Two-Stage 0x40 Program (1024B Block = 4 x 260B STX Frames):
      * Step 1: Send 11-byte 0x40 Header starting with SOH (0x01) -> await [02 01 06 F9 03].
      * Step 2: Send 4 Data Frames of 260B starting with STX (0x02), LEN=0x00:
-     *         Pages 1..3 END=0x17 (ETB), Page 4 END=0x03 (ETX), Paced 32B/20ms -> await ACK (2500ms) after each page.
+     *         Pages 1..3 END=0x17 (ETB), Page 4 END=0x03 (ETX), Paced 64B/15ms -> await ACK (2500ms) after each page.
      *         Auto-retries up to 5 times on 0x07 (Checksum Error) or Timeout (flush RX + 50ms + resend 260B STX,
      *         and re-sends 0x40 block header on attempts 3..5), followed by a 30ms post-block settle delay after ETX.
      */
@@ -3591,6 +3594,7 @@ object Nec78k0ProtocolEngine {
 
         for (n in 0 until BLOCK_SIZE) {
             currentCoroutineContext().ensureActive()
+            ProgrammerForegroundService.awaitIfPaused()
             if (!transport.isDeviceAttached()) {
                 if (n > 0) {
                     System.arraycopy(b0Working, 0, fullBuffer, 0, BLOCK_SIZE)

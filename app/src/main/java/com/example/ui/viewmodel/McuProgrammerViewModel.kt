@@ -13,13 +13,16 @@ import com.example.data.model.ProgrammerLogEntry
 import com.example.data.model.ProtocolFamilyType
 import com.example.data.model.UsbSerialDeviceInfo
 import com.example.data.repository.McuDatabaseRepository
+import com.example.data.McuCatalogLockManager
 import com.example.util.ChipAutoDetectResult
 import com.example.util.FirmwareParser
 import com.example.util.FlashOperationResult
 import com.example.util.Nec78k0ProtocolEngine
 import com.example.util.Nec78k0ProtocolRegistry
 import com.example.util.Nec78k0RecoveryManager
+import com.example.util.ProgrammerForegroundService
 import com.example.util.R8cProtocolEngine
+import com.example.util.UniversalCheckpointManager
 import com.example.util.UsbConnectResult
 import com.example.util.UsbOtgProgrammerService
 import kotlinx.coroutines.CancellationException
@@ -97,7 +100,15 @@ data class McuProgrammerUiState(
     val pendingRescueSessions: List<Nec78k0RecoveryManager.Nec78k0RecoverySession> = emptyList(),
     val watchdogAlertMessage: String? = null,
     val watchdogPausedBlock: Int? = null,
-    val isCurrentDumpMcuVerified: Boolean = false
+    val isCurrentDumpMcuVerified: Boolean = false,
+
+    // Universal Background Progress, Pause/Resume, ETA, Checkpoints & Admin Catalog Locks
+    val isPaused: Boolean = false,
+    val etaRemainingText: String = "",
+    val activeUniversalCheckpoint: UniversalCheckpointManager.UniversalCheckpoint? = null,
+    val isAdmin: Boolean = false,
+    val lockedManufacturers: Set<String> = emptySet(),
+    val lockedMainFamilies: Set<String> = emptySet()
 )
 
 class McuProgrammerViewModel(application: Application) : AndroidViewModel(application) {
@@ -105,19 +116,47 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
     private var allProcessors: List<McuProcessor> = emptyList()
     private val timeFormatLock = Any()
     private val timeFormat = SimpleDateFormat("HH:mm:ss", Locale.US)
+    @Volatile
+    private var userManuallyDisconnected: Boolean = false
 
     private val _uiState = MutableStateFlow(McuProgrammerUiState())
     val uiState: StateFlow<McuProgrammerUiState> = _uiState.asStateFlow()
 
     init {
+        McuCatalogLockManager.init(appContext)
         loadDatabase()
         refreshUsbDevices()
         refresh78k0RescueSessions()
+        refreshUniversalCheckpoint()
+
+        viewModelScope.launch {
+            McuCatalogLockManager.lockedManufacturers.collect { mans ->
+                _uiState.update { it.copy(lockedManufacturers = mans) }
+                if (!_uiState.value.isAdmin) ensureUnlockedSelection()
+            }
+        }
+        viewModelScope.launch {
+            McuCatalogLockManager.lockedMainFamilies.collect { fams ->
+                _uiState.update { it.copy(lockedMainFamilies = fams) }
+                if (!_uiState.value.isAdmin) ensureUnlockedSelection()
+            }
+        }
+        viewModelScope.launch {
+            ProgrammerForegroundService.isPausedFlow.collect { paused ->
+                _uiState.update { it.copy(isPaused = paused) }
+            }
+        }
+        viewModelScope.launch {
+            ProgrammerForegroundService.etaTextFlow.collect { eta ->
+                _uiState.update { it.copy(etaRemainingText = eta) }
+            }
+        }
         viewModelScope.launch {
             UsbOtgProgrammerService.isConnectedFlow.collect { connected ->
                 _uiState.update { it.copy(isConnected = connected) }
                 if (connected) {
                     refresh78k0RescueSessions()
+                    refreshUniversalCheckpoint()
                 }
             }
         }
@@ -129,18 +168,27 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
         viewModelScope.launch {
             UsbOtgProgrammerService.usbAttachedFlow.collect { attachedInfo ->
                 refreshUsbDevices()
+                userManuallyDisconnected = false
                 attachedInfo.chipType?.let { chip ->
                     _uiState.update { it.copy(selectedProgrammer = chip) }
                 }
                 val current = _uiState.value
-                if (isSelectedTarget78k0(current) && !current.isBusy && !UsbOtgProgrammerService.isConnected()) {
-                    addLog(
-                        "تم رصد توصيل ${attachedInfo.productName} — تشغيل التهيئة التلقائية لمعالج 78K0 (DTR/RTS + 0xC0 / 0xB0)...",
-                        LogLevel.INFO
-                    )
-                    connectAndAutoInitUsb(triggeredByUsbAttach = true)
+                if (!current.isBusy && !UsbOtgProgrammerService.isConnected()) {
+                    if (isSelectedTarget78k0(current)) {
+                        addLog(
+                            "تم رصد توصيل ${attachedInfo.productName} — تشغيل التهيئة التلقائية لمعالج 78K0 (DTR/RTS + 0xC0 / 0xB0)...",
+                            LogLevel.INFO
+                        )
+                    }
+                    connectAndAutoInitUsb(triggeredByUsbAttach = true, silentNon78k0 = true)
                 }
             }
+        }
+        // Silent auto-connect if USB OTG programmer is already attached with permission
+        val preAttached = _uiState.value.attachedUsbDevices.firstOrNull { it.hasPermission }
+        if (preAttached != null && !UsbOtgProgrammerService.isConnected() && !userManuallyDisconnected) {
+            preAttached.chipType?.let { chip -> _uiState.update { it.copy(selectedProgrammer = chip) } }
+            connectAndAutoInitUsb(triggeredByUsbAttach = true, silentNon78k0 = true)
         }
     }
 
@@ -163,10 +211,17 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                 return@launch
             }
 
+            val isAdminNow = _uiState.value.isAdmin
             val manufacturers = allProcessors.map { it.manufacturer }.distinct().sorted()
-            val firstMan = manufacturers.firstOrNull().orEmpty()
+            val firstMan = manufacturers.firstOrNull {
+                isAdminNow || !McuCatalogLockManager.isManufacturerLocked(it)
+            } ?: manufacturers.firstOrNull().orEmpty()
             val families = allProcessors.filter { it.manufacturer == firstMan }.map { it.mainFamily }.distinct().sorted()
-            val firstFam = families.firstOrNull { it.equals("R8C", ignoreCase = true) }
+            val unlockedFamilies = if (isAdminNow) families else families.filterNot {
+                McuCatalogLockManager.isMainFamilyLocked(firstMan, it)
+            }
+            val firstFam = unlockedFamilies.firstOrNull { it.equals("R8C", ignoreCase = true) }
+                ?: unlockedFamilies.firstOrNull()
                 ?: families.firstOrNull().orEmpty()
             val subs = allProcessors.filter { it.manufacturer == firstMan && it.mainFamily == firstFam }
                 .map { it.subFamily }.distinct().sorted()
@@ -175,8 +230,13 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
             val parts = allProcessors.filter {
                 it.manufacturer == firstMan && it.mainFamily == firstFam && it.subFamily == firstSub
             }.sortedBy { it.partNumber }
-            val firstPart = parts.firstOrNull { it.partNumber.equals("R5F21258", ignoreCase = true) }
+            val firstPartRaw = parts.firstOrNull { it.partNumber.equals("R5F21258", ignoreCase = true) }
                 ?: parts.firstOrNull()
+            val firstPart = if (!isAdminNow && firstPartRaw != null && McuCatalogLockManager.isProcessorLocked(firstPartRaw)) {
+                null
+            } else {
+                firstPartRaw
+            }
 
             val defaultEcho = defaultEchoCancelFor(firstPart)
             val forceDtr = firstPart?.is78k0Flmd0Mode() == true
@@ -228,7 +288,55 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
         _uiState.update { it.copy(searchQuery = query, searchMatches = matches) }
     }
 
+    fun setIsAdmin(admin: Boolean) {
+        if (_uiState.value.isAdmin == admin) return
+        _uiState.update { it.copy(isAdmin = admin) }
+        if (!admin) {
+            ensureUnlockedSelection()
+        }
+    }
+
+    fun toggleManufacturerLock(manufacturer: String) {
+        if (!_uiState.value.isAdmin) return
+        McuCatalogLockManager.toggleManufacturerLock(appContext, manufacturer)
+        val locked = McuCatalogLockManager.isManufacturerLocked(manufacturer)
+        addLog(
+            if (locked) "تم قفل الشركة المصنعة ($manufacturer) عن المستخدمين."
+            else "تم فتح قفل الشركة المصنعة ($manufacturer) للمستخدمين.",
+            LogLevel.INFO
+        )
+    }
+
+    fun toggleMainFamilyLock(manufacturer: String, mainFamily: String) {
+        if (!_uiState.value.isAdmin) return
+        McuCatalogLockManager.toggleMainFamilyLock(appContext, manufacturer, mainFamily)
+        val locked = McuCatalogLockManager.isMainFamilyLocked(manufacturer, mainFamily)
+        addLog(
+            if (locked) "تم قفل عائلة ($mainFamily) ضمن ($manufacturer) عن المستخدمين."
+            else "تم فتح قفل عائلة ($mainFamily) ضمن ($manufacturer) للمستخدمين.",
+            LogLevel.INFO
+        )
+    }
+
+    private fun ensureUnlockedSelection() {
+        val state = _uiState.value
+        if (state.isAdmin) return
+        val cur = state.selectedProcessor ?: return
+        if (McuCatalogLockManager.isProcessorLocked(cur)) {
+            val fallback = allProcessors.firstOrNull { !McuCatalogLockManager.isProcessorLocked(it) }
+            if (fallback != null) {
+                applySelectedMcuHierarchy(fallback, clearSearch = false, markUserSelected = false)
+            } else {
+                _uiState.update { it.copy(selectedProcessor = null) }
+            }
+        }
+    }
+
     fun selectSearchMatch(mcu: McuProcessor) {
+        if (!_uiState.value.isAdmin && McuCatalogLockManager.isProcessorLocked(mcu)) {
+            addLog("المعالج ${mcu.partNumber} (${mcu.mainFamily}) مقفل حالياً من قبل الإدارة.", LogLevel.WARNING)
+            return
+        }
         applySelectedMcuHierarchy(mcu, clearSearch = true, markUserSelected = true)
     }
 
@@ -281,22 +389,41 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                 firstNonEmptyRowIndex = computeFirstDataRow(newBuffer)
             )
         }
+        refreshUniversalCheckpoint()
     }
 
     fun selectManufacturer(manufacturer: String) {
+        if (!_uiState.value.isAdmin && McuCatalogLockManager.isManufacturerLocked(manufacturer)) {
+            addLog("الشركة ($manufacturer) مقفلة حالياً من قبل الإدارة.", LogLevel.WARNING)
+            return
+        }
         val families = allProcessors.filter { it.manufacturer == manufacturer }.map { it.mainFamily }.distinct().sorted()
-        val firstFam = families.firstOrNull().orEmpty()
+        val firstFam = if (_uiState.value.isAdmin) {
+            families.firstOrNull().orEmpty()
+        } else {
+            families.firstOrNull { !McuCatalogLockManager.isMainFamilyLocked(manufacturer, it) }
+                ?: families.firstOrNull().orEmpty()
+        }
         val subs = allProcessors.filter { it.manufacturer == manufacturer && it.mainFamily == firstFam }
             .map { it.subFamily }.distinct().sorted()
         val firstSub = subs.firstOrNull().orEmpty()
         val parts = allProcessors.filter {
             it.manufacturer == manufacturer && it.mainFamily == firstFam && it.subFamily == firstSub
         }.sortedBy { it.partNumber }
-        updateCascadingState(manufacturer, families, firstFam, subs, firstSub, parts, parts.firstOrNull())
+        val allowedPart = if (!_uiState.value.isAdmin && McuCatalogLockManager.isMainFamilyLocked(manufacturer, firstFam)) {
+            null
+        } else {
+            parts.firstOrNull()
+        }
+        updateCascadingState(manufacturer, families, firstFam, subs, firstSub, parts, allowedPart)
     }
 
     fun selectMainFamily(mainFamily: String) {
         val man = _uiState.value.selectedManufacturer
+        if (!_uiState.value.isAdmin && McuCatalogLockManager.isMainFamilyLocked(man, mainFamily)) {
+            addLog("العائلة ($mainFamily) مقفلة حالياً من قبل الإدارة.", LogLevel.WARNING)
+            return
+        }
         val subs = allProcessors.filter { it.manufacturer == man && it.mainFamily == mainFamily }
             .map { it.subFamily }.distinct().sorted()
         val firstSub = subs.firstOrNull().orEmpty()
@@ -309,6 +436,10 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
     fun selectSubFamily(subFamily: String) {
         val man = _uiState.value.selectedManufacturer
         val fam = _uiState.value.selectedMainFamily
+        if (!_uiState.value.isAdmin && McuCatalogLockManager.isMainFamilyLocked(man, fam)) {
+            addLog("العائلة ($fam) مقفلة حالياً من قبل الإدارة.", LogLevel.WARNING)
+            return
+        }
         val parts = allProcessors.filter {
             it.manufacturer == man && it.mainFamily == fam && it.subFamily == subFamily
         }.sortedBy { it.partNumber }
@@ -339,6 +470,7 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                 firstNonEmptyRowIndex = computeFirstDataRow(resetBuf)
             )
         }
+        refreshUniversalCheckpoint()
     }
 
     fun clearFamilySelectionForUniversalAutoDetect() {
@@ -383,6 +515,7 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                 firstNonEmptyRowIndex = computeFirstDataRow(buf)
             )
         }
+        refreshUniversalCheckpoint()
     }
 
     fun goToStep(step: Int) {
@@ -465,6 +598,61 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
         Nec78k0RecoveryManager.markCompletedAndCleanup(appContext, session.chipName)
         refresh78k0RescueSessions()
         addLog("تم إلغاء وإخفاء وضع إنقاذ المعالج لـ ${session.chipName}.", LogLevel.INFO)
+    }
+
+    fun togglePauseResume() {
+        val paused = ProgrammerForegroundService.togglePauseResume(appContext)
+        addLog(
+            if (paused) "تم إيقاف العملية مؤقتاً بأمان (Pause) مع إبقاء اتصال USB نشطاً."
+            else "تم استئناف تنفيذ العملية (Resume).",
+            LogLevel.INFO
+        )
+    }
+
+    fun refreshUniversalCheckpoint() {
+        val preferredPart = _uiState.value.selectedProcessor?.partNumber
+        val cp = UniversalCheckpointManager.findLatestCheckpoint(appContext, preferredPart)
+        _uiState.update { it.copy(activeUniversalCheckpoint = cp) }
+    }
+
+    fun dismissUniversalCheckpoint(cp: UniversalCheckpointManager.UniversalCheckpoint) {
+        UniversalCheckpointManager.clearCheckpoint(appContext, cp.partNumber)
+        refreshUniversalCheckpoint()
+        addLog("تم مسح نقطة استكمال ${cp.partNumber}.", LogLevel.INFO)
+    }
+
+    fun resumeUniversalCheckpoint(cp: UniversalCheckpointManager.UniversalCheckpoint) {
+        if (_uiState.value.isBusy) return
+        val matched = allProcessors.firstOrNull { it.partNumber.equals(cp.partNumber, ignoreCase = true) }
+        if (matched != null) {
+            applySelectedMcuHierarchy(matched, clearSearch = true, markUserSelected = true, preserveLoadedFirmware = true)
+        }
+        _uiState.update { it.copy(baudRate = cp.baudRate, currentStep = 3) }
+
+        if (cp.operation == UniversalCheckpointManager.OperationKind.READ) {
+            execute78k0OrStandardRead(resumeSession = null, resumeCheckpoint = cp)
+        } else {
+            val savedBuffer = UniversalCheckpointManager.loadBuffer(appContext, cp.partNumber, cp.totalBytes)
+            if (savedBuffer == null) {
+                UniversalCheckpointManager.clearCheckpoint(appContext, cp.partNumber)
+                refreshUniversalCheckpoint()
+                addLog("تعذر العثور على ملف البيانات المؤقت لاستكمال كتابة ${cp.partNumber}.", LogLevel.ERROR)
+                return
+            }
+            val firstRow = computeFirstDataRow(savedBuffer)
+            _uiState.update {
+                it.copy(
+                    flashBuffer = savedBuffer,
+                    flashBaseAddress = cp.flashBaseAddress,
+                    loadedFileName = cp.fileName.ifBlank { "Resume_${cp.partNumber}.bin" },
+                    loadedFormat = "Checkpoint",
+                    loadedNonEmptyCount = savedBuffer.count { b -> b != 0xFF.toByte() },
+                    firstNonEmptyRowIndex = firstRow,
+                    hexJumpSequence = it.hexJumpSequence + 1
+                )
+            }
+            runWriteOrVerify(verifyOnly = false, resumeCheckpoint = cp)
+        }
     }
 
     private fun isSelectedTarget78k0(state: McuProgrammerUiState = _uiState.value): Boolean {
@@ -663,6 +851,7 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
     fun toggleUsbConnection() {
         if (_uiState.value.isBusy) return
         if (UsbOtgProgrammerService.isConnected()) {
+            userManuallyDisconnected = true
             UsbOtgProgrammerService.disconnect()
             _uiState.update {
                 it.copy(
@@ -675,34 +864,41 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
             refreshUsbDevices()
             return
         }
-        connectAndAutoInitUsb(triggeredByUsbAttach = false)
+        userManuallyDisconnected = false
+        connectAndAutoInitUsb(triggeredByUsbAttach = false, silentNon78k0 = false)
     }
 
-    private fun connectAndAutoInitUsb(triggeredByUsbAttach: Boolean) {
+    private fun connectAndAutoInitUsb(
+        triggeredByUsbAttach: Boolean,
+        silentNon78k0: Boolean = false
+    ) {
         if (_uiState.value.isBusy) return
         viewModelScope.launch {
             val is78k0Target = isSelectedTarget78k0()
+            val silentMode = triggeredByUsbAttach && silentNon78k0 && !is78k0Target
             val effectiveBaud = if (is78k0Target) 9600 else _uiState.value.baudRate
             val effectiveDtrRts = if (is78k0Target) true else _uiState.value.enableDtrRtsReset
             if (is78k0Target) {
                 UsbOtgProgrammerService.setEchoCancellation(false)
             }
 
-            _uiState.update {
-                it.copy(
-                    isBusy = true,
-                    enableDtrRtsReset = effectiveDtrRts,
-                    enableEchoCancellation = if (is78k0Target) false else it.enableEchoCancellation,
-                    baudRate = effectiveBaud,
-                    progress = 0.2f,
-                    progressBytesDone = 0,
-                    progressTotalBytes = 0,
-                    progressLabel = if (is78k0Target) {
-                        "فتح منفذ FT232 وتهيئة 78K0 تلقائياً (9600 8N1)..."
-                    } else {
-                        "جاري فتح منفذ USB OTG على سرعة $effectiveBaud..."
-                    }
-                )
+            if (!silentMode) {
+                _uiState.update {
+                    it.copy(
+                        isBusy = true,
+                        enableDtrRtsReset = effectiveDtrRts,
+                        enableEchoCancellation = if (is78k0Target) false else it.enableEchoCancellation,
+                        baudRate = effectiveBaud,
+                        progress = 0.2f,
+                        progressBytesDone = 0,
+                        progressTotalBytes = 0,
+                        progressLabel = if (is78k0Target) {
+                            "فتح منفذ FT232 وتهيئة 78K0 تلقائياً (9600 8N1)..."
+                        } else {
+                            "جاري فتح منفذ USB OTG على سرعة $effectiveBaud..."
+                        }
+                    )
+                }
             }
             try {
                 when (val res = UsbOtgProgrammerService.connect(
@@ -1054,7 +1250,10 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
         execute78k0OrStandardRead(resumeSession = resetSession)
     }
 
-    private fun execute78k0OrStandardRead(resumeSession: Nec78k0RecoveryManager.Nec78k0RecoverySession?) {
+    private fun execute78k0OrStandardRead(
+        resumeSession: Nec78k0RecoveryManager.Nec78k0RecoverySession?,
+        resumeCheckpoint: UniversalCheckpointManager.UniversalCheckpoint? = null
+    ) {
         val mcu = _uiState.value.selectedProcessor ?: return
         if (_uiState.value.isBusy) return
         val idBytes = parseIdCodeBytes() ?: run {
@@ -1067,15 +1266,20 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
             mcu.is78k0Flmd0Mode() -> Nec78k0RecoveryManager.findSessionForChip(appContext, mcu.partNumber)
             else -> null
         }
+        val initialTitle = when {
+            activeResume != null -> "استئناف إنقاذ 78K0..."
+            resumeCheckpoint != null -> "استكمال قراءة ${mcu.partNumber}..."
+            else -> "جاري قراءة ${mcu.partNumber}..."
+        }
 
-        viewModelScope.launch {
+        ProgrammerForegroundService.launchFlashTask(appContext, initialTitle) {
             _uiState.update {
                 it.copy(
                     isBusy = true,
                     progress = 0.01f,
-                    progressBytesDone = 0,
+                    progressBytesDone = resumeCheckpoint?.completedBytes ?: 0,
                     progressTotalBytes = mcu.flashSizeBytes,
-                    progressLabel = if (activeResume != null) "استئناف إنقاذ 78K0..." else "بدء قراءة الفلاش...",
+                    progressLabel = initialTitle,
                     watchdogAlertMessage = null
                 )
             }
@@ -1085,6 +1289,8 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                         "بدء إنقاذ واستكمال سحب ${activeResume.chipName} من الكتلة ${activeResume.lastCompletedBlock + 1} (FullCS=${activeResume.fullChecksumHex} • Block0CS=${activeResume.block0ChecksumHex})..."
                     activeResume != null ->
                         "استرجاع البصمة المحفوظة لـ ${activeResume.chipName} (FullCS=${activeResume.fullChecksumHex} • Block0CS=${activeResume.block0ChecksumHex}) ومتابعة السحب..."
+                    resumeCheckpoint != null ->
+                        "استكمال سحب ${mcu.partNumber} من نسبة ${resumeCheckpoint.progressPercent}% (${resumeCheckpoint.completedBytes / 1024} KB)..."
                     else -> "بدء قراءة ذاكرة ${mcu.partNumber} (${mcu.flashKb}KB)..."
                 },
                 LogLevel.INFO
@@ -1102,6 +1308,7 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                     clockFrequency = _uiState.value.clockFrequency,
                     catalog = allProcessors,
                     resumeSession = activeResume,
+                    resumeCheckpoint = resumeCheckpoint,
                     preDetected78k0Info = _uiState.value.nec78k0DetectedInfo,
                     autoRestoreChip = _uiState.value.autoRestoreChip,
                     on78k0DetectedInfo = { info ->
@@ -1151,6 +1358,7 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                             )
                         }
                         refresh78k0RescueSessions()
+                        refreshUniversalCheckpoint()
                         addLog(res.message, LogLevel.SUCCESS)
                     }
                     is FlashOperationResult.Failure -> {
@@ -1168,6 +1376,7 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                                 )
                             }
                             refresh78k0RescueSessions()
+                            refreshUniversalCheckpoint()
                             addLog("Watchdog Pause: $cleanMsg", LogLevel.WARNING)
                         } else {
                             _uiState.update {
@@ -1180,12 +1389,14 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                                 )
                             }
                             refresh78k0RescueSessions()
+                            refreshUniversalCheckpoint()
                             addLog(rawReason, LogLevel.ERROR)
                         }
                     }
                 }
             } catch (ce: CancellationException) {
                 _uiState.update { it.copy(isBusy = false, progress = 0f, progressLabel = "") }
+                refreshUniversalCheckpoint()
                 throw ce
             } catch (t: Throwable) {
                 _uiState.update {
@@ -1197,6 +1408,7 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                         progressLabel = ""
                     )
                 }
+                refreshUniversalCheckpoint()
                 addLog("خطأ غير متوقع أثناء القراءة: ${t.toString()}", LogLevel.ERROR)
             }
         }
@@ -1213,7 +1425,7 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
         }
         val dfMode = _uiState.value.dataFlashMode
 
-        viewModelScope.launch {
+        ProgrammerForegroundService.launchFlashTask(appContext, "جاري مسح ${mcu.partNumber}...") {
             _uiState.update {
                 it.copy(
                     isBusy = true,
@@ -1304,7 +1516,10 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
     fun writeChipFlash() = runWriteOrVerify(verifyOnly = false)
     fun verifyChipFlash() = runWriteOrVerify(verifyOnly = true)
 
-    private fun runWriteOrVerify(verifyOnly: Boolean) {
+    private fun runWriteOrVerify(
+        verifyOnly: Boolean,
+        resumeCheckpoint: UniversalCheckpointManager.UniversalCheckpoint? = null
+    ) {
         val mcu = _uiState.value.selectedProcessor ?: return
         if (_uiState.value.isBusy) return
         val idBytes = parseIdCodeBytes() ?: if (mcu.is78k0Flmd0Mode()) {
@@ -1317,20 +1532,25 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
         val dfBytes = _uiState.value.dataFlashBuffer
         val autoErase = _uiState.value.autoEraseBeforeWrite
         val autoVerify = _uiState.value.autoVerifyAfterWrite
+        val fileName = _uiState.value.loadedFileName.orEmpty()
+        val actionName = if (verifyOnly) "مطابقة (Verify)" else "كتابة (Write)"
 
-        viewModelScope.launch {
-            val actionName = if (verifyOnly) "مطابقة (Verify)" else "كتابة (Write)"
+        ProgrammerForegroundService.launchFlashTask(appContext, "بدء $actionName على ${mcu.partNumber}...") {
             val totalSize = _uiState.value.flashBuffer.size
             _uiState.update {
                 it.copy(
                     isBusy = true,
-                    progress = 0.01f,
-                    progressBytesDone = 0,
+                    progress = if (resumeCheckpoint != null) resumeCheckpoint.progressFraction.coerceAtLeast(0.01f) else 0.01f,
+                    progressBytesDone = resumeCheckpoint?.completedBytes ?: 0,
                     progressTotalBytes = totalSize,
-                    progressLabel = "بدء $actionName..."
+                    progressLabel = if (resumeCheckpoint != null) "استكمال $actionName من ${resumeCheckpoint.progressPercent}%..." else "بدء $actionName..."
                 )
             }
-            addLog("بدء عملية $actionName على ${mcu.partNumber}...", LogLevel.INFO)
+            addLog(
+                if (resumeCheckpoint != null) "استكمال عملية $actionName على ${mcu.partNumber} من البلوك/الصفحة ${resumeCheckpoint.blockOrPageIndex + 1} دون مسح ما سبق..."
+                else "بدء عملية $actionName على ${mcu.partNumber}...",
+                LogLevel.INFO
+            )
 
             try {
                 when (val res = UsbOtgProgrammerService.executeWriteAndVerify(
@@ -1350,6 +1570,8 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                     eraseMode = _uiState.value.eraseMode,
                     clockFrequency = _uiState.value.clockFrequency,
                     catalog = allProcessors,
+                    resumeCheckpoint = resumeCheckpoint,
+                    fileName = fileName,
                     preDetected78k0Info = _uiState.value.nec78k0DetectedInfo,
                     on78k0DetectedInfo = { info ->
                         info.matchedProcessor?.let { matched ->
@@ -1382,22 +1604,26 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                                 progressLabel = "اكتملت العملية 100%"
                             )
                         }
+                        refreshUniversalCheckpoint()
                         addLog(res.message, LogLevel.SUCCESS)
                     }
                     is FlashOperationResult.Failure -> {
                         _uiState.update {
                             it.copy(isBusy = false, progress = 0f, progressBytesDone = 0, progressTotalBytes = 0, progressLabel = "")
                         }
+                        refreshUniversalCheckpoint()
                         addLog(res.reason, LogLevel.ERROR)
                     }
                 }
             } catch (ce: CancellationException) {
                 _uiState.update { it.copy(isBusy = false, progress = 0f, progressLabel = "") }
+                refreshUniversalCheckpoint()
                 throw ce
             } catch (t: Throwable) {
                 _uiState.update {
                     it.copy(isBusy = false, progress = 0f, progressBytesDone = 0, progressTotalBytes = 0, progressLabel = "")
                 }
+                refreshUniversalCheckpoint()
                 addLog("خطأ غير متوقع أثناء $actionName: ${t.toString()}", LogLevel.ERROR)
             }
         }

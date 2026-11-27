@@ -612,6 +612,8 @@ object UsbOtgProgrammerService {
             flushRxBuffer()
         }
 
+        override fun isDeviceAttached(): Boolean = isDeviceCurrentlyAttached()
+
         override suspend fun writeRaw(bytes: ByteArray): String? {
             return writeRawBytes(bytes)
         }
@@ -702,7 +704,7 @@ object UsbOtgProgrammerService {
                 bytes: ByteArray,
                 timeoutMs: Int,
                 onLog: (String) -> Unit
-            ): String? = writeFrame32BytePackets(bytes, timeoutMs, onLog)
+            ): String? = writeFrame64BytePackets(bytes, timeoutMs, onLog)
 
             override suspend fun discardEcho(expectedCount: Int, baudRate: Int): Int {
                 return if (echoCancellationEnabled) discardEchoBytes(expectedCount) else 0
@@ -846,6 +848,7 @@ object UsbOtgProgrammerService {
         clockFrequency: String = "8 MHz",
         catalog: List<McuProcessor> = emptyList(),
         resumeSession: Nec78k0RecoveryManager.Nec78k0RecoverySession? = null,
+        resumeCheckpoint: UniversalCheckpointManager.UniversalCheckpoint? = null,
         preDetected78k0Info: Nec78k0ProtocolEngine.Nec78k0DetectedInfo? = null,
         autoRestoreChip: Boolean = true,
         on78k0DetectedInfo: (Nec78k0ProtocolEngine.Nec78k0DetectedInfo) -> Unit = {},
@@ -876,6 +879,8 @@ object UsbOtgProgrammerService {
                     baudRate = baudRate,
                     idBytes = idCodeBytes,
                     dataFlashMode = dataFlashMode,
+                    context = context,
+                    resumeFromCheckpoint = resumeCheckpoint,
                     onLog = onLog,
                     onProgress = trackedProgress
                 )
@@ -905,12 +910,47 @@ object UsbOtgProgrammerService {
                 return@withContext FlashOperationResult.Failure("فشلت مرحلة الإرسال أثناء المزامنة (راجع سجل الأحداث).")
             }
 
-            val resultBuffer = FirmwareParser.createEmptyBuffer(totalSize)
             val blockSize = 256
             val totalBlocks = (totalSize + blockSize - 1) / blockSize
-            var bytesReadFromChip = 0
+            val preloaded = if (resumeCheckpoint != null &&
+                resumeCheckpoint.operation == UniversalCheckpointManager.OperationKind.READ &&
+                resumeCheckpoint.partNumber == processor.partNumber
+            ) {
+                UniversalCheckpointManager.loadBuffer(context, processor.partNumber, totalSize)
+            } else null
+            val resultBuffer = preloaded ?: FirmwareParser.createEmptyBuffer(totalSize)
+            val startBlock = if (preloaded != null && resumeCheckpoint != null) {
+                resumeCheckpoint.blockOrPageIndex.coerceIn(0, (totalBlocks - 1).coerceAtLeast(0))
+            } else 0
+            var bytesReadFromChip = (startBlock * blockSize).coerceAtMost(totalSize)
+            if (startBlock > 0) {
+                onLog("استكمال القراءة من البلوك ${startBlock + 1}/$totalBlocks (${bytesReadFromChip / 1024} KB محفوظة)...")
+            }
 
-            for (blockIdx in 0 until totalBlocks) {
+            for (blockIdx in startBlock until totalBlocks) {
+                ProgrammerForegroundService.awaitIfPaused()
+                if (!isDeviceCurrentlyAttached()) {
+                    UniversalCheckpointManager.saveCheckpoint(
+                        context,
+                        UniversalCheckpointManager.UniversalCheckpoint(
+                            partNumber = processor.partNumber,
+                            mainFamily = processor.mainFamily,
+                            protocolTypeName = processor.protocolType.name,
+                            operation = UniversalCheckpointManager.OperationKind.READ,
+                            completedBytes = bytesReadFromChip,
+                            totalBytes = totalSize,
+                            blockOrPageIndex = blockIdx,
+                            totalBlocksOrPages = totalBlocks,
+                            fileName = "Dump_${processor.partNumber}.bin",
+                            baudRate = baudRate,
+                            flashBaseAddress = 0,
+                            updatedAtMs = System.currentTimeMillis()
+                        ),
+                        resultBuffer
+                    )
+                    return@withContext FlashOperationResult.Failure("انقطع كابل USB OTG عند البلوك ${blockIdx + 1}/$totalBlocks — تم حفظ نقطة استكمال.")
+                }
+
                 val addr = blockIdx * blockSize
                 val cmd = byteArrayOf(
                     0xFF.toByte(),
@@ -919,11 +959,47 @@ object UsbOtgProgrammerService {
                 )
                 val txErr = writeWithEchoCancel(cmd, clearStaleRx = true, onLog = onLog)
                 if (txErr != null) {
+                    UniversalCheckpointManager.saveCheckpoint(
+                        context,
+                        UniversalCheckpointManager.UniversalCheckpoint(
+                            partNumber = processor.partNumber,
+                            mainFamily = processor.mainFamily,
+                            protocolTypeName = processor.protocolType.name,
+                            operation = UniversalCheckpointManager.OperationKind.READ,
+                            completedBytes = bytesReadFromChip,
+                            totalBytes = totalSize,
+                            blockOrPageIndex = blockIdx,
+                            totalBlocksOrPages = totalBlocks,
+                            fileName = "Dump_${processor.partNumber}.bin",
+                            baudRate = baudRate,
+                            flashBaseAddress = 0,
+                            updatedAtMs = System.currentTimeMillis()
+                        ),
+                        resultBuffer
+                    )
                     onLog("TX ERROR (Read 0x%06X): $txErr".format(addr))
                     return@withContext FlashOperationResult.Failure("فشل الإرسال عند 0x%06X: $txErr".format(addr))
                 }
                 val chunk = readExactFromBuffer(expectedLen = blockSize, timeoutMs = 550, onLog = onLog)
                 if (chunk.isEmpty()) {
+                    UniversalCheckpointManager.saveCheckpoint(
+                        context,
+                        UniversalCheckpointManager.UniversalCheckpoint(
+                            partNumber = processor.partNumber,
+                            mainFamily = processor.mainFamily,
+                            protocolTypeName = processor.protocolType.name,
+                            operation = UniversalCheckpointManager.OperationKind.READ,
+                            completedBytes = bytesReadFromChip,
+                            totalBytes = totalSize,
+                            blockOrPageIndex = blockIdx,
+                            totalBlocksOrPages = totalBlocks,
+                            fileName = "Dump_${processor.partNumber}.bin",
+                            baudRate = baudRate,
+                            flashBaseAddress = 0,
+                            updatedAtMs = System.currentTimeMillis()
+                        ),
+                        resultBuffer
+                    )
                     return@withContext FlashOperationResult.Failure(
                         "توقف المعالج عن إرسال البيانات عند العنوان 0x%06X (RX فارغ بعد حذف الصدى)."
                             .format(addr)
@@ -932,12 +1008,33 @@ object UsbOtgProgrammerService {
                 val copyLen = min(chunk.size, totalSize - addr)
                 System.arraycopy(chunk, 0, resultBuffer, addr, copyLen)
                 bytesReadFromChip += copyLen
+                if ((blockIdx + 1) % 8 == 0 && blockIdx + 1 < totalBlocks) {
+                    UniversalCheckpointManager.saveCheckpoint(
+                        context,
+                        UniversalCheckpointManager.UniversalCheckpoint(
+                            partNumber = processor.partNumber,
+                            mainFamily = processor.mainFamily,
+                            protocolTypeName = processor.protocolType.name,
+                            operation = UniversalCheckpointManager.OperationKind.READ,
+                            completedBytes = bytesReadFromChip,
+                            totalBytes = totalSize,
+                            blockOrPageIndex = blockIdx + 1,
+                            totalBlocksOrPages = totalBlocks,
+                            fileName = "Dump_${processor.partNumber}.bin",
+                            baudRate = baudRate,
+                            flashBaseAddress = 0,
+                            updatedAtMs = System.currentTimeMillis()
+                        ),
+                        resultBuffer
+                    )
+                }
                 trackedProgress(
                     bytesReadFromChip,
                     totalSize,
                     "قراءة بلوك ${blockIdx + 1}/$totalBlocks (0x%06X)".format(addr)
                 )
             }
+            UniversalCheckpointManager.clearCheckpoint(context, processor.partNumber)
 
             FlashOperationResult.Success(
                 message = "تمت قراءة وسحب ${bytesReadFromChip / 1024} KB ($bytesReadFromChip بايت) من ${processor.partNumber} بنجاح.",
@@ -1047,6 +1144,8 @@ object UsbOtgProgrammerService {
         eraseMode: String = "مسح كلي (Chip Erase)",
         clockFrequency: String = "8 MHz",
         catalog: List<McuProcessor> = emptyList(),
+        resumeCheckpoint: UniversalCheckpointManager.UniversalCheckpoint? = null,
+        fileName: String = "",
         preDetected78k0Info: Nec78k0ProtocolEngine.Nec78k0DetectedInfo? = null,
         on78k0DetectedInfo: (Nec78k0ProtocolEngine.Nec78k0DetectedInfo) -> Unit = {},
         onLog: (String) -> Unit,
@@ -1096,6 +1195,9 @@ object UsbOtgProgrammerService {
                         dataFlashBytes = dataFlashBytes,
                         autoEraseBeforeWrite = autoEraseBeforeWrite,
                         autoVerifyAfterWrite = autoVerifyAfterWrite,
+                        context = context,
+                        resumeFromCheckpoint = resumeCheckpoint,
+                        fileName = fileName,
                         onLog = onLog,
                         onProgress = trackedProgress
                     )
@@ -1105,6 +1207,11 @@ object UsbOtgProgrammerService {
             if (is78k0) {
                 setEchoCancellation(false)
                 val transport78k0 = create78k0Transport()
+                val resumeBlock78k0 = if (!verifyOnly &&
+                    resumeCheckpoint != null &&
+                    resumeCheckpoint.operation == UniversalCheckpointManager.OperationKind.WRITE &&
+                    resumeCheckpoint.partNumber == processor.partNumber
+                ) resumeCheckpoint.blockOrPageIndex else 0
                 return@withContext if (verifyOnly) {
                     Nec78k0FlashWriterEngine.verifyFlash(
                         context = context,
@@ -1132,6 +1239,8 @@ object UsbOtgProgrammerService {
                         clockFreqMhzText = clockFrequency,
                         catalog = catalog,
                         preDetectedInfo = preDetected78k0Info,
+                        resumeStartBlock = resumeBlock78k0,
+                        fileName = fileName,
                         onDetectedInfo = on78k0DetectedInfo,
                         onLog = onLog,
                         onProgress = trackedProgress
@@ -1139,73 +1248,165 @@ object UsbOtgProgrammerService {
                 }
             }
 
-        val totalSize = firmwareBytes.size
-        val syncMode = resolveBootSyncMode(processor.mainFamily)
-        if (!performSyncHandshake(enableDtrRtsReset, syncMode, onLog)) {
-            return@withContext FlashOperationResult.Failure("فشلت مرحلة الإرسال أثناء المزامنة.")
-        }
-
-        val pageSize = 256
-        val totalPages = (totalSize + pageSize - 1) / pageSize
-        for (page in 0 until totalPages) {
-            val offset = page * pageSize
-            val len = min(pageSize, totalSize - offset)
-            val bytesDone = min(offset + len, totalSize)
-            val slice = firmwareBytes.copyOfRange(offset, offset + len)
-
-            if (!verifyOnly && slice.all { it == 0xFF.toByte() }) {
-                trackedProgress(bytesDone, totalSize, "تخطي صفحة فارغة 0x%06X".format(offset))
-                continue
+            val totalSize = firmwareBytes.size
+            val syncMode = resolveBootSyncMode(processor.mainFamily)
+            if (!performSyncHandshake(enableDtrRtsReset, syncMode, onLog)) {
+                return@withContext FlashOperationResult.Failure("فشلت مرحلة الإرسال أثناء المزامنة.")
             }
 
-            if (verifyOnly) {
-                val readCmd = byteArrayOf(
-                    0xFF.toByte(),
-                    (offset and 0xFF).toByte(),
-                    ((offset ushr 8) and 0xFF).toByte(),
-                    ((offset ushr 16) and 0xFF).toByte()
-                )
-                val txErr = writeWithEchoCancel(readCmd, clearStaleRx = true, onLog = onLog)
-                if (txErr != null) {
-                    onLog("TX ERROR (Verify 0x%06X): $txErr".format(offset))
-                    return@withContext FlashOperationResult.Failure("فشل الإرسال أثناء Verify عند 0x%06X: $txErr".format(offset))
+            val pageSize = 256
+            val totalPages = (totalSize + pageSize - 1) / pageSize
+            val startPage = if (!verifyOnly &&
+                resumeCheckpoint != null &&
+                resumeCheckpoint.operation == UniversalCheckpointManager.OperationKind.WRITE &&
+                resumeCheckpoint.partNumber == processor.partNumber
+            ) {
+                resumeCheckpoint.blockOrPageIndex.coerceIn(0, (totalPages - 1).coerceAtLeast(0))
+            } else 0
+
+            for (page in startPage until totalPages) {
+                ProgrammerForegroundService.awaitIfPaused()
+                val offset = page * pageSize
+                val len = min(pageSize, totalSize - offset)
+                val bytesDone = min(offset + len, totalSize)
+                val slice = firmwareBytes.copyOfRange(offset, offset + len)
+
+                if (!isDeviceCurrentlyAttached()) {
+                    if (!verifyOnly) {
+                        UniversalCheckpointManager.saveCheckpoint(
+                            context,
+                            UniversalCheckpointManager.UniversalCheckpoint(
+                                partNumber = processor.partNumber,
+                                mainFamily = processor.mainFamily,
+                                protocolTypeName = processor.protocolType.name,
+                                operation = UniversalCheckpointManager.OperationKind.WRITE,
+                                completedBytes = offset,
+                                totalBytes = totalSize,
+                                blockOrPageIndex = page,
+                                totalBlocksOrPages = totalPages,
+                                fileName = fileName,
+                                baudRate = baudRate,
+                                flashBaseAddress = firmwareStartAddress,
+                                updatedAtMs = System.currentTimeMillis()
+                            ),
+                            firmwareBytes
+                        )
+                    }
+                    return@withContext FlashOperationResult.Failure("انقطع كابل USB OTG عند الصفحة ${page + 1}/$totalPages — تم حفظ التقدم للاستكمال.")
                 }
-                val chipBytes = readBufferedBytes(expectedMax = len, timeoutMs = 450, onLog = onLog)
-                if (chipBytes.size < len) {
-                    return@withContext FlashOperationResult.Failure("تعذر استلام الصفحة عند 0x%06X أثناء Verify (استلم ${chipBytes.size}/$len بايت).".format(offset))
+
+                if (!verifyOnly && slice.all { it == 0xFF.toByte() }) {
+                    trackedProgress(bytesDone, totalSize, "تخطي صفحة فارغة 0x%06X".format(offset))
+                    continue
                 }
-                for (i in 0 until len) {
-                    if (chipBytes[i] != slice[i]) {
-                        return@withContext FlashOperationResult.Failure(
-                            "اختلاف في المطابقة عند العنوان 0x%06X: المتوقع %02X والمقروء %02X."
-                                .format(offset + i, slice[i], chipBytes[i])
+
+                if (verifyOnly) {
+                    val readCmd = byteArrayOf(
+                        0xFF.toByte(),
+                        (offset and 0xFF).toByte(),
+                        ((offset ushr 8) and 0xFF).toByte(),
+                        ((offset ushr 16) and 0xFF).toByte()
+                    )
+                    val txErr = writeWithEchoCancel(readCmd, clearStaleRx = true, onLog = onLog)
+                    if (txErr != null) {
+                        onLog("TX ERROR (Verify 0x%06X): $txErr".format(offset))
+                        return@withContext FlashOperationResult.Failure("فشل الإرسال أثناء Verify عند 0x%06X: $txErr".format(offset))
+                    }
+                    val chipBytes = readBufferedBytes(expectedMax = len, timeoutMs = 450, onLog = onLog)
+                    if (chipBytes.size < len) {
+                        return@withContext FlashOperationResult.Failure("تعذر استلام الصفحة عند 0x%06X أثناء Verify (استلم ${chipBytes.size}/$len بايت).".format(offset))
+                    }
+                    for (i in 0 until len) {
+                        if (chipBytes[i] != slice[i]) {
+                            return@withContext FlashOperationResult.Failure(
+                                "اختلاف في المطابقة عند العنوان 0x%06X: المتوقع %02X والمقروء %02X."
+                                    .format(offset + i, slice[i], chipBytes[i])
+                            )
+                        }
+                    }
+                } else {
+                    val header = byteArrayOf(
+                        0x41,
+                        (offset and 0xFF).toByte(),
+                        ((offset ushr 8) and 0xFF).toByte(),
+                        ((offset ushr 16) and 0xFF).toByte()
+                    )
+                    val txErr = writeWithEchoCancel(header + slice, clearStaleRx = true, onLog = onLog)
+                    if (txErr != null) {
+                        UniversalCheckpointManager.saveCheckpoint(
+                            context,
+                            UniversalCheckpointManager.UniversalCheckpoint(
+                                partNumber = processor.partNumber,
+                                mainFamily = processor.mainFamily,
+                                protocolTypeName = processor.protocolType.name,
+                                operation = UniversalCheckpointManager.OperationKind.WRITE,
+                                completedBytes = offset,
+                                totalBytes = totalSize,
+                                blockOrPageIndex = page,
+                                totalBlocksOrPages = totalPages,
+                                fileName = fileName,
+                                baudRate = baudRate,
+                                flashBaseAddress = firmwareStartAddress,
+                                updatedAtMs = System.currentTimeMillis()
+                            ),
+                            firmwareBytes
+                        )
+                        onLog("TX ERROR (Write 0x%06X): $txErr".format(offset))
+                        return@withContext FlashOperationResult.Failure("فشل إرسال صفحة 0x%06X: $txErr".format(offset))
+                    }
+                    val ack = readBufferedBytes(expectedMax = 4, timeoutMs = 450, onLog = onLog)
+                    if (ack.isEmpty()) {
+                        UniversalCheckpointManager.saveCheckpoint(
+                            context,
+                            UniversalCheckpointManager.UniversalCheckpoint(
+                                partNumber = processor.partNumber,
+                                mainFamily = processor.mainFamily,
+                                protocolTypeName = processor.protocolType.name,
+                                operation = UniversalCheckpointManager.OperationKind.WRITE,
+                                completedBytes = offset,
+                                totalBytes = totalSize,
+                                blockOrPageIndex = page,
+                                totalBlocksOrPages = totalPages,
+                                fileName = fileName,
+                                baudRate = baudRate,
+                                flashBaseAddress = firmwareStartAddress,
+                                updatedAtMs = System.currentTimeMillis()
+                            ),
+                            firmwareBytes
+                        )
+                        return@withContext FlashOperationResult.Failure("لم يستجب المعالج بتأكيد كتابة الصفحة عند 0x%06X.".format(offset))
+                    }
+                    if ((page + 1) % 8 == 0 && page + 1 < totalPages) {
+                        UniversalCheckpointManager.saveCheckpoint(
+                            context,
+                            UniversalCheckpointManager.UniversalCheckpoint(
+                                partNumber = processor.partNumber,
+                                mainFamily = processor.mainFamily,
+                                protocolTypeName = processor.protocolType.name,
+                                operation = UniversalCheckpointManager.OperationKind.WRITE,
+                                completedBytes = bytesDone,
+                                totalBytes = totalSize,
+                                blockOrPageIndex = page + 1,
+                                totalBlocksOrPages = totalPages,
+                                fileName = fileName,
+                                baudRate = baudRate,
+                                flashBaseAddress = firmwareStartAddress,
+                                updatedAtMs = System.currentTimeMillis()
+                            ),
+                            firmwareBytes
                         )
                     }
                 }
-            } else {
-                val header = byteArrayOf(
-                    0x41,
-                    (offset and 0xFF).toByte(),
-                    ((offset ushr 8) and 0xFF).toByte(),
-                    ((offset ushr 16) and 0xFF).toByte()
-                )
-                val txErr = writeWithEchoCancel(header + slice, clearStaleRx = true, onLog = onLog)
-                if (txErr != null) {
-                    onLog("TX ERROR (Write 0x%06X): $txErr".format(offset))
-                    return@withContext FlashOperationResult.Failure("فشل إرسال صفحة 0x%06X: $txErr".format(offset))
-                }
-                val ack = readBufferedBytes(expectedMax = 4, timeoutMs = 450, onLog = onLog)
-                if (ack.isEmpty()) {
-                    return@withContext FlashOperationResult.Failure("لم يستجب المعالج بتأكيد كتابة الصفحة عند 0x%06X.".format(offset))
-                }
-            }
 
-            trackedProgress(
-                bytesDone,
-                totalSize,
-                "${if (verifyOnly) "مطابقة" else "كتابة"} صفحة ${page + 1}/$totalPages (0x%06X)".format(offset)
-            )
-        }
+                trackedProgress(
+                    bytesDone,
+                    totalSize,
+                    "${if (verifyOnly) "مطابقة" else "كتابة"} صفحة ${page + 1}/$totalPages (0x%06X)".format(offset)
+                )
+            }
+            if (!verifyOnly) {
+                UniversalCheckpointManager.clearCheckpoint(context, processor.partNumber)
+            }
 
             val doneMsg = if (verifyOnly) {
                 "تمت مطابقة (Verify) كامل الملف (${totalSize / 1024} KB) بنسبة 100%."
@@ -1223,6 +1424,7 @@ object UsbOtgProgrammerService {
         defaultActionLabel: String,
         onProgress: (bytesDone: Int, totalBytes: Int, label: String) -> Unit
     ): (Int, Int, String) -> Unit = { done, total, label ->
+        ProgrammerForegroundService.updateThroughputAndEta(done, total)
         val pct = if (total > 0) ((done.toLong() * 100L) / total.toLong()).toInt().coerceIn(0, 100) else -1
         val fgsText = if (label.isNotBlank()) label else defaultActionLabel
         ProgrammerForegroundService.renewSessionLock(context, fgsText, pct)
@@ -1742,7 +1944,7 @@ object UsbOtgProgrammerService {
         }
     }
 
-    private suspend fun writeFrame32BytePackets(
+    private suspend fun writeFrame64BytePackets(
         data: ByteArray,
         timeoutMs: Int = 1000,
         onLog: (String) -> Unit
@@ -1753,7 +1955,7 @@ object UsbOtgProgrammerService {
             var offset = 0
             var totalSent = 0
             while (offset < data.size) {
-                val chunkLen = minOf(32, data.size - offset)
+                val chunkLen = minOf(64, data.size - offset)
                 val chunk = data.copyOfRange(offset, offset + chunkLen)
                 val written = conn.bulkTransfer(out, chunk, chunk.size, timeoutMs)
                 if (written <= 0) {
@@ -1762,16 +1964,16 @@ object UsbOtgProgrammerService {
                         disconnect()
                         return "USB_DETACHED:انفصل كابل USB OTG عن الهاتف أثناء الإرسال ($totalSent/${data.size})"
                     }
-                    return "bulkTransfer(OUT 32B packet) returned $written at offset=$offset ($totalSent/${data.size}, len=${chunk.size}, ep=0x%02X, attached=$attached, chip=$activeChipType)"
+                    return "bulkTransfer(OUT 64B packet) returned $written at offset=$offset ($totalSent/${data.size}, len=${chunk.size}, ep=0x%02X, attached=$attached, chip=$activeChipType)"
                         .format(out.address)
                 }
                 totalSent += written
                 offset += written
                 if (offset < data.size) {
-                    delay(20L) // 32B / 20ms FT232R pacing prevents USB-UART FIFO overflow during 260B STX frame transfers
+                    delay(15L) // 64B / 15ms safe USB-UART pacing (~4x faster than 32B/20ms without FIFO overflow)
                 }
             }
-            onLog("تم إرسال $totalSent/${data.size} بايت بنجاح (32B/20ms)")
+            onLog("تم إرسال $totalSent/${data.size} بايت بنجاح (64B/15ms)")
             null
         } catch (e: Throwable) {
             val attached = activeDevice?.deviceName?.let { usbManager?.deviceList?.containsKey(it) } ?: false
