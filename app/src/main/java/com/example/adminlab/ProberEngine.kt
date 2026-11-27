@@ -1,6 +1,8 @@
 package com.example.adminlab
 
 import android.content.Context
+import com.example.util.Nec78k0Block0Reconstructor
+import com.example.util.ProgrammerForegroundService
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -20,6 +22,8 @@ import java.util.Locale
 import kotlin.math.min
 
 class ProberEngine(context: Context) {
+
+    private val appContext = context.applicationContext
 
     companion object {
         private const val SOH = 0x01
@@ -230,6 +234,7 @@ class ProberEngine(context: Context) {
         lastLevelBSamsungHardwareAlert = null
 
         activeJob = scope.launch {
+            ProgrammerForegroundService.acquireSessionLock(appContext, "مختبر المشرفين: بدء الفحص (${family.labelAr})", 5)
             _state.value = _state.value.copy(
                 phase = ProberStagePhase.RUNNING_SAFE_PIPELINE,
                 stageBanner = "جاري تنفيذ المرحلة 1: التوجيه الذكي للمبرمجة والبحث عن المعمارية والهوية الخام...",
@@ -252,6 +257,7 @@ class ProberEngine(context: Context) {
                 }
 
                 // STAGE 1: Universal Programmer Router + 7-Arch USBDM Scanner / UART Blind Sync
+                ProgrammerForegroundService.renewSessionLock(appContext, "مختبر المشرفين: المرحلة 1 (المزامنة)", 15)
                 updateStep("stage1_handshake", ChecklistStepStatus.RUNNING, "تشخيص المبرمجة (${transport.currentChip().displayName}) وبحث العائلة والهوية الخام...")
                 val sync = runStage1UniversalBlindHandshake(family)
                 if (sync == null) {
@@ -288,6 +294,7 @@ class ProberEngine(context: Context) {
                 pendingConfirmDeferred = null
                 _state.value = _state.value.copy(pendingConfirmDialog = null)
                 transport.enterSafeIdleAndClose()
+                ProgrammerForegroundService.releaseSessionLock(appContext)
             }
         }
     }
@@ -299,6 +306,7 @@ class ProberEngine(context: Context) {
         activeWinningOscPayload = null
 
         activeJob = scope.launch {
+            ProgrammerForegroundService.acquireSessionLock(appContext, "مختبر المشرفين: وضع تجاوز التزامن", 10)
             val defaultBaud = when (family) {
                 ProberTargetFamily.STM32_UART -> 115200
                 ProberTargetFamily.FREESCALE_HCS08 -> 1_500_000
@@ -462,6 +470,7 @@ class ProberEngine(context: Context) {
                 pendingConfirmDeferred = null
                 _state.value = _state.value.copy(pendingConfirmDialog = null)
                 transport.enterSafeIdleAndClose()
+                ProgrammerForegroundService.releaseSessionLock(appContext)
             }
         }
     }
@@ -666,8 +675,11 @@ class ProberEngine(context: Context) {
             }
         }
 
-        // STAGE 5: Sequential Modal Warning Dialog (No Hot-Swap!)
+        // STAGE 5 / STAGE 6 ORDER:
+        // For locked NEC 78K0 (School 2.6 Differential 0x40+0xB0), execute Stage 6 Live Read Proof FIRST before Stage 5 (and before 0x20 Mass Erase)
+        // so real flash bytes (0x000400..0x000407) are proven and saved into UNIVERSAL_READ_PROTOCOL_V1 before wiping the chip!
         if (isMcuOpenForSafeRead) {
+            ProgrammerForegroundService.renewSessionLock(appContext, "مختبر المشرفين: المرحلة 6 (إثبات السحب)", 85)
             updateStep("stage5_safety_gate", ChecklistStepStatus.PASSED, "المعالج مفتوح للسحب الآمن — لا حاجة لاختبارات تعديلية خطرة")
             var finalSummary = summary.copy(
                 advancedSchoolsNotes = "المعالج مفتوح للسحب الآمن ($winningReadDesc) — اكتملت المراحل 1..4 دون لمس الفلاش."
@@ -680,12 +692,29 @@ class ProberEngine(context: Context) {
                 phase = ProberStagePhase.COMPLETED,
                 stageBanner = "اكتمل الفحص الشامل والمرحلة 6 وتوليد البطاقات الثلاث بنجاح (المعالج مفتوح للسحب الآمن)"
             )
+        } else if (sync.framing == DetectedFraming.NEC_STX_ETX || r6.status == ChecklistStepStatus.PASSED) {
+            ProgrammerForegroundService.renewSessionLock(appContext, "مختبر المشرفين: المرحلة 6 قبل المسح الكلي", 72)
+            appendLog(
+                ProberLogDirection.INFO,
+                "🔬 المعالج مقفل (${sync.framing.label}) — تنفيذ المرحلة 6 (إثبات السحب التفاضلي الحقيقي) أولاً قبل المرحلة 5.3 (0x20 Mass Erase) لتوثيق البيانات الأصلية في UNIVERSAL_READ_PROTOCOL_V1..."
+            )
+            ensureBootloaderReady(sync, "تهيئة المرحلة 6 قبل المرحلة 5", relockOsc = true)
+            summary = runStage6UniversalLiveReadProof(sync, summary, userCancelledStage5 = false)
+            updateSummaryAndBlueprint(summary)
+            appendLog(
+                ProberLogDirection.WARN,
+                "⚠️ اكتمل توثيق المرحلة 6 وحفظ البطاقة الأولى — الانتقال الآن لبوابة الاختبارات التفاعلية بالمرحلة 5..."
+            )
+            hardwareResetAndResync(sync, "تهيئة المرحلة 5 التفاعلية بعد إتمام المرحلة 6", relockOsc = true)
+            ProgrammerForegroundService.renewSessionLock(appContext, "مختبر المشرفين: بوابة المرحلة 5", 88)
+            runStage5InteractiveDestructiveProbes(sync, summary, stage6AlreadyExecuted = true)
         } else {
             appendLog(
                 ProberLogDirection.WARN,
                 "⚠️ المعالج محمي ومقفل (فشلت القراءة المباشرة و1-بايت Checksum وRAM Stub). الانتقال إلى بوابة التحذير المنبثقة بالمرحلة 5..."
             )
-            runStage5InteractiveDestructiveProbes(sync, summary)
+            ProgrammerForegroundService.renewSessionLock(appContext, "مختبر المشرفين: بوابة المرحلة 5", 75)
+            runStage5InteractiveDestructiveProbes(sync, summary, stage6AlreadyExecuted = false)
         }
     }
 
@@ -696,6 +725,7 @@ class ProberEngine(context: Context) {
         activeJob = null
         job?.cancel()
         transport.enterSafeIdleAndClose()
+        ProgrammerForegroundService.releaseSessionLock(appContext)
         val wasBusy = _state.value.isBusy
         _state.value = _state.value.copy(
             pendingConfirmDialog = null,
@@ -4403,7 +4433,8 @@ class ProberEngine(context: Context) {
 
     private suspend fun runStage5InteractiveDestructiveProbes(
         sync: SyncLock,
-        initialSummary: ProberBlueprintSummary
+        initialSummary: ProberBlueprintSummary,
+        stage6AlreadyExecuted: Boolean = false
     ) {
         var workingSummary = initialSummary
         val results = mutableListOf<Stage5StepResult>()
@@ -4427,9 +4458,11 @@ class ProberEngine(context: Context) {
             )
             updateStep("stage5_safety_gate", stepBadge, stepDetail)
             updateSummaryAndBlueprint(workingSummary)
-            hardwareResetAndResync(sync, "تهيئة وإعادة تزامن للمرحلة 6 بعد المرحلة 5", relockOsc = true)
-            workingSummary = runStage6UniversalLiveReadProof(sync, workingSummary, userCancelledStage5 = userCancelled)
-            updateSummaryAndBlueprint(workingSummary)
+            if (!stage6AlreadyExecuted) {
+                hardwareResetAndResync(sync, "تهيئة وإعادة تزامن للمرحلة 6 بعد المرحلة 5", relockOsc = true)
+                workingSummary = runStage6UniversalLiveReadProof(sync, workingSummary, userCancelledStage5 = userCancelled)
+                updateSummaryAndBlueprint(workingSummary)
+            }
             val finalBanner = when {
                 workingSummary.liveReadProofPassed -> "$bannerMsg | ✅ المرحلة 6: ${workingSummary.liveReadProofFirst32Hex.take(23)}..."
                 workingSummary.liveReadProofMode == "Idle / Waiting for +12.5V Vpp on Pin 9" -> "⚠️ $SAMSUNG_FLOATING_HIGH_ALERT_MSG"
@@ -5233,48 +5266,56 @@ class ProberEngine(context: Context) {
                 }
             }
         } else if (sync.framing == DetectedFraming.NEC_STX_ETX) {
-            // Locked bootloader (no direct Read / no 1B 0xB0): probe blank vs non-blank safely using 0x32 & 0x13
-            var b0Check = transport.transceive(
-                buildNecCommandFrame(0x32, addrRangeBytes(0x000000, pageSize - 1)),
-                12, 280, "6.0 Blank Check [0x32 Page 0]", stopOnCompleteNecFrame = true
+            // Check Block 1 (e.g. 0x000400..0x0007FF) live 0xB0 first:
+            // Only enter Case 2 (Closed-Loop Blank Proof) if memory is already blank (0xFC04) or zeroed (0x0004);
+            // otherwise run real Differential 0x40 + 0xB0 on the locked non-blank chip BEFORE any chip erase!
+            val probeAddr = if (blockSize >= 2048) 0x000800 else 0x000400
+            val probeEnd = probeAddr + blockSize - 1
+            var b1CsRx = transport.transceive(
+                buildNecCommandFrame(0xB0, addrRangeBytes(probeAddr, probeEnd)),
+                16, 400, "6.0 Live Block-1 CS Pre-Check [0xB0 0x%06X]".format(probeAddr), stopOnCompleteNecFrame = true
             )
-            if (b0Check.isEmpty()) {
-                hardwareResetAndResync(sync, "6.0 Blank Check 0x32 Timeout", relockOsc = true)
-                b0Check = transport.transceive(
-                    buildNecCommandFrame(0x32, addrRangeBytes(0x000000, pageSize - 1)),
-                    12, 280, "6.0 Blank Check Retry [0x32 Page 0]", stopOnCompleteNecFrame = true
+            if (b1CsRx.isEmpty()) {
+                hardwareResetAndResync(sync, "6.0 Block-1 0xB0 Pre-Check Timeout", relockOsc = true)
+                b1CsRx = transport.transceive(
+                    buildNecCommandFrame(0xB0, addrRangeBytes(probeAddr, probeEnd)),
+                    16, 400, "6.0 Live Block-1 CS Pre-Check Retry [0xB0]", stopOnCompleteNecFrame = true
                 )
             }
-            if (parseNecStatus(b0Check) == STS_PARAM_ERROR) {
-                b0Check = transport.transceive(
-                    buildNecCommandFrame(0x32, addrRangeBytes(0x000000, blockSize - 1)),
-                    12, 280, "6.0 Blank Check Block-0 [0x32]", stopOnCompleteNecFrame = true
-                )
+            val b1Cs = parseChecksum16(b1CsRx) ?: run {
+                if (parseNecStatus(b1CsRx) == ACK_NEC) parseChecksum16(transport.readFollowUp(12, 260, true)) else null
             }
-            if (parseNecStatus(b0Check) == ACK_NEC) {
-                isChipBlankOrZero = true
-            } else {
-                var hdr = transport.transceive(
-                    buildNecCommandFrame(0x13, addrRangeBytes(0x000000, pageSize - 1)),
-                    12, 280, "6.0 Verify 0xFF Probe [0x13 Page 0]", stopOnCompleteNecFrame = true
-                )
-                if (hdr.isEmpty()) {
-                    hardwareResetAndResync(sync, "6.0 Verify 0x13 Header Timeout", relockOsc = true)
-                    hdr = transport.transceive(
-                        buildNecCommandFrame(0x13, addrRangeBytes(0x000000, pageSize - 1)),
-                        12, 280, "6.0 Verify 0x13 Page 0", stopOnCompleteNecFrame = true
+            if (b1Cs != null) {
+                val quickFill = Nec78k0Block0Reconstructor.fastFillByteForKnownChecksum(b1Cs)
+                if (quickFill != null) {
+                    isChipBlankOrZero = true
+                    appendLog(
+                        ProberLogDirection.WARN,
+                        "⚠️ المرحلة 6: البلوك 1 (0x%06X) فارغ/مصفر مسبقاً (0xB0=%04X => 0x%02X). الدخول في الحالة 2 (Closed-Loop Write+Verify+Checksum)...".format(
+                            probeAddr, b1Cs and 0xFFFF, quickFill.toInt() and 0xFF
+                        )
+                    )
+                } else {
+                    appendLog(
+                        ProberLogDirection.INFO,
+                        "✓ البلوك 1 (0x%06X..0x%06X) يحتوي على بيانات فعلية (0xB0=%04X) — تخطي الحالة 2 وتنفيذ الاستخراج التفاضلي الحقيقي...".format(
+                            probeAddr, probeEnd, b1Cs and 0xFFFF
+                        )
                     )
                 }
-                if (parseNecStatus(hdr) == ACK_NEC) {
-                    val vRx = transport.transceive(
-                        buildNecDataFrame(ByteArray(pageSize) { 0xFF.toByte() }, isLast = true),
-                        16, 480, "6.0 Verify All-0xFF [0x13]", stopOnCompleteNecFrame = true, paced64B = true
+            } else {
+                var b0Check = transport.transceive(
+                    buildNecCommandFrame(0x32, addrRangeBytes(probeAddr, probeAddr + pageSize - 1)),
+                    12, 280, "6.0 Blank Check [0x32 Block-1]", stopOnCompleteNecFrame = true
+                )
+                if (parseNecStatus(b0Check) == STS_PARAM_ERROR) {
+                    b0Check = transport.transceive(
+                        buildNecCommandFrame(0x32, addrRangeBytes(probeAddr, probeEnd)),
+                        12, 280, "6.0 Blank Check Full Block-1 [0x32]", stopOnCompleteNecFrame = true
                     )
-                    if (vRx.isEmpty()) {
-                        hardwareResetAndResync(sync, "6.0 Verify All-0xFF STX Timeout", relockOsc = true)
-                    } else if (effectiveNecStatus(vRx) == ACK_NEC) {
-                        isChipBlankOrZero = true
-                    }
+                }
+                if (parseNecStatus(b0Check) == ACK_NEC) {
+                    isChipBlankOrZero = true
                 }
             }
         }
@@ -5442,8 +5483,7 @@ class ProberEngine(context: Context) {
                 val csHw = parseChecksum16(csRx) ?: run {
                     if (parseNecStatus(csRx) == ACK_NEC) parseChecksum16(transport.readFollowUp(12, 280, true)) else null
                 }
-                val expectedCs16 = (0 - writePage.sumOf { it.toInt() and 0xFF }) and 0xFFFF
-                csMatched = (csHw != null && (csHw == expectedCs16 || (((csHw and 0xFF) shl 8) or (csHw ushr 8)) == expectedCs16))
+                csMatched = (csHw != null && Nec78k0Block0Reconstructor.matches78k0Checksum16(writePage, csHw))
             }
 
             if (vSup && vPass) {

@@ -1,11 +1,19 @@
 package com.example.adminlab
 
+import android.Manifest
+import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.ContextWrapper
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
+import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -92,6 +100,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.DialogProperties
+import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import java.io.File
 
@@ -107,6 +116,39 @@ fun ProtocolProberScreen(
 
     var showFamilyDropdown by remember { mutableStateOf(false) }
     val logListState = rememberLazyListState()
+    var notifPrompted by remember { mutableStateOf(false) }
+
+    val notifLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { _ -> }
+
+    LaunchedEffect(uiState.isBusy) {
+        if (uiState.isBusy &&
+            !notifPrompted &&
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+        ) {
+            val granted = ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.POST_NOTIFICATIONS
+            ) == PackageManager.PERMISSION_GRANTED
+            if (!granted) {
+                notifPrompted = true
+                notifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }
+    }
+
+    DisposableEffect(uiState.isBusy) {
+        val window = context.findProberActivity()?.window
+        if (uiState.isBusy) {
+            window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        } else {
+            window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+        onDispose {
+            window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+    }
 
     BackHandler {
         engine.stopImmediately()
@@ -937,4 +979,10 @@ private fun shareExportFile(context: Context, fileName: String, mimeType: String
     } catch (t: Throwable) {
         Toast.makeText(context, "تعذر مشاركة الملف: ${t.message}", Toast.LENGTH_SHORT).show()
     }
+}
+
+private tailrec fun Context.findProberActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findProberActivity()
+    else -> null
 }

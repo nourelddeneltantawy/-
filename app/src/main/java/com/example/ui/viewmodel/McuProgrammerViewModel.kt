@@ -1432,11 +1432,20 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
     }
 
     private fun addLog(message: String, level: LogLevel) {
+        val effectiveLevel = if (level == LogLevel.INFO) {
+            when {
+                message.contains("[WARN]") || message.contains("⚠️") -> LogLevel.WARNING
+                message.contains("[ERR]") || message.contains("❌") -> LogLevel.ERROR
+                else -> level
+            }
+        } else {
+            level
+        }
         val ts = synchronized(timeFormatLock) {
             timeFormat.format(Date())
         }
         _uiState.update { state ->
-            val updated = (state.logs + ProgrammerLogEntry(ts, message, level)).takeLast(300)
+            val updated = (state.logs + ProgrammerLogEntry(ts, message, effectiveLevel)).takeLast(300)
             state.copy(logs = updated)
         }
     }

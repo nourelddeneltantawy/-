@@ -36,6 +36,18 @@ object Nec78k0Block0Reconstructor {
      * Even offsets (offset % 2 == 0) contribute to the Low Byte; odd offsets contribute to the High Byte (* 0x0100).
      */
     fun compute78k0Word16Checksum(bytes: ByteArray, start: Int = 0, endExclusive: Int = bytes.size): Int {
+        val sum = sumWords16LE(bytes, start, endExclusive)
+        return ((0L - sum) and 0xFFFFL).toInt()
+    }
+
+    /**
+     * Direct (unsigned 16-bit sum without two's complement) of 16-bit Little-Endian words.
+     */
+    fun compute78k0Word16DirectChecksum(bytes: ByteArray, start: Int = 0, endExclusive: Int = bytes.size): Int {
+        return (sumWords16LE(bytes, start, endExclusive) and 0xFFFFL).toInt()
+    }
+
+    private fun sumWords16LE(bytes: ByteArray, start: Int, endExclusive: Int): Long {
         var sum = 0L
         val safeEnd = minOf(endExclusive, bytes.size)
         var i = start
@@ -45,11 +57,31 @@ object Nec78k0Block0Reconstructor {
             sum += (lo or (hi shl 8)).toLong()
             i += 2
         }
-        return ((0L - sum) and 0xFFFFL).toInt()
+        return sum
+    }
+
+    fun swap16(value: Int): Int {
+        val v = value and 0xFFFF
+        return (((v and 0xFF) shl 8) or (v ushr 8)) and 0xFFFF
     }
 
     /**
-     * Matches hardware 0xB0 16-bit checksum against either Byte-Sum or LE Word-16-Sum formula.
+     * Fast-fill rule for known NEC 78K0 uniform block checksums:
+     * - 0x0004 -> all 0x00 bytes
+     * - 0xFC04 -> all 0xFF bytes
+     */
+    fun fastFillByteForKnownChecksum(cs16: Int): Byte? = when (cs16 and 0xFFFF) {
+        0x0004 -> 0x00.toByte()
+        0xFC04 -> 0xFF.toByte()
+        else -> null
+    }
+
+    /**
+     * Matches hardware 0xB0 16-bit checksum across 3 NEC 78K0 formulas:
+     * 1) csByteTwos = (0x10000 - sumBytes) & 0xFFFF
+     * 2) csWord16Twos = (0x10000 - sumWords16LE) & 0xFFFF
+     * 3) csWord16Direct = sumWords16LE & 0xFFFF
+     * against both CS_orig and swap16(CS_orig).
      */
     fun matches78k0Checksum16(
         bytes: ByteArray,
@@ -58,8 +90,13 @@ object Nec78k0Block0Reconstructor {
         endExclusive: Int = bytes.size
     ): Boolean {
         val target = hardwareCs16 and 0xFFFF
-        return (compute78k0Checksum16(bytes, start, endExclusive) and 0xFFFF) == target ||
-            (compute78k0Word16Checksum(bytes, start, endExclusive) and 0xFFFF) == target
+        val swappedTarget = swap16(target)
+        val csByteTwos = compute78k0Checksum16(bytes, start, endExclusive) and 0xFFFF
+        val csWord16Twos = compute78k0Word16Checksum(bytes, start, endExclusive) and 0xFFFF
+        val csWord16Direct = compute78k0Word16DirectChecksum(bytes, start, endExclusive) and 0xFFFF
+        return csByteTwos == target || csByteTwos == swappedTarget ||
+            csWord16Twos == target || csWord16Twos == swappedTarget ||
+            csWord16Direct == target || csWord16Direct == swappedTarget
     }
 
     /**

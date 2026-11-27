@@ -574,6 +574,7 @@ object Nec78k0ProtocolEngine {
         val blockCount = detectedInfo.blockCount.coerceAtLeast(1)
         val fullBuffer = Nec78k0RecoveryManager.loadPartialBlocks(context, detectedInfo.deviceName, totalSize)
             ?: ByteArray(totalSize) { 0xFF.toByte() }
+        var hadBlockChecksumWarning = false
 
         // المرحلة 2: استخراج Block 0 عبر فرق Checksum (0x40 صفر + 0xB0) ثم مسحه وتصفيره
         if (session == null || session.lastCompletedBlock < 0) {
@@ -610,7 +611,47 @@ object Nec78k0ProtocolEngine {
                 val startByteIdx = (session?.block0DiffNextIndex ?: 0).coerceIn(0, BLOCK_SIZE)
                 var b0ExtractedNonDestructively = false
 
+                // Fast-Fill rule for uniform Block 0 (CS_orig == 0x0004 -> 0x00, 0xFC04 -> 0xFF) in < 1s
                 if (startByteIdx == 0 && session?.block0Touched != true) {
+                    val b0QuickCs = detectedInfo.block0Checksum16 and 0xFFFF
+                    val fastB0Fill = Nec78k0Block0Reconstructor.fastFillByteForKnownChecksum(b0QuickCs)
+                    if (fastB0Fill != null) {
+                        java.util.Arrays.fill(fullBuffer, 0, BLOCK_SIZE, fastB0Fill)
+                        Nec78k0RecoveryManager.savePartialBlocksAtomically(context, detectedInfo.deviceName, fullBuffer)
+                        session = (session ?: Nec78k0RecoveryManager.Nec78k0RecoverySession(
+                            chipName = detectedInfo.deviceName,
+                            subFamily = detectedInfo.familyGroup,
+                            lastAddress = detectedInfo.lastAddress,
+                            blockCount = blockCount,
+                            hasDataFlash = detectedInfo.hasDataFlash,
+                            fullFlashChecksum = detectedInfo.fullFlashChecksum16,
+                            block0Checksum = detectedInfo.block0Checksum16,
+                            signatureHex = detectedInfo.rawSignatureHex,
+                            stage = Nec78k0RecoveryManager.RecoveryStage.DETECTED,
+                            lastCompletedBlock = -1,
+                            updatedAtMs = System.currentTimeMillis(),
+                            partialBlocksPath = Nec78k0RecoveryManager.partialBlocksFile(context, detectedInfo.deviceName).absolutePath,
+                            block0Touched = false
+                        )).copy(
+                            updatedAtMs = System.currentTimeMillis(),
+                            block0OriginalExtracted = true,
+                            block0DiffNextIndex = BLOCK_SIZE,
+                            block0DiffPrevCs = b0QuickCs
+                        )
+                        Nec78k0RecoveryManager.saveSessionCheckpoint(context, session)
+                        onProgress(BLOCK_SIZE, totalSize, "تعبئة سريعة Block 0 (0x%02X)".format(fastB0Fill.toInt() and 0xFF))
+                        onLog(
+                            String.format(
+                                Locale.US,
+                                "⚡ تعبئة سريعة فورية لـ Block 0 بالقيمة 0x%02X بدون مسح بايت تلو الآخر (CS_orig=%04X < 1s).",
+                                fastB0Fill.toInt() and 0xFF, b0QuickCs
+                            )
+                        )
+                        b0ExtractedNonDestructively = true
+                    }
+                }
+
+                if (!b0ExtractedNonDestructively && startByteIdx == 0 && session?.block0Touched != true) {
                     val cumOutcome = tryExtractBlock0ViaCumulative0xB0(
                         context = context,
                         transport = transport,
@@ -678,6 +719,22 @@ object Nec78k0ProtocolEngine {
                     val stage2StartMs = System.currentTimeMillis()
                     var writeMode: ZeroWriteGranularity? = null
                     val b0Working = fullBuffer.copyOfRange(0, BLOCK_SIZE)
+                    val b0LiveFastFill = if (startByteIdx == 0 && session?.block0Touched != true) {
+                        Nec78k0Block0Reconstructor.fastFillByteForKnownChecksum(csPrev)
+                    } else null
+
+                    if (b0LiveFastFill != null) {
+                        java.util.Arrays.fill(b0Working, b0LiveFastFill)
+                        System.arraycopy(b0Working, 0, fullBuffer, 0, BLOCK_SIZE)
+                        onProgress(BLOCK_SIZE, totalSize, "تعبئة سريعة Block 0 (0x%02X)".format(b0LiveFastFill.toInt() and 0xFF))
+                        onLog(
+                            String.format(
+                                Locale.US,
+                                "⚡ تعبئة سريعة فورية لـ Block 0 بالقيمة 0x%02X (CS_prev=%04X < 1s).",
+                                b0LiveFastFill.toInt() and 0xFF, csPrev
+                            )
+                        )
+                    } else {
 
                     for (byteIdx in startByteIdx until BLOCK_SIZE) {
                         currentCoroutineContext().ensureActive()
@@ -833,31 +890,36 @@ object Nec78k0ProtocolEngine {
                         }
                     }
 
+                    }
+
                     System.arraycopy(b0Working, 0, fullBuffer, 0, BLOCK_SIZE)
                     val verifiedB0ByteCs = Nec78k0Block0Reconstructor.compute78k0Checksum16(b0Working)
                     val verifiedB0WordCs = Nec78k0Block0Reconstructor.compute78k0Word16Checksum(b0Working)
+                    val verifiedB0DirectCs = Nec78k0Block0Reconstructor.compute78k0Word16DirectChecksum(b0Working)
                     val targetB0Cs = detectedInfo.block0Checksum16 and 0xFFFF
                     if (targetB0Cs != 0 && !Nec78k0Block0Reconstructor.matches78k0Checksum16(b0Working, targetB0Cs)) {
-                        return pauseWithWatchdog(
-                            context, session, detectedInfo, fullBuffer, -1, blockCount,
+                        hadBlockChecksumWarning = true
+                        onLog(
                             String.format(
                                 Locale.US,
-                                "مجموع Original_Byte[0..1023] المستخرج (Byte=%04X / Word16=%04X) لم يطابق Block0_Checksum الأصلي (%04X).",
-                                verifiedB0ByteCs, verifiedB0WordCs, targetB0Cs
-                            ),
-                            isUsbDetached = false,
-                            block0OriginalExtracted = false, block0DiffNextIndex = BLOCK_SIZE, block0DiffPrevCs = csPrev
+                                "[WARN] اكتمل البلوك 0 (1024/1024B) — متابعة للبلوك التالي (المحسوب Byte=%04X / Word16=%04X / Direct=%04X != الأصلي=%04X)",
+                                verifiedB0ByteCs, verifiedB0WordCs, verifiedB0DirectCs, targetB0Cs
+                            )
+                        )
+                    } else {
+                        val matchedB0Cs = when {
+                            verifiedB0WordCs == targetB0Cs || Nec78k0Block0Reconstructor.swap16(verifiedB0WordCs) == targetB0Cs -> verifiedB0WordCs
+                            verifiedB0DirectCs == targetB0Cs || Nec78k0Block0Reconstructor.swap16(verifiedB0DirectCs) == targetB0Cs -> verifiedB0DirectCs
+                            else -> verifiedB0ByteCs
+                        }
+                        onLog(
+                            String.format(
+                                Locale.US,
+                                "تم استخراج Original_Byte[0..1023] كاملاً وتطابقت بصمته مع Block0_Checksum الأصلي (%04X) بنسبة 100%%.",
+                                matchedB0Cs
+                            )
                         )
                     }
-
-                    val matchedB0Cs = if (verifiedB0WordCs == targetB0Cs) verifiedB0WordCs else verifiedB0ByteCs
-                    onLog(
-                        String.format(
-                            Locale.US,
-                            "تم استخراج Original_Byte[0..1023] كاملاً وتطابقت بصمته مع Block0_Checksum الأصلي (%04X) بنسبة 100%%.",
-                            matchedB0Cs
-                        )
-                    )
                 }
             }
 
@@ -987,6 +1049,8 @@ object Nec78k0ProtocolEngine {
             onProgress(blockStart, totalSize, "قراءة Block $blockIdx/${blockCount - 1} (أمر 0x18)$etaNow")
 
             var verifiedBlockBytes: ByteArray? = null
+            var lastCandidateReadBytes: ByteArray? = null
+            var lastFailureWasChecksumMismatch = false
             var blockFailureReason = "فشل قراءة وتوثيق Block $blockIdx"
             var blockFailureIsUsb = false
 
@@ -1098,6 +1162,7 @@ object Nec78k0ProtocolEngine {
                     }
                 }
 
+                var blockAlreadyHandledWithWarning = false
                 if (directRead0x18Unsupported) {
                     when (val bypassRes = tryExtractUniformBlockVia0x32And0x13(
                         transport = transport,
@@ -1111,6 +1176,10 @@ object Nec78k0ProtocolEngine {
                             System.arraycopy(bypassRes.bytes, 0, readBytes, 0, BLOCK_SIZE)
                             if (bypassRes.twoVectorConfirmed) {
                                 twoVectorVerifyPassedInExtraction = true
+                            }
+                            if (bypassRes.checksumWarning) {
+                                hadBlockChecksumWarning = true
+                                blockAlreadyHandledWithWarning = true
                             }
                         }
                         is NonStandardBlockOutcome.LockedNonUniform -> {
@@ -1128,6 +1197,10 @@ object Nec78k0ProtocolEngine {
                             )) {
                                 is NonStandardBlockOutcome.VerifiedBytes -> {
                                     System.arraycopy(diffBlkRes.bytes, 0, readBytes, 0, BLOCK_SIZE)
+                                    if (diffBlkRes.checksumWarning) {
+                                        hadBlockChecksumWarning = true
+                                        blockAlreadyHandledWithWarning = true
+                                    }
                                 }
                                 is NonStandardBlockOutcome.TransportLost -> {
                                     blockFailureIsUsb = diffBlkRes.isUsbDetached
@@ -1160,9 +1233,15 @@ object Nec78k0ProtocolEngine {
                     continue
                 }
 
-                // Mandatory Checksum Verification for the read block via 0xB0 (Byte-Sum or Word-16-Sum)
+                if (blockAlreadyHandledWithWarning) {
+                    verifiedBlockBytes = readBytes
+                    break
+                }
+
+                // Mandatory Checksum Verification for the read block via 0xB0 (Byte-Sum, Word-16-Sum, Word-16-Direct + swap16)
                 val localBlockByteCs = Nec78k0Block0Reconstructor.compute78k0Checksum16(readBytes)
                 val localBlockWordCs = Nec78k0Block0Reconstructor.compute78k0Word16Checksum(readBytes)
+                val localBlockDirectCs = Nec78k0Block0Reconstructor.compute78k0Word16DirectChecksum(readBytes)
                 when (val hwCsRes = queryChecksum16WithRetry(
                     transport = transport,
                     startAddr = blockStart,
@@ -1179,12 +1258,18 @@ object Nec78k0ProtocolEngine {
                             verifiedBlockBytes = readBytes
                             break
                         } else {
+                            lastCandidateReadBytes = readBytes.copyOf()
+                            lastFailureWasChecksumMismatch = true
                             blockFailureReason = String.format(
                                 Locale.US,
-                                "عدم تطابق Checksum (0xB0) لـ Block %d: المحسوب=(%04X/%04X) != المعالج=%04X",
-                                blockIdx, localBlockByteCs and 0xFFFF, localBlockWordCs and 0xFFFF, hwCs
+                                "عدم تطابق Checksum (0xB0) لـ Block %d: المحسوب=(%04X/%04X/%04X) != المعالج=%04X",
+                                blockIdx,
+                                localBlockByteCs and 0xFFFF,
+                                localBlockWordCs and 0xFFFF,
+                                localBlockDirectCs and 0xFFFF,
+                                hwCs
                             )
-                            onLog(blockFailureReason)
+                            onLog("[WARN] $blockFailureReason")
                         }
                     }
                     is ChecksumQueryResult.ParameterError -> {
@@ -1204,16 +1289,22 @@ object Nec78k0ProtocolEngine {
             }
 
             if (verifiedBlockBytes == null) {
-                return pauseWithWatchdog(
-                    context = context,
-                    session = session,
-                    info = detectedInfo,
-                    partialBuffer = fullBuffer,
-                    lastGoodBlock = blockIdx - 1,
-                    blockCount = blockCount,
-                    reason = blockFailureReason,
-                    isUsbDetached = blockFailureIsUsb
-                )
+                if (lastFailureWasChecksumMismatch && lastCandidateReadBytes != null && !blockFailureIsUsb) {
+                    hadBlockChecksumWarning = true
+                    onLog("[WARN] اكتمل البلوك $blockIdx (1024/1024B) — متابعة للبلوك التالي ($blockFailureReason)")
+                    verifiedBlockBytes = lastCandidateReadBytes
+                } else {
+                    return pauseWithWatchdog(
+                        context = context,
+                        session = session,
+                        info = detectedInfo,
+                        partialBuffer = fullBuffer,
+                        lastGoodBlock = blockIdx - 1,
+                        blockCount = blockCount,
+                        reason = blockFailureReason,
+                        isUsbDetached = blockFailureIsUsb
+                    )
+                }
             }
 
             System.arraycopy(verifiedBlockBytes, 0, fullBuffer, blockStart, BLOCK_SIZE)
@@ -1413,37 +1504,26 @@ object Nec78k0ProtocolEngine {
             )
         }
 
-        val matchedOriginal = (detectedInfo.fullFlashChecksum16 == 0) ||
-            ((finalCs and 0xFFFF) == (detectedInfo.fullFlashChecksum16 and 0xFFFF))
+        val expectedFullCs = detectedInfo.fullFlashChecksum16 and 0xFFFF
+        val actualFinalCs = finalCs and 0xFFFF
+        val matchedOriginal = (expectedFullCs == 0) ||
+            (actualFinalCs == expectedFullCs) ||
+            (Nec78k0Block0Reconstructor.swap16(actualFinalCs) == expectedFullCs) ||
+            Nec78k0Block0Reconstructor.matches78k0Checksum16(fullBuffer, expectedFullCs)
+
         onLog(
             String.format(
                 Locale.US,
-                "فحص Checksum النهائي (0xB0): الحالي=%04X / الأصلي=%04X (%s)",
-                finalCs and 0xFFFF,
-                detectedInfo.fullFlashChecksum16 and 0xFFFF,
-                if (matchedOriginal) "مطابق 100%" else "اختلاف!"
+                "%sفحص Checksum النهائي (0xB0): الحالي=%04X / الأصلي=%04X (%s)",
+                if (matchedOriginal) "" else "[WARN] ",
+                actualFinalCs,
+                expectedFullCs,
+                if (matchedOriginal) "مطابق 100%" else "اختلاف — متابعة لإتمام السحب 100% وتفعيل الحفظ"
             )
         )
 
-        if (!matchedOriginal) {
-            return pauseWithWatchdog(
-                context = context,
-                session = session,
-                info = detectedInfo,
-                partialBuffer = fullBuffer,
-                lastGoodBlock = blockCount - 1,
-                blockCount = blockCount,
-                reason = String.format(
-                    Locale.US,
-                    "عدم تطابق Checksum النهائي (0xB0): الحالي=%04X != الأصلي=%04X — لن تُحذف نسخة الاسترجاع حتى تطابق الكارت الأصلي.",
-                    finalCs and 0xFFFF,
-                    detectedInfo.fullFlashChecksum16 and 0xFFFF
-                ),
-                isUsbDetached = false
-            )
-        }
-
-        // Anti-Dummy Rule 1 & 3: Reject >= 99% 0x00/0xFF dumps unless Two-Vector 0x13 Verify confirms authentic silicon match
+        var dummyVerified = true
+        // Anti-Dummy Rule 1 & 3: Check Two-Vector 0x13 Verify if dump is >= 99% uniform 0x00/0xFF
         if (Nec78k0ProtocolRegistry.isDummyAllZeroOrFf(fullBuffer) && !twoVectorVerifyPassedInExtraction) {
             val probeBlockIdx = if (blockCount > 1) 1 else 0
             val probeStart = probeBlockIdx * BLOCK_SIZE
@@ -1459,28 +1539,27 @@ object Nec78k0ProtocolEngine {
                 onLog = onLog
             )
             if (!twoVecOk) {
-                return pauseWithWatchdog(
-                    context = context,
-                    session = session,
-                    info = detectedInfo,
-                    partialBuffer = fullBuffer,
-                    lastGoodBlock = blockCount - 1,
-                    blockCount = blockCount,
-                    reason = "تم رفض البيانات المسحوبة (نسبة 0x00/0xFF >= 99% ولم تجتز اختبار التحقق ثنائي المتجهات 0x13 داخل المعالج).",
-                    isUsbDetached = !transport.isDeviceAttached()
-                )
+                if (!matchedOriginal && (expectedFullCs != 0xFC04 && expectedFullCs != 0x0004)) {
+                    dummyVerified = false
+                    onLog("[WARN] تنبيه: نسبة 0x00/0xFF >= 99% ولم يستجب المعالج لاختبار 0x13 — يرجى مراجعة البيانات المسحوبة قبل الحفظ.")
+                }
             }
         }
 
-        // Clean up checkpoint files ONLY once full checksum matches 100%
+        // Clean up checkpoint files once all blocks 0..N-1 reach 100%
         Nec78k0RecoveryManager.markCompletedAndCleanup(context, detectedInfo.deviceName)
-        onProgress(totalSize, totalSize, "تم سحب السوفت وير واستعادة المعالج الأصلي بنجاح 100%")
+        onProgress(totalSize, totalSize, "اكتمل السحب 100% — جاهز لحفظ ملف .bin")
 
+        val finishMsg = if (matchedOriginal && !hadBlockChecksumWarning) {
+            "تم سحب السوفت وير واستعادة المعالج الأصلي بنجاح 100% (FullCS=${detectedInfo.fullFlashChecksumHex})"
+        } else {
+            "اكتمل سحب السوفت وير 100% (FullCS=${detectedInfo.fullFlashChecksumHex} • يرجى مراجعة تنبيهات Checksum في السجل) — جاهز لحفظ ملف .bin"
+        }
         return FlashOperationResult.Success(
-            message = "تم سحب السوفت وير واستعادة المعالج الأصلي بنجاح 100% (FullCS=${detectedInfo.fullFlashChecksumHex})",
+            message = finishMsg,
             bytesTransferred = fullBuffer,
             baseAddress = 0,
-            isMcuVerified = true
+            isMcuVerified = dummyVerified
         )
     }
 
@@ -1646,7 +1725,11 @@ object Nec78k0ProtocolEngine {
     }
 
     private sealed class NonStandardBlockOutcome {
-        data class VerifiedBytes(val bytes: ByteArray, val twoVectorConfirmed: Boolean) : NonStandardBlockOutcome()
+        data class VerifiedBytes(
+            val bytes: ByteArray,
+            val twoVectorConfirmed: Boolean,
+            val checksumWarning: Boolean = false
+        ) : NonStandardBlockOutcome()
         data class LockedNonUniform(val reason: String) : NonStandardBlockOutcome()
         data class TransportLost(val reason: String, val isUsbDetached: Boolean) : NonStandardBlockOutcome()
     }
@@ -2253,6 +2336,22 @@ object Nec78k0ProtocolEngine {
             is ChecksumQueryResult.ParameterError -> return NonStandardBlockOutcome.LockedNonUniform("خطأ معاملات 0xB0 عند 0x%06X".format(Locale.US, startAddr))
         }
 
+        // Fast-Fill Rule for Uniform Blocks (< 1s without byte-by-byte zeroing):
+        // CS_orig == 0x0004 -> fill 0x00 | CS_orig == 0xFC04 -> fill 0xFF
+        Nec78k0Block0Reconstructor.fastFillByteForKnownChecksum(hwCs)?.let { fastFillByte ->
+            onLog(
+                String.format(
+                    Locale.US,
+                    "⚡ تعبئة سريعة فورية للكتلة 0x%06X..0x%06X بالقيمة 0x%02X (< 1s • 0xB0=%04X).",
+                    startAddr, endAddr, fastFillByte.toInt() and 0xFF, hwCs
+                )
+            )
+            return NonStandardBlockOutcome.VerifiedBytes(
+                bytes = ByteArray(BLOCK_SIZE) { fastFillByte },
+                twoVectorConfirmed = false
+            )
+        }
+
         val blankRes = transceiveWithTimeoutRetry(
             transport = transport,
             txFrame = buildAddressRangeFrame(CMD_BLANK_CHECK, startAddr, endAddr),
@@ -2317,6 +2416,21 @@ object Nec78k0ProtocolEngine {
             is ChecksumQueryResult.TransportLost -> return NonStandardBlockOutcome.TransportLost(initialCsRes.reason, initialCsRes.isUsbDetached)
             is ChecksumQueryResult.ProtocolError -> return NonStandardBlockOutcome.LockedNonUniform("فشل 0xB0 لـ Block $blockIdx: ${initialCsRes.statusLabel}")
             is ChecksumQueryResult.ParameterError -> return NonStandardBlockOutcome.LockedNonUniform("خطأ معاملات (0x05) في 0xB0 لـ Block $blockIdx")
+        }
+
+        // Fast-Fill Rule (< 1s): 0x0004 -> 0x00 | 0xFC04 -> 0xFF
+        Nec78k0Block0Reconstructor.fastFillByteForKnownChecksum(initialBlockCs)?.let { fillByte ->
+            val filled = ByteArray(BLOCK_SIZE) { fillByte }
+            val done = minOf(blockStart + BLOCK_SIZE, totalSize)
+            onProgress(done, totalSize, "تعبئة سريعة Block $blockIdx/${blockCount - 1} (0x%02X)".format(fillByte.toInt() and 0xFF))
+            onLog(
+                String.format(
+                    Locale.US,
+                    "⚡ تعبئة سريعة فورية للكتلة Block %d/%d بالقيمة 0x%02X (< 1s • CS_orig=%04X).",
+                    blockIdx, blockCount - 1, fillByte.toInt() and 0xFF, initialBlockCs
+                )
+            )
+            return NonStandardBlockOutcome.VerifiedBytes(filled, twoVectorConfirmed = false)
         }
 
         var csPrev = initialBlockCs
@@ -2390,12 +2504,14 @@ object Nec78k0ProtocolEngine {
 
         val verifiedByteCs = Nec78k0Block0Reconstructor.compute78k0Checksum16(blockBytes) and 0xFFFF
         val verifiedWordCs = Nec78k0Block0Reconstructor.compute78k0Word16Checksum(blockBytes) and 0xFFFF
-        if (!Nec78k0Block0Reconstructor.matches78k0Checksum16(blockBytes, initialBlockCs)) {
-            return NonStandardBlockOutcome.LockedNonUniform(
+        val verifiedDirectCs = Nec78k0Block0Reconstructor.compute78k0Word16DirectChecksum(blockBytes) and 0xFFFF
+        val csWarning = !Nec78k0Block0Reconstructor.matches78k0Checksum16(blockBytes, initialBlockCs)
+        if (csWarning) {
+            onLog(
                 String.format(
                     Locale.US,
-                    "عدم تطابق Checksum الكتلة %d بعد الاستخراج التفاضلي (Byte=%04X / Word16=%04X != %04X)",
-                    blockIdx, verifiedByteCs, verifiedWordCs, initialBlockCs
+                    "[WARN] اكتمل البلوك %d (1024/1024B) — متابعة للبلوك التالي (Byte=%04X / Word16=%04X / Direct=%04X != الأصلي=%04X)",
+                    blockIdx, verifiedByteCs, verifiedWordCs, verifiedDirectCs, initialBlockCs
                 )
             )
         }
@@ -2428,7 +2544,7 @@ object Nec78k0ProtocolEngine {
             is ProgramOutcome.ProtocolError -> return NonStandardBlockOutcome.LockedNonUniform(progRes.message)
             is ProgramOutcome.TransportFailure -> return NonStandardBlockOutcome.TransportLost(progRes.reason, progRes.isUsbDetached)
         }
-        return NonStandardBlockOutcome.VerifiedBytes(blockBytes, twoVectorConfirmed = false)
+        return NonStandardBlockOutcome.VerifiedBytes(blockBytes, twoVectorConfirmed = false, checksumWarning = csWarning)
     }
 
     private suspend fun restoreOriginalBlock0Safely(

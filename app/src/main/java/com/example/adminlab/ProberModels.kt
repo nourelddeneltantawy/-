@@ -500,7 +500,7 @@ fun defaultChecklist(): List<ChecklistStepItem> = listOf(
     ChecklistStepItem("stage3_cmd_sweep", "المرحلة 3", "المسح الجراحي الشامل للأوامر أو أوامر المبرمجة وأطوال المعاملات"),
     ChecklistStepItem("stage4_timing_bounds", "المرحلة 4", "فحص حدود الفلاش الديناميكي (4KB..2MB) + التردد 0x90 + السرعات + 6 أزمنة"),
     ChecklistStepItem("stage5_safety_gate", "المرحلة 5", "بوابة الأمان التفاعلية (تصفير Block 0 / Mass Erase / الكتابة الجزئية)"),
-    ChecklistStepItem("stage6_live_read_proof", "المرحلة 6", "إثبات صحة السحب الفعلي (Universal Live Read Proof — عينة مليئة أو فارغة 0xFF)")
+    ChecklistStepItem("stage6_live_read_proof", "المرحلة 6", "إثبات صحة السحب الفعلي قبل المسح الكلي (Universal Live Read Proof — عينة حية أو فارغة 0xFF)")
 )
 
 private fun jsonEsc(v: String): String = v

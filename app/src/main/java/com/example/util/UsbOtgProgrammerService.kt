@@ -366,6 +366,9 @@ object UsbOtgProgrammerService {
      * Captures every incoming byte from CP2102 / FT232RL / CH340G immediately into rxBuffer
      * BEFORE commands are transmitted, preventing fast UART responses from ever being missed.
      */
+    @Volatile
+    private var lastUsbLoopBeatMs: Long = 0L
+
     private fun startContinuousReaderLoop(conn: UsbDeviceConnection, epIn: UsbEndpoint) {
         readerJob?.cancel()
         readerJob = serviceScope.launch {
@@ -373,6 +376,7 @@ object UsbOtgProgrammerService {
             val buf = ByteArray(pktSize)
             try {
                 while (isActive && activeConnection === conn) {
+                    lastUsbLoopBeatMs = System.currentTimeMillis()
                     val n = conn.bulkTransfer(epIn, buf, buf.size, 60)
                     if (n > 0) {
                         val startIdx = if (activeChipType == ProgrammerChipType.FT232RL) 2 else 0
@@ -852,7 +856,12 @@ object UsbOtgProgrammerService {
         val effDtrRts = if (is78k0) true else enableDtrRtsReset
         val initialBaud = if (processor.protocolType == ProtocolFamilyType.R8C_M16C || is78k0) 9600 else baudRate
 
-        ProgrammerForegroundService.acquireSessionLock(context, "جاري قراءة ذاكرة ${processor.partNumber}...")
+        ProgrammerForegroundService.acquireSessionLock(context, "جاري قراءة ذاكرة ${processor.partNumber}...", 0)
+        val trackedProgress = wrapProgressWithFgs(
+            context = context,
+            defaultActionLabel = "جاري قراءة ${processor.partNumber}...",
+            onProgress = onProgress
+        )
         try {
             if (!ensureConnectionHealthy(context, preferredChip, initialBaud, effDtrRts, onLog)) {
                 return@withContext FlashOperationResult.Failure("يجب الاتصال بمبرمجة USB OTG أولاً.")
@@ -867,7 +876,7 @@ object UsbOtgProgrammerService {
                     idBytes = idCodeBytes,
                     dataFlashMode = dataFlashMode,
                     onLog = onLog,
-                    onProgress = onProgress
+                    onProgress = trackedProgress
                 )
             }
 
@@ -883,12 +892,12 @@ object UsbOtgProgrammerService {
                     preDetectedInfo = preDetected78k0Info,
                     onDetectedInfo = on78k0DetectedInfo,
                     onLog = onLog,
-                    onProgress = onProgress
+                    onProgress = trackedProgress
                 )
             }
 
             val totalSize = processor.flashSizeBytes
-            onProgress(0, totalSize, "مزامنة المعالج...")
+            trackedProgress(0, totalSize, "مزامنة المعالج...")
             val syncMode = resolveBootSyncMode(processor.mainFamily)
             if (!performSyncHandshake(effDtrRts, syncMode, onLog)) {
                 return@withContext FlashOperationResult.Failure("فشلت مرحلة الإرسال أثناء المزامنة (راجع سجل الأحداث).")
@@ -921,7 +930,7 @@ object UsbOtgProgrammerService {
                 val copyLen = min(chunk.size, totalSize - addr)
                 System.arraycopy(chunk, 0, resultBuffer, addr, copyLen)
                 bytesReadFromChip += copyLen
-                onProgress(
+                trackedProgress(
                     bytesReadFromChip,
                     totalSize,
                     "قراءة بلوك ${blockIdx + 1}/$totalBlocks (0x%06X)".format(addr)
@@ -958,7 +967,12 @@ object UsbOtgProgrammerService {
         val effDtrRts = if (is78k0) true else enableDtrRtsReset
         val initialBaud = if (processor.protocolType == ProtocolFamilyType.R8C_M16C || is78k0) 9600 else baudRate
 
-        ProgrammerForegroundService.acquireSessionLock(context, "جاري مسح ذاكرة ${processor.partNumber}...")
+        ProgrammerForegroundService.acquireSessionLock(context, "جاري مسح ذاكرة ${processor.partNumber}...", 0)
+        val trackedProgress = wrapProgressWithFgs(
+            context = context,
+            defaultActionLabel = "جاري مسح ${processor.partNumber}...",
+            onProgress = onProgress
+        )
         try {
             if (!ensureConnectionHealthy(context, preferredChip, initialBaud, effDtrRts, onLog)) {
                 return@withContext FlashOperationResult.Failure("يجب الاتصال بمبرمجة USB OTG أولاً.")
@@ -972,7 +986,7 @@ object UsbOtgProgrammerService {
                     baudRate = baudRate,
                     idBytes = idCodeBytes,
                     onLog = onLog,
-                    onProgress = onProgress
+                    onProgress = trackedProgress
                 )
             }
 
@@ -988,7 +1002,7 @@ object UsbOtgProgrammerService {
                     preDetectedInfo = preDetected78k0Info,
                     onDetectedInfo = on78k0DetectedInfo,
                     onLog = onLog,
-                    onProgress = onProgress
+                    onProgress = trackedProgress
                 )
             }
 
@@ -998,7 +1012,7 @@ object UsbOtgProgrammerService {
                 return@withContext FlashOperationResult.Failure("فشلت مرحلة الإرسال أثناء المزامنة.")
             }
 
-            onProgress(totalSize / 3, totalSize, "إرسال أمر المسح ($eraseMode)...")
+            trackedProgress(totalSize / 3, totalSize, "إرسال أمر المسح ($eraseMode)...")
             val eraseCmd = when (processor.protocolType) {
                 ProtocolFamilyType.RL78_RX -> byteArrayOf(0x01, 0x04, 0x22, 0x00, 0x00, 0x00, 0xD9.toByte(), 0x03)
                 else -> byteArrayOf(0x20, 0xD0.toByte())
@@ -1007,7 +1021,7 @@ object UsbOtgProgrammerService {
             if (ack.isEmpty()) {
                 return@withContext FlashOperationResult.Failure("لم يرد المعالج بتأكيد إتمام المسح (Timeout 1500ms).")
             }
-            onProgress(totalSize, totalSize, "اكتمل المسح")
+            trackedProgress(totalSize, totalSize, "اكتمل المسح")
             FlashOperationResult.Success("تم مسح ذاكرة الفلاش بنجاح (${toHex(ack)}).")
         } finally {
             ProgrammerForegroundService.releaseSessionLock(context)
@@ -1042,7 +1056,12 @@ object UsbOtgProgrammerService {
         val initialBaud = if (processor.protocolType == ProtocolFamilyType.R8C_M16C || is78k0) 9600 else baudRate
 
         val fgsMsg = if (verifyOnly) "جاري مطابقة ${processor.partNumber}..." else "جاري شحن وكتابة ${processor.partNumber}..."
-        ProgrammerForegroundService.acquireSessionLock(context, fgsMsg)
+        ProgrammerForegroundService.acquireSessionLock(context, fgsMsg, 0)
+        val trackedProgress = wrapProgressWithFgs(
+            context = context,
+            defaultActionLabel = fgsMsg,
+            onProgress = onProgress
+        )
         try {
             if (!ensureConnectionHealthy(context, preferredChip, initialBaud, effDtrRts, onLog)) {
                 return@withContext FlashOperationResult.Failure("يجب الاتصال بمبرمجة USB OTG أولاً.")
@@ -1061,7 +1080,7 @@ object UsbOtgProgrammerService {
                         dataFlashMode = dataFlashMode,
                         dataFlashBytes = dataFlashBytes,
                         onLog = onLog,
-                        onProgress = onProgress
+                        onProgress = trackedProgress
                     )
                 } else {
                     R8cProtocolEngine.writeFlash(
@@ -1076,7 +1095,7 @@ object UsbOtgProgrammerService {
                         autoEraseBeforeWrite = autoEraseBeforeWrite,
                         autoVerifyAfterWrite = autoVerifyAfterWrite,
                         onLog = onLog,
-                        onProgress = onProgress
+                        onProgress = trackedProgress
                     )
                 }
             }
@@ -1096,7 +1115,7 @@ object UsbOtgProgrammerService {
                         preDetectedInfo = preDetected78k0Info,
                         onDetectedInfo = on78k0DetectedInfo,
                         onLog = onLog,
-                        onProgress = onProgress
+                        onProgress = trackedProgress
                     )
                 } else {
                     Nec78k0FlashWriterEngine.writeFlash(
@@ -1113,7 +1132,7 @@ object UsbOtgProgrammerService {
                         preDetectedInfo = preDetected78k0Info,
                         onDetectedInfo = on78k0DetectedInfo,
                         onLog = onLog,
-                        onProgress = onProgress
+                        onProgress = trackedProgress
                     )
                 }
             }
@@ -1133,7 +1152,7 @@ object UsbOtgProgrammerService {
             val slice = firmwareBytes.copyOfRange(offset, offset + len)
 
             if (!verifyOnly && slice.all { it == 0xFF.toByte() }) {
-                onProgress(bytesDone, totalSize, "تخطي صفحة فارغة 0x%06X".format(offset))
+                trackedProgress(bytesDone, totalSize, "تخطي صفحة فارغة 0x%06X".format(offset))
                 continue
             }
 
@@ -1179,7 +1198,7 @@ object UsbOtgProgrammerService {
                 }
             }
 
-            onProgress(
+            trackedProgress(
                 bytesDone,
                 totalSize,
                 "${if (verifyOnly) "مطابقة" else "كتابة"} صفحة ${page + 1}/$totalPages (0x%06X)".format(offset)
@@ -1195,6 +1214,17 @@ object UsbOtgProgrammerService {
         } finally {
             ProgrammerForegroundService.releaseSessionLock(context)
         }
+    }
+
+    private fun wrapProgressWithFgs(
+        context: Context,
+        defaultActionLabel: String,
+        onProgress: (bytesDone: Int, totalBytes: Int, label: String) -> Unit
+    ): (Int, Int, String) -> Unit = { done, total, label ->
+        val pct = if (total > 0) ((done.toLong() * 100L) / total.toLong()).toInt().coerceIn(0, 100) else -1
+        val fgsText = if (label.isNotBlank()) label else defaultActionLabel
+        ProgrammerForegroundService.renewSessionLock(context, fgsText, pct)
+        onProgress(done, total, label)
     }
 
     private suspend fun sendR8cUnlockFrame(

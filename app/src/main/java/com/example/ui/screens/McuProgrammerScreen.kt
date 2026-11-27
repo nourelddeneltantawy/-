@@ -1,6 +1,15 @@
 package com.example.ui.screens
 
+import android.Manifest
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
+import android.content.pm.PackageManager
+import android.os.Build
+import android.view.WindowManager
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -28,18 +37,25 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.ui.screens.programmer.ProgrammerStep1McuSelect
 import com.example.ui.screens.programmer.ProgrammerStep2Pinout
@@ -53,6 +69,41 @@ fun McuProgrammerScreen(
     programmerViewModel: McuProgrammerViewModel = viewModel()
 ) {
     val state by programmerViewModel.uiState.collectAsState()
+    val context = LocalContext.current
+    var keepScreenOnEnabled by remember { mutableStateOf(true) }
+    var notificationPermissionPrompted by remember { mutableStateOf(false) }
+
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { _ -> }
+
+    LaunchedEffect(state.isBusy) {
+        if (state.isBusy &&
+            !notificationPermissionPrompted &&
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+        ) {
+            val granted = ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.POST_NOTIFICATIONS
+            ) == PackageManager.PERMISSION_GRANTED
+            if (!granted) {
+                notificationPermissionPrompted = true
+                notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }
+    }
+
+    DisposableEffect(state.isBusy, keepScreenOnEnabled) {
+        val window = context.findActivity()?.window
+        if (state.isBusy && keepScreenOnEnabled) {
+            window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        } else {
+            window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+        onDispose {
+            window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+    }
 
     val handleStepBack: () -> Unit = {
         if (state.currentStep > 1) {
@@ -237,11 +288,19 @@ fun McuProgrammerScreen(
                     onDismiss78k0Session = { session -> programmerViewModel.dismiss78k0RescueSession(session) },
                     onResumeFromWatchdog = { programmerViewModel.rescueOrResume78k0Flash(null) },
                     onCleanResumeFromWatchdog = { programmerViewModel.reset78k0BlockOffsetAndResume(null) },
-                    onDismissWatchdog = programmerViewModel::dismissWatchdogAlert
+                    onDismissWatchdog = programmerViewModel::dismissWatchdogAlert,
+                    keepScreenOnEnabled = keepScreenOnEnabled,
+                    onToggleKeepScreenOn = { keepScreenOnEnabled = it }
                 )
             }
         }
     }
+}
+
+private tailrec fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
 }
 
 @Composable
