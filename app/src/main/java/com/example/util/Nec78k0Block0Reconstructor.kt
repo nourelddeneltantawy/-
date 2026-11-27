@@ -31,6 +31,64 @@ object Nec78k0Block0Reconstructor {
     }
 
     /**
+     * NEC 78K0 16-bit Little-Endian Word-Sum Checksum (0xB0):
+     * Silicon variants (e.g. uPD78F05xx) sum 16-bit LE words: (lo | (hi << 8)).
+     * Even offsets (offset % 2 == 0) contribute to the Low Byte; odd offsets contribute to the High Byte (* 0x0100).
+     */
+    fun compute78k0Word16Checksum(bytes: ByteArray, start: Int = 0, endExclusive: Int = bytes.size): Int {
+        var sum = 0L
+        val safeEnd = minOf(endExclusive, bytes.size)
+        var i = start
+        while (i < safeEnd) {
+            val lo = bytes[i].toInt() and 0xFF
+            val hi = if (i + 1 < safeEnd) (bytes[i + 1].toInt() and 0xFF) else 0
+            sum += (lo or (hi shl 8)).toLong()
+            i += 2
+        }
+        return ((0L - sum) and 0xFFFFL).toInt()
+    }
+
+    /**
+     * Matches hardware 0xB0 16-bit checksum against either Byte-Sum or LE Word-16-Sum formula.
+     */
+    fun matches78k0Checksum16(
+        bytes: ByteArray,
+        hardwareCs16: Int,
+        start: Int = 0,
+        endExclusive: Int = bytes.size
+    ): Boolean {
+        val target = hardwareCs16 and 0xFFFF
+        return (compute78k0Checksum16(bytes, start, endExclusive) and 0xFFFF) == target ||
+            (compute78k0Word16Checksum(bytes, start, endExclusive) and 0xFFFF) == target
+    }
+
+    /**
+     * Extracts the original flash byte (0x00..0xFF) after zeroing a single byte at [offset]
+     * and reading CS_prev -> CS_curr via 0xB0:
+     * - If delta16 == 0x0000 -> 0x00
+     * - If only Low Byte changed -> delta16 & 0xFF (covers even offsets in Word-Sum and all offsets in Byte-Sum)
+     * - If only High Byte changed -> (delta16 >> 8) & 0xFF (covers odd offsets in Word-Sum, e.g. 0x0004 -> 0xFF04 => Δ=0xFF00 => 0xFF)
+     * - General carry-safe rule: even offset -> delta16 & 0xFF; odd offset -> ((delta16 + carry) >> 8) & 0xFF
+     */
+    fun extractDifferentialByteFromChecksumDelta(csPrev: Int, csCurr: Int, offset: Int): Int {
+        val prev = csPrev and 0xFFFF
+        val curr = csCurr and 0xFFFF
+        val delta16 = (curr - prev + 0x10000) and 0xFFFF
+        val lowDelta = delta16 and 0xFF
+        val highDelta = (delta16 ushr 8) and 0xFF
+        return when {
+            delta16 == 0x0000 -> 0x00
+            lowDelta != 0 && highDelta == 0 -> lowDelta
+            highDelta != 0 && lowDelta == 0 -> highDelta
+            (offset and 1) == 0 -> lowDelta
+            else -> {
+                val carry = if ((curr and 0xFF) < (prev and 0xFF)) 0x0100 else 0
+                ((delta16 + carry) ushr 8) and 0xFF
+            }
+        }
+    }
+
+    /**
      * Parses the 2 payload checksum bytes returned by 78K0 command 0xB0.
      * Supports standard little-endian [CS_L, CS_H] and computes canonical 16-bit value.
      */

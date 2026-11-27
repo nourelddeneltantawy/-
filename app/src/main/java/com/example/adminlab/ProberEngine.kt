@@ -6691,18 +6691,25 @@ class ProberEngine(context: Context) {
             }
 
             delay(12)
-            // 3) Live CS_curr via 11-Byte 0xB0 on Full Block K -> Extracted_Byte = (CS_curr - CS_prev + 0x10000) & 0xFFFF
+            // 3) Live CS_curr via 11-Byte 0xB0 on Full Block K -> Word-16 / Byte-8 Differential Formula
             val (csCurrVal, csCurrErr) = queryLiveFullBlockCs("6.Diff CS_curr +$i")
             val csCurr = csCurrVal ?: return null to csCurrErr
 
-            val delta = (csCurr - csPrev + 0x10000) and 0xFFFF
-            if (delta !in 0x00..0xFF) {
-                return null to "فرق Checksum خارج النطاق عند +$i: CS_prev=0x%04X -> CS_curr=0x%04X (Δ=0x%04X > 0xFF)".format(csPrev, csCurr, delta)
+            val delta16 = (csCurr - csPrev + 0x10000) and 0xFFFF
+            val extractedByte = com.example.util.Nec78k0Block0Reconstructor.extractDifferentialByteFromChecksumDelta(
+                csPrev = csPrev,
+                csCurr = csCurr,
+                offset = byteAddr
+            )
+            if (extractedByte !in 0x00..0xFF) {
+                return null to "فرق Checksum خارج النطاق عند +$i: CS_prev=0x%04X -> CS_curr=0x%04X (Δ16=0x%04X)".format(csPrev, csCurr, delta16)
             }
-            extracted[i] = (delta and 0xFF).toByte()
+            extracted[i] = extractedByte.toByte()
             appendLog(
                 ProberLogDirection.INFO,
-                "  • 6.Diff Byte[$i @ 0x%06X]: CS_prev=0x%04X -> CS_curr=0x%04X => 0x%02X".format(byteAddr, csPrev, csCurr, delta and 0xFF)
+                "  • 6.Diff Byte[$i @ 0x%06X]: CS_prev=0x%04X -> CS_curr=0x%04X (Δ16=0x%04X) => 0x%02X".format(
+                    byteAddr, csPrev, csCurr, delta16, extractedByte
+                )
             )
             csPrev = csCurr
         }

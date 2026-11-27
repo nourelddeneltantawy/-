@@ -769,23 +769,28 @@ object Nec78k0ProtocolEngine {
                             }
                         }
 
-                        // 78K0 Checksum16 = (0x10000 - sum) & 0xFFFF => zeroing Original_Byte[i] increases checksum by Original_Byte[i]
-                        val delta = (csCurr - csPrev + 0x10000) and 0xFFFF
-                        if (delta > 0xFF) {
+                        // 78K0 Checksum16 (Byte-Sum or 16-bit LE Word-Sum): even offset affects Low Byte, odd offset affects High Byte
+                        val delta16 = (csCurr - csPrev + 0x10000) and 0xFFFF
+                        val extractedByte = Nec78k0Block0Reconstructor.extractDifferentialByteFromChecksumDelta(
+                            csPrev = csPrev,
+                            csCurr = csCurr,
+                            offset = byteIdx
+                        )
+                        if (extractedByte !in 0x00..0xFF) {
                             System.arraycopy(b0Working, 0, fullBuffer, 0, BLOCK_SIZE)
                             return pauseWithWatchdog(
                                 context, session, detectedInfo, fullBuffer, -1, blockCount,
                                 String.format(
                                     Locale.US,
-                                    "فرق Checksum غير متسق عند بايت %d (CS_prev=%04X -> CS_curr=%04X, Δ=%04X > 0xFF). اضغط «استئناف نظيف من بداية الكتلة» لإعادة المزامنة من البايت 0.",
-                                    byteIdx, csPrev, csCurr, delta
+                                    "فرق Checksum غير متسق عند بايت %d (CS_prev=%04X -> CS_curr=%04X, Δ16=%04X). اضغط «استئناف نظيف من بداية الكتلة» لإعادة المزامنة من البايت 0.",
+                                    byteIdx, csPrev, csCurr, delta16
                                 ),
                                 isUsbDetached = false,
                                 block0OriginalExtracted = false, block0DiffNextIndex = byteIdx, block0DiffPrevCs = csPrev
                             )
                         }
 
-                        b0Working[byteIdx] = (delta and 0xFF).toByte()
+                        b0Working[byteIdx] = extractedByte.toByte()
                         csPrev = csCurr
 
                         if (byteIdx % 8 == 0 || byteIdx == BLOCK_SIZE - 1) {
@@ -793,7 +798,7 @@ object Nec78k0ProtocolEngine {
                             val labelB0 = String.format(
                                 Locale.US,
                                 "استخراج Block 0 تفاضلياً: %d/1024 (0x%02X)%s",
-                                byteIdx + 1, delta and 0xFF, etaB0
+                                byteIdx + 1, extractedByte, etaB0
                             )
                             onProgress(byteIdx + 1, totalSize, labelB0)
                             ProgrammerForegroundService.renewSessionLock(context, labelB0)
@@ -829,26 +834,28 @@ object Nec78k0ProtocolEngine {
                     }
 
                     System.arraycopy(b0Working, 0, fullBuffer, 0, BLOCK_SIZE)
-                    val verifiedB0Cs = Nec78k0Block0Reconstructor.compute78k0Checksum16(b0Working)
+                    val verifiedB0ByteCs = Nec78k0Block0Reconstructor.compute78k0Checksum16(b0Working)
+                    val verifiedB0WordCs = Nec78k0Block0Reconstructor.compute78k0Word16Checksum(b0Working)
                     val targetB0Cs = detectedInfo.block0Checksum16 and 0xFFFF
-                    if (targetB0Cs != 0 && verifiedB0Cs != targetB0Cs) {
+                    if (targetB0Cs != 0 && !Nec78k0Block0Reconstructor.matches78k0Checksum16(b0Working, targetB0Cs)) {
                         return pauseWithWatchdog(
                             context, session, detectedInfo, fullBuffer, -1, blockCount,
                             String.format(
                                 Locale.US,
-                                "مجموع Original_Byte[0..1023] المستخرج (%04X) لم يطابق Block0_Checksum الأصلي (%04X).",
-                                verifiedB0Cs, targetB0Cs
+                                "مجموع Original_Byte[0..1023] المستخرج (Byte=%04X / Word16=%04X) لم يطابق Block0_Checksum الأصلي (%04X).",
+                                verifiedB0ByteCs, verifiedB0WordCs, targetB0Cs
                             ),
                             isUsbDetached = false,
                             block0OriginalExtracted = false, block0DiffNextIndex = BLOCK_SIZE, block0DiffPrevCs = csPrev
                         )
                     }
 
+                    val matchedB0Cs = if (verifiedB0WordCs == targetB0Cs) verifiedB0WordCs else verifiedB0ByteCs
                     onLog(
                         String.format(
                             Locale.US,
                             "تم استخراج Original_Byte[0..1023] كاملاً وتطابقت بصمته مع Block0_Checksum الأصلي (%04X) بنسبة 100%%.",
-                            verifiedB0Cs
+                            matchedB0Cs
                         )
                     )
                 }
@@ -1153,8 +1160,9 @@ object Nec78k0ProtocolEngine {
                     continue
                 }
 
-                // Mandatory Checksum Verification for the read block via 0xB0
-                val localBlockCs = Nec78k0Block0Reconstructor.compute78k0Checksum16(readBytes)
+                // Mandatory Checksum Verification for the read block via 0xB0 (Byte-Sum or Word-16-Sum)
+                val localBlockByteCs = Nec78k0Block0Reconstructor.compute78k0Checksum16(readBytes)
+                val localBlockWordCs = Nec78k0Block0Reconstructor.compute78k0Word16Checksum(readBytes)
                 when (val hwCsRes = queryChecksum16WithRetry(
                     transport = transport,
                     startAddr = blockStart,
@@ -1167,14 +1175,14 @@ object Nec78k0ProtocolEngine {
                 )) {
                     is ChecksumQueryResult.Success -> {
                         val hwCs = hwCsRes.checksum16 and 0xFFFF
-                        if (hwCs == (localBlockCs and 0xFFFF)) {
+                        if (Nec78k0Block0Reconstructor.matches78k0Checksum16(readBytes, hwCs)) {
                             verifiedBlockBytes = readBytes
                             break
                         } else {
                             blockFailureReason = String.format(
                                 Locale.US,
-                                "عدم تطابق Checksum (0xB0) لـ Block %d: المحسوب=%04X != المعالج=%04X",
-                                blockIdx, localBlockCs and 0xFFFF, hwCs
+                                "عدم تطابق Checksum (0xB0) لـ Block %d: المحسوب=(%04X/%04X) != المعالج=%04X",
+                                blockIdx, localBlockByteCs and 0xFFFF, localBlockWordCs and 0xFFFF, hwCs
                             )
                             onLog(blockFailureReason)
                         }
@@ -1291,7 +1299,7 @@ object Nec78k0ProtocolEngine {
         val savedBlock0Bytes = fullBuffer.copyOfRange(0, BLOCK_SIZE)
         val savedBlock0Cs = Nec78k0Block0Reconstructor.compute78k0Checksum16(savedBlock0Bytes)
         val hasExactOriginalBlock0 = (session.block0OriginalExtracted) ||
-            (detectedInfo.block0Checksum16 != 0 && savedBlock0Cs == (detectedInfo.block0Checksum16 and 0xFFFF))
+            (detectedInfo.block0Checksum16 != 0 && Nec78k0Block0Reconstructor.matches78k0Checksum16(savedBlock0Bytes, detectedInfo.block0Checksum16))
 
         val block0ToRestore = if (hasExactOriginalBlock0) {
             onLog(
@@ -1765,7 +1773,7 @@ object Nec78k0ProtocolEngine {
                     }
                 }
 
-                delay(if (mode == ZeroWriteGranularity.ONE_BYTE || mode == ZeroWriteGranularity.FOUR_BYTES) 3L else 8L)
+                delay(if (mode == ZeroWriteGranularity.ONE_BYTE || mode == ZeroWriteGranularity.FOUR_BYTES) 5L else 10L)
                 transport.flushInputBuffer()
 
                 var timedOut = false
@@ -2255,13 +2263,11 @@ object Nec78k0ProtocolEngine {
         )
         val isBlankAck = blankRes is Nec78k0TransceiveResult.Success
         val allFf = ByteArray(BLOCK_SIZE) { 0xFF.toByte() }
-        val allFfCs = Nec78k0Block0Reconstructor.compute78k0Checksum16(allFf) and 0xFFFF
         val allZero = ByteArray(BLOCK_SIZE) { 0x00 }
-        val allZeroCs = Nec78k0Block0Reconstructor.compute78k0Checksum16(allZero) and 0xFFFF
 
         val candidate = when {
-            isBlankAck && hwCs == allFfCs -> allFf
-            hwCs == allZeroCs -> allZero
+            isBlankAck && Nec78k0Block0Reconstructor.matches78k0Checksum16(allFf, hwCs) -> allFf
+            Nec78k0Block0Reconstructor.matches78k0Checksum16(allZero, hwCs) -> allZero
             else -> null
         }
 
@@ -2354,17 +2360,22 @@ object Nec78k0ProtocolEngine {
                 is ChecksumQueryResult.ParameterError -> return NonStandardBlockOutcome.LockedNonUniform("خطأ معاملات 0xB0 عند Block $blockIdx[$byteIdx]")
             }
 
-            val delta = (csCurr - csPrev + 0x10000) and 0xFFFF
-            if (delta > 0xFF) {
+            val delta16 = (csCurr - csPrev + 0x10000) and 0xFFFF
+            val extractedByte = Nec78k0Block0Reconstructor.extractDifferentialByteFromChecksumDelta(
+                csPrev = csPrev,
+                csCurr = csCurr,
+                offset = blockStart + byteIdx
+            )
+            if (extractedByte !in 0x00..0xFF) {
                 return NonStandardBlockOutcome.LockedNonUniform(
                     String.format(
                         Locale.US,
-                        "فرق Checksum غير متسق في Block %d[%d] (CS_prev=%04X -> CS_curr=%04X, Δ=%04X)",
-                        blockIdx, byteIdx, csPrev, csCurr, delta
+                        "فرق Checksum غير متسق في Block %d[%d] (CS_prev=%04X -> CS_curr=%04X, Δ16=%04X)",
+                        blockIdx, byteIdx, csPrev, csCurr, delta16
                     )
                 )
             }
-            blockBytes[byteIdx] = (delta and 0xFF).toByte()
+            blockBytes[byteIdx] = extractedByte.toByte()
             csPrev = csCurr
 
             if (byteIdx % 16 == 0 || byteIdx == BLOCK_SIZE - 1) {
@@ -2377,10 +2388,15 @@ object Nec78k0ProtocolEngine {
             }
         }
 
-        val verifiedCs = Nec78k0Block0Reconstructor.compute78k0Checksum16(blockBytes) and 0xFFFF
-        if (verifiedCs != initialBlockCs) {
+        val verifiedByteCs = Nec78k0Block0Reconstructor.compute78k0Checksum16(blockBytes) and 0xFFFF
+        val verifiedWordCs = Nec78k0Block0Reconstructor.compute78k0Word16Checksum(blockBytes) and 0xFFFF
+        if (!Nec78k0Block0Reconstructor.matches78k0Checksum16(blockBytes, initialBlockCs)) {
             return NonStandardBlockOutcome.LockedNonUniform(
-                String.format(Locale.US, "عدم تطابق Checksum الكتلة %d بعد الاستخراج التفاضلي (%04X != %04X)", blockIdx, verifiedCs, initialBlockCs)
+                String.format(
+                    Locale.US,
+                    "عدم تطابق Checksum الكتلة %d بعد الاستخراج التفاضلي (Byte=%04X / Word16=%04X != %04X)",
+                    blockIdx, verifiedByteCs, verifiedWordCs, initialBlockCs
+                )
             )
         }
 
@@ -2883,14 +2899,15 @@ object Nec78k0ProtocolEngine {
             }
         }
 
-        val verifiedB0Cs = Nec78k0Block0Reconstructor.compute78k0Checksum16(b0Working)
+        val verifiedB0ByteCs = Nec78k0Block0Reconstructor.compute78k0Checksum16(b0Working)
+        val verifiedB0WordCs = Nec78k0Block0Reconstructor.compute78k0Word16Checksum(b0Working)
         val targetB0Cs = detectedInfo.block0Checksum16 and 0xFFFF
-        if (targetB0Cs != 0 && verifiedB0Cs != targetB0Cs) {
+        if (targetB0Cs != 0 && !Nec78k0Block0Reconstructor.matches78k0Checksum16(b0Working, targetB0Cs)) {
             return Cumulative0xB0Outcome.UnsupportedFallback(
                 String.format(
                     Locale.US,
-                    "مجموع السحب التراكمي 0xB0 (%04X) لم يطابق Block0_Checksum (%04X) — التحويل إلى الاستخراج التفاضلي...",
-                    verifiedB0Cs, targetB0Cs
+                    "مجموع السحب التراكمي 0xB0 (%04X/%04X) لم يطابق Block0_Checksum (%04X) — التحويل إلى الاستخراج التفاضلي...",
+                    verifiedB0ByteCs, verifiedB0WordCs, targetB0Cs
                 )
             )
         }
@@ -2918,11 +2935,12 @@ object Nec78k0ProtocolEngine {
             block0DiffPrevCs = csPrev
         )
         Nec78k0RecoveryManager.saveSessionCheckpoint(context, savedSession)
+        val matchedB0Cs = if (verifiedB0WordCs == targetB0Cs) verifiedB0WordCs else verifiedB0ByteCs
         onLog(
             String.format(
                 Locale.US,
                 "✅ اكتمل استخراج Block 0 غير التدميري عبر 0xB0 (11B LE) وتطابقت بصمته %04X بنسبة 100%%.",
-                verifiedB0Cs
+                matchedB0Cs
             )
         )
         return Cumulative0xB0Outcome.Extracted(savedSession)

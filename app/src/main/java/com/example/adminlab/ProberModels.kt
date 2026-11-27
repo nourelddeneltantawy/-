@@ -660,7 +660,7 @@ private fun buildWorkflows(state: ProberUiState): Pair<List<String>, List<String
         add("5. Speed Transition: ${s.baudStateMachineRule} (wait ${tm.baudSwitchDelayMs}ms after ACK)${if (isNecFraming) " | Baud=[01 03 9A ... Frame_CS 03]" else ""}.")
         if (isNecFraming) {
             add("6. Verified Hex Frame Math: Frame_CS=(0-(LEN+sum(BODY)))&0xFF | Full-Block 0xB0 11B=[01 07 B0 BlockStart(3B) BlockEnd(3B) Frame_CS 03] (Start=K*0x400, End=Start+0x3FF) -> Resp=[02 02 CS_Low CS_High SUM 03] | CS16=(CS_High<<8)|CS_Low (LE).")
-            add("7. School 6 (Differential 0x40 + Full-Block 0xB0): Live CS_prev=0xB0(Block K) -> 0x40 11B Page Header=[01 07 40 PageStart(3B) PageEnd(3B) Frame_CS 03] -> ACK -> 260B STX=[02 00 ...256B (all 0xFF except ONLY target byte=0x00)... Data_CS 03] -> ACK -> Live CS_curr=0xB0(Block K) -> Extracted_Byte=(CS_curr-CS_prev+0x10000)&0xFFFF.")
+            add("7. School 6 (Differential 0x40 + Full-Block 0xB0): Live CS_prev=0xB0(Block K) -> 0x40 11B Page Header=[01 07 40 PageStart(3B) PageEnd(3B) Frame_CS 03] -> ACK -> 260B STX=[02 00 ...256B (all 0xFF except ONLY target byte=0x00)... Data_CS 03] -> ACK -> Live CS_curr=0xB0(Block K) -> Word-16 Diff Formula: delta16=(CS_curr-CS_prev+0x10000)&0xFFFF; LowByte-only=>delta16&0xFF (even offset), HighByte-only=>(delta16>>8)&0xFF (odd offset), else carry-adjusted.")
         }
         if (!isLocked) {
             add("${if (isNecFraming) 8 else 6}. Safe Direct Extraction succeeded via ${s.winningReadMethod}: read ${s.flashStartAddressHex}..${s.flashEndAddressHex}${if (isNecFraming) " using [01 07 18 Start(3B) End(3B) Frame_CS 03] or Differential 0x40+0xB0" else ""} in ${s.pageSizeBytes ?: 256}B pages (${tm.frameToFrameDelayMs}ms frame gap).")
@@ -770,7 +770,7 @@ fun formatReadBlueprintJson(state: ProberUiState): String {
         appendLine("    \"frameChecksumFormula\": \"${jsonEsc(framing?.checksumFormula ?: "--")}\",")
         if (framing == DetectedFraming.NEC_STX_ETX) {
             appendLine("    \"checksumResponseTemplate\": \"02 02 [CS_Low] [CS_High] [Frame_CS] 03\",")
-            appendLine("    \"checksumExtractionFormula\": \"CS16 = (CS_High << 8) | CS_Low (LE); Differential Extracted_Byte = (CS_curr - CS_prev + 0x10000) & 0xFFFF after 0x40 single-byte 256B page zeroing\",")
+            appendLine("    \"checksumExtractionFormula\": \"CS16 = (CS_High << 8) | CS_Low (LE, 16-bit LE Word-Sum or Byte-Sum); delta16=(CS_curr-CS_prev+0x10000)&0xFFFF; if (delta16==0)->0x00, else if (low!=0 && high==0)->low (even offset), else if (high!=0 && low==0)->high (odd offset), else if (offset%2==0)->low else ((delta16 + ((csCurr&0xFF)<(csPrev&0xFF)?0x0100:0))>>8)&0xFF\",")
             appendLine("    \"differentialFullBlockRule\": \"BlockStart = K * 1024, BlockEnd = BlockStart + 0x3FF (totalBlocks = flashSize / 1024); zero ONLY target byte inside 256B Page P via 11B 0x40 header + 260B STX [02 00 ...all 0xFF except target=0x00... Data_CS 03]\",")
             appendLine("    \"exactHexTemplates\": {")
             appendLine("      \"resetCmd\": \"01 01 00 FF 03\",")

@@ -236,13 +236,15 @@ object Nec78k0FlashWriterEngine {
         )
         val csSummary = if (finalHwChecksum != null) {
             val hw = finalHwChecksum and 0xFFFF
-            val matched = hw == (expectedSwChecksum and 0xFFFF)
+            val matched = Nec78k0Block0Reconstructor.matches78k0Checksum16(paddedFirmware, hw)
+            val expectedWordCs = Nec78k0Block0Reconstructor.compute78k0Word16Checksum(paddedFirmware) and 0xFFFF
+            val shownExpected = if (hw == expectedWordCs) expectedWordCs else (expectedSwChecksum and 0xFFFF)
             onLog(
                 String.format(
                     Locale.US,
                     "بصمة الفلاش النهائية (0xB0): 0x%04X • المتوقعة للملف: 0x%04X (%s)",
                     hw,
-                    expectedSwChecksum and 0xFFFF,
+                    shownExpected,
                     if (matched) "متطابقة 100%" else "يرجى فحص النطاق"
                 )
             )
@@ -315,13 +317,15 @@ object Nec78k0FlashWriterEngine {
         )
         val csSummary = if (finalHwChecksum != null) {
             val hw = finalHwChecksum and 0xFFFF
-            val matched = hw == (expectedSwChecksum and 0xFFFF)
+            val matched = Nec78k0Block0Reconstructor.matches78k0Checksum16(paddedFirmware, hw)
+            val expectedWordCs = Nec78k0Block0Reconstructor.compute78k0Word16Checksum(paddedFirmware) and 0xFFFF
+            val shownExpected = if (hw == expectedWordCs) expectedWordCs else (expectedSwChecksum and 0xFFFF)
             onLog(
                 String.format(
                     Locale.US,
                     "بصمة الفلاش النهائية (0xB0): 0x%04X • المتوقعة للملف: 0x%04X (%s)",
                     hw,
-                    expectedSwChecksum and 0xFFFF,
+                    shownExpected,
                     if (matched) "متطابقة 100%" else "اختلاف"
                 )
             )
