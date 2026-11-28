@@ -24,7 +24,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -188,7 +190,7 @@ object UsbOtgProgrammerService {
                                     manufacturerName = dev.manufacturerName ?: "USB Host",
                                     vendorId = dev.vendorId,
                                     productId = dev.productId,
-                                    chipType = ProgrammerChipType.fromVendorId(dev.vendorId),
+                                    chipType = ProgrammerChipType.fromUsbDevice(dev.vendorId, dev.productId),
                                     hasPermission = mgr?.hasPermission(dev) == true
                                 )
                                 _usbAttachedFlow.tryEmit(info)
@@ -229,7 +231,7 @@ object UsbOtgProgrammerService {
                 manufacturerName = dev.manufacturerName ?: "USB Host",
                 vendorId = dev.vendorId,
                 productId = dev.productId,
-                chipType = ProgrammerChipType.fromVendorId(dev.vendorId),
+                chipType = ProgrammerChipType.fromUsbDevice(dev.vendorId, dev.productId),
                 hasPermission = manager.hasPermission(dev)
             )
         }
@@ -333,7 +335,7 @@ object UsbOtgProgrammerService {
             activeConnection = conn
             inEndpoint = endpoints.first
             outEndpoint = endpoints.second
-            activeChipType = ProgrammerChipType.fromVendorId(targetDevice.vendorId)
+            activeChipType = ProgrammerChipType.fromUsbDevice(targetDevice.vendorId, targetDevice.productId)
 
             configureUartHardware(conn, targetDevice, activeChipType, baudRate, onLog, purgeHardwareFifo = true)
             setControlLines(conn, targetDevice, activeChipType, dtr = false, rts = false, onLog = onLog)
@@ -648,19 +650,24 @@ object UsbOtgProgrammerService {
 
     private fun create78k0Transport(): Nec78k0ProtocolEngine.Serial78k0Transport =
         object : Nec78k0ProtocolEngine.Serial78k0Transport {
-            override fun configureUart96008N1(onLog: (String) -> Unit): Boolean {
+            override fun configureUart96008N1(onLog: (String) -> Unit): Boolean =
+                configureUartBaud(Nec78k0ProtocolRegistry.INITIAL_BAUD_RATE, onLog)
+
+            override fun configureUartBaud(baudRate: Int, onLog: (String) -> Unit): Boolean {
                 val conn = activeConnection ?: return false
                 val dev = activeDevice ?: return false
                 configureUartHardware(
                     conn = conn,
                     device = dev,
                     chipType = activeChipType,
-                    baudRate = 9600,
+                    baudRate = baudRate,
                     onLog = onLog,
                     purgeHardwareFifo = (readerJob?.isActive != true)
                 )
                 return true
             }
+
+            override fun currentBaudRate(): Int = this@UsbOtgProgrammerService.currentBaudRate
 
             override fun ensureReaderListening(onLog: (String) -> Unit): Boolean {
                 val conn = activeConnection ?: return false
@@ -706,8 +713,13 @@ object UsbOtgProgrammerService {
             override suspend fun writeFrameBytes(
                 bytes: ByteArray,
                 timeoutMs: Int,
+                useSingleBulkTransfer: Boolean,
                 onLog: (String) -> Unit
-            ): String? = writeFrame64BytePackets(bytes, timeoutMs, onLog)
+            ): String? = if (useSingleBulkTransfer) {
+                writeFrameSingleBulk(bytes, timeoutMs, onLog)
+            } else {
+                writeFrame64BytePackets(bytes, timeoutMs, onLog)
+            }
 
             override suspend fun discardEcho(expectedCount: Int, baudRate: Int): Int {
                 return if (echoCancellationEnabled) discardEchoBytes(expectedCount) else 0
@@ -731,13 +743,140 @@ object UsbOtgProgrammerService {
             }
         }
 
+    /**
+     * Universal Read-Only Auto-Probe Engine across all MCU families in the catalog:
+     * 1. NEC / Renesas 78K0 (DTR/RTS pulse + 0x00,0x00 + Reset 0x00 + Silicon Signature 0xC0 + Checksum 0xB0)
+     * 2. Renesas RL78 / 78K0R (TOOL0 Single-Wire handshake + 0xC0 Signature)
+     * 3. Renesas R8C / M16C (16x0x00 + 0xB0 + strictly read-only getVersion 0xFB — no erase/write/unlock)
+     * 4. Renesas RX SCI Boot (2-Wire Autobaud 0x00/0x55 + Read-Only Inquiry)
+     * Rejects CH341A SPI adapters (1A86:5512) cleanly without sending UART bootloader pulses.
+     */
+    suspend fun autoDetectTargetChip(
+        context: Context,
+        preferredChip: ProgrammerChipType?,
+        catalog: List<McuProcessor>,
+        preferredPartNumber: String? = null,
+        clockFrequency: String = "8 MHz",
+        quietPolling: Boolean = false,
+        onLog: (String) -> Unit
+    ): ChipAutoDetectResult = withContext(Dispatchers.IO) {
+        externalLogSink = onLog
+        val stepLog: (String) -> Unit = if (quietPolling) { _ -> } else onLog
+        if (!ensureConnectionHealthy(context, preferredChip, 9600, true, stepLog)) {
+            return@withContext ChipAutoDetectResult.Failure("المبرمجة غير متصلة أو تعذر فتح منفذ USB OTG.")
+        }
+
+        val dev = activeDevice
+        if (dev != null && ProgrammerChipType.isSpiAdapter(dev.vendorId, dev.productId)) {
+            return@withContext ChipAutoDetectResult.Failure(
+                "تم رصد مبرمجة CH341A SPI/EEPROM (${ProgrammerChipType.CH341A_SPI.chipModel}) — وضع SPI Flash / JEDEC 0x9F (لا يتوافق مع فحص معالجات UART)."
+            )
+        }
+
+        // 1) NEC / Renesas 78K0 (separate TX/RX lines, 9600 8N1)
+        currentCoroutineContext().ensureActive()
+        setEchoCancellation(false)
+        val fallback78k0 = preferredPartNumber?.let { part ->
+            catalog.firstOrNull { it.partNumber.equals(part, ignoreCase = true) && it.is78k0Flmd0Mode() }
+        }
+        val (info78k0, _) = Nec78k0ProtocolEngine.autoDetectAndInspect(
+            context = context,
+            transport = create78k0Transport(),
+            clockFreqMhzText = clockFrequency,
+            preferredChip = fallback78k0,
+            catalog = catalog,
+            onLog = stepLog
+        )
+        if (info78k0 != null) {
+            return@withContext ChipAutoDetectResult.Matched(
+                rawSignatureHex = info78k0.rawSignatureHex,
+                matchedProcessor = info78k0.matchedProcessor,
+                diagnosticMessage = "✅ تم التعرف تلقائياً على المعالج: ${info78k0.deviceName} (${info78k0.familyGroup}) • ${info78k0.flashSizeBytes / 1024} KB • FullCS=${info78k0.fullFlashChecksumHex}",
+                nec78k0Info = info78k0
+            )
+        }
+
+        // 2) Renesas RL78 / 78K0R (Single-Wire TOOL0 + Diode D1 Echo Cancellation)
+        currentCoroutineContext().ensureActive()
+        if (!isDeviceCurrentlyAttached()) {
+            return@withContext ChipAutoDetectResult.Failure("انفصل كابل USB OTG عن الهاتف.")
+        }
+        setEchoCancellation(true)
+        if (performSyncHandshake(true, BootSyncMode.SINGLE_WIRE_RL78, stepLog)) {
+            probeRl78Or78k0Sequence(catalog, stepLog)?.let { rl78Match ->
+                val part = rl78Match.matchedProcessor?.partNumber ?: "RL78 / 78K0R"
+                val fam = rl78Match.matchedProcessor?.mainFamily ?: "RL78"
+                return@withContext rl78Match.copy(
+                    diagnosticMessage = "✅ تم التعرف تلقائياً على المعالج: $part ($fam)"
+                )
+            }
+        }
+
+        // 3) Renesas R8C / M16C (16x0x00 + 0xB0 + getVersion 0xFB — strictly read-only)
+        currentCoroutineContext().ensureActive()
+        if (!isDeviceCurrentlyAttached()) {
+            return@withContext ChipAutoDetectResult.Failure("انفصل كابل USB OTG عن الهاتف.")
+        }
+        setEchoCancellation(true)
+        R8cProtocolEngine.probeVersionReadOnly(
+            transport = createR8cTransport(),
+            catalog = catalog,
+            preferredPartNumber = preferredPartNumber,
+            quiet = quietPolling,
+            onLog = stepLog
+        )?.let { r8cMatch ->
+            return@withContext r8cMatch
+        }
+
+        // 4) Renesas RX SCI Boot fallback (non-destructive 0x00 + 0x55 autobaud check)
+        currentCoroutineContext().ensureActive()
+        if (!isDeviceCurrentlyAttached()) {
+            return@withContext ChipAutoDetectResult.Failure("انفصل كابل USB OTG عن الهاتف.")
+        }
+        probeRxSciBootReadOnly(catalog, stepLog)?.let { rxMatch ->
+            return@withContext rxMatch
+        }
+
+        ChipAutoDetectResult.Failure("المبرمجة متصلة — بانتظار توصيل معالج...")
+    }
+
+    private suspend fun probeRxSciBootReadOnly(
+        catalog: List<McuProcessor>,
+        onLog: (String) -> Unit
+    ): ChipAutoDetectResult.Matched? {
+        setEchoCancellation(false)
+        val conn = activeConnection ?: return null
+        val dev = activeDevice ?: return null
+        configureUartHardware(conn, dev, activeChipType, 9600, null, purgeHardwareFifo = true)
+        delay(35)
+        flushRxBuffer()
+        writeRawBytes(byteArrayOf(0x00, 0x00, 0x00, 0x55))
+        val ack = readBufferedBytes(expectedMax = 8, timeoutMs = 140, onLog = onLog)
+        if (ack.none { (it.toInt() and 0xFF) == 0xE6 || (it.toInt() and 0xFF) == 0x06 }) {
+            return null
+        }
+        // Query supported device (0x20) — strictly read-only
+        val devReply = transmitAndLog(byteArrayOf(0x20), expectedMax = 32, timeoutMs = 220, onLog = onLog)
+        val hexStr = toHex(if (devReply.isNotEmpty()) devReply else ack)
+        val ascii = toPrintableAscii(devReply)
+        val rxPool = catalog.filter { it.mainFamily.trim().uppercase().startsWith("RX") }
+        val matched = matchCatalogBySignature(ascii, hexStr, rxPool.ifEmpty { catalog })
+            ?: rxPool.firstOrNull()
+        val label = matched?.partNumber ?: "Renesas RX"
+        return ChipAutoDetectResult.Matched(
+            rawSignatureHex = hexStr,
+            matchedProcessor = matched,
+            diagnosticMessage = "✅ تم التعرف تلقائياً على المعالج: $label (${matched?.mainFamily ?: "RX"})"
+        )
+    }
+
     suspend fun probeChipId(
         context: Context,
         preferredChip: ProgrammerChipType?,
         enableDtrRtsReset: Boolean,
         targetMainFamily: String? = null,
         preferredPartNumber: String? = null,
-        idCodeBytes: ByteArray = R8cProtocolEngine.DEFAULT_ID_CODE.copyOf(),
+        @Suppress("UNUSED_PARAMETER") idCodeBytes: ByteArray = R8cProtocolEngine.DEFAULT_ID_CODE.copyOf(),
         catalog: List<McuProcessor>,
         clockFrequency: String = "8 MHz",
         onLog: (String) -> Unit
@@ -753,10 +892,29 @@ object UsbOtgProgrammerService {
                 return@withContext ChipAutoDetectResult.Failure("تعذر فتح منفذ USB OTG للفحص التلقائي.")
             }
 
-            val isR8cFamily = famUpper.isBlank() || famUpper.contains("R8C") || famUpper.contains("M16C")
-            if (isR8cFamily) {
-                return@withContext ChipAutoDetectResult.Failure(
-                    "تم إيقاف ميزة التعرف التلقائي وحذف الصدى في عائلة Renesas R8C. اختر المعالج يدوياً ثم انتقل لتنفيذ القراءة والكتابة والمسح مباشرة."
+            if (famUpper.isBlank()) {
+                return@withContext autoDetectTargetChip(
+                    context = context,
+                    preferredChip = preferredChip,
+                    catalog = catalog,
+                    preferredPartNumber = preferredPartNumber,
+                    clockFrequency = clockFrequency,
+                    quietPolling = false,
+                    onLog = onLog
+                )
+            }
+
+            if (famUpper.contains("R8C") || famUpper.contains("M16C")) {
+                setEchoCancellation(true)
+                val r8cRes = R8cProtocolEngine.probeVersionReadOnly(
+                    transport = createR8cTransport(),
+                    catalog = catalog,
+                    preferredPartNumber = preferredPartNumber,
+                    quiet = false,
+                    onLog = onLog
+                )
+                return@withContext r8cRes ?: ChipAutoDetectResult.Failure(
+                    "لم يستجب معالج R8C/M16C لأمر الهوية (0xB0 / 0xFB). تأكد من التوصيل والجهد ثم أعد المحاولة."
                 )
             }
 
@@ -778,7 +936,7 @@ object UsbOtgProgrammerService {
                     ChipAutoDetectResult.Matched(
                         rawSignatureHex = info.rawSignatureHex,
                         matchedProcessor = info.matchedProcessor,
-                        diagnosticMessage = "تم التعرف على ${info.deviceName} (${info.familyGroup}) • المساحة ${info.flashSizeBytes / 1024} KB (${info.blockCount} بلوك) • FullCS=${info.fullFlashChecksumHex} • B0CS=${info.block0ChecksumHex}",
+                        diagnosticMessage = "✅ تم التعرف تلقائياً على المعالج: ${info.deviceName} (${info.familyGroup}) • ${info.flashSizeBytes / 1024} KB • FullCS=${info.fullFlashChecksumHex}",
                         nec78k0Info = info
                     )
                 } else {
@@ -1427,7 +1585,14 @@ object UsbOtgProgrammerService {
         defaultActionLabel: String,
         onProgress: (bytesDone: Int, totalBytes: Int, label: String) -> Unit
     ): (Int, Int, String) -> Unit = { done, total, label ->
-        ProgrammerForegroundService.updateThroughputAndEta(done, total)
+        val isSkippedStep = label.contains("تخطي") ||
+            label.contains("تعبئة سريعة") ||
+            label.contains("⚡")
+        ProgrammerForegroundService.updateThroughputAndEta(
+            bytesDone = done,
+            totalBytes = total,
+            isSkippedStep = isSkippedStep
+        )
         val pct = if (total > 0) ((done.toLong() * 100L) / total.toLong()).toInt().coerceIn(0, 100) else -1
         val fgsText = if (label.isNotBlank()) label else defaultActionLabel
         ProgrammerForegroundService.renewSessionLock(context, fgsText, pct)
@@ -1933,6 +2098,39 @@ object UsbOtgProgrammerService {
                         return "USB_DETACHED:انفصل كابل USB OTG عن الهاتف أثناء الإرسال"
                     }
                     return "bulkTransfer(OUT) returned $written (len=${slice.size}, ep=0x%02X, attached=$attached, chip=$activeChipType)"
+                        .format(out.address)
+                }
+                offset += written
+            }
+            null
+        } catch (e: Throwable) {
+            val attached = activeDevice?.deviceName?.let { usbManager?.deviceList?.containsKey(it) } ?: false
+            if (!attached || e is java.io.IOException) {
+                disconnect()
+            }
+            "SERIAL_IO_EXCEPTION:${e::class.java.simpleName}: ${e.message ?: e.toString()}"
+        }
+    }
+
+    private fun writeFrameSingleBulk(
+        data: ByteArray,
+        timeoutMs: Int = 1000,
+        onLog: (String) -> Unit
+    ): String? {
+        return try {
+            val conn = activeConnection ?: return "USB_DETACHED:UsbDeviceConnection is null (المنفذ مغلق)"
+            val out = outEndpoint ?: return "USB_DETACHED:Bulk OUT endpoint is null"
+            var offset = 0
+            while (offset < data.size) {
+                val slice = if (offset == 0) data else data.copyOfRange(offset, data.size)
+                val written = conn.bulkTransfer(out, slice, slice.size, timeoutMs)
+                if (written <= 0) {
+                    val attached = activeDevice?.deviceName?.let { usbManager?.deviceList?.containsKey(it) } ?: false
+                    if (!attached) {
+                        disconnect()
+                        return "USB_DETACHED:انفصل كابل USB OTG عن الهاتف أثناء الإرسال ($offset/${data.size})"
+                    }
+                    return "bulkTransfer(OUT Single Bulk) returned $written at offset=$offset ($offset/${data.size}, len=${slice.size}, ep=0x%02X, attached=$attached, chip=$activeChipType)"
                         .format(out.address)
                 }
                 offset += written

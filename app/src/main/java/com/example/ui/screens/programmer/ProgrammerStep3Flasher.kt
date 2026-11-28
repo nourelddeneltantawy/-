@@ -46,12 +46,15 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material.icons.filled.Upload
+import androidx.compose.material.icons.filled.Usb
 import androidx.compose.material.icons.filled.Verified
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -174,6 +177,7 @@ fun ProgrammerStep3Flasher(
     onEraseFlash: () -> Unit,
     onVerifyFlash: () -> Unit,
     onTogglePauseResume: () -> Unit = {},
+    onAutoDetectChipId: () -> Unit = {},
     onClearLogs: () -> Unit,
     onRescue78k0Session: (com.example.util.Nec78k0RecoveryManager.Nec78k0RecoverySession) -> Unit = {},
     onCleanResume78k0Session: (com.example.util.Nec78k0RecoveryManager.Nec78k0RecoverySession) -> Unit = {},
@@ -320,6 +324,72 @@ fun ProgrammerStep3Flasher(
                         color = Color(0xFF10B981),
                         style = MonospaceTabularStyle
                     )
+                }
+
+                val step3ProbeStatus = state.autoDetectStatus ?: if (state.isConnected) {
+                    "المبرمجة متصلة — بانتظار توصيل معالج..."
+                } else null
+                if (!step3ProbeStatus.isNullOrBlank()) {
+                    val isCh341Warning = step3ProbeStatus.contains("CH341A") || step3ProbeStatus.contains("خطأ")
+                    val badgeAccent = when {
+                        state.autoDetectIsSuccess -> Color(0xFF10B981)
+                        isCh341Warning -> Color(0xFFEF4444)
+                        else -> Color(0xFFF59E0B)
+                    }
+                    val badgeIcon = when {
+                        state.autoDetectIsSuccess -> Icons.Default.Verified
+                        isCh341Warning -> Icons.Default.Info
+                        else -> Icons.Default.Usb
+                    }
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = badgeAccent.copy(alpha = 0.14f),
+                        border = BorderStroke(1.dp, badgeAccent.copy(alpha = 0.50f)),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("step3_auto_probe_badge")
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 10.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = badgeIcon,
+                                contentDescription = "حالة التعرف التلقائي",
+                                tint = badgeAccent,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = step3ProbeStatus.bidiIsolateMixed(),
+                                fontSize = 11.5.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = if (state.autoDetectIsSuccess) {
+                                    if (isDark) Color(0xFF34D399) else Color(0xFF047857)
+                                } else MaterialTheme.colorScheme.onSurface,
+                                lineHeight = 16.sp,
+                                modifier = Modifier.weight(1f)
+                            )
+                            if (state.isConnected && !state.isBusy) {
+                                IconButton(
+                                    onClick = onAutoDetectChipId,
+                                    enabled = !state.isAutoDetecting,
+                                    modifier = Modifier
+                                        .size(48.dp)
+                                        .testTag("step3_reprobe_button")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Refresh,
+                                        contentDescription = "إعادة فحص المعالج تلقائياً",
+                                        tint = badgeAccent,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
                 }
 
                 Row(
@@ -610,7 +680,7 @@ fun ProgrammerStep3Flasher(
                             )
                             IconButton(
                                 onClick = onDismissFileValidationError,
-                                modifier = Modifier.size(36.dp)
+                                modifier = Modifier.size(48.dp)
                             ) {
                                 Icon(
                                     imageVector = Icons.Default.Close,

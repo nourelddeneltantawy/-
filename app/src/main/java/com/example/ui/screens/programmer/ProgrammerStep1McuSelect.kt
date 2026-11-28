@@ -31,8 +31,10 @@ import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.Memory
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Usb
+import androidx.compose.material.icons.filled.Verified
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -98,6 +100,7 @@ fun ProgrammerStep1McuSelect(
     onToggleDtrRtsReset: (Boolean) -> Unit,
     onToggleManufacturerLock: (String) -> Unit = {},
     onToggleMainFamilyLock: (String, String) -> Unit = { _, _ -> },
+    onAutoDetectChipId: () -> Unit = {},
     onNextStep: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -183,6 +186,73 @@ fun ProgrammerStep1McuSelect(
                             fontWeight = FontWeight.SemiBold,
                             color = MaterialTheme.colorScheme.onSurface
                         )
+                    }
+                }
+            }
+        }
+
+        // Universal Auto-Probe Status Badge (Visible whenever USB connected or status message exists)
+        val probeStatusText = state.autoDetectStatus ?: if (state.isConnected) {
+            "المبرمجة متصلة — بانتظار توصيل معالج..."
+        } else null
+        if (!probeStatusText.isNullOrBlank()) {
+            val isCh341Warning = probeStatusText.contains("CH341A") || probeStatusText.contains("خطأ")
+            val badgeAccent = when {
+                state.autoDetectIsSuccess -> Color(0xFF10B981)
+                isCh341Warning -> Color(0xFFEF4444)
+                else -> Color(0xFFF59E0B)
+            }
+            val badgeIcon = when {
+                state.autoDetectIsSuccess -> Icons.Default.Verified
+                isCh341Warning -> Icons.Default.Info
+                else -> Icons.Default.Usb
+            }
+            Surface(
+                shape = RoundedCornerShape(14.dp),
+                color = badgeAccent.copy(alpha = 0.14f),
+                border = BorderStroke(1.2.dp, badgeAccent.copy(alpha = 0.50f)),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("step1_auto_probe_badge")
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = badgeIcon,
+                        contentDescription = "حالة التعرف التلقائي",
+                        tint = badgeAccent,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = probeStatusText.bidiIsolateMixed(),
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = if (state.autoDetectIsSuccess) Color(0xFF047857).let {
+                            if (isDark) Color(0xFF34D399) else it
+                        } else MaterialTheme.colorScheme.onSurface,
+                        lineHeight = 17.sp,
+                        modifier = Modifier.weight(1f)
+                    )
+                    if (state.isConnected && !state.isBusy) {
+                        IconButton(
+                            onClick = onAutoDetectChipId,
+                            enabled = !state.isAutoDetecting,
+                            modifier = Modifier
+                                .size(48.dp)
+                                .testTag("step1_reprobe_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Refresh,
+                                contentDescription = "إعادة فحص المعالج تلقائياً",
+                                tint = badgeAccent,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
                     }
                 }
             }

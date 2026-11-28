@@ -95,7 +95,8 @@ enum class ProgrammerChipType(
     val chipModel: String,
     val vendorIds: List<Int>,
     val subtitle: String,
-    val voltageLogic: String
+    val voltageLogic: String,
+    val isSpiOnly: Boolean = false
 ) {
     FT232RL(
         id = "ft232rl",
@@ -112,6 +113,15 @@ enum class ProgrammerChipType(
         vendorIds = listOf(0x1A86),
         subtitle = "مبرمجة TTL اقتصادية متوافقة مع UART Mode و TOOL0",
         voltageLogic = "3.3V / 5V"
+    ),
+    CH341A_SPI(
+        id = "ch341a_spi",
+        displayName = "WCH CH341A SPI/EEPROM",
+        chipModel = "CH341A-SPI",
+        vendorIds = listOf(0x1A86),
+        subtitle = "مبرمجة شرائح EEPROM / SPI Flash (أمر JEDEC ID 0x9F)",
+        voltageLogic = "3.3V / 5V",
+        isSpiOnly = true
     ),
     CP2102(
         id = "cp2102",
@@ -132,8 +142,18 @@ enum class ProgrammerChipType(
 
     companion object {
         fun fromVendorId(vid: Int): ProgrammerChipType? {
-            return entries.firstOrNull { vid in it.vendorIds }
+            return entries.firstOrNull { !it.isSpiOnly && vid in it.vendorIds }
+                ?: entries.firstOrNull { vid in it.vendorIds }
         }
+
+        fun fromUsbDevice(vid: Int, pid: Int): ProgrammerChipType? {
+            if (vid == 0x1A86 && pid == 0x5512) {
+                return CH341A_SPI
+            }
+            return fromVendorId(vid)
+        }
+
+        fun isSpiAdapter(vid: Int, pid: Int): Boolean = (vid == 0x1A86 && pid == 0x5512)
     }
 }
 

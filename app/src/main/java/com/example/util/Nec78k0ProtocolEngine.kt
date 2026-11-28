@@ -33,9 +33,11 @@ object Nec78k0ProtocolEngine {
     const val CMD_BLOCK_ERASE: Int = 0x22
     const val CMD_BLANK_CHECK: Int = 0x32
     const val CMD_PROGRAM: Int = 0x40
+    const val CMD_BAUD_RATE_SET: Int = 0x9A
     const val CMD_SECURITY: Int = 0xA0
     const val CMD_CHECKSUM: Int = 0xB0
     const val CMD_SILICON_SIGNATURE: Int = 0xC0
+    const val HIGHSPEED_BAUD_RATE: Int = 115200
 
     const val STS_COMMAND_ERROR: Int = 0x04
     const val STS_PARAMETER_ERROR: Int = 0x05
@@ -65,6 +67,9 @@ object Nec78k0ProtocolEngine {
 
     interface Serial78k0Transport {
         fun configureUart96008N1(onLog: (String) -> Unit): Boolean
+        fun configureUartBaud(baudRate: Int, onLog: (String) -> Unit): Boolean =
+            if (baudRate == Nec78k0ProtocolRegistry.INITIAL_BAUD_RATE) configureUart96008N1(onLog) else false
+        fun currentBaudRate(): Int = Nec78k0ProtocolRegistry.INITIAL_BAUD_RATE
         fun ensureReaderListening(onLog: (String) -> Unit): Boolean
         fun setRawRxMonitor(enabled: Boolean)
         fun setControlLines(dtr: Boolean, rts: Boolean, onLog: (String) -> Unit)
@@ -78,6 +83,7 @@ object Nec78k0ProtocolEngine {
         suspend fun writeFrameBytes(
             bytes: ByteArray,
             timeoutMs: Int = FRAME_PACKET_WRITE_TIMEOUT_MS,
+            useSingleBulkTransfer: Boolean = true,
             onLog: (String) -> Unit = {}
         ): String?
         suspend fun discardEcho(expectedCount: Int, baudRate: Int): Int
@@ -330,7 +336,7 @@ object Nec78k0ProtocolEngine {
             if (sigTxErr != null) {
                 return null to "انقطع الإرسال عند أمر التوقيع 0xC0: $sigTxErr"
             }
-            transport.discardEcho(sigCmd.size, 9600)
+            transport.discardEcho(sigCmd.size, transport.currentBaudRate())
 
             ackFrame = readOneRxFrame(transport, RESET_TIMEOUT_MS) { stray ->
                 onLog("RX Raw Live (0xC0 ACK): $stray")
@@ -576,6 +582,9 @@ object Nec78k0ProtocolEngine {
             onDetectedInfo(info)
             session = Nec78k0RecoveryManager.findSessionForChip(context, info.deviceName)
         }
+
+        // Negotiate 115200 bps via 0x9A after initial 9600 handshake/signature to accelerate bulk operations
+        switchBaudRate0x9AWithFallback(transport, clockFreqMhzText, HIGHSPEED_BAUD_RATE, onLog)
 
         val totalSize = detectedInfo.flashSizeBytes
         val blockCount = detectedInfo.blockCount.coerceAtLeast(1)
@@ -1115,42 +1124,8 @@ object Nec78k0ProtocolEngine {
             var pausedDiffByteIdx = -1
             var pausedDiffOrigCs = -1
 
-            // When resuming mid-block inside Block K, immediately restore Block 0 first if touched and skip 0x18
-            val resumingThisBlockMidDiff = (session?.activeDiffBlockIndex == blockIdx && (session?.activeDiffByteIndex ?: 0) > 0)
-            if ((directRead0x18Unsupported || resumingThisBlockMidDiff) &&
-                autoRestoreChip && session?.block0Touched == true && session?.block0Restored != true
-            ) {
-                onLog("الاستعادة التلقائية الفورية: إرجاع Block 0 الأصلي وتوثيقه (0x22 + 0x40 + 0x13 + 0xB0) قبل متابعة البلوكات التفاضلية...")
-                when (val b0RestoreRes = restoreAndVerifyBlockAtomically(
-                    transport = transport,
-                    blockIdx = 0,
-                    blockStart = 0x000000,
-                    blockEnd = BLOCK_SIZE - 1,
-                    blockData = fullBuffer.copyOfRange(0, BLOCK_SIZE),
-                    expectedCs16 = detectedInfo.block0Checksum16.takeIf { it != 0 },
-                    clockFreqMhzText = clockFreqMhzText,
-                    onLog = onLog
-                )) {
-                    is RestoreBlockOutcome.Verified -> {
-                        if (b0RestoreRes.warningNote != null) hadBlockChecksumWarning = true
-                        session = session?.copy(block0Restored = true, updatedAtMs = System.currentTimeMillis())
-                        session?.let { Nec78k0RecoveryManager.saveSessionCheckpoint(context, it) }
-                    }
-                    is RestoreBlockOutcome.Protected -> {
-                        return FlashOperationResult.Failure(b0RestoreRes.reason)
-                    }
-                    is RestoreBlockOutcome.TransportLost -> {
-                        return pauseWithWatchdog(
-                            context, session, detectedInfo, fullBuffer, blockIdx - 1, blockCount,
-                            b0RestoreRes.reason, isUsbDetached = b0RestoreRes.isUsbDetached
-                        )
-                    }
-                    is RestoreBlockOutcome.Failed -> {
-                        hadBlockChecksumWarning = true
-                        onLog("[WARN] ${b0RestoreRes.reason}")
-                    }
-                }
-            }
+            // Block 0 stays zeroed (0x00) throughout Block 1..N-1 to keep fast reads/extraction unlocked;
+            // Original Block 0 is restored ONLY once in Stage 4 after all blocks complete.
 
             for (attempt in 0..2) {
                 if (attempt > 0) {
@@ -1256,38 +1231,6 @@ object Nec78k0ProtocolEngine {
                                 readFailed = true
                                 break
                             }
-                        }
-                    }
-                }
-
-                // If 0x18 was just discovered to be unsupported, restore Block 0 immediately before touching Block K
-                if (directRead0x18Unsupported && autoRestoreChip && session?.block0Touched == true && session?.block0Restored != true) {
-                    onLog("الاستعادة التلقائية الفورية: إرجاع Block 0 الأصلي وتوثيقه (0x22 + 0x40 + 0x13 + 0xB0) قبل متابعة Block $blockIdx...")
-                    when (val b0RestoreRes = restoreAndVerifyBlockAtomically(
-                        transport = transport,
-                        blockIdx = 0,
-                        blockStart = 0x000000,
-                        blockEnd = BLOCK_SIZE - 1,
-                        blockData = fullBuffer.copyOfRange(0, BLOCK_SIZE),
-                        expectedCs16 = detectedInfo.block0Checksum16.takeIf { it != 0 },
-                        clockFreqMhzText = clockFreqMhzText,
-                        onLog = onLog
-                    )) {
-                        is RestoreBlockOutcome.Verified -> {
-                            if (b0RestoreRes.warningNote != null) hadBlockChecksumWarning = true
-                            session = session?.copy(block0Restored = true, updatedAtMs = System.currentTimeMillis())
-                            session?.let { Nec78k0RecoveryManager.saveSessionCheckpoint(context, it) }
-                        }
-                        is RestoreBlockOutcome.Protected -> return FlashOperationResult.Failure(b0RestoreRes.reason)
-                        is RestoreBlockOutcome.TransportLost -> {
-                            return pauseWithWatchdog(
-                                context, session, detectedInfo, fullBuffer, blockIdx - 1, blockCount,
-                                b0RestoreRes.reason, isUsbDetached = b0RestoreRes.isUsbDetached
-                            )
-                        }
-                        is RestoreBlockOutcome.Failed -> {
-                            hadBlockChecksumWarning = true
-                            onLog("[WARN] ${b0RestoreRes.reason}")
                         }
                     }
                 }
@@ -1943,23 +1886,14 @@ object Nec78k0ProtocolEngine {
 
     private fun formatEtaSuffix(
         bytesDone: Int,
-        initialDoneBytes: Int,
+        @Suppress("UNUSED_PARAMETER") initialDoneBytes: Int,
         totalBytes: Int,
-        startTimeMs: Long
+        @Suppress("UNUSED_PARAMETER") startTimeMs: Long
     ): String {
-        val elapsedMs = System.currentTimeMillis() - startTimeMs
-        val delta = bytesDone - initialDoneBytes
-        if (elapsedMs < 1500L || delta < 8 || bytesDone >= totalBytes) return ""
-        val remainingBytes = (totalBytes - bytesDone).coerceAtLeast(0)
-        val etaSec = ((remainingBytes.toDouble() / delta.toDouble()) * (elapsedMs / 1000.0)).toLong().coerceAtLeast(1L)
-        val hours = etaSec / 3600L
-        val mins = (etaSec % 3600L) / 60L
-        val secs = etaSec % 60L
-        return if (hours > 0L) {
-            String.format(Locale.US, " • متبقي %d:%02d:%02d", hours, mins, secs)
-        } else {
-            String.format(Locale.US, " • متبقي %02d:%02d", mins, secs)
-        }
+        if (bytesDone >= totalBytes) return ""
+        val eta = ProgrammerForegroundService.etaTextFlow.value
+        if (eta.isBlank() || eta == "--:--") return ""
+        return " • متبقي $eta"
     }
 
     /**
@@ -2093,7 +2027,8 @@ object Nec78k0ProtocolEngine {
                     var directStxRetried = false
 
                     while (true) {
-                        when (val ack = sendStxDataPageAndAwaitAck(transport, frame, PAGE_ACK_TIMEOUT_MS, "0x40 B0[$byteIdx]", onLog, verboseLog = false)) {
+                        val useSingleBulk = (attempt == 1 && !directStxRetried)
+                        when (val ack = sendStxDataPageAndAwaitAck(transport, frame, PAGE_ACK_TIMEOUT_MS, "0x40 B0[$byteIdx]", onLog, verboseLog = false, useSingleBulkTransfer = useSingleBulk)) {
                             is FrameAckOutcome.AckSuccess -> {
                                 outcome = DiffWriteOutcome.ProceedToChecksum
                                 break
@@ -2251,7 +2186,7 @@ object Nec78k0ProtocolEngine {
                 }
                 if (rxFrame == null && out.size() > 0 && lastEndByte == ETB && transport.isDeviceAttached()) {
                     transport.writeRaw(hostAckFrame)
-                    transport.discardEcho(hostAckFrame.size, 9600)
+                    transport.discardEcho(hostAckFrame.size, transport.currentBaudRate())
                     rxFrame = readOneRxFrame(transport, PAGE_ACK_TIMEOUT_MS) { stray ->
                         onLog("RX Raw Live ($label بعد ACK): $stray")
                     }
@@ -2325,7 +2260,8 @@ object Nec78k0ProtocolEngine {
         timeoutMs: Int,
         label: String,
         onLog: (String) -> Unit,
-        verboseLog: Boolean = true
+        verboseLog: Boolean = true,
+        useSingleBulkTransfer: Boolean = true
     ): FrameAckOutcome {
         if (!transport.isDeviceAttached()) {
             return FrameAckOutcome.UsbDetached("انقطع كابل USB OTG قبل إرسال $label")
@@ -2334,14 +2270,16 @@ object Nec78k0ProtocolEngine {
             val csByte = dataFrame[dataFrame.size - 2].toInt() and 0xFF
             val endByte = dataFrame[dataFrame.size - 1].toInt() and 0xFF
             val endLabel = if (endByte == ETX) "ETX" else "ETB"
+            val txModeLabel = if (useSingleBulkTransfer) "Single Bulk" else "Paced 64B/15ms"
             val headPreview = toHex(dataFrame.copyOfRange(0, minOf(6, dataFrame.size)))
             onLog(
                 String.format(
                     Locale.US,
-                    "TX %dB (%s • STX=0x02 LEN=0x%02X • Paced 64B/15ms • END=%02X %s): [%s ... CS=%02X END=%02X] • مهلة الرد %dms",
+                    "TX %dB (%s • STX=0x02 LEN=0x%02X • %s • END=%02X %s): [%s ... CS=%02X END=%02X] • مهلة الرد %dms",
                     dataFrame.size,
                     label,
                     dataFrame[1].toInt() and 0xFF,
+                    txModeLabel,
                     endByte,
                     endLabel,
                     headPreview,
@@ -2358,7 +2296,12 @@ object Nec78k0ProtocolEngine {
             val txErr = if (dataFrame.size <= 64) {
                 transport.writeRaw(dataFrame)
             } else {
-                transport.writeFrameBytes(dataFrame, FRAME_PACKET_WRITE_TIMEOUT_MS, onLog)
+                transport.writeFrameBytes(
+                    bytes = dataFrame,
+                    timeoutMs = FRAME_PACKET_WRITE_TIMEOUT_MS,
+                    useSingleBulkTransfer = useSingleBulkTransfer,
+                    onLog = onLog
+                )
             }
             if (txErr != null) {
                 return if (isPhysicalDisconnect(transport, txErr)) {
@@ -2368,7 +2311,7 @@ object Nec78k0ProtocolEngine {
                 }
             }
 
-            transport.discardEcho(dataFrame.size, 9600)
+            transport.discardEcho(dataFrame.size, transport.currentBaudRate())
             val ack = readOneRxFrame(transport, timeoutMs) { stray ->
                 if (verboseLog) onLog("RX Raw Live ($label): $stray")
             } ?: return if (!transport.isDeviceAttached()) {
@@ -2478,7 +2421,8 @@ object Nec78k0ProtocolEngine {
                 var directStxRetried = false
 
                 while (true) {
-                    when (val ackRes = sendStxDataPageAndAwaitAck(transport, dataFrame, PAGE_ACK_TIMEOUT_MS, "0x13 صفحة ${page + 1}/$PAGES_PER_BLOCK", onLog)) {
+                    val useSingleBulk = (attempt == 1 && !directStxRetried)
+                    when (val ackRes = sendStxDataPageAndAwaitAck(transport, dataFrame, PAGE_ACK_TIMEOUT_MS, "0x13 صفحة ${page + 1}/$PAGES_PER_BLOCK", onLog, useSingleBulkTransfer = useSingleBulk)) {
                         is FrameAckOutcome.AckSuccess -> {
                             onPageProgress?.invoke((page + 1) * PAGE_SIZE)
                             if (!isLast) {
@@ -2604,7 +2548,8 @@ object Nec78k0ProtocolEngine {
             var directStxRetried = false
             var restartHeader = false
             while (true) {
-                when (val ackRes = sendStxDataPageAndAwaitAck(transport, dataFrame, PAGE_ACK_TIMEOUT_MS, "0x13 صفحة مفردة", onLog, verboseLog = false)) {
+                val useSingleBulk = (attempt == 1 && !directStxRetried)
+                when (val ackRes = sendStxDataPageAndAwaitAck(transport, dataFrame, PAGE_ACK_TIMEOUT_MS, "0x13 صفحة مفردة", onLog, verboseLog = false, useSingleBulkTransfer = useSingleBulk)) {
                     is FrameAckOutcome.AckSuccess -> return VerifyOutcome.Match
                     is FrameAckOutcome.FrameError -> {
                         if (ackRes.errorCode == STS_CHECKSUM_ERROR) {
@@ -3315,7 +3260,8 @@ object Nec78k0ProtocolEngine {
                 var directPageRetried = false
 
                 while (true) {
-                    when (val ackRes = sendStxDataPageAndAwaitAck(transport, dataFrame, PAGE_ACK_TIMEOUT_MS, "0x40 صفحة ${page + 1}/$PAGES_PER_BLOCK", onLog)) {
+                    val useSingleBulk = (attempt == 1 && !directPageRetried)
+                    when (val ackRes = sendStxDataPageAndAwaitAck(transport, dataFrame, PAGE_ACK_TIMEOUT_MS, "0x40 صفحة ${page + 1}/$PAGES_PER_BLOCK", onLog, useSingleBulkTransfer = useSingleBulk)) {
                         is FrameAckOutcome.AckSuccess -> {
                             anyPageAckedInAttempt = true
                             onPageProgress?.invoke((page + 1) * PAGE_SIZE)
@@ -3463,7 +3409,7 @@ object Nec78k0ProtocolEngine {
                 onLog("TX Error (0xB0): $txErr")
                 return ChecksumQueryResult.TransportLost("خطأ إرسال 0xB0: $txErr", isUsbDetached = isPhysicalDisconnect(transport, txErr))
             }
-            transport.discardEcho(csCmdFrame.size, 9600)
+            transport.discardEcho(csCmdFrame.size, transport.currentBaudRate())
             val firstFrame = readOneRxFrame(transport, 1500) { stray ->
                 if (verboseLog) onLog("RX Raw Live (0xB0): $stray")
             } ?: return ChecksumQueryResult.TransportLost(
@@ -3887,6 +3833,53 @@ object Nec78k0ProtocolEngine {
         }
     }
 
+    internal suspend fun switchBaudRate0x9AWithFallback(
+        transport: Serial78k0Transport,
+        @Suppress("UNUSED_PARAMETER") clockFreqMhzText: String,
+        targetBaud: Int = HIGHSPEED_BAUD_RATE,
+        onLog: (String) -> Unit
+    ): Boolean {
+        if (targetBaud <= Nec78k0ProtocolRegistry.INITIAL_BAUD_RATE || !transport.isDeviceAttached()) {
+            return false
+        }
+        val baudCode = when (targetBaud) {
+            19200 -> 0x04
+            38400 -> 0x05
+            57600 -> 0x06
+            115200 -> 0x07
+            else -> return false
+        }
+        val setBaudCmd = buildCommandFrame(CMD_BAUD_RATE_SET, byteArrayOf(baudCode.toByte(), 0x00))
+        onLog(String.format(Locale.US, "TX (رفع السرعة 0x9A -> %d bps): %s", targetBaud, toHex(setBaudCmd)))
+        val res = transceiveSingleFrame(transport, setBaudCmd, 700, onLog, verboseLog = false)
+        if (res !is Nec78k0TransceiveResult.Success) {
+            onLog("تنبيه السرعة: المعالج لم يقبل أمر 0x9A — الاستمرار بأمان على 9600 bps.")
+            transport.configureUart96008N1(onLog)
+            return false
+        }
+
+        if (!transport.configureUartBaud(targetBaud, onLog)) {
+            onLog("تعذر تبديل منفذ USB المضيف إلى $targetBaud bps — العودة إلى 9600 bps.")
+            transport.configureUart96008N1(onLog)
+            return false
+        }
+        delay(Nec78k0ProtocolRegistry.BAUD_SWITCH_DELAY_MS)
+        transport.flushInputBuffer()
+
+        // Verify live communication on targetBaud via CMD_RESET ping
+        val verifyPing = transceiveSingleFrame(transport, buildCommandFrame(CMD_RESET), 450, onLog, verboseLog = false)
+        if (verifyPing is Nec78k0TransceiveResult.Success) {
+            onLog(String.format(Locale.US, "⚡ تم رفع سرعة نقل NEC 78K0 إلى %d bps بنجاح!", targetBaud))
+            return true
+        }
+
+        onLog("تنبيه السرعة: تعذر تأكيد الاتصال على $targetBaud bps — تراجع تلقائي آمن إلى 9600 bps...")
+        transport.configureUart96008N1(onLog)
+        delay(20L)
+        transport.flushInputBuffer()
+        return false
+    }
+
     internal suspend fun transceiveSingleFrame(
         transport: Serial78k0Transport,
         txFrame: ByteArray,
@@ -3905,7 +3898,7 @@ object Nec78k0ProtocolEngine {
                 isUsbDetached = isPhysicalDisconnect(transport, txErr)
             )
         }
-        transport.discardEcho(txFrame.size, 9600)
+        transport.discardEcho(txFrame.size, transport.currentBaudRate())
         val rx = readOneRxFrame(transport, timeoutMs) { stray ->
             if (verboseLog) onLog("RX Raw Live (استجابة غير مكتملة): $stray")
         }

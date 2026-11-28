@@ -170,15 +170,22 @@ class ProgrammerForegroundService : Service() {
         private var lastStatusText: String = ""
         private val lockGuard = Any()
 
-        // Timing & ETA tracking
+        // Timing & 10-Sample Sliding Window Moving Average ETA tracking
+        private const val ETA_WINDOW_SIZE = 10
+        private data class ThroughputSample(val deltaBytes: Long, val deltaMs: Long)
+        private val etaLock = Any()
+        private val throughputWindow = ArrayDeque<ThroughputSample>(ETA_WINDOW_SIZE + 1)
+
         @Volatile
-        private var operationStartMs: Long = 0L
+        private var lastSampledBytesDone: Int = -1
         @Volatile
-        private var baselineBytesDone: Int = -1
+        private var lastSampledAtMs: Long = 0L
         @Volatile
         private var pausedStartedMs: Long = 0L
         @Volatile
         private var accumulatedPausedMs: Long = 0L
+        @Volatile
+        private var activePauseWindowMs: Long = 0L
         @Volatile
         private var remainingEtaSeconds: Long = -1L
         @Volatile
@@ -330,7 +337,9 @@ class ProgrammerForegroundService : Service() {
 
         fun requestPause(context: Context) {
             if (!_isWorkerActiveFlow.value || _isPausedFlow.value) return
-            pausedStartedMs = System.currentTimeMillis()
+            synchronized(etaLock) {
+                pausedStartedMs = System.currentTimeMillis()
+            }
             _isPausedFlow.value = true
             acquireSessionLock(
                 context,
@@ -341,9 +350,13 @@ class ProgrammerForegroundService : Service() {
 
         fun requestResume(context: Context) {
             if (!_isPausedFlow.value) return
-            if (pausedStartedMs > 0L) {
-                accumulatedPausedMs += (System.currentTimeMillis() - pausedStartedMs).coerceAtLeast(0L)
-                pausedStartedMs = 0L
+            synchronized(etaLock) {
+                if (pausedStartedMs > 0L) {
+                    val pauseDelta = (System.currentTimeMillis() - pausedStartedMs).coerceAtLeast(0L)
+                    accumulatedPausedMs += pauseDelta
+                    activePauseWindowMs += pauseDelta
+                    pausedStartedMs = 0L
+                }
             }
             _isPausedFlow.value = false
             acquireSessionLock(
@@ -375,45 +388,78 @@ class ProgrammerForegroundService : Service() {
             }
         }
 
-        fun updateThroughputAndEta(bytesDone: Int, totalBytes: Int) {
-            if (totalBytes <= 0 || bytesDone <= 0) {
-                remainingEtaSeconds = -1L
-                _etaTextFlow.value = if (totalBytes > 0) "--:--" else ""
-                return
+        fun updateThroughputAndEta(
+            bytesDone: Int,
+            totalBytes: Int,
+            isSkippedStep: Boolean = false,
+            nowMsOverride: Long? = null
+        ) {
+            synchronized(etaLock) {
+                if (totalBytes <= 0 || bytesDone <= 0) {
+                    remainingEtaSeconds = -1L
+                    _etaTextFlow.value = if (totalBytes > 0) "--:--" else ""
+                    return
+                }
+                val remainingBytes = (totalBytes - bytesDone).coerceAtLeast(0)
+                if (remainingBytes == 0) {
+                    remainingEtaSeconds = 0L
+                    _etaTextFlow.value = "00:00"
+                    return
+                }
+                val now = nowMsOverride ?: System.currentTimeMillis()
+                if (lastSampledBytesDone < 0 || bytesDone < lastSampledBytesDone) {
+                    lastSampledBytesDone = bytesDone
+                    lastSampledAtMs = now
+                    activePauseWindowMs = 0L
+                    if (throughputWindow.isEmpty()) {
+                        remainingEtaSeconds = -1L
+                        _etaTextFlow.value = "--:--"
+                    }
+                    return
+                }
+
+                if (isSkippedStep) {
+                    // Advance cursor without feeding instant zero-latency skip into sliding window
+                    lastSampledBytesDone = bytesDone
+                    lastSampledAtMs = now
+                    activePauseWindowMs = 0L
+                    updateRemainingEtaFromWindowLocked(remainingBytes)
+                    return
+                }
+
+                val deltaBytes = (bytesDone - lastSampledBytesDone).toLong()
+                val rawElapsed = (now - lastSampledAtMs).coerceAtLeast(0L)
+                if (deltaBytes >= 256L || (deltaBytes >= 32L && rawElapsed >= 250L)) {
+                    val activeDeltaMs = (rawElapsed - activePauseWindowMs).coerceAtLeast(1L)
+                    throughputWindow.addLast(ThroughputSample(deltaBytes = deltaBytes, deltaMs = activeDeltaMs))
+                    while (throughputWindow.size > ETA_WINDOW_SIZE) {
+                        throughputWindow.removeFirst()
+                    }
+                    lastSampledBytesDone = bytesDone
+                    lastSampledAtMs = now
+                    activePauseWindowMs = 0L
+                    updateRemainingEtaFromWindowLocked(remainingBytes)
+                }
             }
-            val now = System.currentTimeMillis()
-            if (operationStartMs == 0L) {
-                operationStartMs = now
-                baselineBytesDone = bytesDone
-                remainingEtaSeconds = -1L
-                _etaTextFlow.value = "--:--"
-                return
-            }
-            if (baselineBytesDone < 0) {
-                baselineBytesDone = bytesDone
-            }
-            val processedSinceStart = (bytesDone - baselineBytesDone).coerceAtLeast(0)
-            val remainingBytes = (totalBytes - bytesDone).coerceAtLeast(0)
-            if (remainingBytes == 0) {
-                remainingEtaSeconds = 0L
-                _etaTextFlow.value = "00:00"
-                return
-            }
-            val activeElapsedMs = (now - operationStartMs - accumulatedPausedMs).coerceAtLeast(1L)
-            if (activeElapsedMs < 1000L || processedSinceStart < 128) {
+        }
+
+        private fun updateRemainingEtaFromWindowLocked(remainingBytes: Int) {
+            if (throughputWindow.isEmpty()) {
                 if (remainingEtaSeconds < 0L) {
                     _etaTextFlow.value = "--:--"
                 }
                 return
             }
-            val bytesPerMs = processedSinceStart.toDouble() / activeElapsedMs.toDouble()
-            if (bytesPerMs <= 0.0001) {
+            val totalWinBytes = throughputWindow.sumOf { it.deltaBytes }
+            val totalWinMs = throughputWindow.sumOf { it.deltaMs }.coerceAtLeast(1L)
+            val avgBytesPerMs = totalWinBytes.toDouble() / totalWinMs.toDouble()
+            if (avgBytesPerMs <= 0.0001) {
                 if (remainingEtaSeconds < 0L) {
                     _etaTextFlow.value = "--:--"
                 }
                 return
             }
-            val etaSeconds = ((remainingBytes.toDouble() / bytesPerMs) / 1000.0).toLong().coerceIn(0L, 86400L)
+            val etaSeconds = ((remainingBytes.toDouble() / avgBytesPerMs) / 1000.0).toLong().coerceIn(0L, 86400L)
             remainingEtaSeconds = etaSeconds
             _etaTextFlow.value = formatEtaSeconds(etaSeconds)
         }
@@ -429,14 +475,26 @@ class ProgrammerForegroundService : Service() {
             }
         }
 
-        private fun resetPauseAndEtaState() {
-            _isPausedFlow.value = false
-            _etaTextFlow.value = ""
-            operationStartMs = 0L
-            baselineBytesDone = -1
-            pausedStartedMs = 0L
-            accumulatedPausedMs = 0L
-            remainingEtaSeconds = -1L
+        internal fun resetPauseAndEtaState() {
+            synchronized(etaLock) {
+                _isPausedFlow.value = false
+                _etaTextFlow.value = ""
+                throughputWindow.clear()
+                lastSampledBytesDone = -1
+                lastSampledAtMs = 0L
+                pausedStartedMs = 0L
+                accumulatedPausedMs = 0L
+                activePauseWindowMs = 0L
+                remainingEtaSeconds = -1L
+            }
+        }
+
+        internal fun addPauseDeltaForTest(pauseDeltaMs: Long) {
+            synchronized(etaLock) {
+                val safe = pauseDeltaMs.coerceAtLeast(0L)
+                accumulatedPausedMs += safe
+                activePauseWindowMs += safe
+            }
         }
 
         fun acquireSessionLock(context: Context, statusText: String, progressPercent: Int = -1) {

@@ -342,6 +342,7 @@ fun McuProgrammerScreen(
                     onToggleDtrRtsReset = programmerViewModel::setEnableDtrRtsReset,
                     onToggleManufacturerLock = programmerViewModel::toggleManufacturerLock,
                     onToggleMainFamilyLock = programmerViewModel::toggleMainFamilyLock,
+                    onAutoDetectChipId = programmerViewModel::autoDetectChipId,
                     onNextStep = { programmerViewModel.goToStep(2) }
                 )
                 2 -> ProgrammerStep2Pinout(
@@ -385,6 +386,7 @@ fun McuProgrammerScreen(
                     onEraseFlash = programmerViewModel::eraseChipFlash,
                     onVerifyFlash = programmerViewModel::verifyChipFlash,
                     onTogglePauseResume = programmerViewModel::togglePauseResume,
+                    onAutoDetectChipId = programmerViewModel::autoDetectChipId,
                     onClearLogs = programmerViewModel::clearLogs,
                     onRescue78k0Session = { session -> programmerViewModel.rescueOrResume78k0Flash(session) },
                     onCleanResume78k0Session = { session -> programmerViewModel.reset78k0BlockOffsetAndResume(session) },

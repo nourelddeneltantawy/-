@@ -19,6 +19,9 @@ class FirmwareValidationException(message: String) : IllegalArgumentException(me
 
 object FirmwareParser {
 
+    const val INVALID_NON_FIRMWARE_FILE_MESSAGE =
+        "ملف غير صالح: لا يمكن إضافة الصور أو الملفات غير البرمجية. اختر ملف .bin أو .s19 أو .hex فقط"
+
     private val ALLOWED_EXTENSIONS = setOf(
         "bin", "s19", "mot", "srec", "s28", "s37", "hex", "ihx"
     )
@@ -28,28 +31,30 @@ object FirmwareParser {
     }
 
     /**
-     * Stage 1 Gate: rejects image/video/audio MIME types and unsupported extensions before reading bytes.
+     * Stage 1 Gate: rejects image/video/audio/archive/document MIME types and unsupported extensions before reading bytes.
      */
     fun validateFileMetadata(fileName: String, mimeType: String?) {
         val cleanMime = mimeType?.trim()?.lowercase().orEmpty()
         if (cleanMime.startsWith("image/") || cleanMime.startsWith("video/") || cleanMime.startsWith("audio/") ||
             cleanMime == "application/pdf" || cleanMime == "application/zip" ||
+            cleanMime == "application/x-rar-compressed" || cleanMime == "application/vnd.rar" ||
+            cleanMime == "application/x-7z-compressed" ||
             cleanMime == "application/vnd.android.package-archive"
         ) {
             throw FirmwareValidationException(
-                "نوع الملف مرفوض ($cleanMime) — يُسمح فقط بملفات السوفت وير (.bin, .s19, .mot, .srec, .hex, .ihx)."
+                "$INVALID_NON_FIRMWARE_FILE_MESSAGE ($cleanMime)"
             )
         }
         val ext = fileName.substringAfterLast('.', "").trim().lowercase()
         if (ext.isNotEmpty() && ext !in ALLOWED_EXTENSIONS) {
             throw FirmwareValidationException(
-                "امتداد الملف مرفوض (.$ext) — الامتدادات المعتمدة فقط: .bin, .s19, .mot, .srec, .hex, .ihx"
+                "$INVALID_NON_FIRMWARE_FILE_MESSAGE (.$ext)"
             )
         }
     }
 
     /**
-     * Stage 2 Gate + Strict Parser: checks magic headers (PNG/JPEG/GIF/PDF/ZIP/APK/RIFF),
+     * Stage 2 Gate + Strict Parser: inspects first 16 magic bytes (PNG/JPEG/GIF/BMP/WEBP/HEIC/PDF/ZIP/RAR/7Z/ELF),
      * validates S-Record & Intel HEX line checksums, and enforces target flash capacity rules.
      */
     fun validateAndParseFirmware(
@@ -70,7 +75,7 @@ object FirmwareParser {
 
         detectSpoofedMagicHeader(rawBytes)?.let { fakeKind ->
             throw FirmwareValidationException(
-                "تم رفض الملف ($fileName): يحتوي على ترويسة $fakeKind وليس ملف سوفت وير حقيقياً!"
+                "$INVALID_NON_FIRMWARE_FILE_MESSAGE (تم رصد ترويسة $fakeKind)"
             )
         }
 
@@ -136,18 +141,37 @@ object FirmwareParser {
     }
 
     private fun detectSpoofedMagicHeader(bytes: ByteArray): String? {
-        if (bytes.size < 4) return null
-        val b0 = bytes[0].toInt() and 0xFF
-        val b1 = bytes[1].toInt() and 0xFF
-        val b2 = bytes[2].toInt() and 0xFF
-        val b3 = bytes[3].toInt() and 0xFF
+        if (bytes.size < 2) return null
+        val headLen = min(16, bytes.size)
+        fun b(idx: Int): Int = if (idx < headLen) (bytes[idx].toInt() and 0xFF) else -1
+
+        val b0 = b(0)
+        val b1 = b(1)
+        val b2 = b(2)
+        val b3 = b(3)
+
         return when {
-            b0 == 0x89 && b1 == 0x50 && b2 == 0x4E && b3 == 0x47 -> "صورة PNG"
-            b0 == 0xFF && b1 == 0xD8 && b2 == 0xFF -> "صورة JPEG"
-            b0 == 0x47 && b1 == 0x49 && b2 == 0x46 && b3 == 0x38 -> "صورة GIF"
-            b0 == 0x25 && b1 == 0x50 && b2 == 0x44 && b3 == 0x46 -> "مستند PDF"
-            b0 == 0x50 && b1 == 0x4B && (b2 == 0x03 || b2 == 0x05 || b2 == 0x07) -> "أرشيف ZIP/APK"
-            b0 == 0x52 && b1 == 0x49 && b2 == 0x46 && b3 == 0x46 -> "ملف وسائط RIFF/WEBP"
+            headLen >= 8 && b0 == 0x89 && b1 == 0x50 && b2 == 0x4E && b3 == 0x47 &&
+                b(4) == 0x0D && b(5) == 0x0A && b(6) == 0x1A && b(7) == 0x0A -> "صورة PNG"
+            headLen >= 4 && b0 == 0x89 && b1 == 0x50 && b2 == 0x4E && b3 == 0x47 -> "صورة PNG"
+            headLen >= 3 && b0 == 0xFF && b1 == 0xD8 && b2 == 0xFF -> "صورة JPEG"
+            headLen >= 6 && b0 == 0x47 && b1 == 0x49 && b2 == 0x46 && b3 == 0x38 &&
+                (b(4) == 0x37 || b(4) == 0x39) && b(5) == 0x61 -> "صورة GIF"
+            headLen >= 4 && b0 == 0x47 && b1 == 0x49 && b2 == 0x46 && b3 == 0x38 -> "صورة GIF"
+            headLen >= 2 && b0 == 0x42 && b1 == 0x4D && bytes.size > 14 -> "صورة BMP"
+            headLen >= 12 && b0 == 0x52 && b1 == 0x49 && b2 == 0x46 && b3 == 0x46 &&
+                b(8) == 0x57 && b(9) == 0x45 && b(10) == 0x42 && b(11) == 0x50 -> "صورة WEBP"
+            headLen >= 4 && b0 == 0x52 && b1 == 0x49 && b2 == 0x46 && b3 == 0x46 -> "ملف وسائط RIFF"
+            headLen >= 4 && ((b0 == 0x49 && b1 == 0x49 && b2 == 0x2A && b3 == 0x00) ||
+                (b0 == 0x4D && b1 == 0x4D && b2 == 0x00 && b3 == 0x2A)) -> "صورة TIFF"
+            headLen >= 12 && b(4) == 0x66 && b(5) == 0x74 && b(6) == 0x79 && b(7) == 0x70 -> "ملف وسائط HEIC/AVIF/MP4"
+            headLen >= 4 && b0 == 0x25 && b1 == 0x50 && b2 == 0x44 && b3 == 0x46 -> "مستند PDF"
+            headLen >= 4 && b0 == 0x50 && b1 == 0x4B && (b2 == 0x03 || b2 == 0x05 || b2 == 0x07) -> "أرشيف ZIP/APK"
+            headLen >= 6 && b0 == 0x52 && b1 == 0x61 && b2 == 0x72 && b3 == 0x21 &&
+                b(4) == 0x1A && b(5) == 0x07 -> "أرشيف RAR"
+            headLen >= 6 && b0 == 0x37 && b1 == 0x7A && b2 == 0xBC && b3 == 0xAF &&
+                b(4) == 0x27 && b(5) == 0x1C -> "أرشيف 7Z"
+            headLen >= 4 && b0 == 0x7F && b1 == 0x45 && b2 == 0x4C && b3 == 0x46 -> "ملف تنفيذي ELF"
             else -> null
         }
     }
@@ -491,7 +515,11 @@ object FirmwareParser {
                 !insideDf && !insideProg
             }
             val spanBytes = (maxAddr - minAddr).coerceAtLeast(0L)
-            if (outOfRangeChunk != null && spanBytes > (targetFlashSizeBytes + dataFlashSizeBytes).toLong()) {
+            val totalAddressableCap = (targetFlashSizeBytes + dataFlashSizeBytes).toLong()
+            val exceedsPhysicalEnd = outOfRangeChunk != null &&
+                maxAddr > maxOf(progEndExclusive, dfEndExclusive, targetFlashSizeBytes.toLong()) &&
+                outOfRangeChunk.address >= baseOffset
+            if ((outOfRangeChunk != null && spanBytes > totalAddressableCap) || exceedsPhysicalEnd) {
                 throw FirmwareValidationException(
                     String.format(
                         Locale.US,

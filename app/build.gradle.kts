@@ -106,4 +106,7 @@ dependencies {
   implementation(libs.kotlinx.serialization.json)
   debugImplementation(libs.androidx.compose.ui.tooling)
   debugImplementation(libs.firebase.appcheck.debug)
+  testImplementation("junit:junit:4.13.2")
+  testImplementation("org.robolectric:robolectric:4.14.1")
+  testImplementation("androidx.test:core:1.6.1")
 }

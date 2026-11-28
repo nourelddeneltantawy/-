@@ -4,6 +4,7 @@ import android.content.Context
 import com.example.data.model.ChipConfig
 import com.example.data.model.DataFlashExportMode
 import com.example.data.model.McuProcessor
+import com.example.data.model.ProtocolFamilyType
 import kotlinx.coroutines.delay
 import java.util.Locale
 import kotlin.math.min
@@ -157,6 +158,44 @@ object R8cProtocolEngine {
         }
 
         return BootSessionResult(connected = false)
+    }
+
+    /**
+     * Strictly read-only passive probe for R8C / M16C families:
+     * Runs 16x0x00 + 0xB0 + getVersion (0xFB) ONLY — never executes ID unlock, erase, or write.
+     */
+    suspend fun probeVersionReadOnly(
+        transport: SerialTransport,
+        catalog: List<McuProcessor>,
+        preferredPartNumber: String?,
+        quiet: Boolean = false,
+        onLog: (String) -> Unit
+    ): ChipAutoDetectResult? {
+        val logFn: (String) -> Unit = if (quiet) { _ -> } else onLog
+        val boot = startAndConnect(transport, logFn)
+        if (!boot.connected) {
+            return null
+        }
+        val ver = try {
+            getVersion(transport, logFn)
+        } finally {
+            transport.setRawRxMonitor(false)
+        } ?: return null
+
+        val r8cPool = catalog.filter { it.protocolType == ProtocolFamilyType.R8C_M16C }
+        val matched = preferredPartNumber?.let { pref ->
+            r8cPool.firstOrNull { it.partNumber.equals(pref, ignoreCase = true) }
+        } ?: r8cPool.firstOrNull { ver.contains(it.partNumber, ignoreCase = true) }
+            ?: r8cPool.firstOrNull { it.partNumber.equals("R5F21258", ignoreCase = true) }
+            ?: r8cPool.firstOrNull()
+
+        val chipLabel = matched?.partNumber ?: "R8C/M16C ($ver)"
+        val familyLabel = matched?.mainFamily ?: "R8C/M16C"
+        return ChipAutoDetectResult.Matched(
+            rawSignatureHex = toHex(ver.toByteArray(Charsets.US_ASCII)),
+            matchedProcessor = matched,
+            diagnosticMessage = "✅ تم التعرف تلقائياً على المعالج: $chipLabel ($familyLabel) • Bootloader: $ver"
+        )
     }
 
     private suspend fun runBootResetSequence(

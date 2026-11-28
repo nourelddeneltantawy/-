@@ -106,6 +106,12 @@ object Nec78k0FlashWriterEngine {
         if (info == null) {
             return FlashOperationResult.Failure(err ?: "تعذر مزامنة المعالج 78K0 والتعرف عليه قبل الكتابة.")
         }
+        Nec78k0ProtocolEngine.switchBaudRate0x9AWithFallback(
+            transport = transport,
+            clockFreqMhzText = clockFreqMhzText,
+            targetBaud = Nec78k0ProtocolEngine.HIGHSPEED_BAUD_RATE,
+            onLog = onLog
+        )
 
         val totalSize = info.flashSizeBytes
         val blockCount = info.blockCount.coerceAtLeast(1)
@@ -351,6 +357,12 @@ object Nec78k0FlashWriterEngine {
         if (info == null) {
             return FlashOperationResult.Failure(err ?: "تعذر مزامنة المعالج 78K0 والتعرف عليه قبل المطابقة.")
         }
+        Nec78k0ProtocolEngine.switchBaudRate0x9AWithFallback(
+            transport = transport,
+            clockFreqMhzText = clockFreqMhzText,
+            targetBaud = Nec78k0ProtocolEngine.HIGHSPEED_BAUD_RATE,
+            onLog = onLog
+        )
 
         val totalSize = info.flashSizeBytes
         val blockCount = info.blockCount.coerceAtLeast(1)
