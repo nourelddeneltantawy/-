@@ -66,10 +66,24 @@ import androidx.compose.ui.unit.sp
 import com.example.data.McuCatalogLockManager
 import com.example.data.model.McuProcessor
 import com.example.data.model.ProtocolFamilyType
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.unit.LayoutDirection
+import com.example.ui.theme.GlassPrimaryCtaButton
+import com.example.ui.theme.GlassStatusWellPill
+import com.example.ui.theme.GlassTokens
 import com.example.ui.theme.LocalIsDarkTheme
+import com.example.ui.theme.LocalIsLiquidGlassTheme
 import com.example.ui.theme.LocalIsSoftNeumorphismTheme
-import com.example.ui.theme.NeuPillButton
+import com.example.ui.theme.MonospaceTabularStyle
+import com.example.ui.theme.NeuPrimaryCtaButton
+import com.example.ui.theme.NeuStatusWellPill
+import com.example.ui.theme.NeuTokens
+import com.example.ui.theme.bidiIsolateMixed
+import com.example.ui.theme.glassCard
+import com.example.ui.theme.glassRecessed
 import com.example.ui.theme.neuCard
+import com.example.ui.theme.neuRecessed
 import com.example.ui.viewmodel.McuProgrammerUiState
 
 @Composable
@@ -89,6 +103,7 @@ fun ProgrammerStep1McuSelect(
 ) {
     val scrollState = rememberScrollState()
     val isNeu = LocalIsSoftNeumorphismTheme.current
+    val isGlass = LocalIsLiquidGlassTheme.current
     val isDark = LocalIsDarkTheme.current
 
     Column(
@@ -104,14 +119,11 @@ fun ProgrammerStep1McuSelect(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Surface(
-                shape = RoundedCornerShape(10.dp),
-                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f),
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f))
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically
+            when {
+                isNeu -> NeuStatusWellPill(
+                    isDark = isDark,
+                    accentBorder = MaterialTheme.colorScheme.primary.copy(alpha = 0.35f),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
                 ) {
                     Icon(
                         imageVector = Icons.Default.Memory,
@@ -121,21 +133,73 @@ fun ProgrammerStep1McuSelect(
                     )
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
-                        text = if (state.isLoadingDb) "جاري تحميل قاعدة البيانات..."
-                        else "${state.totalMcuCount} معالج (${state.loadedDbFiles.joinToString(" + ")})",
+                        text = (if (state.isLoadingDb) "جاري تحميل قاعدة البيانات..."
+                        else "${state.totalMcuCount} معالج (${state.loadedDbFiles.joinToString(" + ")})").bidiIsolateMixed(),
                         fontSize = 11.sp,
                         fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.onSurface
+                        color = NeuTokens.textPrimary(isDark)
                     )
+                }
+                isGlass -> GlassStatusWellPill(
+                    isDark = isDark,
+                    accentBorder = MaterialTheme.colorScheme.primary.copy(alpha = 0.45f),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Memory,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = (if (state.isLoadingDb) "جاري تحميل قاعدة البيانات..."
+                        else "${state.totalMcuCount} معالج (${state.loadedDbFiles.joinToString(" + ")})").bidiIsolateMixed(),
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = GlassTokens.textPrimary(isDark)
+                    )
+                }
+                else -> Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f))
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Memory,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = (if (state.isLoadingDb) "جاري تحميل قاعدة البيانات..."
+                            else "${state.totalMcuCount} معالج (${state.loadedDbFiles.joinToString(" + ")})").bidiIsolateMixed(),
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
                 }
             }
         }
 
         // Smart Instant Search Card
         Card(
-            shape = RoundedCornerShape(18.dp),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f))
+            shape = RoundedCornerShape(if (isGlass) 24.dp else if (isNeu) 20.dp else 18.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = if (isNeu || isGlass) Color.Transparent else MaterialTheme.colorScheme.surface
+            ),
+            border = if (isNeu || isGlass) null else BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f)),
+            modifier = when {
+                isNeu -> Modifier.neuCard(cornerRadius = 20.dp, isDark = isDark)
+                isGlass -> Modifier.glassCard(cornerRadius = 24.dp, isDark = isDark)
+                else -> Modifier
+            }
         ) {
             Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text(
@@ -406,21 +470,23 @@ fun ProgrammerStep1McuSelect(
                                 fontWeight = FontWeight.Bold,
                                 color = Color(0xFF38BDF8)
                             )
-                            state.logs.takeLast(20).reversed().forEach { entry ->
-                                val c = when {
-                                    entry.message.startsWith("RX:") && !entry.message.contains("لا يوجد") -> Color(0xFF34D399)
-                                    entry.message.startsWith("TX:") -> Color(0xFFFBBF24)
-                                    entry.level == com.example.data.model.LogLevel.ERROR -> Color(0xFFF87171)
-                                    entry.level == com.example.data.model.LogLevel.SUCCESS -> Color(0xFF34D399)
-                                    else -> Color(0xFFCBD5E1)
+                            CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+                                Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                                    state.logs.takeLast(20).reversed().forEach { entry ->
+                                        val c = when {
+                                            entry.message.startsWith("RX:") && !entry.message.contains("لا يوجد") -> Color(0xFF34D399)
+                                            entry.message.startsWith("TX:") -> Color(0xFFFBBF24)
+                                            entry.level == com.example.data.model.LogLevel.ERROR -> Color(0xFFF87171)
+                                            entry.level == com.example.data.model.LogLevel.SUCCESS -> Color(0xFF34D399)
+                                            else -> Color(0xFFCBD5E1)
+                                        }
+                                        Text(
+                                            text = "[${entry.timestamp}] ${entry.message}",
+                                            style = MonospaceTabularStyle.copy(fontSize = 10.sp, lineHeight = 14.sp),
+                                            color = c
+                                        )
+                                    }
                                 }
-                                Text(
-                                    text = "[${entry.timestamp}] ${entry.message}",
-                                    fontSize = 10.sp,
-                                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-                                    color = c,
-                                    lineHeight = 14.sp
-                                )
                             }
                         }
                     }
@@ -430,12 +496,16 @@ fun ProgrammerStep1McuSelect(
 
         // 4 Cascading Dropdowns Card
         Card(
-            shape = RoundedCornerShape(if (isNeu) 20.dp else 18.dp),
+            shape = RoundedCornerShape(if (isGlass) 24.dp else if (isNeu) 20.dp else 18.dp),
             colors = CardDefaults.cardColors(
-                containerColor = if (isNeu) Color.Transparent else MaterialTheme.colorScheme.surface
+                containerColor = if (isNeu || isGlass) Color.Transparent else MaterialTheme.colorScheme.surface
             ),
-            border = if (isNeu) null else BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f)),
-            modifier = if (isNeu) Modifier.neuCard(cornerRadius = 20.dp, isDark = isDark) else Modifier
+            border = if (isNeu || isGlass) null else BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f)),
+            modifier = when {
+                isNeu -> Modifier.neuCard(cornerRadius = 20.dp, isDark = isDark)
+                isGlass -> Modifier.glassCard(cornerRadius = 24.dp, isDark = isDark)
+                else -> Modifier
+            }
         ) {
             Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Row(
@@ -506,18 +576,29 @@ fun ProgrammerStep1McuSelect(
         // Selected MCU Datasheet Specs Card
         state.selectedProcessor?.let { mcu ->
             Card(
-                shape = RoundedCornerShape(18.dp),
+                shape = RoundedCornerShape(if (isGlass) 24.dp else if (isNeu) 20.dp else 18.dp),
                 colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
+                    containerColor = if (isNeu || isGlass) Color.Transparent else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
                 ),
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.4f))
+                border = if (isNeu || isGlass) null else BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.4f)),
+                modifier = when {
+                    isNeu -> Modifier.neuCard(cornerRadius = 20.dp, isDark = isDark)
+                    isGlass -> Modifier.glassCard(cornerRadius = 24.dp, isDark = isDark, accentGlow = MaterialTheme.colorScheme.primary)
+                    else -> Modifier
+                }
             ) {
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Box(
                             modifier = Modifier
                                 .size(42.dp)
-                                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.16f), CircleShape),
+                                .then(
+                                    when {
+                                        isNeu -> Modifier.neuRecessed(cornerRadius = 21.dp, isDark = isDark)
+                                        isGlass -> Modifier.glassRecessed(cornerRadius = 21.dp, isDark = isDark)
+                                        else -> Modifier.background(MaterialTheme.colorScheme.primary.copy(alpha = 0.16f), CircleShape)
+                                    }
+                                ),
                             contentAlignment = Alignment.Center
                         ) {
                             Icon(
@@ -534,9 +615,13 @@ fun ProgrammerStep1McuSelect(
                                 color = MaterialTheme.colorScheme.primary
                             )
                             Text(
-                                text = "${mcu.manufacturer} • ${mcu.mainFamily} / ${mcu.subFamily}",
+                                text = "${mcu.manufacturer} • ${mcu.mainFamily} / ${mcu.subFamily}".bidiIsolateMixed(),
                                 fontSize = 12.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                color = when {
+                                    isNeu -> NeuTokens.textSecondary(isDark)
+                                    isGlass -> GlassTokens.textSecondary(isDark)
+                                    else -> MaterialTheme.colorScheme.onSurfaceVariant
+                                }
                             )
                         }
                     }
@@ -550,35 +635,39 @@ fun ProgrammerStep1McuSelect(
                         SpecMiniBadge(
                             title = "عدد الأطراف",
                             value = "${mcu.pins} Pin",
-                            accent = Color(0xFF38BDF8),
+                            accent = Color(0xFF0284C7),
+                            isNeu = isNeu,
+                            isGlass = isGlass,
+                            isDark = isDark,
                             modifier = Modifier.weight(1f)
                         )
                         SpecMiniBadge(
                             title = "حجم الذاكرة (Flash)",
                             value = "${mcu.flashKb} KB",
                             accent = Color(0xFF10B981),
+                            isNeu = isNeu,
+                            isGlass = isGlass,
+                            isDark = isDark,
                             modifier = Modifier.weight(1f)
                         )
                     }
 
-                    SpecDetailRow(label = "جهد التشغيل الموصى به:", value = mcu.recommendedVoltage)
-                    SpecDetailRow(label = "بروتوكول البرمجة:", value = mcu.protocolName)
+                    SpecDetailRow(label = "جهد التشغيل الموصى به:", value = mcu.recommendedVoltage.bidiIsolateMixed())
+                    SpecDetailRow(label = "بروتوكول البرمجة:", value = mcu.protocolName.bidiIsolateMixed())
                     SpecDetailRow(label = "مصدر قاعدة البيانات:", value = mcu.sourceFile.ifBlank { "renesas_clean.json" })
                 }
             }
         }
 
         // Next Action Button
-        if (isNeu) {
-            NeuPillButton(
+        when {
+            isNeu -> NeuPrimaryCtaButton(
                 onClick = onNextStep,
                 enabled = state.selectedProcessor != null,
-                isActive = state.selectedProcessor != null,
                 isDark = isDark,
                 accentColor = MaterialTheme.colorScheme.primary,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(min = 52.dp)
                     .testTag("step1_next_button")
             ) {
                 Text(
@@ -594,8 +683,29 @@ fun ProgrammerStep1McuSelect(
                     tint = MaterialTheme.colorScheme.primary
                 )
             }
-        } else {
-            Button(
+            isGlass -> GlassPrimaryCtaButton(
+                onClick = onNextStep,
+                enabled = state.selectedProcessor != null,
+                isDark = isDark,
+                accentColor = MaterialTheme.colorScheme.primary,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("step1_next_button")
+            ) {
+                Text(
+                    text = "التالي: اختيار المبرمجة",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 15.sp,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Icon(
+                    Icons.AutoMirrored.Filled.ArrowBack,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary
+                )
+            }
+            else -> Button(
                 onClick = onNextStep,
                 enabled = state.selectedProcessor != null,
                 shape = RoundedCornerShape(16.dp),
@@ -789,18 +899,39 @@ private fun SpecMiniBadge(
     title: String,
     value: String,
     accent: Color,
+    isNeu: Boolean = false,
+    isGlass: Boolean = false,
+    isDark: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     Surface(
-        shape = RoundedCornerShape(12.dp),
-        color = accent.copy(alpha = 0.12f),
-        border = BorderStroke(1.dp, accent.copy(alpha = 0.35f)),
-        modifier = modifier
+        shape = RoundedCornerShape(if (isNeu || isGlass) 14.dp else 12.dp),
+        color = if (isNeu || isGlass) Color.Transparent else accent.copy(alpha = 0.12f),
+        border = if (isNeu || isGlass) null else BorderStroke(1.dp, accent.copy(alpha = 0.35f)),
+        modifier = modifier.then(
+            when {
+                isNeu -> Modifier.neuRecessed(cornerRadius = 14.dp, isDark = isDark, accentBorder = accent.copy(alpha = 0.35f))
+                isGlass -> Modifier.glassRecessed(cornerRadius = 14.dp, isDark = isDark, accentBorder = accent.copy(alpha = 0.45f))
+                else -> Modifier
+            }
+        )
     ) {
         Column(modifier = Modifier.padding(10.dp)) {
-            Text(text = title, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(
+                text = title.bidiIsolateMixed(),
+                fontSize = 11.sp,
+                color = when {
+                    isNeu -> NeuTokens.textSecondary(isDark)
+                    isGlass -> GlassTokens.textSecondary(isDark)
+                    else -> MaterialTheme.colorScheme.onSurfaceVariant
+                }
+            )
             Spacer(modifier = Modifier.height(2.dp))
-            Text(text = value, fontSize = 15.sp, fontWeight = FontWeight.Bold, color = accent)
+            Text(
+                text = value,
+                style = MonospaceTabularStyle.copy(fontSize = 15.sp, fontWeight = FontWeight.Bold),
+                color = accent
+            )
         }
     }
 }

@@ -21,6 +21,7 @@ object Nec78k0RecoveryManager {
         BLOCK0_ZEROED("BLOCK0_ZEROED", "تم تصفير Block 0 وجاهز لسحب الكتل المتبقية"),
         READING_BLOCKS("READING_BLOCKS", "جاري سحب كتل الذاكرة (متوقف مؤقتاً)"),
         BLOCKS_EXTRACTED("BLOCKS_EXTRACTED", "تم سحب Block 1..N وجاهز لاسترجاع Block 0"),
+        RESTORING_BLOCK("RESTORING_BLOCK", "جاري استعادة Block 0 الأصلي للشريحة"),
         COMPLETED("COMPLETED", "مكتمل");
 
         companion object {
@@ -190,10 +191,10 @@ object Nec78k0RecoveryManager {
         context: Context,
         session: Nec78k0RecoverySession
     ): Nec78k0RecoverySession {
-        val resetStage = if (session.lastCompletedBlock >= 0) {
-            RecoveryStage.READING_BLOCKS
-        } else {
-            RecoveryStage.DETECTED
+        val resetStage = when {
+            session.stage == RecoveryStage.RESTORING_BLOCK -> RecoveryStage.RESTORING_BLOCK
+            session.lastCompletedBlock >= 0 -> RecoveryStage.READING_BLOCKS
+            else -> RecoveryStage.DETECTED
         }
         val updated = session.copy(
             stage = resetStage,

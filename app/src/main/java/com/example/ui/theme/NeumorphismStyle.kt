@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
@@ -24,6 +25,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
@@ -51,8 +53,8 @@ object NeuTokens {
     val LightShadowDark = Color(0x59A3B1C6)   // rgba(163, 177, 198, 0.35)
     val LightShadowLight = Color(0xD9FFFFFF)  // rgba(255, 255, 255, 0.85)
     val LightBevelBorder = Color(0xBFFFFFFF)  // rgba(255, 255, 255, 0.75)
-    val LightTextPrimary = Color(0xFF1E293B)
-    val LightTextSecondary = Color(0xFF64748B)
+    val LightTextPrimary = Color(0xFF1E2229)
+    val LightTextSecondary = Color(0xFF475569)
 
     // Dark Soft Neumorphism Palette
     val DarkBg = Color(0xFF1C1E22)
@@ -61,7 +63,7 @@ object NeuTokens {
     val DarkShadowDark = Color(0xA60A0B0D)    // rgba(10, 11, 13, 0.65)
     val DarkShadowLight = Color(0x0AFFFFFF)   // rgba(255, 255, 255, 0.04)
     val DarkBevelBorder = Color(0x0FFFFFFF)   // rgba(255, 255, 255, 0.06)
-    val DarkTextPrimary = Color(0xFFE2E8F0)
+    val DarkTextPrimary = Color(0xFFF1F3F5)
     val DarkTextSecondary = Color(0xFF94A3B8)
 
     fun bg(isDark: Boolean): Color = if (isDark) DarkBg else LightBg
@@ -70,6 +72,8 @@ object NeuTokens {
     fun shadowDark(isDark: Boolean): Color = if (isDark) DarkShadowDark else LightShadowDark
     fun shadowLight(isDark: Boolean): Color = if (isDark) DarkShadowLight else LightShadowLight
     fun bevelBorder(isDark: Boolean): Color = if (isDark) DarkBevelBorder else LightBevelBorder
+    fun textPrimary(isDark: Boolean): Color = if (isDark) DarkTextPrimary else LightTextPrimary
+    fun textSecondary(isDark: Boolean): Color = if (isDark) DarkTextSecondary else LightTextSecondary
 }
 
 /**
@@ -340,3 +344,177 @@ fun NeuSlider(
         }
     )
 }
+
+/**
+ * Extruded soft pill for secondary/outlined/admin actions (e.g., تعديل القوائم، ترتيب الشرائح، إضافة قائمة، مشرف).
+ * Uses background NeuTokens.bg(isDark) (#EAECEF / #1C1E22) with zero colored outer border.
+ */
+@Composable
+fun NeuActionPill(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    isDark: Boolean = false,
+    accentColor: Color = MaterialTheme.colorScheme.primary,
+    minHeight: Dp = 36.dp,
+    contentPadding: PaddingValues = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+    content: @Composable RowScope.() -> Unit
+) {
+    val interactionSource = remember { MutableInteractionSource() }
+    val pressed by interactionSource.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        targetValue = if (pressed && enabled) 0.97f else 1f,
+        animationSpec = spring(stiffness = 700f),
+        label = "neu_action_pill_scale"
+    )
+
+    Row(
+        modifier = modifier
+            .heightIn(min = minHeight)
+            .scale(scale)
+            .neuCard(
+                cornerRadius = 50.dp,
+                isDark = isDark,
+                isPressed = pressed && enabled,
+                backgroundColor = NeuTokens.bg(isDark),
+                accentGlow = accentColor.copy(alpha = 0.25f)
+            )
+            .clickable(
+                interactionSource = interactionSource,
+                indication = null,
+                enabled = enabled,
+                onClick = onClick
+            )
+            .padding(contentPadding),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically,
+        content = content
+    )
+}
+
+/**
+ * Extruded circular soft icon button (for top Back buttons, Edit pencil buttons, and Social icons).
+ */
+@Composable
+fun NeuCircleIconButton(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    size: Dp = 42.dp,
+    enabled: Boolean = true,
+    isDark: Boolean = false,
+    backgroundColor: Color = NeuTokens.bg(isDark),
+    accentGlow: Color? = null,
+    content: @Composable () -> Unit
+) {
+    val interactionSource = remember { MutableInteractionSource() }
+    val pressed by interactionSource.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        targetValue = if (pressed && enabled) 0.96f else 1f,
+        animationSpec = spring(stiffness = 700f),
+        label = "neu_circle_btn_scale"
+    )
+
+    Box(
+        modifier = modifier
+            .minimumInteractiveComponentSize()
+            .size(size)
+            .scale(scale)
+            .neuCard(
+                cornerRadius = 50.dp,
+                isDark = isDark,
+                isPressed = pressed && enabled,
+                backgroundColor = backgroundColor,
+                accentGlow = accentGlow
+            )
+            .clickable(
+                interactionSource = interactionSource,
+                indication = null,
+                enabled = enabled,
+                onClick = onClick
+            ),
+        contentAlignment = Alignment.Center
+    ) {
+        content()
+    }
+}
+
+/**
+ * Primary CTA Pill Button in Soft Neumorphism: extruded soft pill (#EDF0F3 / #202328) with subtle inner accent rim
+ * and accent-colored text & icon instead of a solid blue gradient block.
+ */
+@Composable
+fun NeuPrimaryCtaButton(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    isDark: Boolean = false,
+    accentColor: Color = MaterialTheme.colorScheme.primary,
+    contentPadding: PaddingValues = PaddingValues(horizontal = 20.dp, vertical = 12.dp),
+    content: @Composable RowScope.() -> Unit
+) {
+    val interactionSource = remember { MutableInteractionSource() }
+    val pressed by interactionSource.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        targetValue = if (pressed && enabled) 0.98f else 1f,
+        animationSpec = spring(stiffness = 700f),
+        label = "neu_primary_cta_scale"
+    )
+
+    Row(
+        modifier = modifier
+            .defaultMinSize(minHeight = 54.dp)
+            .scale(scale)
+            .neuCard(
+                cornerRadius = 50.dp,
+                isDark = isDark,
+                isPressed = pressed && enabled,
+                backgroundColor = NeuTokens.surface(isDark),
+                accentGlow = accentColor
+            )
+            .border(
+                width = 1.dp,
+                color = accentColor.copy(alpha = if (isDark) 0.35f else 0.25f),
+                shape = RoundedCornerShape(50)
+            )
+            .clickable(
+                interactionSource = interactionSource,
+                indication = null,
+                enabled = enabled,
+                onClick = onClick
+            )
+            .padding(contentPadding),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically,
+        content = content
+    )
+}
+
+/**
+ * Recessed (inset box-shadow) well pill for stats & status badges (users count, rating, open/locked, counts).
+ */
+@Composable
+fun NeuStatusWellPill(
+    isDark: Boolean = false,
+    accentBorder: Color? = null,
+    modifier: Modifier = Modifier,
+    onClick: (() -> Unit)? = null,
+    contentPadding: PaddingValues = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+    content: @Composable RowScope.() -> Unit
+) {
+    Row(
+        modifier = modifier
+            .neuRecessed(
+                cornerRadius = 50.dp,
+                isDark = isDark,
+                accentBorder = accentBorder
+            )
+            .then(
+                if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier
+            )
+            .padding(contentPadding),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.Center,
+        content = content
+    )
+}
+

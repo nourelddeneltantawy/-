@@ -158,7 +158,8 @@ data class FirmwareFileData(
     val nonEmptyBytesCount: Int,
     val startAddress: Int,
     val dataFlashBytes: ByteArray? = null,
-    val dataFlashStartAddress: Int = 0
+    val dataFlashStartAddress: Int = 0,
+    val rawSizeBytes: Int = bytes.size
 )
 
 enum class LogLevel {

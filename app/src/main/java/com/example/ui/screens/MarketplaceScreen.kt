@@ -112,6 +112,26 @@ import com.example.ui.components.BreadcrumbBar
 import com.example.ui.components.BreadcrumbItem
 import com.example.ui.components.ConfirmDeleteDialog
 import com.example.ui.components.SearchAutocompleteBox
+import com.example.ui.theme.FittedSingleLineText
+import com.example.ui.theme.GlassActionPill
+import com.example.ui.theme.GlassCircleIconButton
+import com.example.ui.theme.GlassPrimaryCtaButton
+import com.example.ui.theme.GlassTokens
+import com.example.ui.theme.LocalAccentColor
+import com.example.ui.theme.LocalIsDarkTheme
+import com.example.ui.theme.LocalIsLiquidGlassTheme
+import com.example.ui.theme.LocalIsSoftNeumorphismTheme
+import com.example.ui.theme.LocalSecondaryAccentColor
+import com.example.ui.theme.NeuActionPill
+import com.example.ui.theme.NeuCircleIconButton
+import com.example.ui.theme.NeuPrimaryCtaButton
+import com.example.ui.theme.NeuTokens
+import com.example.ui.theme.bidiIsolateMixed
+import com.example.ui.theme.glassCanvasBackground
+import com.example.ui.theme.glassCard
+import com.example.ui.theme.glassRecessed
+import com.example.ui.theme.neuCard
+import com.example.ui.theme.neuRecessed
 import com.example.util.HierarchicalLocationSelector
 import com.example.util.ImageHelper
 import com.example.util.LocationData
@@ -205,47 +225,127 @@ fun MarketplaceScreen(
         }
     }
 
+    val isNeu = LocalIsSoftNeumorphismTheme.current
+    val isGlass = LocalIsLiquidGlassTheme.current
+    val isDark = LocalIsDarkTheme.current
+    val accentColor = LocalAccentColor.current
+    val secondaryAccent = LocalSecondaryAccentColor.current
+
     // Gated for unauthenticated / guest users (Requirement: enforce email login like Tools and Group chat)
     if (isGuest || currentUserEmail.isNullOrBlank() || currentUserEmail == "guest") {
         Scaffold(
-            modifier = modifier.fillMaxSize().testTag("marketplace_screen_locked")
+            containerColor = when {
+                isGlass -> Color.Transparent
+                isNeu -> NeuTokens.bg(isDark)
+                else -> MaterialTheme.colorScheme.background
+            },
+            modifier = modifier
+                .fillMaxSize()
+                .then(
+                    if (isGlass) Modifier.glassCanvasBackground(isDark, accentColor, secondaryAccent)
+                    else Modifier
+                )
+                .testTag("marketplace_screen_locked")
         ) { innerPadding ->
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(innerPadding)
+                    .padding(bottom = innerPadding.calculateBottomPadding())
                     .verticalScroll(rememberScrollState()),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clip(RoundedCornerShape(bottomStart = 32.dp, bottomEnd = 32.dp))
-                        .background(
-                            Brush.verticalGradient(
-                                listOf(
-                                    Color(0xFF0284C7),
-                                    Color(0xFF0F172A)
-                                )
-                            )
+                        .then(
+                            when {
+                                isGlass -> Modifier
+                                    .padding(horizontal = 14.dp)
+                                    .padding(top = innerPadding.calculateTopPadding() + 8.dp)
+                                    .glassCard(cornerRadius = 26.dp, isDark = isDark, strongSurface = true)
+                                    .padding(vertical = 20.dp, horizontal = 18.dp)
+                                isNeu -> Modifier
+                                    .padding(horizontal = 14.dp)
+                                    .padding(top = innerPadding.calculateTopPadding() + 8.dp)
+                                    .neuCard(cornerRadius = 26.dp, isDark = isDark)
+                                    .padding(vertical = 20.dp, horizontal = 18.dp)
+                                else -> Modifier
+                                    .clip(RoundedCornerShape(bottomStart = 32.dp, bottomEnd = 32.dp))
+                                    .background(
+                                        Brush.verticalGradient(
+                                            listOf(
+                                                Color(0xFF0284C7),
+                                                Color(0xFF0F172A)
+                                            )
+                                        )
+                                    )
+                                    .padding(top = innerPadding.calculateTopPadding() + 20.dp, bottom = 26.dp, start = 20.dp, end = 20.dp)
+                            }
                         )
-                        .padding(top = 20.dp, bottom = 26.dp, start = 20.dp, end = 20.dp)
                 ) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Column {
-                            Text("مرحباً بك في سوق الكروت 🛒", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
-                            Text("منصة بيع وشراء الكروت والقطع بين الفنيين 🔒", color = Color.White.copy(alpha = 0.85f), fontSize = 12.sp)
-                        }
-                        IconButton(onClick = onBackClick) {
-                            Icon(
-                                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                                contentDescription = "رجوع",
-                                tint = Color.White
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                "مرحباً بك في سوق الكروت 🛒",
+                                color = when {
+                                    isGlass -> GlassTokens.textPrimary(isDark)
+                                    isNeu -> NeuTokens.textPrimary(isDark)
+                                    else -> Color.White
+                                },
+                                fontSize = 20.sp,
+                                fontWeight = FontWeight.Bold
                             )
+                            Text(
+                                "منصة بيع وشراء الكروت والقطع بين الفنيين 🔒",
+                                color = when {
+                                    isGlass -> GlassTokens.textSecondary(isDark)
+                                    isNeu -> NeuTokens.textSecondary(isDark)
+                                    else -> Color.White.copy(alpha = 0.85f)
+                                },
+                                fontSize = 12.sp
+                            )
+                        }
+                        when {
+                            isGlass -> {
+                                GlassCircleIconButton(
+                                    onClick = onBackClick,
+                                    size = 40.dp,
+                                    isDark = isDark,
+                                    accentGlow = accentColor
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                        contentDescription = "رجوع",
+                                        tint = accentColor
+                                    )
+                                }
+                            }
+                            isNeu -> {
+                                NeuCircleIconButton(
+                                    onClick = onBackClick,
+                                    size = 40.dp,
+                                    isDark = isDark
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                        contentDescription = "رجوع",
+                                        tint = MaterialTheme.colorScheme.primary
+                                    )
+                                }
+                            }
+                            else -> {
+                                IconButton(onClick = onBackClick) {
+                                    Icon(
+                                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                        contentDescription = "رجوع",
+                                        tint = Color.White
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -255,10 +355,18 @@ fun MarketplaceScreen(
                 Card(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 20.dp),
-                    shape = RoundedCornerShape(20.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                    border = BorderStroke(1.2.dp, Color(0xFF0284C7).copy(alpha = 0.35f))
+                        .padding(horizontal = 20.dp)
+                        .then(
+                            when {
+                                isGlass -> Modifier.glassCard(cornerRadius = 24.dp, isDark = isDark, accentGlow = accentColor)
+                                isNeu -> Modifier.neuCard(cornerRadius = 24.dp, isDark = isDark)
+                                else -> Modifier
+                            }
+                        ),
+                    shape = RoundedCornerShape(if (isNeu || isGlass) 24.dp else 20.dp),
+                    colors = CardDefaults.cardColors(containerColor = if (isNeu || isGlass) Color.Transparent else MaterialTheme.colorScheme.surface),
+                    border = if (isNeu || isGlass) null else BorderStroke(1.2.dp, Color(0xFF0284C7).copy(alpha = 0.35f)),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
                 ) {
                     Column(
                         modifier = Modifier.padding(24.dp),
@@ -268,14 +376,19 @@ fun MarketplaceScreen(
                         Box(
                             modifier = Modifier
                                 .size(64.dp)
-                                .clip(CircleShape)
-                                .background(Color(0xFF0284C7).copy(alpha = 0.15f)),
+                                .then(
+                                    when {
+                                        isGlass -> Modifier.glassRecessed(cornerRadius = 32.dp, isDark = isDark, accentBorder = accentColor.copy(alpha = 0.4f))
+                                        isNeu -> Modifier.neuRecessed(cornerRadius = 32.dp, isDark = isDark)
+                                        else -> Modifier.clip(CircleShape).background(Color(0xFF0284C7).copy(alpha = 0.15f))
+                                    }
+                                ),
                             contentAlignment = Alignment.Center
                         ) {
                             Icon(
                                 imageVector = Icons.Default.Lock,
                                 contentDescription = null,
-                                tint = Color(0xFF0284C7),
+                                tint = if (isGlass) accentColor else Color(0xFF0284C7),
                                 modifier = Modifier.size(32.dp)
                             )
                         }
@@ -284,30 +397,73 @@ fun MarketplaceScreen(
                             text = "قسم خاص بالفنيين المسجلين 🔒",
                             fontSize = 17.sp,
                             fontWeight = FontWeight.Bold,
-                            textAlign = TextAlign.Center
+                            textAlign = TextAlign.Center,
+                            color = when {
+                                isGlass -> GlassTokens.textPrimary(isDark)
+                                isNeu -> NeuTokens.textPrimary(isDark)
+                                else -> MaterialTheme.colorScheme.onSurface
+                            }
                         )
 
                         Text(
                             text = "سوق الكروت وعروض البيع والشراء والطلبات والتواصل المباشر مخصصة ومستقلة لكل مستخدم ببريده الإلكتروني.\n\nسجل دخولك الآن للوصول إلى السوق ونشر وشراء الكروت والتواصل مع الزملاء الفنيين.",
                             fontSize = 13.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            color = when {
+                                isGlass -> GlassTokens.textSecondary(isDark)
+                                isNeu -> NeuTokens.textSecondary(isDark)
+                                else -> MaterialTheme.colorScheme.onSurfaceVariant
+                            },
                             textAlign = TextAlign.Center,
                             lineHeight = 20.sp
                         )
 
-                        Button(
-                            onClick = onAuthClick,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(48.dp),
-                            shape = RoundedCornerShape(12.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0284C7))
-                        ) {
-                            Text(
-                                text = "تسجيل الدخول بالبريد الإلكتروني 🚀",
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 14.sp
-                            )
+                        when {
+                            isGlass -> {
+                                GlassPrimaryCtaButton(
+                                    onClick = onAuthClick,
+                                    isDark = isDark,
+                                    accentColor = accentColor,
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    FittedSingleLineText(
+                                        text = "تسجيل الدخول بالبريد الإلكتروني 🚀",
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 14.sp,
+                                        color = accentColor
+                                    )
+                                }
+                            }
+                            isNeu -> {
+                                NeuPrimaryCtaButton(
+                                    onClick = onAuthClick,
+                                    isDark = isDark,
+                                    accentColor = Color(0xFF0284C7),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text(
+                                        text = "تسجيل الدخول بالبريد الإلكتروني 🚀",
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 14.sp,
+                                        color = Color(0xFF0284C7)
+                                    )
+                                }
+                            }
+                            else -> {
+                                Button(
+                                    onClick = onAuthClick,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(48.dp),
+                                    shape = RoundedCornerShape(12.dp),
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0284C7))
+                                ) {
+                                    Text(
+                                        text = "تسجيل الدخول بالبريد الإلكتروني 🚀",
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 14.sp
+                                    )
+                                }
+                            }
                         }
 
                         TextButton(onClick = onBackClick) {
@@ -321,7 +477,18 @@ fun MarketplaceScreen(
     }
 
     Scaffold(
-        modifier = modifier.fillMaxSize().testTag("marketplace_screen"),
+        containerColor = when {
+            isGlass -> Color.Transparent
+            isNeu -> NeuTokens.bg(isDark)
+            else -> MaterialTheme.colorScheme.background
+        },
+        modifier = modifier
+            .fillMaxSize()
+            .then(
+                if (isGlass) Modifier.glassCanvasBackground(isDark, accentColor, secondaryAccent)
+                else Modifier
+            )
+            .testTag("marketplace_screen"),
         snackbarHost = { SnackbarHost(snackbarHostState) },
         floatingActionButton = {
             if (selectedTabIndex != 2) {
@@ -367,20 +534,35 @@ fun MarketplaceScreen(
                 .fillMaxSize()
                 .padding(bottom = innerPadding.calculateBottomPadding())
         ) {
-            // Sleek Compact Top Header Box (Requirement 4)
+            // Sleek Compact Top Header Box
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(bottomStart = 20.dp, bottomEnd = 20.dp))
-                    .background(
-                        Brush.verticalGradient(
-                            listOf(
-                                MaterialTheme.colorScheme.primary,
-                                MaterialTheme.colorScheme.primaryContainer
-                            )
-                        )
+                    .then(
+                        when {
+                            isGlass -> Modifier
+                                .padding(horizontal = 12.dp)
+                                .padding(top = innerPadding.calculateTopPadding() + 6.dp)
+                                .glassCard(cornerRadius = 24.dp, isDark = isDark, strongSurface = true)
+                                .padding(vertical = 10.dp, horizontal = 14.dp)
+                            isNeu -> Modifier
+                                .padding(horizontal = 12.dp)
+                                .padding(top = innerPadding.calculateTopPadding() + 6.dp)
+                                .neuCard(cornerRadius = 24.dp, isDark = isDark)
+                                .padding(vertical = 10.dp, horizontal = 14.dp)
+                            else -> Modifier
+                                .clip(RoundedCornerShape(bottomStart = 20.dp, bottomEnd = 20.dp))
+                                .background(
+                                    Brush.verticalGradient(
+                                        listOf(
+                                            MaterialTheme.colorScheme.primary,
+                                            MaterialTheme.colorScheme.primaryContainer
+                                        )
+                                    )
+                                )
+                                .padding(top = innerPadding.calculateTopPadding() + 4.dp, bottom = 8.dp, start = 14.dp, end = 14.dp)
+                        }
                     )
-                    .padding(top = innerPadding.calculateTopPadding() + 4.dp, bottom = 8.dp, start = 14.dp, end = 14.dp)
             ) {
                 Column {
                     Row(
@@ -389,22 +571,63 @@ fun MarketplaceScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            IconButton(
-                                onClick = onBackClick,
-                                modifier = Modifier.size(34.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                                    contentDescription = "رجوع للمجتمع",
-                                    tint = Color.White,
-                                    modifier = Modifier.size(20.dp)
-                                )
+                            when {
+                                isGlass -> {
+                                    GlassCircleIconButton(
+                                        onClick = onBackClick,
+                                        size = 36.dp,
+                                        isDark = isDark,
+                                        accentGlow = accentColor
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                            contentDescription = "رجوع للمجتمع",
+                                            tint = accentColor,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    }
+                                }
+                                isNeu -> {
+                                    NeuCircleIconButton(
+                                        onClick = onBackClick,
+                                        size = 36.dp,
+                                        isDark = isDark
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                            contentDescription = "رجوع للمجتمع",
+                                            tint = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    }
+                                }
+                                else -> {
+                                    IconButton(
+                                        onClick = onBackClick,
+                                        modifier = Modifier.size(34.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                            contentDescription = "رجوع للمجتمع",
+                                            tint = Color.White,
+                                            modifier = Modifier.size(20.dp)
+                                        )
+                                    }
+                                }
                             }
-                            Spacer(modifier = Modifier.width(4.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
                             Surface(
                                 shape = CircleShape,
-                                color = MaterialTheme.colorScheme.surface,
-                                modifier = Modifier.size(34.dp)
+                                color = if (isNeu || isGlass) Color.Transparent else MaterialTheme.colorScheme.surface,
+                                modifier = Modifier
+                                    .size(34.dp)
+                                    .then(
+                                        when {
+                                            isGlass -> Modifier.glassRecessed(cornerRadius = 17.dp, isDark = isDark)
+                                            isNeu -> Modifier.neuRecessed(cornerRadius = 17.dp, isDark = isDark)
+                                            else -> Modifier
+                                        }
+                                    )
                             ) {
                                 Box(contentAlignment = Alignment.Center) {
                                     Icon(
@@ -416,66 +639,155 @@ fun MarketplaceScreen(
                                 }
                             }
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text(
+                            FittedSingleLineText(
                                 text = "سوق ومنشورات الكروت 🛒",
-                                style = MaterialTheme.typography.titleMedium.copy(
-                                    color = Color.White,
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 16.sp
-                                )
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 16.sp,
+                                minFontSize = 12.sp,
+                                color = when {
+                                    isGlass -> GlassTokens.textPrimary(isDark)
+                                    isNeu -> NeuTokens.textPrimary(isDark)
+                                    else -> Color.White
+                                }
                             )
                         }
 
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             // Admin Technicians Directory Button
                             if (isAdmin) {
-                                Surface(
-                                    shape = RoundedCornerShape(8.dp),
-                                    color = Color(0xFF10B981).copy(alpha = 0.35f),
-                                    modifier = Modifier
-                                        .clip(RoundedCornerShape(8.dp))
-                                        .clickable { showTechniciansDialog = true }
-                                        .padding(horizontal = 7.dp, vertical = 5.dp)
-                                ) {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Icon(
-                                            imageVector = Icons.Default.Verified,
-                                            contentDescription = null,
-                                            tint = Color.White,
-                                            modifier = Modifier.size(13.dp)
-                                        )
-                                        Spacer(modifier = Modifier.width(3.dp))
-                                        Text("الفنيون", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                                when {
+                                    isGlass -> {
+                                        GlassActionPill(
+                                            onClick = { showTechniciansDialog = true },
+                                            isDark = isDark,
+                                            accentColor = Color(0xFF10B981),
+                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 5.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Verified,
+                                                contentDescription = null,
+                                                tint = Color(0xFF10B981),
+                                                modifier = Modifier.size(13.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(3.dp))
+                                            Text("الفنيون", color = Color(0xFF10B981), fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                                        }
+                                    }
+                                    isNeu -> {
+                                        NeuActionPill(
+                                            onClick = { showTechniciansDialog = true },
+                                            isDark = isDark,
+                                            accentColor = Color(0xFF10B981),
+                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 5.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Verified,
+                                                contentDescription = null,
+                                                tint = Color(0xFF10B981),
+                                                modifier = Modifier.size(13.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(3.dp))
+                                            Text("الفنيون", color = Color(0xFF10B981), fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                                        }
+                                    }
+                                    else -> {
+                                        Surface(
+                                            shape = RoundedCornerShape(8.dp),
+                                            color = Color(0xFF10B981).copy(alpha = 0.35f),
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(8.dp))
+                                                .clickable { showTechniciansDialog = true }
+                                                .padding(horizontal = 7.dp, vertical = 5.dp)
+                                        ) {
+                                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                                Icon(
+                                                    imageVector = Icons.Default.Verified,
+                                                    contentDescription = null,
+                                                    tint = Color.White,
+                                                    modifier = Modifier.size(13.dp)
+                                                )
+                                                Spacer(modifier = Modifier.width(3.dp))
+                                                Text("الفنيون", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                                            }
+                                        }
                                     }
                                 }
                                 Spacer(modifier = Modifier.width(6.dp))
                             }
 
                             // My Profile Button (compact, single line)
-                            Surface(
-                                shape = RoundedCornerShape(8.dp),
-                                color = Color.White.copy(alpha = 0.22f),
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .clickable {
-                                        if (isGuest) onAuthClick() else showProfileDialog = true
+                            when {
+                                isGlass -> {
+                                    GlassActionPill(
+                                        onClick = { if (isGuest) onAuthClick() else showProfileDialog = true },
+                                        isDark = isDark,
+                                        accentColor = accentColor,
+                                        contentPadding = PaddingValues(horizontal = 9.dp, vertical = 5.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = if (isGuest) Icons.Default.Lock else Icons.Default.Person,
+                                            contentDescription = "الملف الشخصي",
+                                            tint = accentColor,
+                                            modifier = Modifier.size(15.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text(
+                                            text = if (isGuest) "دخول" else "ملفي",
+                                            color = accentColor,
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 11.sp
+                                        )
                                     }
-                                    .padding(horizontal = 8.dp, vertical = 5.dp)
-                            ) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(
-                                        imageVector = if (isGuest) Icons.Default.Lock else Icons.Default.Person,
-                                        contentDescription = "الملف الشخصي",
-                                        tint = Color.White,
-                                        modifier = Modifier.size(15.dp)
-                                    )
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                    Text(
-                                        text = if (isGuest) "دخول" else "ملفي",
-                                        color = Color.White,
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 11.sp
-                                    )
+                                }
+                                isNeu -> {
+                                    NeuActionPill(
+                                        onClick = { if (isGuest) onAuthClick() else showProfileDialog = true },
+                                        isDark = isDark,
+                                        accentColor = MaterialTheme.colorScheme.primary,
+                                        contentPadding = PaddingValues(horizontal = 9.dp, vertical = 5.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = if (isGuest) Icons.Default.Lock else Icons.Default.Person,
+                                            contentDescription = "الملف الشخصي",
+                                            tint = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.size(15.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text(
+                                            text = if (isGuest) "دخول" else "ملفي",
+                                            color = MaterialTheme.colorScheme.primary,
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 11.sp
+                                        )
+                                    }
+                                }
+                                else -> {
+                                    Surface(
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = Color.White.copy(alpha = 0.22f),
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .clickable {
+                                                if (isGuest) onAuthClick() else showProfileDialog = true
+                                            }
+                                            .padding(horizontal = 8.dp, vertical = 5.dp)
+                                    ) {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Icon(
+                                                imageVector = if (isGuest) Icons.Default.Lock else Icons.Default.Person,
+                                                contentDescription = "الملف الشخصي",
+                                                tint = Color.White,
+                                                modifier = Modifier.size(15.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(4.dp))
+                                            Text(
+                                                text = if (isGuest) "دخول" else "ملفي",
+                                                color = Color.White,
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 11.sp
+                                            )
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -514,7 +826,7 @@ fun MarketplaceScreen(
             // Tabs: 1. SELL, 2. BUY, 3. MY POSTS & PROFILE
             TabRow(
                 selectedTabIndex = selectedTabIndex,
-                containerColor = MaterialTheme.colorScheme.surface,
+                containerColor = if (isGlass) GlassTokens.surface(isDark) else MaterialTheme.colorScheme.surface,
                 contentColor = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.fillMaxWidth()
             ) {
@@ -522,10 +834,11 @@ fun MarketplaceScreen(
                     selected = selectedTabIndex == 0,
                     onClick = { selectedTabIndex = 0 },
                     text = {
-                        Text(
+                        FittedSingleLineText(
                             text = "بيع كروت 🏷️ (${posts.count { it.postType.equals("SELL", ignoreCase = true) }})",
                             fontWeight = if (selectedTabIndex == 0) FontWeight.Bold else FontWeight.Normal,
-                            fontSize = 13.sp
+                            fontSize = 13.sp,
+                            minFontSize = 10.sp
                         )
                     }
                 )
@@ -533,10 +846,11 @@ fun MarketplaceScreen(
                     selected = selectedTabIndex == 1,
                     onClick = { selectedTabIndex = 1 },
                     text = {
-                        Text(
+                        FittedSingleLineText(
                             text = "طلب شراء 🔍 (${posts.count { it.postType.equals("BUY", ignoreCase = true) }})",
                             fontWeight = if (selectedTabIndex == 1) FontWeight.Bold else FontWeight.Normal,
-                            fontSize = 13.sp
+                            fontSize = 13.sp,
+                            minFontSize = 10.sp
                         )
                     }
                 )
@@ -544,10 +858,11 @@ fun MarketplaceScreen(
                     selected = selectedTabIndex == 2,
                     onClick = { selectedTabIndex = 2 },
                     text = {
-                        Text(
+                        FittedSingleLineText(
                             text = "إعلاناتي 👤 ($myPostsCount)",
                             fontWeight = if (selectedTabIndex == 2) FontWeight.Bold else FontWeight.Normal,
-                            fontSize = 13.sp
+                            fontSize = 13.sp,
+                            minFontSize = 10.sp
                         )
                     }
                 )
@@ -571,8 +886,9 @@ fun MarketplaceScreen(
                     Box {
                         Surface(
                             shape = RoundedCornerShape(12.dp),
-                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+                            color = if (isGlass) Color.Transparent else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
                             modifier = Modifier
+                                .then(if (isGlass) Modifier.glassRecessed(cornerRadius = 12.dp, isDark = isDark) else Modifier)
                                 .clip(RoundedCornerShape(12.dp))
                                 .clickable { showFilterDropdown = true }
                                 .padding(horizontal = 10.dp, vertical = 4.dp)
@@ -581,9 +897,10 @@ fun MarketplaceScreen(
                                 Icon(Icons.Default.FilterList, contentDescription = null, modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.primary)
                                 Spacer(modifier = Modifier.width(4.dp))
                                 Text(
-                                    text = if (selectedGovernorateFilter == "الكل") "تصفية بالمحافظة: الكل" else "المحافظة: $selectedGovernorateFilter",
+                                    text = (if (selectedGovernorateFilter == "الكل") "تصفية بالمحافظة: الكل" else "المحافظة: $selectedGovernorateFilter").bidiIsolateMixed(),
                                     fontSize = 11.sp,
-                                    fontWeight = FontWeight.Medium
+                                    fontWeight = FontWeight.Medium,
+                                    color = if (isGlass) GlassTokens.textPrimary(isDark) else Color.Unspecified
                                 )
                             }
                         }
@@ -624,10 +941,12 @@ fun MarketplaceScreen(
                     // Profile Header Card
                     item {
                         Card(
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(18.dp),
-                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .then(if (isGlass) Modifier.glassCard(cornerRadius = 20.dp, isDark = isDark) else Modifier),
+                            shape = RoundedCornerShape(if (isGlass) 20.dp else 18.dp),
+                            colors = CardDefaults.cardColors(containerColor = if (isGlass) Color.Transparent else MaterialTheme.colorScheme.surface),
+                            elevation = CardDefaults.cardElevation(defaultElevation = if (isGlass) 0.dp else 2.dp)
                         ) {
                             Column(modifier = Modifier.padding(16.dp)) {
                                 Row(
@@ -1067,28 +1386,44 @@ fun MarketplacePostCard(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
+    val isGlass = LocalIsLiquidGlassTheme.current
+    val isDark = LocalIsDarkTheme.current
     val isCompleted = post.isCompleted
     val isBuyRequest = post.postType.equals("BUY", ignoreCase = true)
 
     Card(
         modifier = modifier
             .fillMaxWidth()
-            .shadow(
-                elevation = 6.dp,
-                shape = RoundedCornerShape(22.dp),
-                spotColor = Color(0x1F000000),
-                ambientColor = Color(0x10000000)
-            )
-            .clip(RoundedCornerShape(22.dp))
-            .border(
-                1.2.dp,
-                if (isCompleted) Color(0xFF10B981) else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f),
-                RoundedCornerShape(22.dp)
+            .then(
+                if (isGlass) {
+                    Modifier.glassCard(
+                        cornerRadius = 22.dp,
+                        isDark = isDark,
+                        accentGlow = if (isCompleted) Color(0xFF10B981) else null
+                    )
+                } else {
+                    Modifier
+                        .shadow(
+                            elevation = 6.dp,
+                            shape = RoundedCornerShape(22.dp),
+                            spotColor = Color(0x1F000000),
+                            ambientColor = Color(0x10000000)
+                        )
+                        .clip(RoundedCornerShape(22.dp))
+                        .border(
+                            1.2.dp,
+                            if (isCompleted) Color(0xFF10B981) else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f),
+                            RoundedCornerShape(22.dp)
+                        )
+                }
             ),
         shape = RoundedCornerShape(22.dp),
         colors = CardDefaults.cardColors(
-            containerColor = if (isCompleted) MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
-            else MaterialTheme.colorScheme.surface
+            containerColor = when {
+                isGlass -> Color.Transparent
+                isCompleted -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
+                else -> MaterialTheme.colorScheme.surface
+            }
         ),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
     ) {

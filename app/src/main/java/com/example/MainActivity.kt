@@ -81,10 +81,18 @@ import com.example.ui.screens.MotorDetailScreen
 import com.example.ui.screens.PartsListScreen
 import com.example.ui.screens.SplashScreen
 import com.example.ui.screens.SystemIntegratorScreen
+import com.example.ui.theme.FittedSingleLineText
+import com.example.ui.theme.GlassTokens
+import com.example.ui.theme.LocalAccentColor
 import com.example.ui.theme.LocalIsDarkTheme
+import com.example.ui.theme.LocalIsLiquidGlassTheme
 import com.example.ui.theme.LocalIsSoftNeumorphismTheme
+import com.example.ui.theme.LocalSecondaryAccentColor
 import com.example.ui.theme.MyApplicationTheme
 import com.example.ui.theme.NeuTokens
+import com.example.ui.theme.glassCanvasBackground
+import com.example.ui.theme.glassCard
+import com.example.ui.theme.glassRecessed
 import com.example.ui.theme.neuCard
 import com.example.ui.theme.neuRecessed
 import com.example.ui.viewmodel.AiStudioViewModel
@@ -577,10 +585,22 @@ fun AppContent(
     )
 
     val isNeu = LocalIsSoftNeumorphismTheme.current
+    val isGlass = LocalIsLiquidGlassTheme.current
     val isDark = LocalIsDarkTheme.current
+    val accentColor = LocalAccentColor.current
+    val secondaryAccent = LocalSecondaryAccentColor.current
 
     Scaffold(
-        containerColor = if (isNeu) NeuTokens.bg(isDark) else MaterialTheme.colorScheme.background,
+        modifier = Modifier
+            .fillMaxSize()
+            .then(
+                if (isGlass) Modifier.glassCanvasBackground(isDark, accentColor, secondaryAccent) else Modifier
+            ),
+        containerColor = when {
+            isNeu -> NeuTokens.bg(isDark)
+            isGlass -> Color.Transparent
+            else -> MaterialTheme.colorScheme.background
+        },
         bottomBar = {
             if (showBottomBar) {
                 if (isNeu) {
@@ -683,6 +703,106 @@ fun AppContent(
                             )
                         }
                     }
+                } else if (isGlass) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .navigationBarsPadding()
+                            .padding(horizontal = 14.dp, vertical = 10.dp)
+                            .glassCard(cornerRadius = 50.dp, isDark = isDark, strongSurface = true)
+                            .padding(horizontal = 8.dp, vertical = 6.dp),
+                        horizontalArrangement = Arrangement.SpaceEvenly,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        if (isHomeVisible) {
+                            val isHomeHidden = BottomNavManager.isTabHiddenForUsers(BottomNavManager.TAB_HOME)
+                            GlassNavBarPillItem(
+                                selected = false,
+                                icon = Icons.Default.Home,
+                                label = if (isAdmin && isHomeHidden) "البدء (مخفية)" else "البدء",
+                                accentColor = if (isAdmin && isHomeHidden) Color(0xFFEF4444) else MaterialTheme.colorScheme.primary,
+                                isDark = isDark,
+                                onClick = { onOpenWelcomeProfile() },
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                        if (isDashboardVisible) {
+                            GlassNavBarPillItem(
+                                selected = currentScreen == Screen.DASHBOARD,
+                                icon = Icons.Default.GridView,
+                                label = "الأقسام",
+                                accentColor = MaterialTheme.colorScheme.primary,
+                                isDark = isDark,
+                                onClick = { selectTab(Screen.DASHBOARD) },
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                        if (isToolsVisible) {
+                            val locked = isAdmin && isToolsHiddenForUsers
+                            GlassNavBarPillItem(
+                                selected = currentScreen == Screen.TOOLS,
+                                icon = if (locked) Icons.Default.Lock else Icons.Default.Bolt,
+                                label = if (locked) "الأدوات (مغلق)" else "الأدوات",
+                                accentColor = if (locked) Color(0xFFEF4444) else MaterialTheme.colorScheme.primary,
+                                isDark = isDark,
+                                onClick = {
+                                    if (isToolsHiddenForUsers && !isAdmin) {
+                                        Toast.makeText(context, "قسم الأدوات مغلق حالياً من قبل الإدارة للصيانة", Toast.LENGTH_SHORT).show()
+                                    } else {
+                                        selectTab(Screen.TOOLS)
+                                    }
+                                },
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                        if (isMcuProgrammerVisible) {
+                            val locked = isAdmin && isMcuProgrammerHiddenForUsers
+                            GlassNavBarPillItem(
+                                selected = currentScreen == Screen.MCU_PROGRAMMER,
+                                icon = if (locked) Icons.Default.Lock else Icons.Default.Memory,
+                                label = if (locked) "البرمجة (مغلق)" else "البرمجة",
+                                accentColor = if (locked) Color(0xFFEF4444) else MaterialTheme.colorScheme.primary,
+                                isDark = isDark,
+                                onClick = {
+                                    if (isMcuProgrammerHiddenForUsers && !isAdmin) {
+                                        Toast.makeText(context, "قسم البرمجة مغلق حالياً من قبل الإدارة للصيانة", Toast.LENGTH_SHORT).show()
+                                    } else {
+                                        selectTab(Screen.MCU_PROGRAMMER)
+                                    }
+                                },
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                        if (isCommunityVisible) {
+                            val locked = isAdmin && isCommunityHiddenForUsers
+                            GlassNavBarPillItem(
+                                selected = currentScreen == Screen.COMMUNITY_HUB || currentScreen == Screen.MARKETPLACE || currentScreen == Screen.COMMUNITY_GROUP,
+                                icon = if (locked) Icons.Default.Lock else Icons.Default.Groups,
+                                label = if (locked) "المجتمع (مغلق)" else "المجتمع",
+                                accentColor = if (locked) Color(0xFFEF4444) else MaterialTheme.colorScheme.primary,
+                                isDark = isDark,
+                                onClick = {
+                                    if (isCommunityHiddenForUsers && !isAdmin) {
+                                        Toast.makeText(context, "قسم المجتمع مغلق حالياً من قبل الإدارة للصيانة", Toast.LENGTH_SHORT).show()
+                                    } else {
+                                        selectTab(Screen.COMMUNITY_HUB)
+                                    }
+                                },
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                        if (isAdmin) {
+                            GlassNavBarPillItem(
+                                selected = false,
+                                icon = Icons.Default.Tune,
+                                label = "الشريط",
+                                accentColor = Color(0xFFF59E0B),
+                                isDark = isDark,
+                                onClick = { showAdminBottomNavDialog = true },
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    }
                 } else {
                     Surface(
                         shape = RoundedCornerShape(26.dp),
@@ -707,9 +827,10 @@ fun AppContent(
                             onClick = { onOpenWelcomeProfile() },
                             icon = { Icon(Icons.Default.Home, contentDescription = "شاشة البدء") },
                             label = {
-                                Text(
-                                    if (isAdmin && isHomeHidden) "البدء (مخفية)" else "شاشة البدء",
+                                FittedSingleLineText(
+                                    text = if (isAdmin && isHomeHidden) "البدء (مخفية)" else "البدء",
                                     fontSize = 11.sp,
+                                    minFontSize = 9.sp,
                                     fontWeight = FontWeight.Normal
                                 )
                             },
@@ -729,9 +850,10 @@ fun AppContent(
                             onClick = { selectTab(Screen.DASHBOARD) },
                             icon = { Icon(Icons.Default.GridView, contentDescription = "الأقسام") },
                             label = {
-                                Text(
-                                    "الأقسام",
+                                FittedSingleLineText(
+                                    text = "الأقسام",
                                     fontSize = 11.sp,
+                                    minFontSize = 9.sp,
                                     fontWeight = if (currentScreen == Screen.DASHBOARD) FontWeight.Bold else FontWeight.Normal
                                 )
                             },
@@ -771,9 +893,10 @@ fun AppContent(
                                 }
                             },
                             label = {
-                                Text(
-                                    if (isAdmin && isToolsHiddenForUsers) "الأدوات (مغلق)" else "الأدوات",
+                                FittedSingleLineText(
+                                    text = if (isAdmin && isToolsHiddenForUsers) "الأدوات (مغلق)" else "الأدوات",
                                     fontSize = 11.sp,
+                                    minFontSize = 9.sp,
                                     fontWeight = if (currentScreen == Screen.TOOLS) FontWeight.Bold else FontWeight.Normal
                                 )
                             },
@@ -813,10 +936,10 @@ fun AppContent(
                                 }
                             },
                             label = {
-                                Text(
-                                    if (isAdmin && isMcuProgrammerHiddenForUsers) "البرمجة (مغلق)" else "البرمجة",
-                                    fontSize = 10.sp,
-                                    maxLines = 1,
+                                FittedSingleLineText(
+                                    text = if (isAdmin && isMcuProgrammerHiddenForUsers) "البرمجة (مغلق)" else "البرمجة",
+                                    fontSize = 11.sp,
+                                    minFontSize = 9.sp,
                                     fontWeight = if (currentScreen == Screen.MCU_PROGRAMMER) FontWeight.Bold else FontWeight.Normal
                                 )
                             },
@@ -856,9 +979,10 @@ fun AppContent(
                                 }
                             },
                             label = {
-                                Text(
-                                    if (isAdmin && isCommunityHiddenForUsers) "المجتمع (مغلق)" else "المجتمع",
+                                FittedSingleLineText(
+                                    text = if (isAdmin && isCommunityHiddenForUsers) "المجتمع (مغلق)" else "المجتمع",
                                     fontSize = 11.sp,
+                                    minFontSize = 9.sp,
                                     fontWeight = if (currentScreen == Screen.COMMUNITY_HUB || currentScreen == Screen.MARKETPLACE || currentScreen == Screen.COMMUNITY_GROUP) FontWeight.Bold else FontWeight.Normal
                                 )
                             },
@@ -877,9 +1001,10 @@ fun AppContent(
                             onClick = { showAdminBottomNavDialog = true },
                             icon = { Icon(Icons.Default.Tune, contentDescription = "إدارة الشريط") },
                             label = {
-                                Text(
-                                    "إدارة الشريط",
-                                    fontSize = 10.sp,
+                                FittedSingleLineText(
+                                    text = "الشريط",
+                                    fontSize = 11.sp,
+                                    minFontSize = 9.sp,
                                     fontWeight = FontWeight.Normal
                                 )
                             },
@@ -1509,13 +1634,65 @@ private fun NeuNavBarPillItem(
             )
         }
         Spacer(modifier = Modifier.height(2.dp))
-        Text(
+        FittedSingleLineText(
             text = label,
-            fontSize = 10.sp,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
+            fontSize = 11.sp,
+            minFontSize = 9.sp,
             fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
             color = if (selected) accentColor else MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
+
+@Composable
+private fun GlassNavBarPillItem(
+    selected: Boolean,
+    icon: ImageVector,
+    label: String,
+    accentColor: Color,
+    isDark: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Column(
+        modifier = modifier
+            .heightIn(min = 48.dp)
+            .clip(RoundedCornerShape(24.dp))
+            .clickable(onClick = onClick)
+            .padding(vertical = 4.dp, horizontal = 2.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Box(
+            modifier = Modifier
+                .size(width = 48.dp, height = 30.dp)
+                .then(
+                    if (selected) {
+                        Modifier.glassRecessed(
+                            cornerRadius = 15.dp,
+                            isDark = isDark,
+                            accentBorder = accentColor.copy(alpha = 0.55f)
+                        )
+                    } else {
+                        Modifier
+                    }
+                ),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = label,
+                tint = if (selected) accentColor else GlassTokens.textSecondary(isDark),
+                modifier = Modifier.size(20.dp)
+            )
+        }
+        Spacer(modifier = Modifier.height(2.dp))
+        FittedSingleLineText(
+            text = label,
+            fontSize = 11.sp,
+            minFontSize = 9.sp,
+            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+            color = if (selected) accentColor else GlassTokens.textSecondary(isDark)
         )
     }
 }

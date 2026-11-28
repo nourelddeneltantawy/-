@@ -100,6 +100,26 @@ import com.example.data.ToolsCategoryManager
 import com.example.data.model.HubCategoryCustomization
 import com.example.data.repository.AdminRepository
 import com.example.data.repository.JobRecordRepository
+import com.example.ui.theme.FittedSingleLineText
+import com.example.ui.theme.GlassActionPill
+import com.example.ui.theme.GlassBadge
+import com.example.ui.theme.GlassPrimaryCtaButton
+import com.example.ui.theme.GlassTokens
+import com.example.ui.theme.LocalAccentColor
+import com.example.ui.theme.LocalIsDarkTheme
+import com.example.ui.theme.LocalIsLiquidGlassTheme
+import com.example.ui.theme.LocalIsSoftNeumorphismTheme
+import com.example.ui.theme.LocalSecondaryAccentColor
+import com.example.ui.theme.NeuActionPill
+import com.example.ui.theme.NeuBadge
+import com.example.ui.theme.NeuPrimaryCtaButton
+import com.example.ui.theme.NeuTokens
+import com.example.ui.theme.bidiIsolateMixed
+import com.example.ui.theme.glassCanvasBackground
+import com.example.ui.theme.glassCard
+import com.example.ui.theme.glassRecessed
+import com.example.ui.theme.neuCard
+import com.example.ui.theme.neuRecessed
 
 data class ToolGridItem(
     val id: String,
@@ -163,35 +183,85 @@ fun ToolsHubScreen(
     var lockedDialogCategoryTitle by remember { mutableStateOf<String?>(null) }
     var customInfoDialogCategory by remember { mutableStateOf<ToolGridItem?>(null) }
 
+    val isNeu = LocalIsSoftNeumorphismTheme.current
+    val isGlass = LocalIsLiquidGlassTheme.current
+    val isDark = LocalIsDarkTheme.current
+    val accentColor = LocalAccentColor.current
+    val secondaryAccent = LocalSecondaryAccentColor.current
+
     // If user is not authenticated with an email, enforce login
     if (userEmail.isNullOrBlank() || userEmail == "guest") {
         Scaffold(
-            modifier = modifier.fillMaxSize().testTag("tools_hub_screen_locked")
+            containerColor = when {
+                isNeu -> NeuTokens.bg(isDark)
+                isGlass -> Color.Transparent
+                else -> MaterialTheme.colorScheme.background
+            },
+            modifier = modifier
+                .fillMaxSize()
+                .then(
+                    if (isGlass) Modifier.glassCanvasBackground(isDark, accentColor, secondaryAccent) else Modifier
+                )
+                .testTag("tools_hub_screen_locked")
         ) { innerPadding ->
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(innerPadding)
+                    .padding(bottom = innerPadding.calculateBottomPadding())
                     .verticalScroll(rememberScrollState()),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clip(RoundedCornerShape(bottomStart = 32.dp, bottomEnd = 32.dp))
-                        .background(
-                            Brush.verticalGradient(
-                                listOf(
-                                    MaterialTheme.colorScheme.primary,
-                                    MaterialTheme.colorScheme.primaryContainer
-                                )
-                            )
+                        .then(
+                            when {
+                                isNeu -> Modifier
+                                    .padding(horizontal = 14.dp)
+                                    .padding(top = innerPadding.calculateTopPadding() + 8.dp)
+                                    .neuCard(cornerRadius = 26.dp, isDark = isDark)
+                                    .padding(vertical = 20.dp, horizontal = 20.dp)
+                                isGlass -> Modifier
+                                    .padding(horizontal = 14.dp)
+                                    .padding(top = innerPadding.calculateTopPadding() + 8.dp)
+                                    .glassCard(cornerRadius = 28.dp, isDark = isDark, accentGlow = accentColor)
+                                    .padding(vertical = 20.dp, horizontal = 20.dp)
+                                else -> Modifier
+                                    .clip(RoundedCornerShape(bottomStart = 32.dp, bottomEnd = 32.dp))
+                                    .background(
+                                        Brush.verticalGradient(
+                                            listOf(
+                                                MaterialTheme.colorScheme.primary,
+                                                MaterialTheme.colorScheme.primaryContainer
+                                            )
+                                        )
+                                    )
+                                    .padding(top = innerPadding.calculateTopPadding() + 20.dp, bottom = 26.dp, start = 20.dp, end = 20.dp)
+                            }
                         )
-                        .padding(top = 20.dp, bottom = 26.dp, start = 20.dp, end = 20.dp)
                 ) {
                     Column {
-                        Text("مرحباً بك في مركز الأدوات ⚡", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
-                        Text("مساحة عمل خاصة بكل فني ومستخدم 🔒", color = Color.White.copy(alpha = 0.85f), fontSize = 12.sp)
+                        FittedSingleLineText(
+                            text = "مرحباً بك في مركز الأدوات ⚡",
+                            color = when {
+                                isNeu -> NeuTokens.textPrimary(isDark)
+                                isGlass -> GlassTokens.textPrimary(isDark)
+                                else -> Color.White
+                            },
+                            fontSize = 20.sp,
+                            minFontSize = 15.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            "مساحة عمل خاصة بكل فني ومستخدم 🔒",
+                            color = when {
+                                isNeu -> NeuTokens.textSecondary(isDark)
+                                isGlass -> GlassTokens.textSecondary(isDark)
+                                else -> Color.White.copy(alpha = 0.85f)
+                            },
+                            fontSize = 12.sp
+                        )
                     }
                 }
 
@@ -200,10 +270,20 @@ fun ToolsHubScreen(
                 Card(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 20.dp),
-                    shape = RoundedCornerShape(20.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                    border = BorderStroke(1.2.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.3f))
+                        .padding(horizontal = 20.dp)
+                        .then(
+                            when {
+                                isNeu -> Modifier.neuCard(cornerRadius = 24.dp, isDark = isDark)
+                                isGlass -> Modifier.glassCard(cornerRadius = 26.dp, isDark = isDark, accentGlow = accentColor)
+                                else -> Modifier
+                            }
+                        ),
+                    shape = RoundedCornerShape(if (isNeu) 24.dp else if (isGlass) 26.dp else 20.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = if (isNeu || isGlass) Color.Transparent else MaterialTheme.colorScheme.surface
+                    ),
+                    border = if (isNeu || isGlass) null else BorderStroke(1.2.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
                 ) {
                     Column(
                         modifier = Modifier.padding(24.dp),
@@ -213,8 +293,13 @@ fun ToolsHubScreen(
                         Box(
                             modifier = Modifier
                                 .size(64.dp)
-                                .clip(CircleShape)
-                                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)),
+                                .then(
+                                    when {
+                                        isNeu -> Modifier.neuRecessed(cornerRadius = 32.dp, isDark = isDark)
+                                        isGlass -> Modifier.glassRecessed(cornerRadius = 32.dp, isDark = isDark, accentBorder = accentColor.copy(alpha = 0.45f))
+                                        else -> Modifier.clip(CircleShape).background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f))
+                                    }
+                                ),
                             contentAlignment = Alignment.Center
                         ) {
                             Icon(
@@ -229,30 +314,67 @@ fun ToolsHubScreen(
                             text = "قسم خاص بالفنيين المسجلين 🔒",
                             fontSize = 17.sp,
                             fontWeight = FontWeight.Bold,
-                            textAlign = TextAlign.Center
+                            textAlign = TextAlign.Center,
+                            color = when {
+                                isNeu -> NeuTokens.textPrimary(isDark)
+                                isGlass -> GlassTokens.textPrimary(isDark)
+                                else -> MaterialTheme.colorScheme.onSurface
+                            }
                         )
 
                         Text(
                             text = "قائمة الأدوات وسجل الكروت ودليل العملاء وحساب الأرباح مخصصة ومستقلة تماماً لكل مستخدم ببريده الإلكتروني.\n\nسجل دخولك الآن للوصول إلى أدواتك وسجلك الخاص المشفر والمحمي بالكامل.",
                             fontSize = 13.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            color = when {
+                                isNeu -> NeuTokens.textSecondary(isDark)
+                                isGlass -> GlassTokens.textSecondary(isDark)
+                                else -> MaterialTheme.colorScheme.onSurfaceVariant
+                            },
                             textAlign = TextAlign.Center,
                             lineHeight = 20.sp
                         )
 
-                        Button(
-                            onClick = onAuthClick,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(48.dp),
-                            shape = RoundedCornerShape(12.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
-                        ) {
-                            Text(
-                                text = "تسجيل الدخول بالبريد الإلكتروني 🚀",
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 14.sp
-                            )
+                        when {
+                            isNeu -> NeuPrimaryCtaButton(
+                                onClick = onAuthClick,
+                                isDark = isDark,
+                                accentColor = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(
+                                    text = "تسجيل الدخول بالبريد الإلكتروني 🚀",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 14.sp,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                            isGlass -> GlassPrimaryCtaButton(
+                                onClick = onAuthClick,
+                                isDark = isDark,
+                                accentColor = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(
+                                    text = "تسجيل الدخول بالبريد الإلكتروني 🚀",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 14.sp,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                            else -> Button(
+                                onClick = onAuthClick,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(48.dp),
+                                shape = RoundedCornerShape(12.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                            ) {
+                                Text(
+                                    text = "تسجيل الدخول بالبريد الإلكتروني 🚀",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 14.sp
+                                )
+                            }
                         }
                     }
                 }
@@ -337,27 +459,52 @@ fun ToolsHubScreen(
     }
 
     Scaffold(
-        modifier = modifier.fillMaxSize().testTag("tools_hub_screen")
+        containerColor = when {
+            isNeu -> NeuTokens.bg(isDark)
+            isGlass -> Color.Transparent
+            else -> MaterialTheme.colorScheme.background
+        },
+        modifier = modifier
+            .fillMaxSize()
+            .then(
+                if (isGlass) Modifier.glassCanvasBackground(isDark, accentColor, secondaryAccent) else Modifier
+            )
+            .testTag("tools_hub_screen")
     ) { innerPadding ->
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(bottom = innerPadding.calculateBottomPadding())
         ) {
-            // TOP HEADER: Curved gradient banner matching DashboardHubScreen
+            // TOP HEADER: Floating Soft Neumorphism / Liquid Glass card or curved gradient banner
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(bottomStart = 32.dp, bottomEnd = 32.dp))
-                    .background(
-                        Brush.verticalGradient(
-                            colors = listOf(
-                                MaterialTheme.colorScheme.primary,
-                                MaterialTheme.colorScheme.primaryContainer
-                            )
-                        )
+                    .then(
+                        when {
+                            isNeu -> Modifier
+                                .padding(horizontal = 14.dp)
+                                .padding(top = innerPadding.calculateTopPadding() + 8.dp)
+                                .neuCard(cornerRadius = 26.dp, isDark = isDark)
+                                .padding(vertical = 18.dp, horizontal = 18.dp)
+                            isGlass -> Modifier
+                                .padding(horizontal = 14.dp)
+                                .padding(top = innerPadding.calculateTopPadding() + 8.dp)
+                                .glassCard(cornerRadius = 28.dp, isDark = isDark, accentGlow = accentColor)
+                                .padding(vertical = 18.dp, horizontal = 18.dp)
+                            else -> Modifier
+                                .clip(RoundedCornerShape(bottomStart = 32.dp, bottomEnd = 32.dp))
+                                .background(
+                                    Brush.verticalGradient(
+                                        colors = listOf(
+                                            MaterialTheme.colorScheme.primary,
+                                            MaterialTheme.colorScheme.primaryContainer
+                                        )
+                                    )
+                                )
+                                .padding(top = innerPadding.calculateTopPadding() + 8.dp, bottom = 22.dp, start = 20.dp, end = 20.dp)
+                        }
                     )
-                    .padding(top = innerPadding.calculateTopPadding() + 8.dp, bottom = 22.dp, start = 20.dp, end = 20.dp)
             ) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -377,7 +524,15 @@ fun ToolsHubScreen(
                             modifier = Modifier
                                 .size(48.dp)
                                 .clip(CircleShape)
-                                .border(2.dp, Color.White.copy(alpha = 0.8f), CircleShape)
+                                .border(
+                                    2.dp,
+                                    when {
+                                        isNeu -> NeuTokens.bevelBorder(isDark)
+                                        isGlass -> GlassTokens.specularRim(isDark)
+                                        else -> Color.White.copy(alpha = 0.8f)
+                                    },
+                                    CircleShape
+                                )
                         ) {
                             Image(
                                 painter = painterResource(id = R.drawable.logo_albaraa),
@@ -391,24 +546,34 @@ fun ToolsHubScreen(
                             Text(
                                 text = "مرحباً بك،",
                                 style = MaterialTheme.typography.bodyMedium.copy(
-                                    color = Color.White.copy(alpha = 0.85f),
+                                    color = when {
+                                        isNeu -> NeuTokens.textSecondary(isDark)
+                                        isGlass -> GlassTokens.textSecondary(isDark)
+                                        else -> Color.White.copy(alpha = 0.85f)
+                                    },
                                     fontSize = 13.sp
                                 )
                             )
-                            Text(
+                            FittedSingleLineText(
                                 text = if (isSuperAdmin) "م. البراء إلكترونيك (Super Admin)" else if (isAdmin) "م. البراء إلكترونيك (مشرف)" else (userEmail ?: "مهندس الصيانة"),
                                 style = MaterialTheme.typography.titleLarge.copy(
-                                    color = Color.White,
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 17.sp
-                                )
+                                    fontWeight = FontWeight.Bold
+                                ),
+                                color = when {
+                                    isNeu -> NeuTokens.textPrimary(isDark)
+                                    isGlass -> GlassTokens.textPrimary(isDark)
+                                    else -> Color.White
+                                },
+                                fontSize = 17.sp,
+                                minFontSize = 13.sp,
+                                fontWeight = FontWeight.Bold
                             )
-                            Text(
+                            FittedSingleLineText(
                                 text = if (!userEmail.isNullOrBlank()) "أدوات وقوائم خاصة بحساب: $userEmail 🔒" else "أدوات وقوائم الصيانة الخاصة ⚡",
-                                style = MaterialTheme.typography.labelSmall.copy(
-                                    color = Color.White.copy(alpha = 0.9f),
-                                    fontSize = 11.sp
-                                )
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (isNeu || isGlass) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = 0.9f),
+                                fontSize = 11.sp,
+                                minFontSize = 9.sp
                             )
                         }
                     }
@@ -449,21 +614,18 @@ fun ToolsHubScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         // Add new tool list
-                        Surface(
-                            shape = RoundedCornerShape(12.dp),
-                            color = Color(0xFF10B981).copy(alpha = 0.15f),
-                            border = BorderStroke(1.dp, Color(0xFF10B981)),
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(12.dp))
-                                .clickable { showAddCategoryDialog = true }
-                                .padding(horizontal = 7.dp, vertical = 5.dp)
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
+                        when {
+                            isNeu -> NeuActionPill(
+                                onClick = { showAddCategoryDialog = true },
+                                isDark = isDark,
+                                accentColor = Color(0xFF10B981),
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 5.dp)
+                            ) {
                                 Icon(
                                     imageVector = Icons.Default.Add,
                                     contentDescription = "إضافة قائمة جديدة",
                                     tint = Color(0xFF10B981),
-                                    modifier = Modifier.size(15.dp)
+                                    modifier = Modifier.size(14.dp)
                                 )
                                 Spacer(modifier = Modifier.width(3.dp))
                                 Text(
@@ -475,24 +637,70 @@ fun ToolsHubScreen(
                                     )
                                 )
                             }
+                            isGlass -> GlassActionPill(
+                                onClick = { showAddCategoryDialog = true },
+                                isDark = isDark,
+                                accentColor = Color(0xFF10B981),
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 5.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Add,
+                                    contentDescription = "إضافة قائمة جديدة",
+                                    tint = Color(0xFF10B981),
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                Spacer(modifier = Modifier.width(3.dp))
+                                Text(
+                                    text = "إضافة قائمة ➕",
+                                    style = MaterialTheme.typography.labelSmall.copy(
+                                        color = Color(0xFF10B981),
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 10.sp
+                                    )
+                                )
+                            }
+                            else -> Surface(
+                                shape = RoundedCornerShape(12.dp),
+                                color = Color(0xFF10B981).copy(alpha = 0.15f),
+                                border = BorderStroke(1.dp, Color(0xFF10B981)),
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .clickable { showAddCategoryDialog = true }
+                                    .padding(horizontal = 7.dp, vertical = 5.dp)
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(
+                                        imageVector = Icons.Default.Add,
+                                        contentDescription = "إضافة قائمة جديدة",
+                                        tint = Color(0xFF10B981),
+                                        modifier = Modifier.size(15.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(3.dp))
+                                    Text(
+                                        text = "إضافة قائمة ➕",
+                                        style = MaterialTheme.typography.labelSmall.copy(
+                                            color = Color(0xFF10B981),
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 10.sp
+                                        )
+                                    )
+                                }
+                            }
                         }
 
                         // Reorder slices button
-                        Surface(
-                            shape = RoundedCornerShape(12.dp),
-                            color = Color(0xFF0D9488).copy(alpha = 0.15f),
-                            border = BorderStroke(1.dp, Color(0xFF0D9488)),
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(12.dp))
-                                .clickable { showReorderDialog = true }
-                                .padding(horizontal = 7.dp, vertical = 5.dp)
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
+                        when {
+                            isNeu -> NeuActionPill(
+                                onClick = { showReorderDialog = true },
+                                isDark = isDark,
+                                accentColor = Color(0xFF0D9488),
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 5.dp)
+                            ) {
                                 Icon(
                                     imageVector = Icons.AutoMirrored.Filled.Sort,
                                     contentDescription = "ترتيب الشرايح",
                                     tint = Color(0xFF0D9488),
-                                    modifier = Modifier.size(15.dp)
+                                    modifier = Modifier.size(14.dp)
                                 )
                                 Spacer(modifier = Modifier.width(3.dp))
                                 Text(
@@ -504,27 +712,74 @@ fun ToolsHubScreen(
                                     )
                                 )
                             }
+                            isGlass -> GlassActionPill(
+                                onClick = { showReorderDialog = true },
+                                isDark = isDark,
+                                accentColor = Color(0xFF0D9488),
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 5.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Filled.Sort,
+                                    contentDescription = "ترتيب الشرايح",
+                                    tint = Color(0xFF0D9488),
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                Spacer(modifier = Modifier.width(3.dp))
+                                Text(
+                                    text = "ترتيب الشرايح ⇅",
+                                    style = MaterialTheme.typography.labelSmall.copy(
+                                        color = Color(0xFF0D9488),
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 10.sp
+                                    )
+                                )
+                            }
+                            else -> Surface(
+                                shape = RoundedCornerShape(12.dp),
+                                color = Color(0xFF0D9488).copy(alpha = 0.15f),
+                                border = BorderStroke(1.dp, Color(0xFF0D9488)),
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .clickable { showReorderDialog = true }
+                                    .padding(horizontal = 7.dp, vertical = 5.dp)
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(
+                                        imageVector = Icons.AutoMirrored.Filled.Sort,
+                                        contentDescription = "ترتيب الشرايح",
+                                        tint = Color(0xFF0D9488),
+                                        modifier = Modifier.size(15.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(3.dp))
+                                    Text(
+                                        text = "ترتيب الشرايح ⇅",
+                                        style = MaterialTheme.typography.labelSmall.copy(
+                                            color = Color(0xFF0D9488),
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 10.sp
+                                        )
+                                    )
+                                }
+                            }
                         }
 
                         // Edit titles and icons button
-                        Surface(
-                            shape = RoundedCornerShape(12.dp),
-                            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f),
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(12.dp))
-                                .clickable {
+                        when {
+                            isNeu -> NeuActionPill(
+                                onClick = {
                                     if (allItems.isNotEmpty()) {
                                         editingCategoryId = allItems.first().id
                                     }
-                                }
-                                .padding(horizontal = 7.dp, vertical = 5.dp)
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                },
+                                isDark = isDark,
+                                accentColor = MaterialTheme.colorScheme.primary,
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 5.dp)
+                            ) {
                                 Icon(
                                     imageVector = Icons.Default.Edit,
                                     contentDescription = "تعديل القوائم",
                                     tint = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.size(15.dp)
+                                    modifier = Modifier.size(14.dp)
                                 )
                                 Spacer(modifier = Modifier.width(3.dp))
                                 Text(
@@ -535,6 +790,62 @@ fun ToolsHubScreen(
                                         fontSize = 10.sp
                                     )
                                 )
+                            }
+                            isGlass -> GlassActionPill(
+                                onClick = {
+                                    if (allItems.isNotEmpty()) {
+                                        editingCategoryId = allItems.first().id
+                                    }
+                                },
+                                isDark = isDark,
+                                accentColor = MaterialTheme.colorScheme.primary,
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 5.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Edit,
+                                    contentDescription = "تعديل القوائم",
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                Spacer(modifier = Modifier.width(3.dp))
+                                Text(
+                                    text = "تعديل القوائم",
+                                    style = MaterialTheme.typography.labelSmall.copy(
+                                        color = MaterialTheme.colorScheme.primary,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 10.sp
+                                    )
+                                )
+                            }
+                            else -> Surface(
+                                shape = RoundedCornerShape(12.dp),
+                                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f),
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .clickable {
+                                        if (allItems.isNotEmpty()) {
+                                            editingCategoryId = allItems.first().id
+                                        }
+                                    }
+                                    .padding(horizontal = 7.dp, vertical = 5.dp)
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(
+                                        imageVector = Icons.Default.Edit,
+                                        contentDescription = "تعديل القوائم",
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(15.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(3.dp))
+                                    Text(
+                                        text = "تعديل القوائم",
+                                        style = MaterialTheme.typography.labelSmall.copy(
+                                            color = MaterialTheme.colorScheme.primary,
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 10.sp
+                                        )
+                                    )
+                                }
                             }
                         }
                     }
@@ -569,17 +880,31 @@ fun ToolsHubScreen(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .height(172.dp)
-                                .shadow(
-                                    elevation = 8.dp,
-                                    shape = RoundedCornerShape(24.dp),
-                                    spotColor = Color(0x1F000000),
-                                    ambientColor = Color(0x12000000)
-                                )
-                                .clip(RoundedCornerShape(24.dp))
-                                .border(
-                                    width = 1.2.dp,
-                                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f),
-                                    shape = RoundedCornerShape(24.dp)
+                                .then(
+                                    when {
+                                        isNeu -> Modifier.neuCard(
+                                            cornerRadius = 20.dp,
+                                            isDark = isDark
+                                        )
+                                        isGlass -> Modifier.glassCard(
+                                            cornerRadius = 24.dp,
+                                            isDark = isDark,
+                                            accentGlow = if (isCategoryLocked && !isAdmin) Color(0xFFEF4444) else item.iconTint
+                                        )
+                                        else -> Modifier
+                                            .shadow(
+                                                elevation = 8.dp,
+                                                shape = RoundedCornerShape(24.dp),
+                                                spotColor = Color(0x1F000000),
+                                                ambientColor = Color(0x12000000)
+                                            )
+                                            .clip(RoundedCornerShape(24.dp))
+                                            .border(
+                                                width = 1.2.dp,
+                                                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f),
+                                                shape = RoundedCornerShape(24.dp)
+                                            )
+                                    }
                                 )
                                 .clickable {
                                     if (!isAdmin && isCategoryLocked) {
@@ -591,9 +916,13 @@ fun ToolsHubScreen(
                                     }
                                 }
                                 .testTag("tool_card_${item.id}"),
-                            shape = RoundedCornerShape(24.dp),
+                            shape = RoundedCornerShape(if (isNeu) 20.dp else 24.dp),
                             colors = CardDefaults.cardColors(
-                                containerColor = if (isCategoryLocked && !isAdmin) MaterialTheme.colorScheme.surface.copy(alpha = 0.6f) else MaterialTheme.colorScheme.surface
+                                containerColor = when {
+                                    isNeu || isGlass -> Color.Transparent
+                                    isCategoryLocked && !isAdmin -> MaterialTheme.colorScheme.surface.copy(alpha = 0.6f)
+                                    else -> MaterialTheme.colorScheme.surface
+                                }
                             ),
                             elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
                         ) {
@@ -607,11 +936,20 @@ fun ToolsHubScreen(
                                 // Circular Icon / Custom Image Container
                                 Surface(
                                     shape = CircleShape,
-                                    color = item.circleBackground,
+                                    color = if (isNeu || isGlass) Color.Transparent else item.circleBackground,
                                     modifier = Modifier
                                         .size(62.dp)
-                                        .shadow(4.dp, CircleShape)
-                                        .clip(CircleShape)
+                                        .then(
+                                            when {
+                                                isNeu -> Modifier.neuRecessed(cornerRadius = 31.dp, isDark = isDark)
+                                                isGlass -> Modifier.glassRecessed(
+                                                    cornerRadius = 31.dp,
+                                                    isDark = isDark,
+                                                    accentBorder = item.iconTint.copy(alpha = 0.45f)
+                                                )
+                                                else -> Modifier.shadow(4.dp, CircleShape).clip(CircleShape)
+                                            }
+                                        )
                                 ) {
                                     Box(contentAlignment = Alignment.Center) {
                                         if (finalImageUrl.isNotBlank()) {
@@ -634,27 +972,35 @@ fun ToolsHubScreen(
 
                                 Spacer(modifier = Modifier.height(10.dp))
 
-                                Text(
+                                FittedSingleLineText(
                                     text = finalTitle,
                                     style = MaterialTheme.typography.bodyMedium.copy(
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 14.sp
+                                        fontWeight = FontWeight.Bold
                                     ),
+                                    fontSize = 14.sp,
+                                    minFontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
                                     textAlign = TextAlign.Center,
-                                    maxLines = 1,
-                                    color = MaterialTheme.colorScheme.onSurface
+                                    color = when {
+                                        isNeu -> NeuTokens.textPrimary(isDark)
+                                        isGlass -> GlassTokens.textPrimary(isDark)
+                                        else -> MaterialTheme.colorScheme.onSurface
+                                    }
                                 )
 
                                 Spacer(modifier = Modifier.height(4.dp))
 
-                                Text(
+                                FittedSingleLineText(
                                     text = finalSubtitle,
-                                    style = MaterialTheme.typography.labelSmall.copy(
-                                        color = MaterialTheme.colorScheme.outline,
-                                        fontSize = 11.sp
-                                    ),
-                                    textAlign = TextAlign.Center,
-                                    maxLines = 1
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontSize = 11.sp,
+                                    minFontSize = 9.sp,
+                                    color = when {
+                                        isNeu -> NeuTokens.textSecondary(isDark)
+                                        isGlass -> GlassTokens.textSecondary(isDark)
+                                        else -> MaterialTheme.colorScheme.onSurfaceVariant
+                                    },
+                                    textAlign = TextAlign.Center
                                 )
                             }
                         }
@@ -746,33 +1092,53 @@ fun ToolsHubScreen(
                             }
                         } else if (isCategoryLocked) {
                             // Guest indicator when category is locked
-                            Surface(
-                                shape = RoundedCornerShape(8.dp),
-                                color = Color(0xFFEF4444),
-                                modifier = Modifier
-                                    .align(Alignment.TopStart)
-                                    .padding(8.dp)
-                                    .testTag("tool_locked_badge_${item.id}")
-                            ) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            when {
+                                isNeu -> NeuBadge(
+                                    text = "🔒 مغلق",
+                                    accentColor = Color(0xFFEF4444),
+                                    isDark = isDark,
+                                    modifier = Modifier
+                                        .align(Alignment.TopStart)
+                                        .padding(8.dp)
+                                        .testTag("tool_locked_badge_${item.id}")
+                                )
+                                isGlass -> GlassBadge(
+                                    text = "🔒 مغلق",
+                                    accentColor = Color(0xFFEF4444),
+                                    isDark = isDark,
+                                    modifier = Modifier
+                                        .align(Alignment.TopStart)
+                                        .padding(8.dp)
+                                        .testTag("tool_locked_badge_${item.id}")
+                                )
+                                else -> Surface(
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = Color(0xFFEF4444),
+                                    modifier = Modifier
+                                        .align(Alignment.TopStart)
+                                        .padding(8.dp)
+                                        .testTag("tool_locked_badge_${item.id}")
                                 ) {
-                                    Icon(
-                                        imageVector = Icons.Default.Lock,
-                                        contentDescription = "مغلق",
-                                        tint = Color.White,
-                                        modifier = Modifier.size(11.dp)
-                                    )
-                                    Spacer(modifier = Modifier.width(3.dp))
-                                    Text(
-                                        text = "مغلق",
-                                        style = MaterialTheme.typography.labelSmall.copy(
-                                            color = Color.White,
-                                            fontWeight = FontWeight.Bold,
-                                            fontSize = 9.sp
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Lock,
+                                            contentDescription = "مغلق",
+                                            tint = Color.White,
+                                            modifier = Modifier.size(11.dp)
                                         )
-                                    )
+                                        Spacer(modifier = Modifier.width(3.dp))
+                                        Text(
+                                            text = "مغلق",
+                                            style = MaterialTheme.typography.labelSmall.copy(
+                                                color = Color.White,
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 9.sp
+                                            )
+                                        )
+                                    }
                                 }
                             }
                         }

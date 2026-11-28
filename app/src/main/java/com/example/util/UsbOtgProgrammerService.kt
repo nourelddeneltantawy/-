@@ -61,7 +61,10 @@ sealed class FlashOperationResult {
         val baseAddress: Int = 0,
         val dataFlashBytes: ByteArray? = null,
         val dataFlashBaseAddress: Int = 0,
-        val isMcuVerified: Boolean = false
+        val isMcuVerified: Boolean = false,
+        val fullCsMatched: Boolean = true,
+        val actualFullCs16: Int? = null,
+        val expectedFullCs16: Int? = null
     ) : FlashOperationResult()
     data class Failure(val reason: String) : FlashOperationResult()
 }

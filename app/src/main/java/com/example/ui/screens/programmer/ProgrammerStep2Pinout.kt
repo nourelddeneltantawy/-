@@ -39,10 +39,16 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.model.ProgrammerChipType
+import com.example.ui.theme.GlassBadge
+import com.example.ui.theme.GlassPillButton
 import com.example.ui.theme.LocalIsDarkTheme
+import com.example.ui.theme.LocalIsLiquidGlassTheme
 import com.example.ui.theme.LocalIsSoftNeumorphismTheme
 import com.example.ui.theme.NeuBadge
 import com.example.ui.theme.NeuPillButton
+import com.example.ui.theme.bidiIsolateMixed
+import com.example.ui.theme.glassCard
+import com.example.ui.theme.glassRecessed
 import com.example.ui.theme.neuCard
 import com.example.ui.viewmodel.McuProgrammerUiState
 
@@ -57,6 +63,7 @@ fun ProgrammerStep2Pinout(
 ) {
     val scrollState = rememberScrollState()
     val isNeu = LocalIsSoftNeumorphismTheme.current
+    val isGlass = LocalIsLiquidGlassTheme.current
     val isDark = LocalIsDarkTheme.current
 
     Column(
@@ -68,12 +75,16 @@ fun ProgrammerStep2Pinout(
     ) {
         // Supported USB-to-TTL Adapters Header + Refresh
         Card(
-            shape = RoundedCornerShape(if (isNeu) 20.dp else 18.dp),
+            shape = RoundedCornerShape(if (isGlass) 24.dp else if (isNeu) 20.dp else 18.dp),
             colors = CardDefaults.cardColors(
-                containerColor = if (isNeu) Color.Transparent else MaterialTheme.colorScheme.surface
+                containerColor = if (isNeu || isGlass) Color.Transparent else MaterialTheme.colorScheme.surface
             ),
-            border = if (isNeu) null else BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f)),
-            modifier = if (isNeu) Modifier.neuCard(cornerRadius = 20.dp, isDark = isDark) else Modifier
+            border = if (isNeu || isGlass) null else BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f)),
+            modifier = when {
+                isNeu -> Modifier.neuCard(cornerRadius = 20.dp, isDark = isDark)
+                isGlass -> Modifier.glassCard(cornerRadius = 24.dp, isDark = isDark)
+                else -> Modifier
+            }
         ) {
             Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Row(
@@ -152,14 +163,18 @@ fun ProgrammerStep2Pinout(
                                         color = MaterialTheme.colorScheme.onSurface
                                     )
                                     if (attachedMatch != null) {
-                                        if (isNeu) {
-                                            NeuBadge(
+                                        when {
+                                            isNeu -> NeuBadge(
                                                 text = "متصلة الآن",
                                                 accentColor = Color(0xFF10B981),
                                                 isDark = isDark
                                             )
-                                        } else {
-                                            Surface(
+                                            isGlass -> GlassBadge(
+                                                text = "متصلة الآن",
+                                                accentColor = Color(0xFF10B981),
+                                                isDark = isDark
+                                            )
+                                            else -> Surface(
                                                 shape = RoundedCornerShape(6.dp),
                                                 color = Color(0xFF10B981).copy(alpha = 0.18f)
                                             ) {
@@ -196,69 +211,109 @@ fun ProgrammerStep2Pinout(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            if (isNeu) {
-                NeuPillButton(
-                    onClick = onSkipStep,
-                    isDark = isDark,
-                    modifier = Modifier
-                        .weight(0.35f)
-                        .heightIn(min = 50.dp)
-                        .testTag("step2_skip_button")
-                ) {
-                    Text("تخطي", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
-                }
+            when {
+                isNeu -> {
+                    NeuPillButton(
+                        onClick = onSkipStep,
+                        isDark = isDark,
+                        modifier = Modifier
+                            .weight(0.35f)
+                            .heightIn(min = 50.dp)
+                            .testTag("step2_skip_button")
+                    ) {
+                        Text("تخطي", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
+                    }
 
-                NeuPillButton(
-                    onClick = onNextStep,
-                    isActive = true,
-                    isDark = isDark,
-                    accentColor = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier
-                        .weight(0.65f)
-                        .heightIn(min = 50.dp)
-                        .testTag("step2_next_button")
-                ) {
-                    Text(
-                        text = "التالي: فتح واجهة البرمجة",
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 14.sp,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Icon(
-                        Icons.AutoMirrored.Filled.ArrowBack,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(18.dp)
-                    )
+                    NeuPillButton(
+                        onClick = onNextStep,
+                        isActive = true,
+                        isDark = isDark,
+                        accentColor = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier
+                            .weight(0.65f)
+                            .heightIn(min = 50.dp)
+                            .testTag("step2_next_button")
+                    ) {
+                        Text(
+                            text = "التالي: فتح واجهة البرمجة",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 14.sp,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Icon(
+                            Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
                 }
-            } else {
-                OutlinedButton(
-                    onClick = onSkipStep,
-                    shape = RoundedCornerShape(14.dp),
-                    modifier = Modifier
-                        .weight(0.35f)
-                        .heightIn(min = 50.dp)
-                        .testTag("step2_skip_button")
-                ) {
-                    Text("تخطي", fontWeight = FontWeight.Bold)
-                }
+                isGlass -> {
+                    GlassPillButton(
+                        onClick = onSkipStep,
+                        isDark = isDark,
+                        modifier = Modifier
+                            .weight(0.35f)
+                            .heightIn(min = 50.dp)
+                            .testTag("step2_skip_button")
+                    ) {
+                        Text("تخطي", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
+                    }
 
-                Button(
-                    onClick = onNextStep,
-                    shape = RoundedCornerShape(14.dp),
-                    modifier = Modifier
-                        .weight(0.65f)
-                        .heightIn(min = 50.dp)
-                        .testTag("step2_next_button")
-                ) {
-                    Text(
-                        text = "التالي: فتح واجهة البرمجة",
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 14.sp
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = null, modifier = Modifier.size(18.dp))
+                    GlassPillButton(
+                        onClick = onNextStep,
+                        isActive = true,
+                        isDark = isDark,
+                        accentColor = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier
+                            .weight(0.65f)
+                            .heightIn(min = 50.dp)
+                            .testTag("step2_next_button")
+                    ) {
+                        Text(
+                            text = "التالي: فتح واجهة البرمجة",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 14.sp,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Icon(
+                            Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                }
+                else -> {
+                    OutlinedButton(
+                        onClick = onSkipStep,
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier
+                            .weight(0.35f)
+                            .heightIn(min = 50.dp)
+                            .testTag("step2_skip_button")
+                    ) {
+                        Text("تخطي", fontWeight = FontWeight.Bold)
+                    }
+
+                    Button(
+                        onClick = onNextStep,
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier
+                            .weight(0.65f)
+                            .heightIn(min = 50.dp)
+                            .testTag("step2_next_button")
+                    ) {
+                        Text(
+                            text = "التالي: فتح واجهة البرمجة",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 14.sp
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = null, modifier = Modifier.size(18.dp))
+                    }
                 }
             }
         }

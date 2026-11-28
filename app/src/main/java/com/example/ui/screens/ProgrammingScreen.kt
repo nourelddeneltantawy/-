@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -134,6 +135,23 @@ import com.example.data.model.ProgrammerConnection
 import com.example.data.model.ProgrammerSoftware
 import com.example.data.repository.ProgrammingRepository
 import com.example.ui.components.ConfirmDeleteDialog
+import com.example.ui.theme.FittedSingleLineText
+import com.example.ui.theme.GlassBadge
+import com.example.ui.theme.GlassCircleIconButton
+import com.example.ui.theme.GlassTokens
+import com.example.ui.theme.LocalAccentColor
+import com.example.ui.theme.LocalIsDarkTheme
+import com.example.ui.theme.LocalIsLiquidGlassTheme
+import com.example.ui.theme.LocalIsSoftNeumorphismTheme
+import com.example.ui.theme.LocalSecondaryAccentColor
+import com.example.ui.theme.NeuBadge
+import com.example.ui.theme.NeuCircleIconButton
+import com.example.ui.theme.NeuTokens
+import com.example.ui.theme.bidiIsolateMixed
+import com.example.ui.theme.glassCanvasBackground
+import com.example.ui.theme.glassCard
+import com.example.ui.theme.glassRecessed
+import com.example.ui.theme.neuCard
 import com.example.util.ZipHelper
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
@@ -263,23 +281,56 @@ fun ProgrammingScreen(
         handleBackPress()
     }
 
+    val isNeu = LocalIsSoftNeumorphismTheme.current
+    val isGlass = LocalIsLiquidGlassTheme.current
+    val isDark = LocalIsDarkTheme.current
+    val accentColor = LocalAccentColor.current
+    val secondaryAccent = LocalSecondaryAccentColor.current
+
     Scaffold(
-        modifier = modifier.fillMaxSize().testTag("programming_screen"),
+        containerColor = when {
+            isGlass -> Color.Transparent
+            isNeu -> NeuTokens.bg(isDark)
+            else -> MaterialTheme.colorScheme.background
+        },
+        modifier = modifier
+            .fillMaxSize()
+            .then(
+                if (isGlass) Modifier.glassCanvasBackground(isDark, accentColor, secondaryAccent)
+                else Modifier
+            )
+            .testTag("programming_screen"),
         topBar = {
-            // Elegant Curved Top Bar matching the app's visual identity
+            // Elegant Curved Top Bar or Soft Neumorphism / Liquid Glass floating card
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(bottomStart = 26.dp, bottomEnd = 26.dp))
-                    .background(
-                        Brush.verticalGradient(
-                            colors = listOf(
-                                MaterialTheme.colorScheme.primary,
-                                MaterialTheme.colorScheme.primaryContainer
-                            )
-                        )
+                    .then(
+                        when {
+                            isGlass -> Modifier
+                                .padding(horizontal = 12.dp, vertical = 6.dp)
+                                .statusBarsPadding()
+                                .glassCard(cornerRadius = 26.dp, isDark = isDark, strongSurface = true)
+                                .padding(top = 12.dp, bottom = 10.dp, start = 14.dp, end = 14.dp)
+                            isNeu -> Modifier
+                                .padding(horizontal = 12.dp, vertical = 6.dp)
+                                .statusBarsPadding()
+                                .neuCard(cornerRadius = 26.dp, isDark = isDark)
+                                .padding(top = 12.dp, bottom = 10.dp, start = 14.dp, end = 14.dp)
+                            else -> Modifier
+                                .clip(RoundedCornerShape(bottomStart = 26.dp, bottomEnd = 26.dp))
+                                .background(
+                                    Brush.verticalGradient(
+                                        colors = listOf(
+                                            MaterialTheme.colorScheme.primary,
+                                            MaterialTheme.colorScheme.primaryContainer
+                                        )
+                                    )
+                                )
+                                .statusBarsPadding()
+                                .padding(top = 10.dp, bottom = 14.dp, start = 16.dp, end = 16.dp)
+                        }
                     )
-                    .padding(top = 10.dp, bottom = 14.dp, start = 16.dp, end = 16.dp)
             ) {
                 Column {
                     Row(
@@ -289,19 +340,54 @@ fun ProgrammingScreen(
                     ) {
                         // START SIDE (Right in RTL): Prominent Back Button + Screen Title
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            IconButton(
-                                onClick = { handleBackPress() },
-                                modifier = Modifier
-                                    .size(42.dp)
-                                    .background(Color.White.copy(alpha = 0.15f), CircleShape)
-                                    .testTag("programming_back_button")
-                            ) {
-                                Icon(
-                                    imageVector = Icons.AutoMirrored.Filled.ArrowForward,
-                                    contentDescription = "رجوع للخلف",
-                                    tint = Color.White,
-                                    modifier = Modifier.size(24.dp)
-                                )
+                            when {
+                                isGlass -> {
+                                    GlassCircleIconButton(
+                                        onClick = { handleBackPress() },
+                                        size = 42.dp,
+                                        isDark = isDark,
+                                        accentGlow = accentColor,
+                                        modifier = Modifier.testTag("programming_back_button")
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.AutoMirrored.Filled.ArrowForward,
+                                            contentDescription = "رجوع للخلف",
+                                            tint = accentColor,
+                                            modifier = Modifier.size(22.dp)
+                                        )
+                                    }
+                                }
+                                isNeu -> {
+                                    NeuCircleIconButton(
+                                        onClick = { handleBackPress() },
+                                        size = 42.dp,
+                                        isDark = isDark,
+                                        modifier = Modifier.testTag("programming_back_button")
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.AutoMirrored.Filled.ArrowForward,
+                                            contentDescription = "رجوع للخلف",
+                                            tint = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.size(22.dp)
+                                        )
+                                    }
+                                }
+                                else -> {
+                                    IconButton(
+                                        onClick = { handleBackPress() },
+                                        modifier = Modifier
+                                            .size(42.dp)
+                                            .background(Color.White.copy(alpha = 0.15f), CircleShape)
+                                            .testTag("programming_back_button")
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.AutoMirrored.Filled.ArrowForward,
+                                            contentDescription = "رجوع للخلف",
+                                            tint = Color.White,
+                                            modifier = Modifier.size(24.dp)
+                                        )
+                                    }
+                                }
                             }
 
                             Spacer(modifier = Modifier.width(10.dp))
@@ -309,9 +395,13 @@ fun ProgrammingScreen(
                             Column {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Text(
-                                        text = if (activeFolder != null) activeFolder.name else "البرمجة والسوفت وير 💻",
+                                        text = (if (activeFolder != null) activeFolder.name else "البرمجة والسوفت وير 💻").bidiIsolateMixed(),
                                         style = MaterialTheme.typography.titleMedium.copy(
-                                            color = Color.White,
+                                            color = when {
+                                                isGlass -> GlassTokens.textPrimary(isDark)
+                                                isNeu -> NeuTokens.textPrimary(isDark)
+                                                else -> Color.White
+                                            },
                                             fontWeight = FontWeight.Bold,
                                             fontSize = 17.sp
                                         ),
@@ -320,18 +410,36 @@ fun ProgrammingScreen(
                                     )
                                     if (isAdmin) {
                                         Spacer(modifier = Modifier.width(6.dp))
-                                        Surface(
-                                            shape = RoundedCornerShape(6.dp),
-                                            color = Color(0xFF10B981).copy(alpha = 0.25f),
-                                            border = BorderStroke(1.dp, Color(0xFF10B981))
-                                        ) {
-                                            Text(
-                                                text = "مشرف",
-                                                color = Color(0xFF6EE7B7),
-                                                fontSize = 10.sp,
-                                                fontWeight = FontWeight.Bold,
-                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                            )
+                                        when {
+                                            isGlass -> {
+                                                GlassBadge(
+                                                    text = "مشرف",
+                                                    accentColor = Color(0xFF10B981),
+                                                    isDark = isDark
+                                                )
+                                            }
+                                            isNeu -> {
+                                                NeuBadge(
+                                                    text = "مشرف",
+                                                    accentColor = Color(0xFF10B981),
+                                                    isDark = isDark
+                                                )
+                                            }
+                                            else -> {
+                                                Surface(
+                                                    shape = RoundedCornerShape(6.dp),
+                                                    color = Color(0xFF10B981).copy(alpha = 0.25f),
+                                                    border = BorderStroke(1.dp, Color(0xFF10B981))
+                                                ) {
+                                                    Text(
+                                                        text = "مشرف",
+                                                        color = Color(0xFF6EE7B7),
+                                                        fontSize = 10.sp,
+                                                        fontWeight = FontWeight.Bold,
+                                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                                    )
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -339,7 +447,11 @@ fun ProgrammingScreen(
                                 Text(
                                     text = if (activeFolder != null) "استعراض ملفات الدامب والسوفت داخل المجلد" else "برامج مبرمجات • سوفتات بروسيسور • مخططات الربط",
                                     style = MaterialTheme.typography.labelSmall.copy(
-                                        color = Color.White.copy(alpha = 0.8f),
+                                        color = when {
+                                            isGlass -> GlassTokens.textSecondary(isDark)
+                                            isNeu -> NeuTokens.textSecondary(isDark)
+                                            else -> Color.White.copy(alpha = 0.8f)
+                                        },
                                         fontSize = 11.sp
                                     )
                                 )
@@ -358,7 +470,7 @@ fun ProgrammingScreen(
                     ScrollableTabRow(
                         selectedTabIndex = selectedTabIndex,
                         containerColor = Color.Transparent,
-                        contentColor = Color.White,
+                        contentColor = if (isNeu || isGlass) MaterialTheme.colorScheme.primary else Color.White,
                         edgePadding = 0.dp,
                         divider = {}
                     ) {
@@ -371,11 +483,19 @@ fun ProgrammingScreen(
                                     folderStack = emptyList()
                                 },
                                 text = {
-                                    Text(
+                                    FittedSingleLineText(
                                         text = title,
                                         fontSize = 13.sp,
+                                        minFontSize = 10.sp,
                                         fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                                        color = if (isSelected) Color(0xFF5EEAD4) else Color.White.copy(alpha = 0.7f)
+                                        color = when {
+                                            isGlass && isSelected -> accentColor
+                                            isGlass -> GlassTokens.textSecondary(isDark)
+                                            isNeu && isSelected -> MaterialTheme.colorScheme.primary
+                                            isNeu -> NeuTokens.textSecondary(isDark)
+                                            isSelected -> Color(0xFF5EEAD4)
+                                            else -> Color.White.copy(alpha = 0.7f)
+                                        }
                                     )
                                 }
                             )
@@ -431,10 +551,11 @@ fun ProgrammingScreen(
             Surface(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                    .padding(horizontal = 16.dp, vertical = 8.dp)
+                    .then(if (isGlass) Modifier.glassRecessed(cornerRadius = 14.dp, isDark = isDark) else Modifier),
                 shape = RoundedCornerShape(14.dp),
-                color = MaterialTheme.colorScheme.surface,
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+                color = if (isGlass) Color.Transparent else MaterialTheme.colorScheme.surface,
+                border = if (isGlass) null else BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
             ) {
                 Row(
                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
@@ -443,7 +564,7 @@ fun ProgrammingScreen(
                     Icon(
                         imageVector = Icons.Default.Search,
                         contentDescription = "بحث",
-                        tint = MaterialTheme.colorScheme.outline,
+                        tint = if (isGlass) accentColor else MaterialTheme.colorScheme.outline,
                         modifier = Modifier.size(20.dp)
                     )
                     Spacer(modifier = Modifier.width(8.dp))
@@ -454,6 +575,8 @@ fun ProgrammingScreen(
                         modifier = Modifier.fillMaxWidth(),
                         singleLine = true,
                         colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
+                            focusedContainerColor = Color.Transparent,
+                            unfocusedContainerColor = Color.Transparent,
                             focusedBorderColor = Color.Transparent,
                             unfocusedBorderColor = Color.Transparent
                         )
@@ -466,14 +589,15 @@ fun ProgrammingScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp, vertical = 4.dp)
+                    .then(if (isGlass) Modifier.glassCard(cornerRadius = 14.dp, isDark = isDark, accentGlow = Color(0xFFEAB308)) else Modifier)
                     .clickable {
                         activationTargetScope = "ALL_FIRMWARE"
                         activationTargetName = "تفعيل ترخيص جديد"
                         showActivationDialog = true
                     },
-                shape = RoundedCornerShape(12.dp),
-                color = Color(0xFFEAB308).copy(alpha = 0.12f),
-                border = BorderStroke(1.dp, Color(0xFFEAB308).copy(alpha = 0.4f))
+                shape = RoundedCornerShape(if (isGlass) 14.dp else 12.dp),
+                color = if (isGlass) Color.Transparent else Color(0xFFEAB308).copy(alpha = 0.12f),
+                border = if (isGlass) null else BorderStroke(1.dp, Color(0xFFEAB308).copy(alpha = 0.4f))
             ) {
                 Row(
                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
@@ -496,17 +620,17 @@ fun ProgrammingScreen(
                                 text = "تفعيل مفتاح ترخيص جديد 🔑",
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 12.sp,
-                                color = MaterialTheme.colorScheme.onSurface
+                                color = if (isGlass) GlassTokens.textPrimary(isDark) else MaterialTheme.colorScheme.onSurface
                             )
                             Text(
                                 text = "اضغط هنا للصق كود التفعيل وفتح كافة المجلدات والبرامج المصرح لك بها فوراً",
                                 fontSize = 10.sp,
-                                color = MaterialTheme.colorScheme.outline
+                                color = if (isGlass) GlassTokens.textSecondary(isDark) else MaterialTheme.colorScheme.outline
                             )
                         }
                     }
                     Surface(
-                        shape = RoundedCornerShape(6.dp),
+                        shape = RoundedCornerShape(8.dp),
                         color = Color(0xFFEAB308)
                     ) {
                         Text(
@@ -802,6 +926,8 @@ fun SoftwareListTab(
     onRequestActivation: (scope: String, name: String) -> Unit
 ) {
     val context = LocalContext.current
+    val isGlass = LocalIsLiquidGlassTheme.current
+    val isDark = LocalIsDarkTheme.current
 
     if (softwares.isEmpty()) {
         Box(
@@ -811,7 +937,7 @@ fun SoftwareListTab(
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Icon(Icons.Default.Laptop, contentDescription = null, tint = Color.Gray, modifier = Modifier.size(48.dp))
                 Spacer(modifier = Modifier.height(8.dp))
-                Text("لا توجد برامج مضافة حالياً", color = MaterialTheme.colorScheme.outline)
+                Text("لا توجد برامج مضافة حالياً", color = if (isGlass) GlassTokens.textSecondary(isDark) else MaterialTheme.colorScheme.outline)
             }
         }
         return
@@ -827,12 +953,14 @@ fun SoftwareListTab(
             val isLocked = (item.requiresLicense || item.isLocked) && !isUnlocked && !item.isFree
 
             Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(18.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .then(if (isGlass) Modifier.glassCard(cornerRadius = 20.dp, isDark = isDark) else Modifier),
+                shape = RoundedCornerShape(if (isGlass) 20.dp else 18.dp),
                 colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.surface
+                    containerColor = if (isGlass) Color.Transparent else MaterialTheme.colorScheme.surface
                 ),
-                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                elevation = CardDefaults.cardElevation(defaultElevation = if (isGlass) 0.dp else 2.dp)
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
                     Row(
@@ -1015,16 +1143,19 @@ fun FoldersGridTab(
     onRequestUnlockAll: () -> Unit
 ) {
     val context = LocalContext.current
+    val isGlass = LocalIsLiquidGlassTheme.current
+    val isDark = LocalIsDarkTheme.current
 
     Column(modifier = Modifier.fillMaxSize()) {
         // Banner informing about folder activation
         Surface(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 6.dp),
-            shape = RoundedCornerShape(12.dp),
-            color = Color(0xFF0F766E).copy(alpha = 0.12f),
-            border = BorderStroke(1.dp, Color(0xFF0F766E).copy(alpha = 0.3f))
+                .padding(horizontal = 16.dp, vertical = 6.dp)
+                .then(if (isGlass) Modifier.glassCard(cornerRadius = 14.dp, isDark = isDark, accentGlow = Color(0xFF0F766E)) else Modifier),
+            shape = RoundedCornerShape(if (isGlass) 14.dp else 12.dp),
+            color = if (isGlass) Color.Transparent else Color(0xFF0F766E).copy(alpha = 0.12f),
+            border = if (isGlass) null else BorderStroke(1.dp, Color(0xFF0F766E).copy(alpha = 0.3f))
         ) {
             Row(
                 modifier = Modifier.padding(12.dp),
@@ -1039,12 +1170,12 @@ fun FoldersGridTab(
                             text = "مكتبة سوفتات ومعالجات الغسالات 📁",
                             fontWeight = FontWeight.Bold,
                             fontSize = 13.sp,
-                            color = MaterialTheme.colorScheme.onSurface
+                            color = if (isGlass) GlassTokens.textPrimary(isDark) else MaterialTheme.colorScheme.onSurface
                         )
                         Text(
-                            text = "مجلدات منظمة تشبه الكمبيوتر تضم ملفات فلاشات BIN/HEX لكل كارتة",
+                            text = "مجلدات منظمة تشبه الكمبيوتر تضم ملفات فلاشات BIN/HEX لكل كارتة".bidiIsolateMixed(),
                             fontSize = 11.sp,
-                            color = MaterialTheme.colorScheme.outline
+                            color = if (isGlass) GlassTokens.textSecondary(isDark) else MaterialTheme.colorScheme.outline
                         )
                     }
                 }
@@ -1079,13 +1210,14 @@ fun FoldersGridTab(
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(170.dp)
+                        .then(if (isGlass) Modifier.glassCard(cornerRadius = 20.dp, isDark = isDark) else Modifier)
                         .clip(RoundedCornerShape(20.dp))
                         .clickable { onFolderClick(folder) },
                     shape = RoundedCornerShape(20.dp),
                     colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.surface
+                        containerColor = if (isGlass) Color.Transparent else MaterialTheme.colorScheme.surface
                     ),
-                    elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                    elevation = CardDefaults.cardElevation(defaultElevation = if (isGlass) 0.dp else 2.dp)
                 ) {
                     Box(modifier = Modifier.fillMaxSize()) {
                         Column(
@@ -1217,6 +1349,8 @@ fun DumpsListTab(
     onRequestActivation: (String, String) -> Unit = { _, _ -> }
 ) {
     val context = LocalContext.current
+    val isGlass = LocalIsLiquidGlassTheme.current
+    val isDark = LocalIsDarkTheme.current
     var isMultiSelectMode by remember { mutableStateOf(false) }
     val selectedDumpIds = remember { mutableStateListOf<String>() }
 
@@ -1225,10 +1359,11 @@ fun DumpsListTab(
         Surface(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp),
-            shape = RoundedCornerShape(12.dp),
-            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+                .padding(horizontal = 16.dp, vertical = 8.dp)
+                .then(if (isGlass) Modifier.glassRecessed(cornerRadius = 14.dp, isDark = isDark) else Modifier),
+            shape = RoundedCornerShape(if (isGlass) 14.dp else 12.dp),
+            color = if (isGlass) Color.Transparent else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+            border = if (isGlass) null else BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
         ) {
             Column(modifier = Modifier.padding(10.dp)) {
                 // Breadcrumbs row
@@ -1340,10 +1475,11 @@ fun DumpsListTab(
                                 modifier = Modifier
                                     .weight(1f)
                                     .height(115.dp)
+                                    .then(if (isGlass) Modifier.glassCard(cornerRadius = 16.dp, isDark = isDark) else Modifier)
                                     .clip(RoundedCornerShape(14.dp))
                                     .clickable { onNavigateToSubFolder(sub) },
-                                shape = RoundedCornerShape(14.dp),
-                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                                shape = RoundedCornerShape(if (isGlass) 16.dp else 14.dp),
+                                colors = CardDefaults.cardColors(containerColor = if (isGlass) Color.Transparent else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
                             ) {
                                 Column(
                                     modifier = Modifier.fillMaxSize().padding(8.dp),
@@ -1467,13 +1603,18 @@ fun DumpsListTab(
                 val isDumpFreeOrUnlocked = dump.isFree || isUnlocked
 
                 Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(16.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .then(if (isGlass) Modifier.glassCard(cornerRadius = 18.dp, isDark = isDark, accentGlow = if (isSelected) MaterialTheme.colorScheme.primary else null) else Modifier),
+                    shape = RoundedCornerShape(if (isGlass) 18.dp else 16.dp),
                     colors = CardDefaults.cardColors(
-                        containerColor = if (isSelected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f)
-                        else MaterialTheme.colorScheme.surface
+                        containerColor = when {
+                            isGlass -> Color.Transparent
+                            isSelected -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f)
+                            else -> MaterialTheme.colorScheme.surface
+                        }
                     ),
-                    elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                    elevation = CardDefaults.cardElevation(defaultElevation = if (isGlass) 0.dp else 2.dp)
                 ) {
                     Column(modifier = Modifier.padding(14.dp)) {
                         Row(
@@ -1662,6 +1803,8 @@ fun ConnectionDiagramsTab(
     onDelete: (ProgrammerConnection) -> Unit
 ) {
     val context = LocalContext.current
+    val isGlass = LocalIsLiquidGlassTheme.current
+    val isDark = LocalIsDarkTheme.current
 
     if (connections.isEmpty()) {
         Box(
@@ -1671,7 +1814,7 @@ fun ConnectionDiagramsTab(
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Icon(Icons.Default.Cable, contentDescription = null, tint = Color.Gray, modifier = Modifier.size(48.dp))
                 Spacer(modifier = Modifier.height(8.dp))
-                Text("لا توجد مخططات توصيل مبرمجات مضافة حالياً", color = MaterialTheme.colorScheme.outline)
+                Text("لا توجد مخططات توصيل مبرمجات مضافة حالياً", color = if (isGlass) GlassTokens.textSecondary(isDark) else MaterialTheme.colorScheme.outline)
             }
         }
         return
@@ -1684,10 +1827,12 @@ fun ConnectionDiagramsTab(
     ) {
         items(connections, key = { it.id }) { conn ->
             Card(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .then(if (isGlass) Modifier.glassCard(cornerRadius = 20.dp, isDark = isDark) else Modifier),
                 shape = RoundedCornerShape(20.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                colors = CardDefaults.cardColors(containerColor = if (isGlass) Color.Transparent else MaterialTheme.colorScheme.surface),
+                elevation = CardDefaults.cardElevation(defaultElevation = if (isGlass) 0.dp else 2.dp)
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
                     // Header: Programmer Name & Target Board

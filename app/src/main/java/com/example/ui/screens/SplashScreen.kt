@@ -40,7 +40,28 @@ import androidx.compose.material.icons.filled.StarBorder
 import com.example.data.AppStatsAndRatingManager
 import com.example.data.AppStatsData
 import com.example.ui.components.ThemeSettingsDialog
+import com.example.ui.theme.FittedSingleLineText
+import com.example.ui.theme.GlassCircleIconButton
+import com.example.ui.theme.GlassPrimaryCtaButton
+import com.example.ui.theme.GlassStatusWellPill
+import com.example.ui.theme.GlassTokens
+import com.example.ui.theme.LocalAccentColor
 import com.example.ui.theme.LocalIsClayTheme
+import com.example.ui.theme.LocalIsDarkTheme
+import com.example.ui.theme.LocalIsLiquidGlassTheme
+import com.example.ui.theme.LocalIsSoftNeumorphismTheme
+import com.example.ui.theme.LocalSecondaryAccentColor
+import com.example.ui.theme.NeuActionPill
+import com.example.ui.theme.NeuCircleIconButton
+import com.example.ui.theme.NeuPrimaryCtaButton
+import com.example.ui.theme.NeuStatusWellPill
+import com.example.ui.theme.NeuTokens
+import com.example.ui.theme.bidiIsolateMixed
+import com.example.ui.theme.glassCanvasBackground
+import com.example.ui.theme.glassCard
+import com.example.ui.theme.glassRecessed
+import com.example.ui.theme.neuCard
+import com.example.ui.theme.neuRecessed
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -141,6 +162,11 @@ fun SplashScreen(
     val contactInfo by ContactInfoManager.contactInfo.collectAsState()
     val statsData by AppStatsAndRatingManager.stats.collectAsState()
     val isClay = LocalIsClayTheme.current
+    val isNeu = LocalIsSoftNeumorphismTheme.current
+    val isGlass = LocalIsLiquidGlassTheme.current
+    val isDark = LocalIsDarkTheme.current
+    val accentColor = LocalAccentColor.current
+    val secondaryAccent = LocalSecondaryAccentColor.current
 
     val handleUpdateIconClick = {
         coroutineScope.launch {
@@ -172,37 +198,45 @@ fun SplashScreen(
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
+            .then(
+                when {
+                    isNeu -> Modifier.background(NeuTokens.bg(isDark))
+                    isGlass -> Modifier.glassCanvasBackground(isDark, accentColor, secondaryAccent)
+                    else -> Modifier.background(MaterialTheme.colorScheme.background)
+                }
+            )
     ) {
-        // TOP 48% DYNAMIC THEME HERO CURVE
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .fillMaxSize(0.48f)
-                .clip(RoundedCornerShape(bottomStart = 56.dp, bottomEnd = 56.dp))
-                .background(
-                    if (isClay) {
-                        Brush.verticalGradient(
-                            listOf(
-                                Color(0xFFFFFFFF),
-                                Color(0xFFEFF2F6)
+        // TOP 48% DYNAMIC THEME HERO CURVE (omitted in Soft Neumorphism & Liquid Glass where hero is a floating card)
+        if (!isNeu && !isGlass) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .fillMaxSize(0.48f)
+                    .clip(RoundedCornerShape(bottomStart = 56.dp, bottomEnd = 56.dp))
+                    .background(
+                        if (isClay) {
+                            Brush.verticalGradient(
+                                listOf(
+                                    Color(0xFFFFFFFF),
+                                    Color(0xFFEFF2F6)
+                                )
                             )
-                        )
-                    } else {
-                        Brush.verticalGradient(
-                            listOf(
-                                MaterialTheme.colorScheme.primary,
-                                MaterialTheme.colorScheme.primaryContainer
+                        } else {
+                            Brush.verticalGradient(
+                                listOf(
+                                    MaterialTheme.colorScheme.primary,
+                                    MaterialTheme.colorScheme.primaryContainer
+                                )
                             )
-                        )
-                    }
-                )
-                .then(
-                    if (isClay) {
-                        Modifier.border(1.2.dp, Color(0xFFD6DFEA), RoundedCornerShape(bottomStart = 56.dp, bottomEnd = 56.dp))
-                    } else Modifier
-                )
-        )
+                        }
+                    )
+                    .then(
+                        if (isClay) {
+                            Modifier.border(1.2.dp, Color(0xFFD6DFEA), RoundedCornerShape(bottomStart = 56.dp, bottomEnd = 56.dp))
+                        } else Modifier
+                    )
+            )
+        }
 
         // MAIN CONTENT CONTAINER
         Column(
@@ -211,369 +245,724 @@ fun SplashScreen(
                 .verticalScroll(rememberScrollState()),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Spacer(modifier = Modifier.height(28.dp))
+            Spacer(modifier = Modifier.height(if (isNeu || isGlass) 36.dp else 28.dp))
 
-            // Top Bar: Admin/Guest badge & Action Icons
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 18.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                // Start side: Prominent Back Button (if opened from within app) + Role Badge & Admin Edit Button
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    if (onBackClick != null) {
-                        IconButton(
-                            onClick = onBackClick,
-                            modifier = Modifier
-                                .size(38.dp)
-                                .background(Color.White.copy(alpha = 0.22f), CircleShape)
-                                .testTag("splash_back_button")
-                        ) {
-                            Icon(
-                                imageVector = Icons.AutoMirrored.Filled.ArrowForward,
-                                contentDescription = "رجوع للدليل الشامل",
-                                tint = Color.White,
-                                modifier = Modifier.size(22.dp)
-                            )
-                        }
-                    }
-
-                    Surface(
-                        shape = RoundedCornerShape(20.dp),
-                        color = if (isAdmin) Color(0xFF0284C7).copy(alpha = 0.85f) else Color.White.copy(alpha = 0.22f),
-                        border = androidx.compose.foundation.BorderStroke(1.dp, Color.White.copy(alpha = 0.4f))
-                    ) {
-                        Text(
-                            text = if (isAdmin) "🛡️ مشرف" else "وضع الزائر",
-                            style = MaterialTheme.typography.labelMedium.copy(
-                                fontWeight = FontWeight.Bold,
-                                color = Color.White,
-                                fontSize = 12.sp
-                            ),
-                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp)
-                        )
-                    }
-
-                    if (isAdmin) {
-                        Surface(
-                            shape = CircleShape,
-                            color = Color.White.copy(alpha = 0.25f),
-                            modifier = Modifier
-                                .size(36.dp)
-                                .clip(CircleShape)
-                                .clickable { showEditDialog = true }
-                                .testTag("admin_edit_contact_button")
-                        ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Icon(
-                                    imageVector = Icons.Default.Edit,
-                                    contentDescription = "تعديل بيانات التواصل",
-                                    tint = Color.White,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                            }
-                        }
-                    }
-                }
-
-                // End side: Custom Sleek Container with Action Icons
-                Surface(
-                    shape = RoundedCornerShape(16.dp),
-                    color = if (isClay) Color(0xFFFFFFFF) else Color(0xFF0B1727).copy(alpha = 0.85f),
-                    border = androidx.compose.foundation.BorderStroke(
-                        1.2.dp,
-                        if (isClay) Color(0xFFD6DFEA) else Color(0xFF38BDF8).copy(alpha = 0.35f)
-                    ),
-                    shadowElevation = 6.dp
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 3.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        // 1. Phone with Download Arrow (تنزيل / إدارة التحديث)
-                        Box(contentAlignment = Alignment.Center) {
-                            IconButton(
-                                onClick = { handleUpdateIconClick() },
-                                modifier = Modifier.size(42.dp).testTag("splash_download_update_button")
-                            ) {
-                                PhoneDownloadIcon(tint = if (isClay) MaterialTheme.colorScheme.primary else Color(0xFF38BDF8))
-                            }
-
-                            if (activeUpdateInfo?.hasUpdate == true) {
-                                Box(
-                                    modifier = Modifier
-                                        .align(Alignment.TopEnd)
-                                        .padding(top = 4.dp, end = 4.dp)
-                                        .size(9.dp)
-                                        .background(Color(0xFFEF4444), CircleShape)
-                                        .border(1.5.dp, if (isClay) Color.White else Color(0xFF0B1727), CircleShape)
-                                )
-                            }
-                        }
-
-                        // Small vertical separator
-                        Box(
-                            modifier = Modifier
-                                .width(1.dp)
-                                .height(22.dp)
-                                .background(if (isClay) Color(0xFFD6DFEA) else Color.White.copy(alpha = 0.2f))
-                        )
-
-                        // 2. Door with Arrow (تسجيل الدخول / الخروج)
-                        IconButton(
-                            onClick = {
-                                if (currentUserEmail != null) {
-                                    showLogoutConfirmDialog = true
-                                } else {
-                                    onAuthClick()
-                                }
-                            },
-                            modifier = Modifier.size(42.dp).testTag("splash_auth_button")
-                        ) {
-                            Icon(
-                                imageVector = if (currentUserEmail != null) Icons.AutoMirrored.Filled.Logout else Icons.AutoMirrored.Filled.Login,
-                                contentDescription = if (currentUserEmail != null) "تسجيل الخروج" else "تسجيل الدخول",
-                                tint = if (isClay) MaterialTheme.colorScheme.primary else Color(0xFF38BDF8),
-                                modifier = Modifier.size(24.dp)
-                            )
-                        }
-
-                        // Small vertical separator
-                        Box(
-                            modifier = Modifier
-                                .width(1.dp)
-                                .height(22.dp)
-                                .background(if (isClay) Color(0xFFD6DFEA) else Color.White.copy(alpha = 0.2f))
-                        )
-
-                        // 3. App Theme & Appearance Settings (السمة وإعدادات التطبيق)
-                        IconButton(
-                            onClick = { showThemeDialog = true },
-                            modifier = Modifier.size(42.dp).testTag("splash_theme_button")
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Settings,
-                                contentDescription = "إعدادات المظهر والسمة",
-                                tint = if (isClay) MaterialTheme.colorScheme.primary else Color(0xFF38BDF8),
-                                modifier = Modifier.size(22.dp)
-                            )
-                        }
-                    }
-                }
-            }
-
-            Spacer(modifier = Modifier.height(10.dp))
-
-            // White Circular Frame holding user's custom 3D Logo
-            Surface(
-                modifier = Modifier
-                    .size(130.dp)
-                    .shadow(16.dp, CircleShape)
-                    .clip(CircleShape)
-                    .border(3.5.dp, Color.White, CircleShape),
-                color = Color.White
-            ) {
-                Image(
-                    painter = painterResource(id = R.drawable.logo_albaraa),
-                    contentDescription = "شعار البراء إلكترونيك",
-                    modifier = Modifier.fillMaxSize(),
-                    contentScale = ContentScale.Crop
-                )
-            }
-
-            Spacer(modifier = Modifier.height(14.dp))
-
-            // Engineer Name & Title
-            Text(
-                text = contactInfo.engineerName,
-                style = MaterialTheme.typography.titleLarge.copy(
-                    fontWeight = FontWeight.Bold,
-                    color = if (isClay) Color(0xFF0F172A) else Color.White,
-                    fontSize = 22.sp
-                ),
-                textAlign = TextAlign.Center
-            )
-
-            Spacer(modifier = Modifier.height(4.dp))
-
-            Text(
-                text = contactInfo.titleSubtitle,
-                style = MaterialTheme.typography.bodyMedium.copy(
-                    color = if (isClay) Color(0xFF64748B) else Color(0xFFE0F2FE),
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.Medium
-                ),
-                textAlign = TextAlign.Center
-            )
-
-            Spacer(modifier = Modifier.height(26.dp))
-
-            // Real Users Count & App Rating - Seamlessly blending with the screen background
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 20.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+                    .then(
+                        when {
+                            isNeu -> Modifier
+                                .padding(horizontal = 14.dp)
+                                .neuCard(cornerRadius = 28.dp, isDark = isDark)
+                                .padding(top = 16.dp, bottom = 22.dp, start = 14.dp, end = 14.dp)
+                            isGlass -> Modifier
+                                .padding(horizontal = 14.dp)
+                                .glassCard(cornerRadius = 28.dp, isDark = isDark, accentGlow = accentColor)
+                                .padding(top = 16.dp, bottom = 22.dp, start = 14.dp, end = 14.dp)
+                            else -> Modifier
+                        }
+                    ),
+                horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                // 1. Real Active Users Pill
-                Surface(
-                    shape = RoundedCornerShape(20.dp),
-                    color = if (isClay) Color(0xFFFFFFFF) else Color.White.copy(alpha = 0.12f),
-                    border = BorderStroke(1.dp, if (isClay) Color(0xFFD6DFEA) else Color.White.copy(alpha = 0.25f)),
-                    shadowElevation = if (isClay) 4.dp else 0.dp
+                // Top Bar: Admin/Guest badge & Action Icons
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = if (isNeu || isGlass) 4.dp else 18.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
+                    // Start side: Prominent Back Button (if opened from within app) + Role Badge & Admin Edit Button
                     Row(
-                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.People,
-                            contentDescription = null,
-                            tint = if (isClay) MaterialTheme.colorScheme.primary else Color(0xFF67E8F9),
-                            modifier = Modifier.size(16.dp)
+                        if (onBackClick != null) {
+                            when {
+                                isNeu -> NeuCircleIconButton(
+                                    onClick = onBackClick,
+                                    size = 40.dp,
+                                    isDark = isDark,
+                                    modifier = Modifier.testTag("splash_back_button")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.AutoMirrored.Filled.ArrowForward,
+                                        contentDescription = "رجوع للدليل الشامل",
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                                isGlass -> GlassCircleIconButton(
+                                    onClick = onBackClick,
+                                    size = 40.dp,
+                                    isDark = isDark,
+                                    modifier = Modifier.testTag("splash_back_button")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.AutoMirrored.Filled.ArrowForward,
+                                        contentDescription = "رجوع للدليل الشامل",
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                                else -> IconButton(
+                                    onClick = onBackClick,
+                                    modifier = Modifier
+                                        .size(38.dp)
+                                        .background(Color.White.copy(alpha = 0.22f), CircleShape)
+                                        .testTag("splash_back_button")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.AutoMirrored.Filled.ArrowForward,
+                                        contentDescription = "رجوع للدليل الشامل",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(22.dp)
+                                    )
+                                }
+                            }
+                        }
+
+                        val badgeAccent = if (isAdmin) Color(0xFF0284C7) else MaterialTheme.colorScheme.primary
+                        when {
+                            isNeu -> Box(
+                                modifier = Modifier
+                                    .neuCard(
+                                        cornerRadius = 50.dp,
+                                        isDark = isDark,
+                                        backgroundColor = NeuTokens.bg(isDark),
+                                        accentGlow = badgeAccent.copy(alpha = 0.2f)
+                                    )
+                                    .padding(horizontal = 14.dp, vertical = 7.dp)
+                            ) {
+                                Text(
+                                    text = if (isAdmin) "🛡️ مشرف" else "وضع الزائر",
+                                    style = MaterialTheme.typography.labelMedium.copy(
+                                        fontWeight = FontWeight.Bold,
+                                        color = badgeAccent,
+                                        fontSize = 12.sp
+                                    )
+                                )
+                            }
+                            isGlass -> Box(
+                                modifier = Modifier
+                                    .glassRecessed(
+                                        cornerRadius = 50.dp,
+                                        isDark = isDark,
+                                        accentBorder = badgeAccent.copy(alpha = 0.45f)
+                                    )
+                                    .padding(horizontal = 14.dp, vertical = 7.dp)
+                            ) {
+                                Text(
+                                    text = if (isAdmin) "🛡️ مشرف" else "وضع الزائر",
+                                    style = MaterialTheme.typography.labelMedium.copy(
+                                        fontWeight = FontWeight.Bold,
+                                        color = badgeAccent,
+                                        fontSize = 12.sp
+                                    )
+                                )
+                            }
+                            else -> Surface(
+                                shape = RoundedCornerShape(20.dp),
+                                color = if (isAdmin) Color(0xFF0284C7).copy(alpha = 0.85f) else Color.White.copy(alpha = 0.22f),
+                                border = androidx.compose.foundation.BorderStroke(1.dp, Color.White.copy(alpha = 0.4f))
+                            ) {
+                                Text(
+                                    text = if (isAdmin) "🛡️ مشرف" else "وضع الزائر",
+                                    style = MaterialTheme.typography.labelMedium.copy(
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color.White,
+                                        fontSize = 12.sp
+                                    ),
+                                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp)
+                                )
+                            }
+                        }
+
+                        if (isAdmin) {
+                            when {
+                                isNeu -> NeuCircleIconButton(
+                                    onClick = { showEditDialog = true },
+                                    size = 38.dp,
+                                    isDark = isDark,
+                                    modifier = Modifier.testTag("admin_edit_contact_button")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Edit,
+                                        contentDescription = "تعديل بيانات التواصل",
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+                                isGlass -> GlassCircleIconButton(
+                                    onClick = { showEditDialog = true },
+                                    size = 38.dp,
+                                    isDark = isDark,
+                                    modifier = Modifier.testTag("admin_edit_contact_button")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Edit,
+                                        contentDescription = "تعديل بيانات التواصل",
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+                                else -> Surface(
+                                    shape = CircleShape,
+                                    color = Color.White.copy(alpha = 0.25f),
+                                    modifier = Modifier
+                                        .size(36.dp)
+                                        .clip(CircleShape)
+                                        .clickable { showEditDialog = true }
+                                        .testTag("admin_edit_contact_button")
+                                ) {
+                                    Box(contentAlignment = Alignment.Center) {
+                                        Icon(
+                                            imageVector = Icons.Default.Edit,
+                                            contentDescription = "تعديل بيانات التواصل",
+                                            tint = Color.White,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // End side: Custom Sleek Container with Action Icons
+                    val iconTintColor = when {
+                        isNeu || isGlass || isClay -> MaterialTheme.colorScheme.primary
+                        else -> Color(0xFF38BDF8)
+                    }
+                    val dividerColor = when {
+                        isNeu -> NeuTokens.shadowDark(isDark).copy(alpha = 0.55f)
+                        isGlass -> GlassTokens.specularRim(isDark).copy(alpha = if (isDark) 0.2f else 0.7f)
+                        isClay -> Color(0xFFD6DFEA)
+                        else -> Color.White.copy(alpha = 0.2f)
+                    }
+                    val toolbarContent: @Composable () -> Unit = {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 3.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            // 1. Phone with Download Arrow (تنزيل / إدارة التحديث)
+                            Box(contentAlignment = Alignment.Center) {
+                                IconButton(
+                                    onClick = { handleUpdateIconClick() },
+                                    modifier = Modifier.size(42.dp).testTag("splash_download_update_button")
+                                ) {
+                                    PhoneDownloadIcon(tint = iconTintColor)
+                                }
+
+                                if (activeUpdateInfo?.hasUpdate == true) {
+                                    Box(
+                                        modifier = Modifier
+                                            .align(Alignment.TopEnd)
+                                            .padding(top = 4.dp, end = 4.dp)
+                                            .size(9.dp)
+                                            .background(Color(0xFFEF4444), CircleShape)
+                                            .border(
+                                                1.5.dp,
+                                                when {
+                                                    isNeu -> NeuTokens.well(isDark)
+                                                    isGlass -> GlassTokens.surface(isDark)
+                                                    isClay -> Color.White
+                                                    else -> Color(0xFF0B1727)
+                                                },
+                                                CircleShape
+                                            )
+                                    )
+                                }
+                            }
+
+                            Box(
+                                modifier = Modifier
+                                    .width(1.dp)
+                                    .height(22.dp)
+                                    .background(dividerColor)
+                            )
+
+                            // 2. Door with Arrow (تسجيل الدخول / الخروج)
+                            IconButton(
+                                onClick = {
+                                    if (currentUserEmail != null) {
+                                        showLogoutConfirmDialog = true
+                                    } else {
+                                        onAuthClick()
+                                    }
+                                },
+                                modifier = Modifier.size(42.dp).testTag("splash_auth_button")
+                            ) {
+                                Icon(
+                                    imageVector = if (currentUserEmail != null) Icons.AutoMirrored.Filled.Logout else Icons.AutoMirrored.Filled.Login,
+                                    contentDescription = if (currentUserEmail != null) "تسجيل الخروج" else "تسجيل الدخول",
+                                    tint = iconTintColor,
+                                    modifier = Modifier.size(24.dp)
+                                )
+                            }
+
+                            Box(
+                                modifier = Modifier
+                                    .width(1.dp)
+                                    .height(22.dp)
+                                    .background(dividerColor)
+                            )
+
+                            // 3. App Theme & Appearance Settings (السمة وإعدادات التطبيق)
+                            IconButton(
+                                onClick = { showThemeDialog = true },
+                                modifier = Modifier.size(42.dp).testTag("splash_theme_button")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Settings,
+                                    contentDescription = "إعدادات المظهر والسمة",
+                                    tint = iconTintColor,
+                                    modifier = Modifier.size(22.dp)
+                                )
+                            }
+                        }
+                    }
+
+                    when {
+                        isNeu -> Box(
+                            modifier = Modifier.neuRecessed(cornerRadius = 50.dp, isDark = isDark)
+                        ) {
+                            toolbarContent()
+                        }
+                        isGlass -> Box(
+                            modifier = Modifier.glassRecessed(cornerRadius = 50.dp, isDark = isDark)
+                        ) {
+                            toolbarContent()
+                        }
+                        else -> Surface(
+                            shape = RoundedCornerShape(16.dp),
+                            color = if (isClay) Color(0xFFFFFFFF) else Color(0xFF0B1727).copy(alpha = 0.85f),
+                            border = androidx.compose.foundation.BorderStroke(
+                                1.2.dp,
+                                if (isClay) Color(0xFFD6DFEA) else Color(0xFF38BDF8).copy(alpha = 0.35f)
+                            ),
+                            shadowElevation = 6.dp
+                        ) {
+                            toolbarContent()
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                // Circular Frame holding user's custom 3D Logo
+                when {
+                    isNeu -> Box(
+                        modifier = Modifier
+                            .size(128.dp)
+                            .neuCard(cornerRadius = 64.dp, isDark = isDark, backgroundColor = NeuTokens.bg(isDark))
+                            .padding(5.dp)
+                            .clip(CircleShape)
+                    ) {
+                        Image(
+                            painter = painterResource(id = R.drawable.logo_albaraa),
+                            contentDescription = "شعار البراء إلكترونيك",
+                            modifier = Modifier.fillMaxSize().clip(CircleShape),
+                            contentScale = ContentScale.Crop
                         )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(
-                            text = "${statsData.totalUsersCount} مستخدم مسجل بالتطبيق ⚡",
-                            color = if (isClay) Color(0xFF1E293B) else Color.White,
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Bold
+                    }
+                    isGlass -> Box(
+                        modifier = Modifier
+                            .size(128.dp)
+                            .glassCard(cornerRadius = 64.dp, isDark = isDark, accentGlow = accentColor)
+                            .padding(5.dp)
+                            .clip(CircleShape)
+                    ) {
+                        Image(
+                            painter = painterResource(id = R.drawable.logo_albaraa),
+                            contentDescription = "شعار البراء إلكترونيك",
+                            modifier = Modifier.fillMaxSize().clip(CircleShape),
+                            contentScale = ContentScale.Crop
+                        )
+                    }
+                    else -> Surface(
+                        modifier = Modifier
+                            .size(130.dp)
+                            .shadow(16.dp, CircleShape)
+                            .clip(CircleShape)
+                            .border(3.5.dp, Color.White, CircleShape),
+                        color = Color.White
+                    ) {
+                        Image(
+                            painter = painterResource(id = R.drawable.logo_albaraa),
+                            contentDescription = "شعار البراء إلكترونيك",
+                            modifier = Modifier.fillMaxSize(),
+                            contentScale = ContentScale.Crop
                         )
                     }
                 }
 
-                // 2. Interactive Real App Rating Badge
-                Surface(
-                    shape = RoundedCornerShape(20.dp),
-                    color = if (isClay) Color(0xFFFFFFFF) else Color.White.copy(alpha = 0.14f),
-                    border = BorderStroke(1.dp, if (isClay) Color(0xFFD6DFEA) else Color(0xFFFDE047).copy(alpha = 0.4f)),
-                    shadowElevation = if (isClay) 4.dp else 0.dp,
-                    modifier = Modifier.clickable {
+                Spacer(modifier = Modifier.height(14.dp))
+
+                // Engineer Name & Title
+                Text(
+                    text = contactInfo.engineerName.bidiIsolateMixed(),
+                    style = MaterialTheme.typography.titleLarge.copy(
+                        fontWeight = FontWeight.Bold,
+                        color = when {
+                            isNeu -> NeuTokens.textPrimary(isDark)
+                            isGlass -> GlassTokens.textPrimary(isDark)
+                            isClay -> Color(0xFF0F172A)
+                            else -> Color.White
+                        },
+                        fontSize = 22.sp
+                    ),
+                    textAlign = TextAlign.Center
+                )
+
+                Spacer(modifier = Modifier.height(4.dp))
+
+                Text(
+                    text = contactInfo.titleSubtitle.bidiIsolateMixed(),
+                    style = MaterialTheme.typography.bodyMedium.copy(
+                        color = when {
+                            isNeu -> NeuTokens.textSecondary(isDark)
+                            isGlass -> GlassTokens.textSecondary(isDark)
+                            isClay -> Color(0xFF475569)
+                            else -> Color(0xFFE0F2FE)
+                        },
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Medium
+                    ),
+                    textAlign = TextAlign.Center
+                )
+
+                Spacer(modifier = Modifier.height(if (isNeu || isGlass) 18.dp else 26.dp))
+
+                // Real Users Count & App Rating
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = if (isNeu || isGlass) 8.dp else 20.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    // 1. Real Active Users Pill
+                    when {
+                        isNeu -> NeuStatusWellPill(isDark = isDark) {
+                            Icon(
+                                imageVector = Icons.Default.People,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "${statsData.totalUsersCount} مستخدم مسجل بالتطبيق ⚡",
+                                color = NeuTokens.textPrimary(isDark),
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        isGlass -> GlassStatusWellPill(isDark = isDark) {
+                            Icon(
+                                imageVector = Icons.Default.People,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "${statsData.totalUsersCount} مستخدم مسجل بالتطبيق ⚡",
+                                color = GlassTokens.textPrimary(isDark),
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        else -> Surface(
+                            shape = RoundedCornerShape(20.dp),
+                            color = if (isClay) Color(0xFFFFFFFF) else Color.White.copy(alpha = 0.12f),
+                            border = BorderStroke(1.dp, if (isClay) Color(0xFFD6DFEA) else Color.White.copy(alpha = 0.25f)),
+                            shadowElevation = if (isClay) 4.dp else 0.dp
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.People,
+                                    contentDescription = null,
+                                    tint = if (isClay) MaterialTheme.colorScheme.primary else Color(0xFF67E8F9),
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = "${statsData.totalUsersCount} مستخدم مسجل بالتطبيق ⚡",
+                                    color = if (isClay) Color(0xFF1E293B) else Color.White,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                    }
+
+                    // 2. Interactive Real App Rating Badge
+                    val openRating = {
                         if (currentUserEmail.isNullOrBlank()) {
                             showMustLoginDialog = true
                         } else {
                             showRatingDialog = true
                         }
                     }
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.Center
-                    ) {
-                        Text(
-                            text = String.format(java.util.Locale.US, "%.1f", statsData.averageRating),
-                            color = Color(0xFFFDE047),
-                            fontWeight = FontWeight.ExtraBold,
-                            fontSize = 15.sp
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        // 5 Stars
-                        val fullStars = statsData.averageRating.toInt()
-                        for (i in 1..5) {
-                            Icon(
-                                imageVector = if (i <= fullStars) Icons.Default.Star else Icons.Default.StarBorder,
-                                contentDescription = null,
-                                tint = Color(0xFFFDE047),
-                                modifier = Modifier.size(14.dp)
-                            )
+                    when {
+                        isNeu -> {
+                            val starColor = if (isDark) Color(0xFFFBBF24) else Color(0xFFD97706)
+                            NeuStatusWellPill(
+                                isDark = isDark,
+                                onClick = openRating
+                            ) {
+                                Text(
+                                    text = String.format(java.util.Locale.US, "%.1f", statsData.averageRating),
+                                    color = starColor,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    fontSize = 15.sp
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                val fullStars = statsData.averageRating.toInt()
+                                for (i in 1..5) {
+                                    Icon(
+                                        imageVector = if (i <= fullStars) Icons.Default.Star else Icons.Default.StarBorder,
+                                        contentDescription = null,
+                                        tint = starColor,
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                }
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = if (statsData.totalRatingsCount > 0) "(${statsData.totalRatingsCount} تقييم)" else "(كن أول من يقيّم التطبيق ⭐)",
+                                    color = NeuTokens.textSecondary(isDark),
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Medium
+                                )
+                                if (statsData.currentUserRating > 0) {
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text(
+                                        text = "• تقييمك: ${statsData.currentUserRating}★",
+                                        color = Color(0xFF047857),
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
                         }
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(
-                            text = if (statsData.totalRatingsCount > 0) "(${statsData.totalRatingsCount} تقييم)" else "(كن أول من يقيّم التطبيق ⭐)",
-                            color = if (isClay) Color(0xFF64748B) else Color.White.copy(alpha = 0.9f),
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Medium
-                        )
-                        if (statsData.currentUserRating > 0) {
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text(
-                                text = "• تقييمك: ${statsData.currentUserRating}★",
-                                color = if (isClay) Color(0xFF047857) else Color(0xFF86EFAC),
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Bold
-                            )
+                        isGlass -> {
+                            val starColor = if (isDark) Color(0xFFFBBF24) else Color(0xFFD97706)
+                            GlassStatusWellPill(
+                                isDark = isDark,
+                                onClick = openRating
+                            ) {
+                                Text(
+                                    text = String.format(java.util.Locale.US, "%.1f", statsData.averageRating),
+                                    color = starColor,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    fontSize = 15.sp
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                val fullStars = statsData.averageRating.toInt()
+                                for (i in 1..5) {
+                                    Icon(
+                                        imageVector = if (i <= fullStars) Icons.Default.Star else Icons.Default.StarBorder,
+                                        contentDescription = null,
+                                        tint = starColor,
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                }
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = if (statsData.totalRatingsCount > 0) "(${statsData.totalRatingsCount} تقييم)" else "(كن أول من يقيّم التطبيق ⭐)",
+                                    color = GlassTokens.textSecondary(isDark),
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Medium
+                                )
+                                if (statsData.currentUserRating > 0) {
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text(
+                                        text = "• تقييمك: ${statsData.currentUserRating}★",
+                                        color = Color(0xFF047857),
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
+                        }
+                        else -> Surface(
+                            shape = RoundedCornerShape(20.dp),
+                            color = if (isClay) Color(0xFFFFFFFF) else Color.White.copy(alpha = 0.14f),
+                            border = BorderStroke(1.dp, if (isClay) Color(0xFFD6DFEA) else Color(0xFFFDE047).copy(alpha = 0.4f)),
+                            shadowElevation = if (isClay) 4.dp else 0.dp,
+                            modifier = Modifier.clickable { openRating() }
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.Center
+                            ) {
+                                Text(
+                                    text = String.format(java.util.Locale.US, "%.1f", statsData.averageRating),
+                                    color = Color(0xFFFDE047),
+                                    fontWeight = FontWeight.ExtraBold,
+                                    fontSize = 15.sp
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                val fullStars = statsData.averageRating.toInt()
+                                for (i in 1..5) {
+                                    Icon(
+                                        imageVector = if (i <= fullStars) Icons.Default.Star else Icons.Default.StarBorder,
+                                        contentDescription = null,
+                                        tint = Color(0xFFFDE047),
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                }
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = if (statsData.totalRatingsCount > 0) "(${statsData.totalRatingsCount} تقييم)" else "(كن أول من يقيّم التطبيق ⭐)",
+                                    color = if (isClay) Color(0xFF475569) else Color.White.copy(alpha = 0.9f),
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Medium
+                                )
+                                if (statsData.currentUserRating > 0) {
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text(
+                                        text = "• تقييمك: ${statsData.currentUserRating}★",
+                                        color = if (isClay) Color(0xFF047857) else Color(0xFF86EFAC),
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
                         }
                     }
                 }
             }
 
-            Spacer(modifier = Modifier.height(22.dp))
+            Spacer(modifier = Modifier.height(24.dp))
 
             // Primary Enter Button (الدخول إلى الدليل الشامل)
-            Button(
-                onClick = {
-                    if (!hasFollowedFacebook && !isAdmin) {
-                        showFacebookFollowDialog = true
-                    } else {
-                        onReady()
-                    }
-                },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 22.dp)
-                    .height(54.dp)
-                    .shadow(8.dp, RoundedCornerShape(18.dp))
-                    .testTag("enter_app_button"),
-                shape = RoundedCornerShape(18.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = Color.Transparent),
-                contentPadding = PaddingValues()
-            ) {
-                Box(
+            val onEnterAppClick = {
+                if (!hasFollowedFacebook && !isAdmin) {
+                    showFacebookFollowDialog = true
+                } else {
+                    onReady()
+                }
+            }
+            when {
+                isNeu -> NeuPrimaryCtaButton(
+                    onClick = onEnterAppClick,
+                    isDark = isDark,
+                    accentColor = MaterialTheme.colorScheme.primary,
                     modifier = Modifier
-                        .fillMaxSize()
-                        .background(
-                            if (isClay) {
-                                Brush.horizontalGradient(
-                                    listOf(
-                                        Color(0xFFEA580C),
-                                        Color(0xFFF97316)
-                                    )
-                                )
-                            } else {
-                                Brush.horizontalGradient(
-                                    listOf(
-                                        MaterialTheme.colorScheme.primary,
-                                        MaterialTheme.colorScheme.primary.copy(alpha = 0.85f)
-                                    )
-                                )
-                            }
-                        ),
-                    contentAlignment = Alignment.Center
+                        .fillMaxWidth()
+                        .padding(horizontal = 22.dp)
+                        .testTag("enter_app_button")
                 ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.Center
+                    Text(
+                        text = "الدخول إلى الدليل الشامل",
+                        style = MaterialTheme.typography.titleMedium.copy(
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary,
+                            fontSize = 16.sp
+                        )
+                    )
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+                isGlass -> GlassPrimaryCtaButton(
+                    onClick = onEnterAppClick,
+                    isDark = isDark,
+                    accentColor = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 22.dp)
+                        .testTag("enter_app_button")
+                ) {
+                    Text(
+                        text = "الدخول إلى الدليل الشامل",
+                        style = MaterialTheme.typography.titleMedium.copy(
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary,
+                            fontSize = 16.sp
+                        )
+                    )
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+                else -> Button(
+                    onClick = onEnterAppClick,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 22.dp)
+                        .height(54.dp)
+                        .shadow(8.dp, RoundedCornerShape(18.dp))
+                        .testTag("enter_app_button"),
+                    shape = RoundedCornerShape(18.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = Color.Transparent),
+                    contentPadding = PaddingValues()
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(
+                                if (isClay) {
+                                    Brush.horizontalGradient(
+                                        listOf(
+                                            Color(0xFFEA580C),
+                                            Color(0xFFF97316)
+                                        )
+                                    )
+                                } else {
+                                    Brush.horizontalGradient(
+                                        listOf(
+                                            MaterialTheme.colorScheme.primary,
+                                            MaterialTheme.colorScheme.primary.copy(alpha = 0.85f)
+                                        )
+                                    )
+                                }
+                            ),
+                        contentAlignment = Alignment.Center
                     ) {
-                        Text(
-                            text = "الدخول إلى الدليل الشامل",
-                            style = MaterialTheme.typography.titleMedium.copy(
-                                fontWeight = FontWeight.Bold,
-                                color = Color.White,
-                                fontSize = 16.sp
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center
+                        ) {
+                            Text(
+                                text = "الدخول إلى الدليل الشامل",
+                                style = MaterialTheme.typography.titleMedium.copy(
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color.White,
+                                    fontSize = 16.sp
+                                )
                             )
-                        )
-                        Spacer(modifier = Modifier.width(10.dp))
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = null,
-                            tint = Color.White,
-                            modifier = Modifier.size(20.dp)
-                        )
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                contentDescription = null,
+                                tint = Color.White,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
                     }
                 }
             }
 
             Spacer(modifier = Modifier.height(30.dp))
 
-            // Bottom 3 Quick Actions: واتس أب - الموقع - فيسبوك (بدلاً من اتصال)
+            // Bottom 3 Quick Actions: واتس أب - الموقع - فيسبوك
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -587,6 +976,9 @@ fun SplashScreen(
                     icon = Icons.AutoMirrored.Filled.Chat,
                     iconTint = Color(0xFF16A34A),
                     circleBackground = Color(0xFFDCFCE7),
+                    isNeu = isNeu,
+                    isGlass = isGlass,
+                    isDark = isDark,
                     onClick = { openWhatsApp(context, contactInfo.whatsappNumber) }
                 )
 
@@ -596,15 +988,21 @@ fun SplashScreen(
                     icon = Icons.Default.Place,
                     iconTint = Color(0xFFEF4444),
                     circleBackground = Color(0xFFFFE4E6),
+                    isNeu = isNeu,
+                    isGlass = isGlass,
+                    isDark = isDark,
                     onClick = { openMapLocation(context, contactInfo.locationUrl) }
                 )
 
-                // 3. فيسبوك (Facebook Page - بدل اتصال تماماً)
+                // 3. فيسبوك (Facebook Page)
                 ContactActionCircle(
                     title = "فيسبوك",
                     painter = painterResource(id = R.drawable.ic_facebook),
                     iconTint = Color(0xFF1877F2),
                     circleBackground = Color(0xFFE7F3FF),
+                    isNeu = isNeu,
+                    isGlass = isGlass,
+                    isDark = isDark,
                     onClick = { openFacebookPage(context, contactInfo.facebookUrl) }
                 )
             }
@@ -689,6 +1087,7 @@ fun SplashScreen(
         if (showThemeDialog) {
             ThemeSettingsDialog(
                 onDismiss = { showThemeDialog = false },
+                isAdmin = isAdmin,
                 onManageAdmins = if (isAdmin) onManageAdminsClick else null
             )
         }
@@ -971,24 +1370,31 @@ private fun ContactActionCircle(
     painter: Painter? = null,
     iconTint: Color,
     circleBackground: Color,
+    isNeu: Boolean = false,
+    isGlass: Boolean = false,
+    isDark: Boolean = false,
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     Column(
         modifier = modifier
-            .clip(CircleShape)
+            .clip(RoundedCornerShape(16.dp))
             .clickable { onClick() }
             .padding(8.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Surface(
-            shape = CircleShape,
-            color = circleBackground,
-            modifier = Modifier
-                .size(64.dp)
-                .shadow(4.dp, CircleShape)
-        ) {
-            Box(contentAlignment = Alignment.Center) {
+        when {
+            isNeu -> Box(
+                modifier = Modifier
+                    .size(64.dp)
+                    .neuCard(
+                        cornerRadius = 32.dp,
+                        isDark = isDark,
+                        backgroundColor = NeuTokens.bg(isDark),
+                        accentGlow = iconTint.copy(alpha = 0.25f)
+                    ),
+                contentAlignment = Alignment.Center
+            ) {
                 if (icon != null) {
                     Icon(
                         imageVector = icon,
@@ -1005,13 +1411,68 @@ private fun ContactActionCircle(
                     )
                 }
             }
+            isGlass -> Box(
+                modifier = Modifier
+                    .size(64.dp)
+                    .glassCard(
+                        cornerRadius = 32.dp,
+                        isDark = isDark,
+                        accentGlow = iconTint
+                    ),
+                contentAlignment = Alignment.Center
+            ) {
+                if (icon != null) {
+                    Icon(
+                        imageVector = icon,
+                        contentDescription = title,
+                        tint = iconTint,
+                        modifier = Modifier.size(28.dp)
+                    )
+                } else if (painter != null) {
+                    Icon(
+                        painter = painter,
+                        contentDescription = title,
+                        tint = iconTint,
+                        modifier = Modifier.size(28.dp)
+                    )
+                }
+            }
+            else -> Surface(
+                shape = CircleShape,
+                color = circleBackground,
+                modifier = Modifier
+                    .size(64.dp)
+                    .shadow(4.dp, CircleShape)
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    if (icon != null) {
+                        Icon(
+                            imageVector = icon,
+                            contentDescription = title,
+                            tint = iconTint,
+                            modifier = Modifier.size(28.dp)
+                        )
+                    } else if (painter != null) {
+                        Icon(
+                            painter = painter,
+                            contentDescription = title,
+                            tint = iconTint,
+                            modifier = Modifier.size(28.dp)
+                        )
+                    }
+                }
+            }
         }
         Spacer(modifier = Modifier.height(8.dp))
         Text(
             text = title,
             style = MaterialTheme.typography.labelMedium.copy(
                 fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onBackground,
+                color = when {
+                    isNeu -> NeuTokens.textPrimary(isDark)
+                    isGlass -> GlassTokens.textPrimary(isDark)
+                    else -> MaterialTheme.colorScheme.onBackground
+                },
                 fontSize = 13.sp
             )
         )

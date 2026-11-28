@@ -100,18 +100,42 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.tween
+import androidx.compose.ui.draw.scale
+import androidx.compose.material.icons.filled.ErrorOutline
+import androidx.compose.material.icons.filled.FileDownload
 import com.example.data.model.DataFlashExportMode
 import com.example.data.model.LogLevel
 import com.example.data.model.ProtocolFamilyType
+import com.example.ui.theme.FittedSingleLineText
+import com.example.ui.theme.GlassActionPill
+import com.example.ui.theme.GlassBadge
+import com.example.ui.theme.GlassPillButton
+import com.example.ui.theme.GlassPrimaryCtaButton
+import com.example.ui.theme.GlassTokens
 import com.example.ui.theme.LocalIsDarkTheme
+import com.example.ui.theme.LocalIsLiquidGlassTheme
 import com.example.ui.theme.LocalIsSoftNeumorphismTheme
+import com.example.ui.theme.MonospaceTabularStyle
+import com.example.ui.theme.NeuActionPill
 import com.example.ui.theme.NeuBadge
 import com.example.ui.theme.NeuPillButton
+import com.example.ui.theme.NeuPrimaryCtaButton
+import com.example.ui.theme.NeuTokens
+import com.example.ui.theme.bidiIsolateMixed
+import com.example.ui.theme.glassCard
+import com.example.ui.theme.glassRecessed
 import com.example.ui.theme.neuCard
 import com.example.ui.theme.neuRecessed
 import com.example.ui.viewmodel.McuProgrammerUiState
+import com.example.util.FirmwareExportFormat
 import com.example.util.UniversalCheckpointManager
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -135,8 +159,16 @@ fun ProgrammerStep3Flasher(
     onToggleAutoRestoreChip: (Boolean) -> Unit = {},
     onJumpToFirstData: () -> Unit,
     onLoadFirmwareUri: (android.net.Uri) -> Unit,
+    onDismissFileValidationError: () -> Unit = {},
+    onDismissFullCsMismatchAlert: () -> Unit = {},
+    onSelectExportFormat: (FirmwareExportFormat) -> Unit = {},
+    suggestedDumpFileName: (FirmwareExportFormat, Boolean) -> String = { fmt, df -> "MCU_dump${if (df) "_DF" else ""}.${fmt.extension}" },
+    onSaveDumpFormatUri: (android.net.Uri, FirmwareExportFormat) -> Unit = { _, _ -> },
+    onSaveDataFlashFormatUri: (android.net.Uri, FirmwareExportFormat) -> Unit = { _, _ -> },
     onSaveDumpUri: (android.net.Uri, Boolean) -> Unit,
     onSaveDataFlashUri: (android.net.Uri, Boolean) -> Unit,
+    onExportFullLogsUri: (android.net.Uri) -> Unit = {},
+    buildFullLogExportText: () -> String = { "" },
     onReadFlash: () -> Unit,
     onWriteFlash: () -> Unit,
     onEraseFlash: () -> Unit,
@@ -159,33 +191,37 @@ fun ProgrammerStep3Flasher(
     val chipConfig = mcu.chipConfig
     val is78k0 = mcu.is78k0Flmd0Mode()
     val scrollState = rememberScrollState()
+    val context = LocalContext.current
     val isNeu = LocalIsSoftNeumorphismTheme.current
+    val isGlass = LocalIsLiquidGlassTheme.current
     val isDark = LocalIsDarkTheme.current
+
+    LaunchedEffect(state.fileValidationError) {
+        val err = state.fileValidationError
+        if (!err.isNullOrBlank()) {
+            Toast.makeText(context, err, Toast.LENGTH_LONG).show()
+        }
+    }
 
     val openFirmwareLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri ->
         if (uri != null) onLoadFirmwareUri(uri)
     }
-    val saveBinLauncher = rememberLauncherForActivityResult(
+    val saveFormatLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("application/octet-stream")
     ) { uri ->
-        if (uri != null) onSaveDumpUri(uri, false)
+        if (uri != null) onSaveDumpFormatUri(uri, state.selectedExportFormat)
     }
-    val saveHexLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.CreateDocument("text/plain")
-    ) { uri ->
-        if (uri != null) onSaveDumpUri(uri, true)
-    }
-    val saveDataFlashBinLauncher = rememberLauncherForActivityResult(
+    val saveDataFlashFormatLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("application/octet-stream")
     ) { uri ->
-        if (uri != null) onSaveDataFlashUri(uri, false)
+        if (uri != null) onSaveDataFlashFormatUri(uri, state.selectedExportFormat)
     }
-    val saveDataFlashHexLauncher = rememberLauncherForActivityResult(
+    val exportFullLogsLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("text/plain")
     ) { uri ->
-        if (uri != null) onSaveDataFlashUri(uri, true)
+        if (uri != null) onExportFullLogsUri(uri)
     }
 
     Column(
@@ -197,12 +233,16 @@ fun ProgrammerStep3Flasher(
     ) {
         // 1. Target MCU & USB Connection Card
         Card(
-            shape = RoundedCornerShape(if (isNeu) 20.dp else 18.dp),
+            shape = RoundedCornerShape(if (isGlass) 24.dp else if (isNeu) 20.dp else 18.dp),
             colors = CardDefaults.cardColors(
-                containerColor = if (isNeu) Color.Transparent else MaterialTheme.colorScheme.surface
+                containerColor = if (isNeu || isGlass) Color.Transparent else MaterialTheme.colorScheme.surface
             ),
-            border = if (isNeu) null else BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f)),
-            modifier = if (isNeu) Modifier.neuCard(cornerRadius = 20.dp, isDark = isDark) else Modifier
+            border = if (isNeu || isGlass) null else BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f)),
+            modifier = when {
+                isNeu -> Modifier.neuCard(cornerRadius = 20.dp, isDark = isDark)
+                isGlass -> Modifier.glassCard(cornerRadius = 24.dp, isDark = isDark)
+                else -> Modifier
+            }
         ) {
             Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Row(
@@ -246,18 +286,30 @@ fun ProgrammerStep3Flasher(
                             )
                         }
                     }
-                    Surface(
-                        shape = RoundedCornerShape(10.dp),
-                        color = if (state.isConnected) Color(0xFF10B981).copy(alpha = 0.16f)
-                        else Color(0xFF64748B).copy(alpha = 0.16f)
-                    ) {
-                        Text(
+                    when {
+                        isNeu -> NeuBadge(
                             text = if (state.isConnected) "متصل OTG" else "غير متصل",
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = if (state.isConnected) Color(0xFF10B981) else MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                            accentColor = if (state.isConnected) Color(0xFF10B981) else NeuTokens.textSecondary(isDark),
+                            isDark = isDark
                         )
+                        isGlass -> GlassBadge(
+                            text = if (state.isConnected) "متصل OTG" else "غير متصل",
+                            accentColor = if (state.isConnected) Color(0xFF10B981) else GlassTokens.textSecondary(isDark),
+                            isDark = isDark
+                        )
+                        else -> Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = if (state.isConnected) Color(0xFF10B981).copy(alpha = 0.16f)
+                            else Color(0xFF64748B).copy(alpha = 0.16f)
+                        ) {
+                            Text(
+                                text = (if (state.isConnected) "متصل OTG" else "غير متصل").bidiIsolateMixed(),
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = if (state.isConnected) Color(0xFF10B981) else MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                            )
+                        }
                     }
                 }
 
@@ -266,7 +318,7 @@ fun ProgrammerStep3Flasher(
                         text = state.connectedDeviceLabel,
                         fontSize = 11.sp,
                         color = Color(0xFF10B981),
-                        fontFamily = FontFamily.Monospace
+                        style = MonospaceTabularStyle
                     )
                 }
 
@@ -277,10 +329,16 @@ fun ProgrammerStep3Flasher(
                 ) {
                     Surface(
                         shape = RoundedCornerShape(12.dp),
-                        color = if (isNeu) Color.Transparent else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                        color = if (isNeu || isGlass) Color.Transparent else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
                         modifier = Modifier
                             .weight(1f)
-                            .then(if (isNeu) Modifier.neuRecessed(cornerRadius = 14.dp, isDark = isDark) else Modifier)
+                            .then(
+                                when {
+                                    isNeu -> Modifier.neuRecessed(cornerRadius = 14.dp, isDark = isDark)
+                                    isGlass -> Modifier.glassRecessed(cornerRadius = 14.dp, isDark = isDark)
+                                    else -> Modifier
+                                }
+                            )
                     ) {
                         Row(
                             modifier = Modifier
@@ -451,18 +509,44 @@ fun ProgrammerStep3Flasher(
             else -> Unit
         }
 
-        // 3. Firmware File Loader & Export Card (Clean non-wrapping button rows)
+        // 3. Firmware File Loader & Multi-Format Export Card (.bin / .s19 / .hex + Gatekeeper + Pulse)
+        val dropPulseScale = remember { Animatable(1f) }
+        var showConfirmFlash by remember { mutableStateOf(false) }
+        LaunchedEffect(state.dropZoneConfirmToken) {
+            if (state.dropZoneConfirmToken > 0) {
+                showConfirmFlash = true
+                dropPulseScale.snapTo(1f)
+                dropPulseScale.animateTo(1.07f, animationSpec = tween(180))
+                dropPulseScale.animateTo(1f, animationSpec = tween(260))
+                delay(700)
+                showConfirmFlash = false
+            }
+        }
+        val dropFlashColor by animateColorAsState(
+            targetValue = if (showConfirmFlash) Color(0xFF10B981) else Color.Transparent,
+            animationSpec = tween(250),
+            label = "drop_zone_flash"
+        )
+
         Card(
-            shape = RoundedCornerShape(if (isNeu) 20.dp else 18.dp),
+            shape = RoundedCornerShape(if (isGlass) 24.dp else if (isNeu) 20.dp else 18.dp),
             colors = CardDefaults.cardColors(
-                containerColor = if (isNeu) Color.Transparent else MaterialTheme.colorScheme.surface
+                containerColor = if (isNeu || isGlass) Color.Transparent else MaterialTheme.colorScheme.surface
             ),
-            border = if (isNeu) null else BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f)),
-            modifier = if (isNeu) Modifier.neuCard(cornerRadius = 20.dp, isDark = isDark) else Modifier
+            border = when {
+                showConfirmFlash -> BorderStroke(2.dp, Color(0xFF10B981))
+                isNeu || isGlass -> null
+                else -> BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f))
+            },
+            modifier = when {
+                isNeu -> Modifier.neuCard(cornerRadius = 20.dp, isDark = isDark, accentGlow = if (showConfirmFlash) Color(0xFF10B981) else null)
+                isGlass -> Modifier.glassCard(cornerRadius = 24.dp, isDark = isDark, accentGlow = if (showConfirmFlash) Color(0xFF10B981) else null)
+                else -> Modifier
+            }
         ) {
             Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
-                    text = "إدارة ملف السوفت وير (.bin / .hex / .mot)",
+                    text = "إدارة ملف السوفت وير (.bin / .hex / .s19 / .mot)".bidiIsolateMixed(),
                     fontWeight = FontWeight.Bold,
                     fontSize = 13.sp,
                     color = MaterialTheme.colorScheme.onSurface
@@ -471,104 +555,192 @@ fun ProgrammerStep3Flasher(
                 Button(
                     onClick = { openFirmwareLauncher.launch(arrayOf("*/*")) },
                     enabled = !state.isBusy,
-                    shape = RoundedCornerShape(12.dp),
+                    shape = RoundedCornerShape(if (isGlass || isNeu) 50.dp else 12.dp),
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                        contentColor = MaterialTheme.colorScheme.onSecondaryContainer
+                        containerColor = if (showConfirmFlash) Color(0xFF10B981).copy(alpha = 0.22f)
+                        else MaterialTheme.colorScheme.secondaryContainer,
+                        contentColor = if (showConfirmFlash) Color(0xFF065F46)
+                        else MaterialTheme.colorScheme.onSecondaryContainer
                     ),
+                    border = if (showConfirmFlash) BorderStroke(1.5.dp, dropFlashColor) else null,
                     modifier = Modifier
                         .fillMaxWidth()
+                        .scale(dropPulseScale.value)
                         .heightIn(min = 48.dp)
                         .testTag("load_firmware_button")
                 ) {
                     Icon(Icons.Default.FolderOpen, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = "فتح ملف سوفت وير (.bin / .hex / .mot)",
+                    FittedSingleLineText(
+                        text = "فتح ملف سوفت وير (.bin / .hex / .s19 / .mot)",
                         fontSize = 13.sp,
-                        fontWeight = FontWeight.Bold,
-                        maxLines = 1
+                        minFontSize = 10.sp,
+                        fontWeight = FontWeight.Bold
                     )
+                }
+
+                if (!state.fileValidationError.isNullOrBlank()) {
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = Color(0xFFEF4444).copy(alpha = 0.14f),
+                        border = BorderStroke(1.dp, Color(0xFFEF4444).copy(alpha = 0.55f)),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("firmware_validation_error_banner")
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 10.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.ErrorOutline,
+                                contentDescription = "خطأ تحقق",
+                                tint = Color(0xFFEF4444),
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = state.fileValidationError.bidiIsolateMixed(),
+                                fontSize = 11.5.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = Color(0xFFEF4444),
+                                modifier = Modifier.weight(1f)
+                            )
+                            IconButton(
+                                onClick = onDismissFileValidationError,
+                                modifier = Modifier.size(36.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Close,
+                                    contentDescription = "إغلاق التحذير",
+                                    tint = Color(0xFFEF4444),
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // Multi-format export selector (.bin default | .s19 | .hex)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    FirmwareExportFormat.entries.forEach { fmt ->
+                        val isFmtSelected = state.selectedExportFormat == fmt
+                        FilterChip(
+                            selected = isFmtSelected,
+                            enabled = !state.isBusy,
+                            onClick = { onSelectExportFormat(fmt) },
+                            label = {
+                                FittedSingleLineText(
+                                    text = fmt.label,
+                                    fontSize = 11.sp,
+                                    minFontSize = 9.5.sp,
+                                    fontWeight = if (isFmtSelected) FontWeight.Bold else FontWeight.Medium,
+                                    applyBidiIsolate = false
+                                )
+                            },
+                            modifier = Modifier
+                                .weight(1f)
+                                .heightIn(min = 48.dp)
+                                .testTag("export_format_${fmt.extension}")
+                        )
+                    }
                 }
 
                 val isMergedMode = state.dataFlashMode == DataFlashExportMode.MERGED &&
                     mcu.protocolType == ProtocolFamilyType.R8C_M16C
                 val fullMergedSizeBytes = chipConfig.programEndAddress + 1
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    OutlinedButton(
-                        onClick = { saveBinLauncher.launch("${mcu.partNumber}_dump.bin") },
+                val saveActionLabel = when {
+                    state.selectedExportFormat == FirmwareExportFormat.BIN && isMergedMode ->
+                        "حفظ ${state.selectedExportFormat.label} (${fullMergedSizeBytes / 1024} KiB)"
+                    isMergedMode && state.dataFlashBuffer != null ->
+                        "حفظ وتصدير ${state.selectedExportFormat.label} (مدمج)"
+                    else ->
+                        "حفظ وتصدير ${state.selectedExportFormat.label}"
+                }
+
+                when {
+                    isNeu -> NeuPillButton(
+                        onClick = { saveFormatLauncher.launch(suggestedDumpFileName(state.selectedExportFormat, false)) },
+                        enabled = !state.isBusy,
+                        isActive = true,
+                        isDark = isDark,
+                        accentColor = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 48.dp)
+                            .testTag("save_firmware_export_button")
+                    ) {
+                        Icon(Icons.Default.Save, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        FittedSingleLineText(
+                            text = saveActionLabel,
+                            fontSize = 12.5.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                    isGlass -> GlassPillButton(
+                        onClick = { saveFormatLauncher.launch(suggestedDumpFileName(state.selectedExportFormat, false)) },
+                        enabled = !state.isBusy,
+                        isActive = true,
+                        isDark = isDark,
+                        accentColor = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 48.dp)
+                            .testTag("save_firmware_export_button")
+                    ) {
+                        Icon(Icons.Default.Save, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        FittedSingleLineText(
+                            text = saveActionLabel,
+                            fontSize = 12.5.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                    else -> OutlinedButton(
+                        onClick = { saveFormatLauncher.launch(suggestedDumpFileName(state.selectedExportFormat, false)) },
                         enabled = !state.isBusy,
                         shape = RoundedCornerShape(12.dp),
                         modifier = Modifier
-                            .weight(1f)
+                            .fillMaxWidth()
                             .heightIn(min = 48.dp)
-                            .testTag("save_bin_button")
+                            .testTag("save_firmware_export_button")
                     ) {
                         Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text(
-                            text = if (isMergedMode) "حفظ BIN (${fullMergedSizeBytes / 1024} KiB)" else "حفظ BIN",
+                        FittedSingleLineText(
+                            text = saveActionLabel,
                             fontSize = 12.sp,
-                            fontWeight = FontWeight.Bold,
-                            maxLines = 1
-                        )
-                    }
-
-                    OutlinedButton(
-                        onClick = { saveHexLauncher.launch("${mcu.partNumber}_dump.hex") },
-                        enabled = !state.isBusy,
-                        shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier
-                            .weight(1f)
-                            .heightIn(min = 48.dp)
-                            .testTag("save_hex_button")
-                    ) {
-                        Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(
-                            text = if (isMergedMode && state.dataFlashBuffer != null) "تصدير HEX (مدمج)" else "تصدير HEX",
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Bold,
-                            maxLines = 1
+                            fontWeight = FontWeight.Bold
                         )
                     }
                 }
 
                 if (state.dataFlashMode == DataFlashExportMode.SEPARATE_FILE && state.dataFlashBuffer != null) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    OutlinedButton(
+                        onClick = { saveDataFlashFormatLauncher.launch(suggestedDumpFileName(state.selectedExportFormat, true)) },
+                        enabled = !state.isBusy,
+                        shape = RoundedCornerShape(if (isGlass || isNeu) 50.dp else 12.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 48.dp)
+                            .testTag("save_dataflash_export_button")
                     ) {
-                        OutlinedButton(
-                            onClick = { saveDataFlashBinLauncher.launch("${mcu.partNumber}_dataflash.bin") },
-                            enabled = !state.isBusy,
-                            shape = RoundedCornerShape(12.dp),
-                            modifier = Modifier
-                                .weight(1f)
-                                .heightIn(min = 48.dp)
-                                .testTag("save_dataflash_bin_button")
-                        ) {
-                            Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("حفظ Data BIN", fontSize = 11.5.sp, fontWeight = FontWeight.Bold, maxLines = 1)
-                        }
-
-                        OutlinedButton(
-                            onClick = { saveDataFlashHexLauncher.launch("${mcu.partNumber}_dataflash.hex") },
-                            enabled = !state.isBusy,
-                            shape = RoundedCornerShape(12.dp),
-                            modifier = Modifier
-                                .weight(1f)
-                                .heightIn(min = 48.dp)
-                                .testTag("save_dataflash_hex_button")
-                        ) {
-                            Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("تصدير Data HEX", fontSize = 11.5.sp, fontWeight = FontWeight.Bold, maxLines = 1)
-                        }
+                        Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        FittedSingleLineText(
+                            text = "حفظ Data Flash (${state.selectedExportFormat.label})",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold
+                        )
                     }
                 }
 
@@ -585,11 +757,11 @@ fun ProgrammerStep3Flasher(
                     )
                 } else ""
                 Text(
-                    text = if (state.loadedFileName != null) {
+                    text = (if (state.loadedFileName != null) {
                         "الملف النشط: ${state.loadedFileName} (${state.loadedFormat}) • ${state.loadedNonEmptyCount} بايت بيانات$dfLoadedSummary$mergedSummary"
                     } else {
                         "الذاكرة مهيأة على 0xFF بحجم ${chipConfig.flashSizeBytes / 1024} KB (${chipConfig.flashSizeBytes} بايت)$mergedSummary"
-                    },
+                    }).bidiIsolateMixed(),
                     fontSize = 11.sp,
                     color = MaterialTheme.colorScheme.secondary
                 )
@@ -634,12 +806,16 @@ fun ProgrammerStep3Flasher(
 
         // 5. Flash Operations Grid + Linear Progress Bar with Percentage, KB Counter, ETA & Checkpoint Banner
         Card(
-            shape = RoundedCornerShape(if (isNeu) 20.dp else 18.dp),
+            shape = RoundedCornerShape(if (isGlass) 24.dp else if (isNeu) 20.dp else 18.dp),
             colors = CardDefaults.cardColors(
-                containerColor = if (isNeu) Color.Transparent else MaterialTheme.colorScheme.surface
+                containerColor = if (isNeu || isGlass) Color.Transparent else MaterialTheme.colorScheme.surface
             ),
-            border = if (isNeu) null else BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f)),
-            modifier = if (isNeu) Modifier.neuCard(cornerRadius = 20.dp, isDark = isDark) else Modifier
+            border = if (isNeu || isGlass) null else BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f)),
+            modifier = when {
+                isNeu -> Modifier.neuCard(cornerRadius = 20.dp, isDark = isDark)
+                isGlass -> Modifier.glassCard(cornerRadius = 24.dp, isDark = isDark)
+                else -> Modifier
+            }
         ) {
             Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text(
@@ -699,8 +875,8 @@ fun ProgrammerStep3Flasher(
 
                 if (state.isBusy) {
                     val pauseColor = if (state.isPaused) Color(0xFF10B981) else Color(0xFFF59E0B)
-                    if (isNeu) {
-                        NeuPillButton(
+                    when {
+                        isNeu -> NeuPillButton(
                             onClick = onTogglePauseResume,
                             isActive = state.isPaused,
                             isDark = isDark,
@@ -718,14 +894,37 @@ fun ProgrammerStep3Flasher(
                             )
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(
-                                text = if (state.isPaused) "استكمال العملية (Resume)" else "إيقاف مؤقت (Pause)",
+                                text = (if (state.isPaused) "استكمال العملية (Resume)" else "إيقاف مؤقت (Pause)").bidiIsolateMixed(),
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 13.sp,
                                 color = pauseColor
                             )
                         }
-                    } else {
-                        OutlinedButton(
+                        isGlass -> GlassPillButton(
+                            onClick = onTogglePauseResume,
+                            isActive = state.isPaused,
+                            isDark = isDark,
+                            accentColor = pauseColor,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 48.dp)
+                                .testTag("flash_pause_resume_button")
+                        ) {
+                            Icon(
+                                imageVector = if (state.isPaused) Icons.Default.PlayArrow else Icons.Default.Pause,
+                                contentDescription = null,
+                                tint = pauseColor,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = (if (state.isPaused) "استكمال العملية (Resume)" else "إيقاف مؤقت (Pause)").bidiIsolateMixed(),
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp,
+                                color = pauseColor
+                            )
+                        }
+                        else -> OutlinedButton(
                             onClick = onTogglePauseResume,
                             shape = RoundedCornerShape(14.dp),
                             border = BorderStroke(1.2.dp, pauseColor),
@@ -742,7 +941,7 @@ fun ProgrammerStep3Flasher(
                             )
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(
-                                text = if (state.isPaused) "استكمال العملية (Resume)" else "إيقاف مؤقت (Pause)",
+                                text = (if (state.isPaused) "استكمال العملية (Resume)" else "إيقاف مؤقت (Pause)").bidiIsolateMixed(),
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 13.sp
                             )
@@ -891,19 +1090,22 @@ fun ProgrammerStep3Flasher(
                     }
                 }
 
-                // Linear Progress Bar + Percentage + Done KB / Total KB
+                // Linear Progress Bar + Smooth 1-Byte Counter + Percentage + ETA + FullCS Alert
                 val showProgress = state.isBusy || state.progress > 0f
                 val pct = (state.progress.coerceIn(0f, 1f) * 100f).roundToInt()
                 val totalKb = if (state.progressTotalBytes > 0) (state.progressTotalBytes / 1024) else mcu.flashKb
                 val doneKb = if (state.progressTotalBytes > 0) (state.progressBytesDone / 1024) else 0
+                val totalBytesDisplay = if (state.progressTotalBytes > 0) state.progressTotalBytes else mcu.flashSizeBytes
+                val doneBytesDisplay = state.progressBytesDone.coerceIn(0, totalBytesDisplay)
 
                 if (showProgress) {
                     Surface(
                         shape = RoundedCornerShape(12.dp),
-                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)),
+                        color = if (isGlass) Color.Transparent else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+                        border = if (isGlass) null else BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)),
                         modifier = Modifier
                             .fillMaxWidth()
+                            .then(if (isGlass) Modifier.glassRecessed(cornerRadius = 14.dp, isDark = isDark, accentBorder = MaterialTheme.colorScheme.primary.copy(alpha = 0.4f)) else Modifier)
                             .testTag("flash_progress_container")
                     ) {
                         Column(
@@ -916,7 +1118,7 @@ fun ProgrammerStep3Flasher(
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Text(
-                                    text = state.progressLabel.ifBlank { "جاري التنفيذ..." },
+                                    text = state.progressLabel.ifBlank { "جاري التنفيذ..." }.bidiIsolateMixed(),
                                     fontSize = 11.sp,
                                     color = MaterialTheme.colorScheme.onSurface,
                                     maxLines = 2,
@@ -924,14 +1126,14 @@ fun ProgrammerStep3Flasher(
                                     modifier = Modifier.weight(1f)
                                 )
                                 Spacer(modifier = Modifier.width(8.dp))
-                                Text(
-                                    text = "$doneKb KB / $totalKb KB  •  $pct%",
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    fontFamily = FontFamily.Monospace,
-                                    color = if (pct >= 100) Color(0xFF10B981) else MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.testTag("flash_progress_percentage")
-                                )
+                                CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+                                    Text(
+                                        text = "$doneKb KB / $totalKb KB  •  $pct%",
+                                        style = MonospaceTabularStyle.copy(fontSize = 12.sp, fontWeight = FontWeight.Bold),
+                                        color = if (pct >= 100) Color(0xFF10B981) else MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.testTag("flash_progress_percentage")
+                                    )
+                                }
                             }
 
                             LinearProgressIndicator(
@@ -945,22 +1147,23 @@ fun ProgrammerStep3Flasher(
                                     .testTag("flash_linear_progress_bar")
                             )
 
-                            if (state.isBusy && state.etaRemainingText.isNotBlank()) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
                                     Text(
-                                        text = if (state.isPaused) "الحالة: متوقف مؤقتاً" else "جاري العمل في الخلفية...",
-                                        fontSize = 10.5.sp,
-                                        color = if (state.isPaused) Color(0xFFF59E0B) else MaterialTheme.colorScheme.onSurfaceVariant
+                                        text = "$doneBytesDisplay / $totalBytesDisplay B",
+                                        style = MonospaceTabularStyle.copy(fontSize = 10.5.sp, fontWeight = FontWeight.Medium),
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.testTag("flash_progress_bytes")
                                     )
+                                }
+                                if (state.isBusy && state.etaRemainingText.isNotBlank()) {
                                     Text(
-                                        text = "الوقت المتبقي: ${state.etaRemainingText}",
-                                        fontSize = 11.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        fontFamily = FontFamily.Monospace,
+                                        text = "المتبقي: \u2066${state.etaRemainingText}\u2069",
+                                        style = MonospaceTabularStyle.copy(fontSize = 10.5.sp, fontWeight = FontWeight.Bold),
                                         color = MaterialTheme.colorScheme.primary,
                                         modifier = Modifier.testTag("flash_eta_text")
                                     )
@@ -968,27 +1171,110 @@ fun ProgrammerStep3Flasher(
                             }
 
                             if (!state.isBusy && state.progress >= 1f && state.loadedFormat == "Chip Read") {
-                                Button(
-                                    onClick = { saveBinLauncher.launch("${mcu.partNumber}_dump.bin") },
-                                    shape = RoundedCornerShape(12.dp),
-                                    colors = ButtonDefaults.buttonColors(
-                                        containerColor = Color(0xFF10B981),
-                                        contentColor = Color.White
-                                    ),
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .heightIn(min = 48.dp)
-                                        .padding(top = 4.dp)
-                                        .testTag("progress_save_bin_button")
-                                ) {
-                                    Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(18.dp))
-                                    Spacer(modifier = Modifier.width(8.dp))
-                                    Text(
-                                        text = "حفظ الملف (.bin) — جاهز 100%",
-                                        fontSize = 13.sp,
-                                        fontWeight = FontWeight.Bold
-                                    )
+                                val fmtLabel = state.selectedExportFormat.label
+                                when {
+                                    isNeu -> NeuPrimaryCtaButton(
+                                        onClick = { saveFormatLauncher.launch(suggestedDumpFileName(state.selectedExportFormat, false)) },
+                                        isDark = isDark,
+                                        accentColor = Color(0xFF10B981),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(top = 4.dp)
+                                            .testTag("progress_save_bin_button")
+                                    ) {
+                                        Icon(Icons.Default.Save, contentDescription = null, tint = Color(0xFF10B981), modifier = Modifier.size(18.dp))
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        FittedSingleLineText(
+                                            text = "حفظ الملف ($fmtLabel) — جاهز 100%",
+                                            fontSize = 13.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = Color(0xFF10B981)
+                                        )
+                                    }
+                                    isGlass -> GlassPrimaryCtaButton(
+                                        onClick = { saveFormatLauncher.launch(suggestedDumpFileName(state.selectedExportFormat, false)) },
+                                        isDark = isDark,
+                                        accentColor = Color(0xFF10B981),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(top = 4.dp)
+                                            .testTag("progress_save_bin_button")
+                                    ) {
+                                        Icon(Icons.Default.Save, contentDescription = null, tint = Color(0xFF10B981), modifier = Modifier.size(18.dp))
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        FittedSingleLineText(
+                                            text = "حفظ الملف ($fmtLabel) — جاهز 100%",
+                                            fontSize = 13.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = Color(0xFF10B981)
+                                        )
+                                    }
+                                    else -> Button(
+                                        onClick = { saveFormatLauncher.launch(suggestedDumpFileName(state.selectedExportFormat, false)) },
+                                        shape = RoundedCornerShape(12.dp),
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = Color(0xFF10B981),
+                                            contentColor = Color.White
+                                        ),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .heightIn(min = 48.dp)
+                                            .padding(top = 4.dp)
+                                            .testTag("progress_save_bin_button")
+                                    ) {
+                                        Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(18.dp))
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        FittedSingleLineText(
+                                            text = "حفظ الملف ($fmtLabel) — جاهز 100%",
+                                            fontSize = 13.sp,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
                                 }
+                            }
+                        }
+                    }
+                }
+
+                if (!state.fullCsMismatchAlert.isNullOrBlank()) {
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = Color(0xFFEF4444).copy(alpha = 0.14f),
+                        border = BorderStroke(1.2.dp, Color(0xFFEF4444).copy(alpha = 0.65f)),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("full_cs_mismatch_alert_banner")
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 10.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.ErrorOutline,
+                                contentDescription = "عدم تطابق البصمة",
+                                tint = Color(0xFFEF4444),
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = state.fullCsMismatchAlert.bidiIsolateMixed(),
+                                fontSize = 11.5.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFFEF4444),
+                                modifier = Modifier.weight(1f)
+                            )
+                            IconButton(
+                                onClick = onDismissFullCsMismatchAlert,
+                                modifier = Modifier.size(36.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Close,
+                                    contentDescription = "إغلاق التحذير",
+                                    tint = Color(0xFFEF4444),
+                                    modifier = Modifier.size(16.dp)
+                                )
                             }
                         }
                     }
@@ -1068,32 +1354,94 @@ fun ProgrammerStep3Flasher(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                Button(
-                                    onClick = onResumeAction,
-                                    shape = RoundedCornerShape(12.dp),
-                                    colors = ButtonDefaults.buttonColors(
-                                        containerColor = Color(0xFF10B981),
-                                        contentColor = Color.White
-                                    ),
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .heightIn(min = 48.dp)
-                                        .testTag("resume_checkpoint_button")
-                                ) {
-                                    Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text("استكمال العملية", fontSize = 12.5.sp, fontWeight = FontWeight.Bold)
-                                }
-                                if (hasWatchdogAlert || active78k0Session != null) {
-                                    OutlinedButton(
-                                        onClick = {
-                                            if (active78k0Session != null) onCleanResume78k0Session(active78k0Session)
-                                            else onCleanResumeFromWatchdog()
-                                        },
-                                        shape = RoundedCornerShape(12.dp),
-                                        modifier = Modifier.heightIn(min = 48.dp)
-                                    ) {
-                                        Text("من بداية الكتلة", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                                when {
+                                    isNeu -> {
+                                        NeuPillButton(
+                                            onClick = onResumeAction,
+                                            isActive = true,
+                                            isDark = isDark,
+                                            accentColor = Color(0xFF10B981),
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .heightIn(min = 48.dp)
+                                                .testTag("resume_checkpoint_button")
+                                        ) {
+                                            Icon(Icons.Default.PlayArrow, contentDescription = null, tint = Color(0xFF10B981), modifier = Modifier.size(18.dp))
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text("استكمال العملية", fontSize = 12.5.sp, fontWeight = FontWeight.Bold, color = Color(0xFF10B981))
+                                        }
+                                        if (hasWatchdogAlert || active78k0Session != null) {
+                                            NeuActionPill(
+                                                onClick = {
+                                                    if (active78k0Session != null) onCleanResume78k0Session(active78k0Session)
+                                                    else onCleanResumeFromWatchdog()
+                                                },
+                                                isDark = isDark,
+                                                accentColor = Color(0xFFF59E0B),
+                                                minHeight = 48.dp
+                                            ) {
+                                                Text("من بداية الكتلة", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFFF59E0B))
+                                            }
+                                        }
+                                    }
+                                    isGlass -> {
+                                        GlassPillButton(
+                                            onClick = onResumeAction,
+                                            isActive = true,
+                                            isDark = isDark,
+                                            accentColor = Color(0xFF10B981),
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .heightIn(min = 48.dp)
+                                                .testTag("resume_checkpoint_button")
+                                        ) {
+                                            Icon(Icons.Default.PlayArrow, contentDescription = null, tint = Color(0xFF10B981), modifier = Modifier.size(18.dp))
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text("استكمال العملية", fontSize = 12.5.sp, fontWeight = FontWeight.Bold, color = Color(0xFF10B981))
+                                        }
+                                        if (hasWatchdogAlert || active78k0Session != null) {
+                                            GlassActionPill(
+                                                onClick = {
+                                                    if (active78k0Session != null) onCleanResume78k0Session(active78k0Session)
+                                                    else onCleanResumeFromWatchdog()
+                                                },
+                                                isDark = isDark,
+                                                accentColor = Color(0xFFF59E0B),
+                                                minHeight = 48.dp
+                                            ) {
+                                                Text("من بداية الكتلة", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFFF59E0B))
+                                            }
+                                        }
+                                    }
+                                    else -> {
+                                        Button(
+                                            onClick = onResumeAction,
+                                            shape = RoundedCornerShape(12.dp),
+                                            colors = ButtonDefaults.buttonColors(
+                                                containerColor = Color(0xFF10B981),
+                                                contentColor = Color.White
+                                            ),
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .heightIn(min = 48.dp)
+                                                .testTag("resume_checkpoint_button")
+                                        ) {
+                                            Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text("استكمال العملية", fontSize = 12.5.sp, fontWeight = FontWeight.Bold)
+                                        }
+                                        if (hasWatchdogAlert || active78k0Session != null) {
+                                            OutlinedButton(
+                                                onClick = {
+                                                    if (active78k0Session != null) onCleanResume78k0Session(active78k0Session)
+                                                    else onCleanResumeFromWatchdog()
+                                                },
+                                                shape = RoundedCornerShape(12.dp),
+                                                modifier = Modifier.heightIn(min = 48.dp)
+                                            ) {
+                                                Text("من بداية الكتلة", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -1103,9 +1451,9 @@ fun ProgrammerStep3Flasher(
             }
         }
 
-        // 6. Live Event Log Console
+        // 6. Live Event Log Console (150-line rolling window + full 5000-line TXT export)
         Card(
-            shape = RoundedCornerShape(18.dp),
+            shape = RoundedCornerShape(if (isGlass) 22.dp else 18.dp),
             colors = CardDefaults.cardColors(containerColor = Color(0xFF0B1120)),
             border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
         ) {
@@ -1115,7 +1463,7 @@ fun ProgrammerStep3Flasher(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
                         Icon(
                             imageVector = Icons.Default.Terminal,
                             contentDescription = null,
@@ -1123,25 +1471,49 @@ fun ProgrammerStep3Flasher(
                             modifier = Modifier.size(18.dp)
                         )
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text(
-                            text = "سجل الأحداث المباشر (Event Log)",
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 12.sp,
-                            color = Color.White
-                        )
+                        Column {
+                            FittedSingleLineText(
+                                text = "سجل الأحداث المباشر (Event Log)",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 12.sp,
+                                minFontSize = 10.sp,
+                                color = Color.White
+                            )
+                            if (state.totalLogCount > state.logs.size) {
+                                Text(
+                                    text = "(عرض ${state.logs.size} من أصل ${state.totalLogCount})",
+                                    fontSize = 10.sp,
+                                    color = Color(0xFF38BDF8)
+                                )
+                            }
+                        }
                     }
-                    val logContext = LocalContext.current
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         IconButton(
                             onClick = {
-                                val fullLogText = if (state.logs.isEmpty()) {
-                                    "جاهز للعمل — قم بتوصيل المبرمجة USB OTG للبدء."
-                                } else {
-                                    state.logs.joinToString("\n") { "[${it.timestamp}] ${it.message}" }
+                                val stamp = SimpleDateFormat("yyyy-MM-dd_HHmm", Locale.US).format(Date())
+                                exportFullLogsLauncher.launch("Baraa_Programmer_Log_$stamp.txt")
+                            },
+                            modifier = Modifier
+                                .size(48.dp)
+                                .testTag("export_full_log_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.FileDownload,
+                                contentDescription = "تصدير السجل الكامل",
+                                tint = Color(0xFF38BDF8),
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                        IconButton(
+                            onClick = {
+                                val fullLogText = buildFullLogExportText().ifBlank {
+                                    if (state.logs.isEmpty()) "جاهز للعمل — قم بتوصيل المبرمجة USB OTG للبدء."
+                                    else state.logs.joinToString("\n") { "[${it.timestamp}] ${it.message}" }
                                 }
-                                val clipboard = logContext.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
                                 clipboard?.setPrimaryClip(ClipData.newPlainText("Event Log", fullLogText))
-                                Toast.makeText(logContext, "تم نسخ سجل الأحداث بالكامل", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(context, "تم نسخ سجل الأحداث بالكامل", Toast.LENGTH_SHORT).show()
                             },
                             modifier = Modifier
                                 .size(48.dp)
@@ -1174,37 +1546,37 @@ fun ProgrammerStep3Flasher(
 
                 if (state.logs.isEmpty()) {
                     Text(
-                        text = "جاهز للعمل — قم بتوصيل المبرمجة USB OTG للبدء.",
+                        text = "جاهز للعمل — قم بتوصيل المبرمجة USB OTG للبدء.".bidiIsolateMixed(),
                         fontSize = 11.sp,
                         color = Color(0xFF94A3B8)
                     )
                 } else {
                     val reversedLogs = remember(state.logs) { state.logs.asReversed() }
-                    LazyColumn(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(min = 60.dp, max = 190.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        items(count = reversedLogs.size) { idx ->
-                            val entry = reversedLogs[idx]
-                            val isTx = entry.message.startsWith("TX:")
-                            val isRxData = entry.message.startsWith("RX:") && !entry.message.contains("لا يوجد")
-                            val logColor = when {
-                                isRxData -> Color(0xFF34D399)
-                                isTx -> Color(0xFFFBBF24)
-                                entry.level == LogLevel.SUCCESS -> Color(0xFF34D399)
-                                entry.level == LogLevel.WARNING -> Color(0xFFFBBF24)
-                                entry.level == LogLevel.ERROR -> Color(0xFFF87171)
-                                else -> Color(0xFFCBD5E1)
+                    CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+                        LazyColumn(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 60.dp, max = 190.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            items(count = reversedLogs.size) { idx ->
+                                val entry = reversedLogs[idx]
+                                val isTx = entry.message.startsWith("TX:")
+                                val isRxData = entry.message.startsWith("RX:") && !entry.message.contains("لا يوجد")
+                                val logColor = when {
+                                    isRxData -> Color(0xFF34D399)
+                                    isTx -> Color(0xFFFBBF24)
+                                    entry.level == LogLevel.SUCCESS -> Color(0xFF34D399)
+                                    entry.level == LogLevel.WARNING -> Color(0xFFFBBF24)
+                                    entry.level == LogLevel.ERROR -> Color(0xFFF87171)
+                                    else -> Color(0xFFCBD5E1)
+                                }
+                                Text(
+                                    text = "[${entry.timestamp}] ${entry.message}",
+                                    style = MonospaceTabularStyle.copy(fontSize = 11.sp, lineHeight = 15.sp),
+                                    color = logColor
+                                )
                             }
-                            Text(
-                                text = "[${entry.timestamp}] ${entry.message}",
-                                fontSize = 11.sp,
-                                fontFamily = if (isTx || entry.message.startsWith("RX:")) FontFamily.Monospace else FontFamily.Default,
-                                color = logColor,
-                                lineHeight = 15.sp
-                            )
                         }
                     }
                 }
@@ -1221,14 +1593,22 @@ private fun IdCodeSevenBoxesCard(
     onByteChange: (Int, String) -> Unit,
     onResetFf: () -> Unit
 ) {
+    val isNeu = LocalIsSoftNeumorphismTheme.current
+    val isGlass = LocalIsLiquidGlassTheme.current
+    val isDark = LocalIsDarkTheme.current
     val focusRequesters = remember { List(7) { FocusRequester() } }
     val allValid = idCodeBytesHex.size == 7 && idCodeBytesHex.all { it.length == 2 }
     val combinedHex = idCodeBytesHex.joinToString(" ") { it.ifBlank { "--" } }
 
     Card(
-        shape = RoundedCornerShape(18.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        border = BorderStroke(1.dp, Color(0xFFF59E0B).copy(alpha = 0.45f))
+        shape = RoundedCornerShape(if (isGlass) 24.dp else 18.dp),
+        colors = CardDefaults.cardColors(containerColor = if (isNeu || isGlass) Color.Transparent else MaterialTheme.colorScheme.surface),
+        border = if (isNeu || isGlass) null else BorderStroke(1.dp, Color(0xFFF59E0B).copy(alpha = 0.45f)),
+        modifier = when {
+            isNeu -> Modifier.neuCard(cornerRadius = 20.dp, isDark = isDark)
+            isGlass -> Modifier.glassCard(cornerRadius = 24.dp, isDark = isDark, accentGlow = Color(0xFFF59E0B))
+            else -> Modifier
+        }
     ) {
         Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Row(
@@ -1398,6 +1778,9 @@ private fun DataFlashModeCard(
     enabled: Boolean,
     onSelectMode: (DataFlashExportMode) -> Unit
 ) {
+    val isNeu = LocalIsSoftNeumorphismTheme.current
+    val isGlass = LocalIsLiquidGlassTheme.current
+    val isDark = LocalIsDarkTheme.current
     val sizeLabel = if (dataFlashSizeBytes >= 1024 && dataFlashSizeBytes % 1024 == 0) {
         "${dataFlashSizeBytes / 1024} KB"
     } else {
@@ -1407,9 +1790,14 @@ private fun DataFlashModeCard(
     val fullMapBytes = programEndAddress + 1
 
     Card(
-        shape = RoundedCornerShape(18.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f))
+        shape = RoundedCornerShape(if (isGlass) 24.dp else 18.dp),
+        colors = CardDefaults.cardColors(containerColor = if (isNeu || isGlass) Color.Transparent else MaterialTheme.colorScheme.surface),
+        border = if (isNeu || isGlass) null else BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)),
+        modifier = when {
+            isNeu -> Modifier.neuCard(cornerRadius = 20.dp, isDark = isDark)
+            isGlass -> Modifier.glassCard(cornerRadius = 24.dp, isDark = isDark)
+            else -> Modifier
+        }
     ) {
         Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(
@@ -1510,10 +1898,18 @@ private fun PcStyleHexViewerCard(
         "${buffer.size} B"
     }
 
+    val isNeu = LocalIsSoftNeumorphismTheme.current
+    val isGlass = LocalIsLiquidGlassTheme.current
+    val isDark = LocalIsDarkTheme.current
     Card(
-        shape = RoundedCornerShape(18.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f))
+        shape = RoundedCornerShape(if (isGlass) 24.dp else 18.dp),
+        colors = CardDefaults.cardColors(containerColor = if (isNeu || isGlass) Color.Transparent else MaterialTheme.colorScheme.surface),
+        border = if (isNeu || isGlass) null else BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f)),
+        modifier = when {
+            isNeu -> Modifier.neuCard(cornerRadius = 20.dp, isDark = isDark)
+            isGlass -> Modifier.glassCard(cornerRadius = 24.dp, isDark = isDark)
+            else -> Modifier
+        }
     ) {
         Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(
@@ -1599,9 +1995,7 @@ private fun PcStyleHexViewerCard(
                             // Column Header
                             Text(
                                 text = "Address   00 01 02 03 04 05 06 07  08 09 0A 0B 0C 0D 0E 0F   ASCII",
-                                fontFamily = FontFamily.Monospace,
-                                fontSize = 10.5.sp,
-                                fontWeight = FontWeight.Bold,
+                                style = MonospaceTabularStyle.copy(fontSize = 10.5.sp, fontWeight = FontWeight.Bold),
                                 color = Color(0xFF94A3B8)
                             )
                             HorizontalDivider(
@@ -1625,8 +2019,7 @@ private fun PcStyleHexViewerCard(
                                     }
                                     Text(
                                         text = lineStr,
-                                        fontFamily = FontFamily.Monospace,
-                                        fontSize = 10.5.sp,
+                                        style = MonospaceTabularStyle.copy(fontSize = 10.5.sp),
                                         color = if (hasData) Color(0xFF38BDF8) else Color(0xFF64748B)
                                     )
                                 }
@@ -1847,9 +2240,10 @@ private fun FlashActionButton(
     modifier: Modifier = Modifier
 ) {
     val isNeu = LocalIsSoftNeumorphismTheme.current
+    val isGlass = LocalIsLiquidGlassTheme.current
     val isDark = LocalIsDarkTheme.current
-    if (isNeu) {
-        NeuPillButton(
+    when {
+        isNeu -> NeuPillButton(
             onClick = onClick,
             enabled = enabled,
             isDark = isDark,
@@ -1865,16 +2259,39 @@ private fun FlashActionButton(
                 modifier = Modifier.size(18.dp)
             )
             Spacer(modifier = Modifier.width(6.dp))
-            Text(
+            FittedSingleLineText(
                 text = title,
                 fontWeight = FontWeight.Bold,
                 fontSize = 12.sp,
-                color = if (enabled) color else color.copy(alpha = 0.45f),
-                maxLines = 1
+                minFontSize = 10.sp,
+                color = if (enabled) color else color.copy(alpha = 0.45f)
             )
         }
-    } else {
-        Button(
+        isGlass -> GlassPillButton(
+            onClick = onClick,
+            enabled = enabled,
+            isDark = isDark,
+            accentColor = color,
+            modifier = modifier
+                .heightIn(min = 50.dp)
+                .testTag(testTag)
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = if (enabled) color else color.copy(alpha = 0.45f),
+                modifier = Modifier.size(18.dp)
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+            FittedSingleLineText(
+                text = title,
+                fontWeight = FontWeight.Bold,
+                fontSize = 12.sp,
+                minFontSize = 10.sp,
+                color = if (enabled) color else color.copy(alpha = 0.45f)
+            )
+        }
+        else -> Button(
             onClick = onClick,
             enabled = enabled,
             shape = RoundedCornerShape(14.dp),
@@ -1888,7 +2305,7 @@ private fun FlashActionButton(
         ) {
             Icon(imageVector = icon, contentDescription = null, modifier = Modifier.size(18.dp))
             Spacer(modifier = Modifier.width(6.dp))
-            Text(text = title, fontWeight = FontWeight.Bold, fontSize = 12.sp, maxLines = 1)
+            FittedSingleLineText(text = title, fontWeight = FontWeight.Bold, fontSize = 12.sp, minFontSize = 10.sp)
         }
     }
 }

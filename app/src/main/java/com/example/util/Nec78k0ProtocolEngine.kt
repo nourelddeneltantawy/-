@@ -584,7 +584,10 @@ object Nec78k0ProtocolEngine {
         var hadBlockChecksumWarning = false
 
         // المرحلة 2: استخراج Block 0 عبر فرق Checksum (0x40 صفر + 0xB0) ثم مسحه وتصفيره
-        if (session == null || session.lastCompletedBlock < 0) {
+        if (session == null || (session.lastCompletedBlock < 0 &&
+                session.stage != Nec78k0RecoveryManager.RecoveryStage.RESTORING_BLOCK &&
+                session.stage != Nec78k0RecoveryManager.RecoveryStage.BLOCKS_EXTRACTED)
+        ) {
             onProgress(0, totalSize, "المرحلة 2: فحص واستخراج Block 0 عبر فرق 0xB0...")
 
             // Check if resuming a legacy session where Block 0 was already erased without differential capture
@@ -665,32 +668,7 @@ object Nec78k0ProtocolEngine {
                     }
                 }
 
-                if (!b0ExtractedNonDestructively && startByteIdx == 0 && session?.block0Touched != true) {
-                    val cumOutcome = tryExtractBlock0ViaCumulative0xB0(
-                        context = context,
-                        transport = transport,
-                        detectedInfo = detectedInfo,
-                        fullBuffer = fullBuffer,
-                        blockCount = blockCount,
-                        clockFreqMhzText = clockFreqMhzText,
-                        existingSession = session,
-                        onProgress = onProgress,
-                        onLog = onLog
-                    )
-                    when (cumOutcome) {
-                        is Cumulative0xB0Outcome.Extracted -> {
-                            session = cumOutcome.updatedSession
-                            b0ExtractedNonDestructively = true
-                        }
-                        is Cumulative0xB0Outcome.UnsupportedFallback -> {
-                            onLog(cumOutcome.reason)
-                        }
-                        is Cumulative0xB0Outcome.Paused -> return cumOutcome.failure
-                        is Cumulative0xB0Outcome.Fatal -> return FlashOperationResult.Failure(cumOutcome.reason)
-                    }
-                }
-
-                var b0AlreadyAllZeroedOnChip = false
+                var b0AlreadyAllZeroedOnChip = (b0ExtractedNonDestructively && b0FastFillByte == 0x00.toByte())
                 if (!b0ExtractedNonDestructively && startByteIdx < BLOCK_SIZE) {
                     onLog(
                         if (startByteIdx == 0) {
@@ -875,14 +853,14 @@ object Nec78k0ProtocolEngine {
                             b0Working[byteIdx] = extractedByte.toByte()
                             csPrev = csCurr
 
+                            val etaB0 = formatEtaSuffix(byteIdx + 1, startByteIdx, BLOCK_SIZE, stage2StartMs)
+                            val labelB0 = String.format(
+                                Locale.US,
+                                "استخراج Block 0 تفاضلياً: %d/1024 (0x%02X)%s",
+                                byteIdx + 1, extractedByte, etaB0
+                            )
+                            onProgress(byteIdx + 1, totalSize, labelB0)
                             if (byteIdx % 8 == 0 || byteIdx == BLOCK_SIZE - 1) {
-                                val etaB0 = formatEtaSuffix(byteIdx + 1, startByteIdx, BLOCK_SIZE, stage2StartMs)
-                                val labelB0 = String.format(
-                                    Locale.US,
-                                    "استخراج Block 0 تفاضلياً: %d/1024 (0x%02X)%s",
-                                    byteIdx + 1, extractedByte, etaB0
-                                )
-                                onProgress(byteIdx + 1, totalSize, labelB0)
                                 ProgrammerForegroundService.renewSessionLock(context, labelB0)
                             }
 
@@ -952,8 +930,11 @@ object Nec78k0ProtocolEngine {
                     }
                 }
 
-                // Only erase+zero Block 0 if not already zeroed on silicon AND not fast-filled uniform Block 0
-                val skipZeroWriteOnB0 = b0AlreadyAllZeroedOnChip || (b0ExtractedNonDestructively && b0FastFillByte != null)
+                // Keep Block 0 zeroed (0x00) so Block 1..N-1 can unlock 0x18 fast read.
+                // Only skip zeroing if Block 0 is already all 0x00 on silicon, OR single-block uniform 0xFF chip.
+                val skipZeroWriteOnB0 = b0AlreadyAllZeroedOnChip ||
+                    (b0ExtractedNonDestructively && b0FastFillByte == 0x00.toByte()) ||
+                    (b0ExtractedNonDestructively && b0FastFillByte == 0xFF.toByte() && blockCount <= 1)
                 val b0WasZeroed = if (!skipZeroWriteOnB0) {
                     onLog("المرحلة 2: مسح Block 0 (0x000000..0x0003FF) بأمر 0x22 ثم كتابة 1024 بايت من الأصفار (0x00) بأمر 0x40 لفتح القراءة...")
                     val eraseB0Cmd = buildAddressRangeFrame(CMD_BLOCK_ERASE, 0x000000, BLOCK_SIZE - 1)
@@ -1020,7 +1001,7 @@ object Nec78k0ProtocolEngine {
                     !b0ExtractedNonDestructively // true if differential extraction just zeroed Block 0
                 }
 
-                val b0UntouchedOnChip = b0ExtractedNonDestructively && b0FastFillByte != null
+                val b0UntouchedOnChip = skipZeroWriteOnB0 && (b0ExtractedNonDestructively && b0FastFillByte != null)
                 val b0ExtractedFlag = !alreadyBlankLegacy
                 Nec78k0RecoveryManager.savePartialBlocksAtomically(context, detectedInfo.deviceName, fullBuffer)
                 session = Nec78k0RecoveryManager.Nec78k0RecoverySession(
@@ -1036,7 +1017,7 @@ object Nec78k0ProtocolEngine {
                     lastCompletedBlock = 0,
                     updatedAtMs = System.currentTimeMillis(),
                     partialBlocksPath = Nec78k0RecoveryManager.partialBlocksFile(context, detectedInfo.deviceName).absolutePath,
-                    block0Touched = !b0UntouchedOnChip && (b0WasZeroed || !b0ExtractedNonDestructively),
+                    block0Touched = !b0UntouchedOnChip,
                     block0OriginalExtracted = b0ExtractedFlag,
                     block0DiffNextIndex = BLOCK_SIZE,
                     block0DiffPrevCs = 0,
@@ -1539,7 +1520,12 @@ object Nec78k0ProtocolEngine {
             }
         }
 
-        // Persist BLOCKS_EXTRACTED checkpoint before Step 4 Restore
+        // Persist BLOCKS_EXTRACTED checkpoint before Step 4 Restore (preserve RESTORING_BLOCK if already restoring)
+        val preRestoreStage = if (session?.stage == Nec78k0RecoveryManager.RecoveryStage.RESTORING_BLOCK) {
+            Nec78k0RecoveryManager.RecoveryStage.RESTORING_BLOCK
+        } else {
+            Nec78k0RecoveryManager.RecoveryStage.BLOCKS_EXTRACTED
+        }
         Nec78k0RecoveryManager.savePartialBlocksAtomically(context, detectedInfo.deviceName, fullBuffer)
         session = (session ?: Nec78k0RecoveryManager.Nec78k0RecoverySession(
             chipName = detectedInfo.deviceName,
@@ -1550,14 +1536,14 @@ object Nec78k0ProtocolEngine {
             fullFlashChecksum = detectedInfo.fullFlashChecksum16,
             block0Checksum = detectedInfo.block0Checksum16,
             signatureHex = detectedInfo.rawSignatureHex,
-            stage = Nec78k0RecoveryManager.RecoveryStage.BLOCKS_EXTRACTED,
+            stage = preRestoreStage,
             lastCompletedBlock = blockCount - 1,
             updatedAtMs = System.currentTimeMillis(),
             partialBlocksPath = Nec78k0RecoveryManager.partialBlocksFile(context, detectedInfo.deviceName).absolutePath,
             block0Touched = true,
             block0OriginalExtracted = true
         )).copy(
-            stage = Nec78k0RecoveryManager.RecoveryStage.BLOCKS_EXTRACTED,
+            stage = preRestoreStage,
             lastCompletedBlock = blockCount - 1,
             updatedAtMs = System.currentTimeMillis(),
             block0Touched = true
@@ -1568,6 +1554,13 @@ object Nec78k0ProtocolEngine {
         if (autoRestoreChip && session.block0Touched && !session.block0Restored) {
             onProgress(totalSize - BLOCK_SIZE, totalSize, "المرحلة 4: استعادة Block 0 الأصلي وتوثيقه (0x22 + 0x40 + 0x13 + 0xB0)...")
             ProgrammerForegroundService.renewSessionLock(context, "استعادة Block 0 الأصلي ومطابقة 0x13/0xB0...")
+
+            // Save RESTORING_BLOCK checkpoint BEFORE starting 0x22 + 0x40 so disconnect/power loss always resumes here
+            session = session.copy(
+                stage = Nec78k0RecoveryManager.RecoveryStage.RESTORING_BLOCK,
+                updatedAtMs = System.currentTimeMillis()
+            )
+            Nec78k0RecoveryManager.saveSessionCheckpoint(context, session)
 
             val savedBlock0Bytes = fullBuffer.copyOfRange(0, BLOCK_SIZE)
             val savedBlock0Cs = Nec78k0Block0Reconstructor.compute78k0Checksum16(savedBlock0Bytes)
@@ -1734,7 +1727,10 @@ object Nec78k0ProtocolEngine {
             message = finishMsg,
             bytesTransferred = fullBuffer,
             baseAddress = 0,
-            isMcuVerified = dummyVerified
+            isMcuVerified = dummyVerified,
+            fullCsMatched = matchedOriginal,
+            actualFullCs16 = actualFinalCs,
+            expectedFullCs16 = expectedFullCs
         )
     }
 
@@ -2980,10 +2976,10 @@ object Nec78k0ProtocolEngine {
                 Nec78k0RecoveryManager.saveSessionCheckpoint(context, updated)
             }
 
+            val done = minOf(blockStart + byteIdx + 1, totalSize)
+            val label = String.format(Locale.US, "استخراج تفاضلي Block %d/%d: %d/1024", blockIdx, blockCount - 1, byteIdx + 1)
+            onProgress(done, totalSize, label)
             if (byteIdx % 16 == 0 || byteIdx == BLOCK_SIZE - 1) {
-                val done = minOf(blockStart + byteIdx + 1, totalSize)
-                val label = String.format(Locale.US, "استخراج تفاضلي Block %d/%d: %d/1024", blockIdx, blockCount - 1, byteIdx + 1)
-                onProgress(done, totalSize, label)
                 ProgrammerForegroundService.renewSessionLock(context, label)
             }
         }

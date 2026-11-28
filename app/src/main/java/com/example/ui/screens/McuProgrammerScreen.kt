@@ -60,12 +60,24 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.ui.screens.programmer.ProgrammerStep1McuSelect
 import com.example.ui.screens.programmer.ProgrammerStep2Pinout
 import com.example.ui.screens.programmer.ProgrammerStep3Flasher
+import com.example.ui.theme.FittedSingleLineText
+import com.example.ui.theme.GlassCircleIconButton
+import com.example.ui.theme.GlassTokens
+import com.example.ui.theme.LocalAccentColor
 import com.example.ui.theme.LocalIsDarkTheme
+import com.example.ui.theme.LocalIsLiquidGlassTheme
 import com.example.ui.theme.LocalIsSoftNeumorphismTheme
+import com.example.ui.theme.LocalSecondaryAccentColor
+import com.example.ui.theme.NeuCircleIconButton
 import com.example.ui.theme.NeuTokens
+import com.example.ui.theme.bidiIsolateMixed
+import com.example.ui.theme.glassCanvasBackground
+import com.example.ui.theme.glassCard
+import com.example.ui.theme.glassRecessed
 import com.example.ui.theme.neuCard
 import com.example.ui.theme.neuRecessed
 import com.example.ui.viewmodel.McuProgrammerViewModel
+import com.example.util.FirmwareExportFormat
 
 @Composable
 fun McuProgrammerScreen(
@@ -127,12 +139,21 @@ fun McuProgrammerScreen(
     }
 
     val isNeu = LocalIsSoftNeumorphismTheme.current
+    val isGlass = LocalIsLiquidGlassTheme.current
     val isDark = LocalIsDarkTheme.current
+    val accentColor = LocalAccentColor.current
+    val secondaryAccent = LocalSecondaryAccentColor.current
 
     Column(
         modifier = modifier
             .fillMaxSize()
-            .background(if (isNeu) NeuTokens.bg(isDark) else MaterialTheme.colorScheme.background)
+            .then(
+                when {
+                    isNeu -> Modifier.background(NeuTokens.bg(isDark))
+                    isGlass -> Modifier.glassCanvasBackground(isDark, accentColor, secondaryAccent)
+                    else -> Modifier.background(MaterialTheme.colorScheme.background)
+                }
+            )
             .testTag("mcu_programmer_screen")
     ) {
         // Curved Professional Header with 3-Step Indicator
@@ -140,14 +161,18 @@ fun McuProgrammerScreen(
             modifier = Modifier
                 .fillMaxWidth()
                 .then(
-                    if (isNeu) {
-                        Modifier
+                    when {
+                        isNeu -> Modifier
                             .padding(horizontal = 12.dp, vertical = 6.dp)
                             .statusBarsPadding()
                             .neuCard(cornerRadius = 24.dp, isDark = isDark)
                             .padding(horizontal = 16.dp, vertical = 12.dp)
-                    } else {
-                        Modifier
+                        isGlass -> Modifier
+                            .padding(horizontal = 12.dp, vertical = 6.dp)
+                            .statusBarsPadding()
+                            .glassCard(cornerRadius = 26.dp, isDark = isDark, accentGlow = accentColor)
+                            .padding(horizontal = 16.dp, vertical = 12.dp)
+                        else -> Modifier
                             .clip(RoundedCornerShape(bottomStart = 24.dp, bottomEnd = 24.dp))
                             .background(
                                 Brush.verticalGradient(
@@ -162,29 +187,61 @@ fun McuProgrammerScreen(
                     }
                 )
         ) {
-            val headerContentColor = if (isNeu) MaterialTheme.colorScheme.onSurface else Color.White
-            val headerSubColor = if (isNeu) MaterialTheme.colorScheme.onSurfaceVariant else Color.White.copy(alpha = 0.85f)
+            val headerContentColor = when {
+                isNeu -> NeuTokens.textPrimary(isDark)
+                isGlass -> GlassTokens.textPrimary(isDark)
+                else -> Color.White
+            }
+            val headerSubColor = when {
+                isNeu -> NeuTokens.textSecondary(isDark)
+                isGlass -> GlassTokens.textSecondary(isDark)
+                else -> Color.White.copy(alpha = 0.88f)
+            }
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     if (state.currentStep > 1) {
-                        IconButton(
-                            onClick = handleStepBack,
-                            modifier = Modifier
-                                .size(40.dp)
-                                .then(
-                                    if (isNeu) Modifier.neuRecessed(cornerRadius = 20.dp, isDark = isDark)
-                                    else Modifier.background(Color.White.copy(alpha = 0.16f), CircleShape)
+                        when {
+                            isNeu -> NeuCircleIconButton(
+                                onClick = handleStepBack,
+                                size = 40.dp,
+                                isDark = isDark,
+                                modifier = Modifier.testTag("mcu_programmer_back_button")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Filled.ArrowForward,
+                                    contentDescription = "الخطوة السابقة",
+                                    tint = MaterialTheme.colorScheme.primary
                                 )
-                                .testTag("mcu_programmer_back_button")
-                        ) {
-                            Icon(
-                                imageVector = Icons.AutoMirrored.Filled.ArrowForward,
-                                contentDescription = "الخطوة السابقة",
-                                tint = if (isNeu) MaterialTheme.colorScheme.primary else Color.White
-                            )
+                            }
+                            isGlass -> GlassCircleIconButton(
+                                onClick = handleStepBack,
+                                size = 40.dp,
+                                isDark = isDark,
+                                accentGlow = accentColor,
+                                modifier = Modifier.testTag("mcu_programmer_back_button")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Filled.ArrowForward,
+                                    contentDescription = "الخطوة السابقة",
+                                    tint = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                            else -> IconButton(
+                                onClick = handleStepBack,
+                                modifier = Modifier
+                                    .size(40.dp)
+                                    .background(Color.White.copy(alpha = 0.16f), CircleShape)
+                                    .testTag("mcu_programmer_back_button")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Filled.ArrowForward,
+                                    contentDescription = "الخطوة السابقة",
+                                    tint = Color.White
+                                )
+                            }
                         }
                         Spacer(modifier = Modifier.width(10.dp))
                     } else {
@@ -192,36 +249,39 @@ fun McuProgrammerScreen(
                             modifier = Modifier
                                 .size(40.dp)
                                 .then(
-                                    if (isNeu) Modifier.neuRecessed(cornerRadius = 20.dp, isDark = isDark)
-                                    else Modifier.background(Color.White.copy(alpha = 0.16f), CircleShape)
+                                    when {
+                                        isNeu -> Modifier.neuRecessed(cornerRadius = 20.dp, isDark = isDark)
+                                        isGlass -> Modifier.glassRecessed(cornerRadius = 20.dp, isDark = isDark, accentBorder = accentColor.copy(alpha = 0.45f))
+                                        else -> Modifier.background(Color.White.copy(alpha = 0.16f), CircleShape)
+                                    }
                                 ),
                             contentAlignment = Alignment.Center
                         ) {
                             Icon(
                                 imageVector = Icons.Default.Memory,
                                 contentDescription = "مبرمجة المعالجات",
-                                tint = if (isNeu) MaterialTheme.colorScheme.primary else Color.White
+                                tint = if (isNeu || isGlass) MaterialTheme.colorScheme.primary else Color.White
                             )
                         }
                         Spacer(modifier = Modifier.width(10.dp))
                     }
 
                     Column(modifier = Modifier.weight(1f)) {
-                        Text(
+                        FittedSingleLineText(
                             text = "مبرمجة المعالجات الاحترافية",
                             style = MaterialTheme.typography.titleMedium.copy(
-                                fontWeight = FontWeight.Bold,
-                                color = headerContentColor
+                                fontWeight = FontWeight.Bold
                             ),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
+                            color = headerContentColor,
+                            fontSize = 16.sp,
+                            minFontSize = 13.sp
                         )
                         Text(
                             text = when (state.currentStep) {
                                 1 -> "الخطوة 1: اختيار المعالج والبحث الذكي"
                                 2 -> "الخطوة 2: اختيار المبرمجة"
                                 else -> "الخطوة 3: واجهة البرمجة وقراءة/كتابة الفلاش"
-                            },
+                            }.bidiIsolateMixed(),
                             fontSize = 11.sp,
                             color = headerSubColor
                         )
@@ -308,8 +368,18 @@ fun McuProgrammerScreen(
                     onToggleAutoRestoreChip = programmerViewModel::setAutoRestoreChip,
                     onJumpToFirstData = programmerViewModel::triggerJumpToFirstData,
                     onLoadFirmwareUri = programmerViewModel::loadFirmwareFromUri,
+                    onDismissFileValidationError = programmerViewModel::dismissFileValidationError,
+                    onDismissFullCsMismatchAlert = programmerViewModel::dismissFullCsMismatchAlert,
+                    onSelectExportFormat = programmerViewModel::setSelectedExportFormat,
+                    suggestedDumpFileName = { fmt: FirmwareExportFormat, dfOnly: Boolean ->
+                        programmerViewModel.suggestedDumpFileName(fmt, dfOnly)
+                    },
+                    onSaveDumpFormatUri = { uri, fmt -> programmerViewModel.saveDumpToUri(uri, fmt) },
+                    onSaveDataFlashFormatUri = { uri, fmt -> programmerViewModel.saveDataFlashToUri(uri, fmt) },
                     onSaveDumpUri = programmerViewModel::saveDumpToUri,
                     onSaveDataFlashUri = programmerViewModel::saveDataFlashToUri,
+                    onExportFullLogsUri = programmerViewModel::exportFullLogsToUri,
+                    buildFullLogExportText = programmerViewModel::buildFullLogExportText,
                     onReadFlash = programmerViewModel::readChipFlash,
                     onWriteFlash = programmerViewModel::writeChipFlash,
                     onEraseFlash = programmerViewModel::eraseChipFlash,
@@ -349,32 +419,38 @@ private fun StepPill(
     modifier: Modifier = Modifier
 ) {
     val isNeu = LocalIsSoftNeumorphismTheme.current
+    val isGlass = LocalIsLiquidGlassTheme.current
     val isDark = LocalIsDarkTheme.current
     val bgColor = when {
         isNeu -> NeuTokens.surface(isDark)
+        isGlass -> Color.Transparent
         isActive -> Color.White
         isCompleted -> Color(0xFF10B981).copy(alpha = 0.25f)
         else -> Color.White.copy(alpha = 0.14f)
     }
     val textColor = when {
-        isNeu && isActive -> MaterialTheme.colorScheme.primary
-        isNeu && isCompleted -> Color(0xFF10B981)
-        isNeu -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = if (enabled) 1f else 0.45f)
+        (isNeu || isGlass) && isActive -> MaterialTheme.colorScheme.primary
+        (isNeu || isGlass) && isCompleted -> Color(0xFF10B981)
+        isNeu -> NeuTokens.textSecondary(isDark).copy(alpha = if (enabled) 1f else 0.45f)
+        isGlass -> GlassTokens.textSecondary(isDark).copy(alpha = if (enabled) 1f else 0.45f)
         isActive -> MaterialTheme.colorScheme.primary
         isCompleted -> Color(0xFF6EE7B7)
-        else -> Color.White.copy(alpha = if (enabled) 0.9f else 0.45f)
+        else -> Color.White.copy(alpha = if (enabled) 0.92f else 0.45f)
     }
 
     Surface(
-        shape = RoundedCornerShape(if (isNeu) 50.dp else 12.dp),
-        color = if (isNeu) Color.Transparent else bgColor,
-        border = if (isCompleted && !isActive && !isNeu) BorderStroke(1.dp, Color(0xFF10B981)) else null,
+        shape = RoundedCornerShape(if (isNeu || isGlass) 50.dp else 12.dp),
+        color = if (isNeu || isGlass) Color.Transparent else bgColor,
+        border = if (isCompleted && !isActive && !isNeu && !isGlass) BorderStroke(1.dp, Color(0xFF10B981)) else null,
         modifier = modifier
             .then(
-                if (isNeu) {
-                    if (isActive) Modifier.neuRecessed(cornerRadius = 50.dp, isDark = isDark, accentBorder = MaterialTheme.colorScheme.primary)
+                when {
+                    isNeu -> if (isActive) Modifier.neuRecessed(cornerRadius = 50.dp, isDark = isDark, accentBorder = MaterialTheme.colorScheme.primary)
                     else Modifier.neuCard(cornerRadius = 50.dp, isDark = isDark)
-                } else Modifier
+                    isGlass -> if (isActive) Modifier.glassRecessed(cornerRadius = 50.dp, isDark = isDark, accentBorder = MaterialTheme.colorScheme.primary.copy(alpha = 0.7f))
+                    else Modifier.glassCard(cornerRadius = 50.dp, isDark = isDark, accentGlow = if (isCompleted) Color(0xFF10B981) else null)
+                    else -> Modifier
+                }
             )
             .clickable(enabled = enabled, onClick = onClick)
     ) {
@@ -383,13 +459,12 @@ private fun StepPill(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.Center
         ) {
-            Text(
+            FittedSingleLineText(
                 text = "$stepNum. $title",
                 fontSize = 11.sp,
+                minFontSize = 9.sp,
                 fontWeight = if (isActive) FontWeight.Bold else FontWeight.Medium,
-                color = textColor,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
+                color = textColor
             )
         }
     }

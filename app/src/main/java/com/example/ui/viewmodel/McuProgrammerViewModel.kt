@@ -15,8 +15,10 @@ import com.example.data.model.UsbSerialDeviceInfo
 import com.example.data.repository.McuDatabaseRepository
 import com.example.data.McuCatalogLockManager
 import com.example.util.ChipAutoDetectResult
+import com.example.util.FirmwareExportFormat
 import com.example.util.FirmwareParser
 import com.example.util.FlashOperationResult
+import com.example.util.Nec78k0Block0Reconstructor
 import com.example.util.Nec78k0ProtocolEngine
 import com.example.util.Nec78k0ProtocolRegistry
 import com.example.util.Nec78k0RecoveryManager
@@ -89,9 +91,14 @@ data class McuProgrammerUiState(
     val loadedFileName: String? = null,
     val loadedFormat: String? = null,
     val loadedNonEmptyCount: Int = 0,
+    val loadedRawSizeBytes: Int = 0,
     val firstNonEmptyRowIndex: Int = 0,
     val hexJumpSequence: Int = 0,
+    val fileValidationError: String? = null,
+    val dropZoneConfirmToken: Int = 0,
+    val selectedExportFormat: FirmwareExportFormat = FirmwareExportFormat.BIN,
     val logs: List<ProgrammerLogEntry> = emptyList(),
+    val totalLogCount: Int = 0,
 
     // NEC / Renesas 78K0 Engine State
     val invert78k0DtrRtsPolarity: Boolean = false,
@@ -100,6 +107,7 @@ data class McuProgrammerUiState(
     val pendingRescueSessions: List<Nec78k0RecoveryManager.Nec78k0RecoverySession> = emptyList(),
     val watchdogAlertMessage: String? = null,
     val watchdogPausedBlock: Int? = null,
+    val fullCsMismatchAlert: String? = null,
     val isCurrentDumpMcuVerified: Boolean = false,
 
     // Universal Background Progress, Pause/Resume, ETA, Checkpoints & Admin Catalog Locks
@@ -116,6 +124,8 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
     private var allProcessors: List<McuProcessor> = emptyList()
     private val timeFormatLock = Any()
     private val timeFormat = SimpleDateFormat("HH:mm:ss", Locale.US)
+    private val fullLogLock = Any()
+    private val fullLogHistory = ArrayDeque<ProgrammerLogEntry>(512)
     @Volatile
     private var userManuallyDisconnected: Boolean = false
 
@@ -1023,6 +1033,39 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
         }
     }
 
+    fun dismissFileValidationError() {
+        _uiState.update { it.copy(fileValidationError = null) }
+    }
+
+    fun dismissFullCsMismatchAlert() {
+        _uiState.update { it.copy(fullCsMismatchAlert = null) }
+    }
+
+    fun setSelectedExportFormat(format: FirmwareExportFormat) {
+        _uiState.update { it.copy(selectedExportFormat = format) }
+    }
+
+    fun suggestedDumpFileName(
+        format: FirmwareExportFormat = _uiState.value.selectedExportFormat,
+        dataFlashOnly: Boolean = false
+    ): String {
+        val state = _uiState.value
+        val part = (state.selectedProcessor?.partNumber ?: "MCU")
+            .trim()
+            .replace(Regex("[^A-Za-z0-9_-]"), "_")
+            .ifBlank { "MCU" }
+        val cs16 = if (dataFlashOnly && state.dataFlashBuffer != null) {
+            Nec78k0Block0Reconstructor.compute78k0Checksum16(state.dataFlashBuffer) and 0xFFFF
+        } else {
+            val hwCs = state.nec78k0DetectedInfo?.fullFlashChecksum16 ?: 0
+            if (hwCs != 0) hwCs and 0xFFFF
+            else Nec78k0Block0Reconstructor.compute78k0Checksum16(state.flashBuffer) and 0xFFFF
+        }
+        val dateTag = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
+        val suffix = if (dataFlashOnly) "_DF" else ""
+        return String.format(Locale.US, "%s%s_CS%04X_%s.%s", part, suffix, cs16, dateTag, format.extension)
+    }
+
     fun loadFirmwareFromUri(uri: Uri) {
         val mcu = _uiState.value.selectedProcessor ?: return
         val cfg = mcu.chipConfig
@@ -1030,10 +1073,11 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
             _uiState.update {
                 it.copy(
                     isBusy = true,
+                    fileValidationError = null,
                     progress = 0.4f,
                     progressBytesDone = 0,
                     progressTotalBytes = cfg.flashSizeBytes,
-                    progressLabel = "جاري قراءة وتحليل ملف السوفت..."
+                    progressLabel = "فحص والتحقق من ملف السوفت..."
                 )
             }
             try {
@@ -1045,15 +1089,23 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                             fileName = cursor.getString(idx) ?: fileName
                         }
                     }
+                    val mimeType = appContext.contentResolver.getType(uri)
+                    // Stage 1: Check extension and MIME type before reading file bytes
+                    FirmwareParser.validateFileMetadata(fileName, mimeType)
+
                     val bytes = appContext.contentResolver.openInputStream(uri)?.use { it.readBytes() }
                         ?: throw IllegalStateException("تعذر فتح الملف المختار.")
-                    FirmwareParser.parseFirmware(
+                    // Stage 2: Check magic bytes, HEX/S19 checksums, and target chip capacity
+                    val physicalEnd = if (mcu.protocolType == ProtocolFamilyType.R8C_M16C) cfg.programEndAddress else null
+                    FirmwareParser.validateAndParseFirmware(
                         rawBytes = bytes,
                         fileName = fileName,
+                        mimeType = mimeType,
                         targetFlashSizeBytes = cfg.flashSizeBytes,
                         preferredBaseAddress = defaultBaseAddressFor(mcu),
                         dataFlashStartAddress = cfg.dataFlashStartAddress,
-                        dataFlashSizeBytes = cfg.dataFlashSizeBytes
+                        dataFlashSizeBytes = cfg.dataFlashSizeBytes,
+                        fullPhysicalMapEndAddress = physicalEnd
                     )
                 }
 
@@ -1065,7 +1117,7 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                         progress = 1f,
                         progressBytesDone = cfg.flashSizeBytes,
                         progressTotalBytes = cfg.flashSizeBytes,
-                        progressLabel = "تم تحميل الملف بنجاح",
+                        progressLabel = "تم التحقق وتحميل الملف بنجاح",
                         flashBuffer = parsed.bytes,
                         flashBaseAddress = resolvedBase,
                         dataFlashBuffer = parsed.dataFlashBytes,
@@ -1074,8 +1126,12 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                         loadedFileName = parsed.fileName,
                         loadedFormat = parsed.format,
                         loadedNonEmptyCount = parsed.nonEmptyBytesCount,
+                        loadedRawSizeBytes = parsed.rawSizeBytes,
                         firstNonEmptyRowIndex = firstDataRow,
                         hexJumpSequence = it.hexJumpSequence + 1,
+                        fileValidationError = null,
+                        dropZoneConfirmToken = it.dropZoneConfirmToken + 1,
+                        fullCsMismatchAlert = null,
                         isCurrentDumpMcuVerified = false
                     )
                 }
@@ -1084,23 +1140,37 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                     " + Data Flash (${String.format(Locale.US, "0x%05X", parsed.dataFlashStartAddress)})"
                 } else ""
                 addLog(
-                    "تم عرض الملف ${parsed.fileName} (${parsed.format})$dfNote - بداية البيانات عند $startHex",
+                    "تم قبول وعرض الملف ${parsed.fileName} (${parsed.format})$dfNote - بداية البيانات عند $startHex",
                     LogLevel.SUCCESS
                 )
             } catch (e: Throwable) {
-                _uiState.update { it.copy(isBusy = false, progress = 0f, progressLabel = "") }
-                addLog("فشل قراءة الملف: ${e.message}", LogLevel.ERROR)
+                // Keep previously loaded buffer/file intact on validation or parse rejection
+                val errMsg = e.message ?: "ملف سوفت وير غير صالح أو غير متوافق."
+                _uiState.update {
+                    it.copy(
+                        isBusy = false,
+                        progress = 0f,
+                        progressLabel = "",
+                        fileValidationError = errMsg
+                    )
+                }
+                addLog("رفض بوابة التحقق: $errMsg", LogLevel.ERROR)
             }
         }
     }
 
     fun saveDumpToUri(uri: Uri, asIntelHex: Boolean) {
+        saveDumpToUri(uri, if (asIntelHex) FirmwareExportFormat.HEX else FirmwareExportFormat.BIN)
+    }
+
+    fun saveDumpToUri(uri: Uri, format: FirmwareExportFormat) {
         val state = _uiState.value
         val buffer = state.flashBuffer
         val baseAddr = state.flashBaseAddress
         val dfBuffer = state.dataFlashBuffer
         val dfBase = state.dataFlashBaseAddress
         val chipConfig = state.selectedProcessor?.chipConfig
+        val partLabel = state.selectedProcessor?.partNumber ?: "BARAA"
         val isMergedMode = state.dataFlashMode == DataFlashExportMode.MERGED
 
         // Anti-Dummy Rule 1: Never allow saving >= 99% 0x00/0xFF extracted dumps without on-chip MCU Verify confirmation
@@ -1120,35 +1190,56 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                 var savedByteCount = buffer.size
                 withContext(Dispatchers.IO) {
                     appContext.contentResolver.openOutputStream(uri)?.use { out ->
-                        if (asIntelHex) {
-                            val hexContent = if (isMergedMode && dfBuffer != null) {
-                                FirmwareParser.toIntelHexMultiSegment(
-                                    listOf(
-                                        dfBase to dfBuffer,
-                                        baseAddr to buffer
+                        when (format) {
+                            FirmwareExportFormat.HEX -> {
+                                val hexContent = if (isMergedMode && dfBuffer != null) {
+                                    FirmwareParser.toIntelHexMultiSegment(
+                                        listOf(
+                                            dfBase to dfBuffer,
+                                            baseAddr to buffer
+                                        )
                                     )
-                                )
-                            } else {
-                                FirmwareParser.toIntelHex(buffer, baseAddr)
+                                } else {
+                                    FirmwareParser.toIntelHex(buffer, baseAddr)
+                                }
+                                out.write(hexContent.toByteArray(Charsets.US_ASCII))
                             }
-                            out.write(hexContent.toByteArray(Charsets.US_ASCII))
-                        } else {
-                            val payload = if (isMergedMode && chipConfig != null) {
-                                FirmwareParser.buildMergedMemoryMap(
-                                    chipConfig = chipConfig,
-                                    programFlashBytes = buffer,
-                                    dataFlashBytes = dfBuffer
-                                )
-                            } else {
-                                buffer
+                            FirmwareExportFormat.S19 -> {
+                                val srecContent = if (isMergedMode && dfBuffer != null) {
+                                    FirmwareParser.toMotorolaSRecordMultiSegment(
+                                        segments = listOf(
+                                            dfBase to dfBuffer,
+                                            baseAddr to buffer
+                                        ),
+                                        headerLabel = partLabel
+                                    )
+                                } else {
+                                    FirmwareParser.toMotorolaSRecord(
+                                        bytes = buffer,
+                                        baseAddress = baseAddr,
+                                        headerLabel = partLabel
+                                    )
+                                }
+                                out.write(srecContent.toByteArray(Charsets.US_ASCII))
                             }
-                            savedByteCount = payload.size
-                            out.write(payload)
+                            FirmwareExportFormat.BIN -> {
+                                val payload = if (isMergedMode && chipConfig != null) {
+                                    FirmwareParser.buildMergedMemoryMap(
+                                        chipConfig = chipConfig,
+                                        programFlashBytes = buffer,
+                                        dataFlashBytes = dfBuffer
+                                    )
+                                } else {
+                                    buffer
+                                }
+                                savedByteCount = payload.size
+                                out.write(payload)
+                            }
                         }
                     } ?: throw IllegalStateException("تعذر الكتابة إلى المسار المختار.")
                 }
 
-                val mergeInfo = if (!asIntelHex && isMergedMode && chipConfig != null) {
+                val mergeInfo = if (format == FirmwareExportFormat.BIN && isMergedMode && chipConfig != null) {
                     val endHex = String.format(Locale.US, "0x%05X", chipConfig.programEndAddress)
                     val formattedBytes = String.format(Locale.US, "%,d", savedByteCount)
                     val dfLabel = if (dfBuffer != null && chipConfig.dataFlashStartAddress != null) {
@@ -1157,14 +1248,14 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                         "Program @ ${String.format(Locale.US, "0x%05X", chipConfig.programStartAddress)}"
                     }
                     " [مدمج خريطة كاملة 0x00000..$endHex • $formattedBytes بايت / ${savedByteCount / 1024} KiB • $dfLabel]"
-                } else if (asIntelHex && isMergedMode && dfBuffer != null) {
+                } else if (format != FirmwareExportFormat.BIN && isMergedMode && dfBuffer != null) {
                     val mapSize = (chipConfig?.programEndAddress ?: 0) + 1
-                    " [مدمج Intel HEX: Program + Data Flash @ ${String.format(Locale.US, "0x%05X", dfBase)} (نطاق ${String.format(Locale.US, "%,d", mapSize)} بايت / ${mapSize / 1024} KiB)]"
+                    " [مدمج ${format.label}: Program + Data Flash @ ${String.format(Locale.US, "0x%05X", dfBase)} (نطاق ${String.format(Locale.US, "%,d", mapSize)} بايت / ${mapSize / 1024} KiB)]"
                 } else {
                     " [Program Flash ${String.format(Locale.US, "%,d", buffer.size)} بايت / ${buffer.size / 1024} KiB]"
                 }
                 addLog(
-                    "تم حفظ السوفت المسحوب بنجاح (${if (asIntelHex) "Intel HEX" else "BIN"})$mergeInfo",
+                    "تم حفظ السوفت المسحوب بنجاح (${format.label})$mergeInfo",
                     LogLevel.SUCCESS
                 )
             } catch (e: Throwable) {
@@ -1174,30 +1265,71 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
     }
 
     fun saveDataFlashToUri(uri: Uri, asIntelHex: Boolean) {
+        saveDataFlashToUri(uri, if (asIntelHex) FirmwareExportFormat.HEX else FirmwareExportFormat.BIN)
+    }
+
+    fun saveDataFlashToUri(uri: Uri, format: FirmwareExportFormat) {
         val state = _uiState.value
         val dfBuffer = state.dataFlashBuffer ?: run {
             addLog("لا توجد بيانات Data Flash مقروءة للحفظ بعد.", LogLevel.WARNING)
             return
         }
         val dfBase = state.dataFlashBaseAddress
+        val partLabel = state.selectedProcessor?.partNumber ?: "BARAA"
         viewModelScope.launch {
             try {
                 withContext(Dispatchers.IO) {
                     appContext.contentResolver.openOutputStream(uri)?.use { out ->
-                        if (asIntelHex) {
-                            out.write(FirmwareParser.toIntelHex(dfBuffer, dfBase).toByteArray(Charsets.US_ASCII))
-                        } else {
-                            out.write(dfBuffer)
+                        when (format) {
+                            FirmwareExportFormat.HEX -> {
+                                out.write(FirmwareParser.toIntelHex(dfBuffer, dfBase).toByteArray(Charsets.US_ASCII))
+                            }
+                            FirmwareExportFormat.S19 -> {
+                                out.write(
+                                    FirmwareParser.toMotorolaSRecord(dfBuffer, dfBase, "${partLabel}_DF")
+                                        .toByteArray(Charsets.US_ASCII)
+                                )
+                            }
+                            FirmwareExportFormat.BIN -> {
+                                out.write(dfBuffer)
+                            }
                         }
                     } ?: throw IllegalStateException("تعذر الكتابة إلى المسار المختار.")
                 }
                 addLog(
-                    "تم حفظ Data Flash (${dfBuffer.size} بايت @ ${String.format(Locale.US, "0x%05X", dfBase)}) بصيغة ${if (asIntelHex) "Intel HEX" else "BIN"}.",
+                    "تم حفظ Data Flash (${dfBuffer.size} بايت @ ${String.format(Locale.US, "0x%05X", dfBase)}) بصيغة ${format.label}.",
                     LogLevel.SUCCESS
                 )
             } catch (e: Throwable) {
                 addLog("خطأ أثناء حفظ Data Flash: ${e.message}", LogLevel.ERROR)
             }
+        }
+    }
+
+    fun exportFullLogsToUri(uri: Uri) {
+        viewModelScope.launch {
+            try {
+                val logContent = buildFullLogExportText()
+                withContext(Dispatchers.IO) {
+                    appContext.contentResolver.openOutputStream(uri)?.use { out ->
+                        out.write(logContent.toByteArray(Charsets.UTF_8))
+                    } ?: throw IllegalStateException("تعذر فتح مسار حفظ السجل الكامل.")
+                }
+                addLog("تم تصدير سجل الأحداث الكامل (${_uiState.value.totalLogCount} سطر) بنجاح.", LogLevel.SUCCESS)
+            } catch (e: Throwable) {
+                addLog("فشل تصدير السجل الكامل: ${e.message}", LogLevel.ERROR)
+            }
+        }
+    }
+
+    fun buildFullLogExportText(): String {
+        val snapshot = synchronized(fullLogLock) {
+            fullLogHistory.toList()
+        }
+        return if (snapshot.isEmpty()) {
+            "جاهز للعمل — سجل الأحداث فارغ حالياً."
+        } else {
+            snapshot.joinToString("\n") { "[${it.timestamp}] [${it.level.name}] ${it.message}" }
         }
     }
 
@@ -1272,6 +1404,7 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
             else -> "جاري قراءة ${mcu.partNumber}..."
         }
 
+        ProgrammerForegroundService.requestBatteryOptimizationExemptionIfNeeded(appContext)
         ProgrammerForegroundService.launchFlashTask(appContext, initialTitle) {
             _uiState.update {
                 it.copy(
@@ -1280,7 +1413,8 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                     progressBytesDone = resumeCheckpoint?.completedBytes ?: 0,
                     progressTotalBytes = mcu.flashSizeBytes,
                     progressLabel = initialTitle,
-                    watchdogAlertMessage = null
+                    watchdogAlertMessage = null,
+                    fullCsMismatchAlert = null
                 )
             }
             addLog(
@@ -1335,6 +1469,14 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                     is FlashOperationResult.Success -> {
                         val data = res.bytesTransferred ?: _uiState.value.flashBuffer
                         val firstDataRow = computeFirstDataRow(data)
+                        val mismatchAlert = if (!res.fullCsMatched) {
+                            String.format(
+                                Locale.US,
+                                "تحذير: بصمة الفلاش الكلية بعد الاستعادة (%04X) لا تطابق البصمة الأصلية (%04X). يرجى فحص السجل والتحقق قبل الحفظ.",
+                                res.actualFullCs16 ?: 0,
+                                res.expectedFullCs16 ?: 0
+                            )
+                        } else null
                         _uiState.update {
                             it.copy(
                                 isBusy = false,
@@ -1350,16 +1492,23 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                                 loadedFileName = "Dump_${mcu.partNumber}.bin",
                                 loadedFormat = "Chip Read",
                                 loadedNonEmptyCount = data.count { b -> b != 0xFF.toByte() },
+                                loadedRawSizeBytes = data.size,
                                 firstNonEmptyRowIndex = firstDataRow,
                                 hexJumpSequence = it.hexJumpSequence + 1,
                                 watchdogAlertMessage = null,
                                 watchdogPausedBlock = null,
+                                fullCsMismatchAlert = mismatchAlert,
                                 isCurrentDumpMcuVerified = res.isMcuVerified
                             )
                         }
                         refresh78k0RescueSessions()
                         refreshUniversalCheckpoint()
-                        addLog(res.message, LogLevel.SUCCESS)
+                        addLog(res.message, if (mismatchAlert == null) LogLevel.SUCCESS else LogLevel.WARNING)
+                        ProgrammerForegroundService.postCompletionNotification(
+                            appContext,
+                            "اكتمل سحب ${mcu.partNumber} (100%)",
+                            res.message
+                        )
                     }
                     is FlashOperationResult.Failure -> {
                         val rawReason = res.reason
@@ -1425,6 +1574,7 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
         }
         val dfMode = _uiState.value.dataFlashMode
 
+        ProgrammerForegroundService.requestBatteryOptimizationExemptionIfNeeded(appContext)
         ProgrammerForegroundService.launchFlashTask(appContext, "جاري مسح ${mcu.partNumber}...") {
             _uiState.update {
                 it.copy(
@@ -1493,6 +1643,11 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                             )
                         }
                         addLog(res.message, LogLevel.SUCCESS)
+                        ProgrammerForegroundService.postCompletionNotification(
+                            appContext,
+                            "اكتمل مسح ${mcu.partNumber}",
+                            res.message
+                        )
                     }
                     is FlashOperationResult.Failure -> {
                         _uiState.update {
@@ -1533,8 +1688,27 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
         val autoErase = _uiState.value.autoEraseBeforeWrite
         val autoVerify = _uiState.value.autoVerifyAfterWrite
         val fileName = _uiState.value.loadedFileName.orEmpty()
+        val rawLoadedBytes = _uiState.value.loadedRawSizeBytes
+        val maxWriteAllowed = if (mcu.protocolType == ProtocolFamilyType.R8C_M16C) {
+            (mcu.chipConfig.programEndAddress + 1).coerceAtLeast(mcu.flashSizeBytes)
+        } else {
+            mcu.flashSizeBytes
+        }
+        if (fileName.isNotBlank() && rawLoadedBytes > maxWriteAllowed) {
+            val sizeErr = String.format(
+                Locale.US,
+                "حجم الملف المحمل (%,d بايت) يتجاوز سعة الفلاش للمعالج %s (%,d بايت). تم إلغاء العملية لحماية المعالج.",
+                rawLoadedBytes,
+                mcu.partNumber,
+                maxWriteAllowed
+            )
+            _uiState.update { it.copy(fileValidationError = sizeErr) }
+            addLog(sizeErr, LogLevel.ERROR)
+            return
+        }
         val actionName = if (verifyOnly) "مطابقة (Verify)" else "كتابة (Write)"
 
+        ProgrammerForegroundService.requestBatteryOptimizationExemptionIfNeeded(appContext)
         ProgrammerForegroundService.launchFlashTask(appContext, "بدء $actionName على ${mcu.partNumber}...") {
             val totalSize = _uiState.value.flashBuffer.size
             _uiState.update {
@@ -1606,6 +1780,11 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
                         }
                         refreshUniversalCheckpoint()
                         addLog(res.message, LogLevel.SUCCESS)
+                        ProgrammerForegroundService.postCompletionNotification(
+                            appContext,
+                            "اكتملت $actionName لـ ${mcu.partNumber}",
+                            res.message
+                        )
                     }
                     is FlashOperationResult.Failure -> {
                         _uiState.update {
@@ -1630,7 +1809,10 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
     }
 
     fun clearLogs() {
-        _uiState.update { it.copy(logs = emptyList()) }
+        synchronized(fullLogLock) {
+            fullLogHistory.clear()
+        }
+        _uiState.update { it.copy(logs = emptyList(), totalLogCount = 0) }
     }
 
     private fun parseIdCodeBytes(): ByteArray? {
@@ -1681,9 +1863,18 @@ class McuProgrammerViewModel(application: Application) : AndroidViewModel(applic
         val ts = synchronized(timeFormatLock) {
             timeFormat.format(Date())
         }
+        val entry = ProgrammerLogEntry(ts, message, effectiveLevel)
+        val fullCount = synchronized(fullLogLock) {
+            if (fullLogHistory.size >= 5000) {
+                fullLogHistory.removeFirst()
+            }
+            fullLogHistory.addLast(entry)
+            fullLogHistory.size
+        }
         _uiState.update { state ->
-            val updated = (state.logs + ProgrammerLogEntry(ts, message, effectiveLevel)).takeLast(300)
-            state.copy(logs = updated)
+            // Rolling 150-line window in UI state to keep Compose smooth and leak-free
+            val updated = (state.logs + entry).takeLast(150)
+            state.copy(logs = updated, totalLogCount = fullCount)
         }
     }
 

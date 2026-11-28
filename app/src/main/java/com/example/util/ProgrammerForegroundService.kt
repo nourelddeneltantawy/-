@@ -1,5 +1,7 @@
 package com.example.util
 
+import android.Manifest
+import android.annotation.SuppressLint
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -7,10 +9,14 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
+import android.media.RingtoneManager
+import android.net.Uri
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import android.provider.Settings
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.example.MainActivity
@@ -23,13 +29,15 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.util.Locale
 
 /**
- * Foreground Service + Partial WakeLock + Dedicated Background Worker Scope for USB OTG MCU flashing.
- * Runs Read / Write / Erase / Verify / Rescue independently of UI / Activity lifecycle so
- * screen-off or switching apps never throttles or aborts transfers, while keeping live ETA & Pause state.
+ * Connected-Device Foreground Service + Partial WakeLock + Dedicated Background Worker Scope
+ * for USB OTG MCU flashing. Runs Read / Write / Erase / Verify / Rescue independently of UI /
+ * Activity lifecycle so screen-off or Doze never suspends USB transfers, while updating ETA
+ * smoothly every second and posting an audible completion notification when done.
  */
 class ProgrammerForegroundService : Service() {
     private var wakeLock: PowerManager.WakeLock? = null
@@ -38,7 +46,7 @@ class ProgrammerForegroundService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        createChannelIfNeeded()
+        createChannelsIfNeeded(this)
         acquireLocalWakeLock()
     }
 
@@ -59,7 +67,7 @@ class ProgrammerForegroundService : Service() {
             startForeground(
                 NOTIFICATION_ID,
                 notification,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
             )
         } else {
             startForeground(NOTIFICATION_ID, notification)
@@ -92,23 +100,6 @@ class ProgrammerForegroundService : Service() {
             }
         } catch (_: Throwable) {}
         wakeLock = null
-    }
-
-    private fun createChannelIfNeeded() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val nm = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
-            if (nm.getNotificationChannel(CHANNEL_ID) == null) {
-                val ch = NotificationChannel(
-                    CHANNEL_ID,
-                    "جلسة برمجة المعالجات USB OTG",
-                    NotificationManager.IMPORTANCE_LOW
-                ).apply {
-                    description = "يحافظ على استقرار المنفذ ومنع سكون النظام أثناء القراءة أو الكتابة"
-                    setShowBadge(false)
-                }
-                nm.createNotificationChannel(ch)
-            }
-        }
     }
 
     private fun buildNotification(statusText: String, progressPercent: Int): Notification {
@@ -150,8 +141,10 @@ class ProgrammerForegroundService : Service() {
 
     companion object {
         private const val CHANNEL_ID = "mcu_programmer_session_channel"
+        private const val COMPLETION_CHANNEL_ID = "mcu_programmer_completion_channel"
         private const val NOTIFICATION_ID = 4780
-        private const val WAKE_LOCK_TAG = "WasherMotors::McuFlashWakeLock"
+        private const val COMPLETION_NOTIFICATION_ID = 4781
+        private const val WAKE_LOCK_TAG = "BaraaProgrammer:UsbWakeLock"
         private const val WAKE_LOCK_TIMEOUT_MS = 3 * 60 * 60 * 1000L
         private const val RENEW_THROTTLE_MS = 950L
         private const val ACTION_START_OR_UPDATE = "com.example.action.PROGRAMMER_FGS_START"
@@ -159,11 +152,13 @@ class ProgrammerForegroundService : Service() {
         private const val EXTRA_STATUS_TEXT = "extra_status_text"
         private const val EXTRA_PROGRESS_PERCENT = "extra_progress_percent"
 
-        // Dedicated service-owned worker scope that survives screen lock, backgrounding, or ViewModel churn
         private val workerScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
         @Volatile
         private var activeWorkerJob: Job? = null
+
+        @Volatile
+        private var etaTickerJob: Job? = null
 
         @Volatile
         private var fallbackWakeLock: PowerManager.WakeLock? = null
@@ -184,6 +179,10 @@ class ProgrammerForegroundService : Service() {
         private var pausedStartedMs: Long = 0L
         @Volatile
         private var accumulatedPausedMs: Long = 0L
+        @Volatile
+        private var remainingEtaSeconds: Long = -1L
+        @Volatile
+        private var batteryOptPromptShown: Boolean = false
 
         private val _isWorkerActiveFlow = MutableStateFlow(false)
         val isWorkerActiveFlow: StateFlow<Boolean> = _isWorkerActiveFlow.asStateFlow()
@@ -194,6 +193,97 @@ class ProgrammerForegroundService : Service() {
         private val _etaTextFlow = MutableStateFlow("")
         val etaTextFlow: StateFlow<String> = _etaTextFlow.asStateFlow()
 
+        fun createChannelsIfNeeded(context: Context) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
+                if (nm.getNotificationChannel(CHANNEL_ID) == null) {
+                    val ch = NotificationChannel(
+                        CHANNEL_ID,
+                        "جلسة برمجة المعالجات USB OTG",
+                        NotificationManager.IMPORTANCE_LOW
+                    ).apply {
+                        description = "يحافظ على استقرار المنفذ ومنع سكون النظام أثناء القراءة أو الكتابة"
+                        setShowBadge(false)
+                    }
+                    nm.createNotificationChannel(ch)
+                }
+                if (nm.getNotificationChannel(COMPLETION_CHANNEL_ID) == null) {
+                    val soundUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+                    val doneCh = NotificationChannel(
+                        COMPLETION_CHANNEL_ID,
+                        "تنبيهات اكتمال البرمجة",
+                        NotificationManager.IMPORTANCE_HIGH
+                    ).apply {
+                        description = "إشعار صوتي واهتزاز خفيف فور اكتمال القراءة أو الكتابة في الخلفية"
+                        enableVibration(true)
+                        vibrationPattern = longArrayOf(0L, 180L, 90L, 180L)
+                        setSound(soundUri, android.media.AudioAttributes.Builder()
+                            .setUsage(android.media.AudioAttributes.USAGE_NOTIFICATION)
+                            .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                            .build())
+                    }
+                    nm.createNotificationChannel(doneCh)
+                }
+            }
+        }
+
+        @SuppressLint("BatteryLife")
+        fun requestBatteryOptimizationExemptionIfNeeded(context: Context) {
+            if (batteryOptPromptShown) return
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
+            try {
+                val pm = context.getSystemService(Context.POWER_SERVICE) as? PowerManager ?: return
+                if (pm.isIgnoringBatteryOptimizations(context.packageName)) return
+                batteryOptPromptShown = true
+                val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                    data = Uri.parse("package:${context.packageName}")
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                context.startActivity(intent)
+            } catch (_: Throwable) {}
+        }
+
+        fun postCompletionNotification(
+            context: Context,
+            title: String,
+            body: String
+        ) {
+            val appCtx = context.applicationContext
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                val granted = ContextCompat.checkSelfPermission(
+                    appCtx,
+                    Manifest.permission.POST_NOTIFICATIONS
+                ) == PackageManager.PERMISSION_GRANTED
+                if (!granted) return
+            }
+            try {
+                createChannelsIfNeeded(appCtx)
+                val nm = appCtx.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
+                val launchIntent = Intent(appCtx, MainActivity::class.java).apply {
+                    flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                }
+                val contentPendingIntent = PendingIntent.getActivity(
+                    appCtx,
+                    1,
+                    launchIntent,
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                )
+                val soundUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+                val notification = NotificationCompat.Builder(appCtx, COMPLETION_CHANNEL_ID)
+                    .setSmallIcon(android.R.drawable.stat_sys_download_done)
+                    .setContentTitle(title)
+                    .setContentText(body)
+                    .setStyle(NotificationCompat.BigTextStyle().bigText(body))
+                    .setContentIntent(contentPendingIntent)
+                    .setAutoCancel(true)
+                    .setSound(soundUri)
+                    .setVibrate(longArrayOf(0L, 180L, 90L, 180L))
+                    .setPriority(NotificationCompat.PRIORITY_HIGH)
+                    .build()
+                nm.notify(COMPLETION_NOTIFICATION_ID, notification)
+            } catch (_: Throwable) {}
+        }
+
         fun launchFlashTask(
             context: Context,
             initialStatus: String,
@@ -201,15 +291,34 @@ class ProgrammerForegroundService : Service() {
         ): Job {
             val appCtx = context.applicationContext
             activeWorkerJob?.cancel()
+            etaTickerJob?.cancel()
             resetPauseAndEtaState()
             _isWorkerActiveFlow.value = true
             acquireSessionLock(appCtx, initialStatus, 0)
+
+            // Independent 1-second countdown ticker so UI timer decrements smoothly every second
+            etaTickerJob = workerScope.launch {
+                while (isActive && _isWorkerActiveFlow.value) {
+                    delay(1000L)
+                    if (!_isPausedFlow.value) {
+                        val rem = remainingEtaSeconds
+                        if (rem > 0L) {
+                            val next = (rem - 1L).coerceAtLeast(0L)
+                            remainingEtaSeconds = next
+                            _etaTextFlow.value = formatEtaSeconds(next)
+                        }
+                    }
+                }
+            }
+
             val job = workerScope.launch {
                 try {
                     block()
                 } catch (ce: CancellationException) {
                     throw ce
                 } finally {
+                    etaTickerJob?.cancel()
+                    etaTickerJob = null
                     resetPauseAndEtaState()
                     _isWorkerActiveFlow.value = false
                     releaseSessionLock(appCtx)
@@ -256,13 +365,10 @@ class ProgrammerForegroundService : Service() {
 
         fun requestCancel() {
             _isPausedFlow.value = false
+            etaTickerJob?.cancel()
             activeWorkerJob?.cancel()
         }
 
-        /**
-         * Safe checkpoint gate called between frames/blocks across all MCU protocols.
-         * Suspends cleanly without closing USB or losing state until resumed or cancelled.
-         */
         suspend fun awaitIfPaused() {
             while (_isPausedFlow.value) {
                 delay(120L)
@@ -271,6 +377,7 @@ class ProgrammerForegroundService : Service() {
 
         fun updateThroughputAndEta(bytesDone: Int, totalBytes: Int) {
             if (totalBytes <= 0 || bytesDone <= 0) {
+                remainingEtaSeconds = -1L
                 _etaTextFlow.value = if (totalBytes > 0) "--:--" else ""
                 return
             }
@@ -278,6 +385,7 @@ class ProgrammerForegroundService : Service() {
             if (operationStartMs == 0L) {
                 operationStartMs = now
                 baselineBytesDone = bytesDone
+                remainingEtaSeconds = -1L
                 _etaTextFlow.value = "--:--"
                 return
             }
@@ -287,20 +395,26 @@ class ProgrammerForegroundService : Service() {
             val processedSinceStart = (bytesDone - baselineBytesDone).coerceAtLeast(0)
             val remainingBytes = (totalBytes - bytesDone).coerceAtLeast(0)
             if (remainingBytes == 0) {
+                remainingEtaSeconds = 0L
                 _etaTextFlow.value = "00:00"
                 return
             }
             val activeElapsedMs = (now - operationStartMs - accumulatedPausedMs).coerceAtLeast(1L)
-            if (activeElapsedMs < 1200L || processedSinceStart < 256) {
-                _etaTextFlow.value = "--:--"
+            if (activeElapsedMs < 1000L || processedSinceStart < 128) {
+                if (remainingEtaSeconds < 0L) {
+                    _etaTextFlow.value = "--:--"
+                }
                 return
             }
             val bytesPerMs = processedSinceStart.toDouble() / activeElapsedMs.toDouble()
             if (bytesPerMs <= 0.0001) {
-                _etaTextFlow.value = "--:--"
+                if (remainingEtaSeconds < 0L) {
+                    _etaTextFlow.value = "--:--"
+                }
                 return
             }
             val etaSeconds = ((remainingBytes.toDouble() / bytesPerMs) / 1000.0).toLong().coerceIn(0L, 86400L)
+            remainingEtaSeconds = etaSeconds
             _etaTextFlow.value = formatEtaSeconds(etaSeconds)
         }
 
@@ -322,6 +436,7 @@ class ProgrammerForegroundService : Service() {
             baselineBytesDone = -1
             pausedStartedMs = 0L
             accumulatedPausedMs = 0L
+            remainingEtaSeconds = -1L
         }
 
         fun acquireSessionLock(context: Context, statusText: String, progressPercent: Int = -1) {

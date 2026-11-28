@@ -31,8 +31,18 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import com.example.ui.theme.GlassTokens
+import com.example.ui.theme.LocalIsDarkTheme
+import com.example.ui.theme.LocalIsLiquidGlassTheme
+import com.example.ui.theme.LocalIsSoftNeumorphismTheme
+import com.example.ui.theme.bidiIsolateMixed
+import com.example.ui.theme.glassCard
+import com.example.ui.theme.glassRecessed
+import com.example.ui.theme.neuCard
+import com.example.ui.theme.neuRecessed
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -79,12 +89,16 @@ fun SearchAutocompleteBox(
 
     val showDropdown = isFocused && matchingSuggestions.isNotEmpty()
 
+    val isNeu = LocalIsSoftNeumorphismTheme.current
+    val isGlass = LocalIsLiquidGlassTheme.current
+    val isDark = LocalIsDarkTheme.current
+
     Box(modifier = modifier.zIndex(10f)) {
         Column {
             OutlinedTextField(
                 value = query,
                 onValueChange = { onQueryChange(it) },
-                placeholder = { Text(placeholder, fontSize = 13.sp) },
+                placeholder = { Text(placeholder.bidiIsolateMixed(), fontSize = 13.sp) },
                 leadingIcon = {
                     Icon(
                         imageVector = Icons.Default.Search,
@@ -107,8 +121,25 @@ fun SearchAutocompleteBox(
                         }
                     }
                 },
+                colors = if (isNeu || isGlass) {
+                    OutlinedTextFieldDefaults.colors(
+                        focusedContainerColor = Color.Transparent,
+                        unfocusedContainerColor = Color.Transparent,
+                        focusedBorderColor = Color.Transparent,
+                        unfocusedBorderColor = Color.Transparent
+                    )
+                } else {
+                    OutlinedTextFieldDefaults.colors()
+                },
                 modifier = Modifier
                     .fillMaxWidth()
+                    .then(
+                        when {
+                            isGlass -> Modifier.glassRecessed(cornerRadius = 16.dp, isDark = isDark)
+                            isNeu -> Modifier.neuRecessed(cornerRadius = 16.dp, isDark = isDark)
+                            else -> Modifier
+                        }
+                    )
                     .testTag(testTag)
                     .onFocusChanged { isFocused = it.isFocused },
                 singleLine = true,
@@ -124,11 +155,19 @@ fun SearchAutocompleteBox(
                 Card(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(top = 4.dp)
-                        .border(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f), RoundedCornerShape(12.dp)),
-                    shape = RoundedCornerShape(12.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                    elevation = CardDefaults.cardElevation(defaultElevation = 6.dp)
+                        .padding(top = 6.dp)
+                        .then(
+                            when {
+                                isGlass -> Modifier.glassCard(cornerRadius = 16.dp, isDark = isDark, strongSurface = true)
+                                isNeu -> Modifier.neuCard(cornerRadius = 16.dp, isDark = isDark)
+                                else -> Modifier.border(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f), RoundedCornerShape(12.dp))
+                            }
+                        ),
+                    shape = RoundedCornerShape(if (isNeu || isGlass) 16.dp else 12.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = if (isNeu || isGlass) Color.Transparent else MaterialTheme.colorScheme.surface
+                    ),
+                    elevation = CardDefaults.cardElevation(defaultElevation = if (isNeu || isGlass) 0.dp else 6.dp)
                 ) {
                     Column(modifier = Modifier.padding(vertical = 4.dp)) {
                         Row(
@@ -188,10 +227,11 @@ fun SearchAutocompleteBox(
                                             )
                                             Spacer(modifier = Modifier.width(10.dp))
                                             Text(
-                                                text = suggestion,
+                                                text = suggestion.bidiIsolateMixed(),
                                                 style = MaterialTheme.typography.bodyMedium.copy(
                                                     fontWeight = if (isExact) FontWeight.Bold else FontWeight.Normal,
-                                                    fontSize = 13.sp
+                                                    fontSize = 13.sp,
+                                                    color = if (isGlass) GlassTokens.textPrimary(isDark) else Color.Unspecified
                                                 )
                                             )
                                         }

@@ -73,6 +73,16 @@ import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.example.data.model.Motor
+import com.example.ui.theme.GlassActionPill
+import com.example.ui.theme.GlassTokens
+import com.example.ui.theme.LocalAccentColor
+import com.example.ui.theme.LocalIsDarkTheme
+import com.example.ui.theme.LocalIsLiquidGlassTheme
+import com.example.ui.theme.LocalIsSoftNeumorphismTheme
+import com.example.ui.theme.NeuActionPill
+import com.example.ui.theme.bidiIsolateMixed
+import com.example.ui.theme.glassCard
+import com.example.ui.theme.neuCard
 
 @OptIn(ExperimentalLayoutApi::class, ExperimentalFoundationApi::class)
 @Composable
@@ -94,6 +104,10 @@ fun MotorCard(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
+    val isNeu = LocalIsSoftNeumorphismTheme.current
+    val isGlass = LocalIsLiquidGlassTheme.current
+    val isDark = LocalIsDarkTheme.current
+    val accentColor = LocalAccentColor.current
     var isConnectorExpanded by remember { mutableStateOf(false) }
     val arrowRotation by animateFloatAsState(targetValue = if (isConnectorExpanded) 180f else 0f, label = "arrow_rot")
 
@@ -101,17 +115,24 @@ fun MotorCard(
         modifier = modifier
             .testTag("motor_card_${motor.id}")
             .fillMaxWidth()
-            .shadow(
-                elevation = 6.dp,
-                shape = RoundedCornerShape(22.dp),
-                spotColor = Color(0x1F000000),
-                ambientColor = Color(0x10000000)
-            )
-            .clip(RoundedCornerShape(22.dp))
-            .border(
-                1.2.dp,
-                MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f),
-                RoundedCornerShape(22.dp)
+            .then(
+                when {
+                    isGlass -> Modifier.glassCard(cornerRadius = 22.dp, isDark = isDark)
+                    isNeu -> Modifier.neuCard(cornerRadius = 22.dp, isDark = isDark)
+                    else -> Modifier
+                        .shadow(
+                            elevation = 6.dp,
+                            shape = RoundedCornerShape(22.dp),
+                            spotColor = Color(0x1F000000),
+                            ambientColor = Color(0x10000000)
+                        )
+                        .clip(RoundedCornerShape(22.dp))
+                        .border(
+                            1.2.dp,
+                            MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f),
+                            RoundedCornerShape(22.dp)
+                        )
+                }
             )
             .combinedClickable(
                 onClick = onClick,
@@ -120,7 +141,7 @@ fun MotorCard(
             .animateContentSize(),
         shape = RoundedCornerShape(22.dp),
         colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surface
+            containerColor = if (isNeu || isGlass) Color.Transparent else MaterialTheme.colorScheme.surface
         ),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
     ) {
@@ -137,11 +158,12 @@ fun MotorCard(
                 verticalAlignment = Alignment.Top
             ) {
                 Text(
-                    text = motor.name,
+                    text = motor.name.bidiIsolateMixed(),
                     style = MaterialTheme.typography.titleMedium.copy(
                         fontWeight = FontWeight.Bold,
                         fontSize = 16.sp,
-                        lineHeight = 22.sp
+                        lineHeight = 22.sp,
+                        color = if (isGlass) GlassTokens.textPrimary(isDark) else Color.Unspecified
                     ),
                     modifier = Modifier.weight(1f),
                     softWrap = true,
@@ -226,9 +248,9 @@ fun MotorCard(
 
                     if (motor.brand.isNotBlank() || motor.model.isNotBlank()) {
                         Text(
-                            text = listOfNotNull(motor.brand.takeIf { it.isNotBlank() }, motor.model.takeIf { it.isNotBlank() }).joinToString(" • "),
+                            text = listOfNotNull(motor.brand.takeIf { it.isNotBlank() }, motor.model.takeIf { it.isNotBlank() }).joinToString(" • ").bidiIsolateMixed(),
                             style = MaterialTheme.typography.bodySmall.copy(
-                                color = MaterialTheme.colorScheme.outline
+                                color = if (isGlass) GlassTokens.textSecondary(isDark) else MaterialTheme.colorScheme.outline
                             ),
                             maxLines = 1
                         )
@@ -458,40 +480,110 @@ fun MotorCard(
             // Visual Interactive Terminal Connector button & expandable view
             if (motor.pinouts.isNotEmpty()) {
                 Spacer(modifier = Modifier.height(12.dp))
-                OutlinedButton(
-                    onClick = { isConnectorExpanded = !isConnectorExpanded },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag("connector_diagram_toggle_${motor.id}"),
-                    shape = RoundedCornerShape(12.dp),
-                    colors = ButtonDefaults.outlinedButtonColors(
-                        containerColor = if (isConnectorExpanded) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.25f) else Color.Transparent
-                    )
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Cable,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(18.dp)
-                    )
-                    val activePinsCount = motor.pinouts.count { !it.isBlankPin }
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = if (isConnectorExpanded) "إغلاق فيشة الأطراف" else "عرض فيشة أطراف الماتور التفاعلية ($activePinsCount طرف)",
-                        style = MaterialTheme.typography.labelLarge.copy(
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                    )
-                    Spacer(modifier = Modifier.weight(1f))
-                    Icon(
-                        imageVector = Icons.Default.KeyboardArrowDown,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary,
+                val activePinsCount = motor.pinouts.count { !it.isBlankPin }
+                if (isGlass) {
+                    GlassActionPill(
+                        onClick = { isConnectorExpanded = !isConnectorExpanded },
+                        isDark = isDark,
+                        accentColor = accentColor,
+                        minHeight = 44.dp,
                         modifier = Modifier
-                            .size(20.dp)
-                            .rotate(arrowRotation)
-                    )
+                            .fillMaxWidth()
+                            .testTag("connector_diagram_toggle_${motor.id}")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Cable,
+                            contentDescription = null,
+                            tint = accentColor,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = (if (isConnectorExpanded) "إغلاق فيشة الأطراف" else "عرض فيشة أطراف الماتور التفاعلية ($activePinsCount طرف)").bidiIsolateMixed(),
+                            style = MaterialTheme.typography.labelLarge.copy(
+                                fontWeight = FontWeight.Bold,
+                                color = accentColor
+                            )
+                        )
+                        Spacer(modifier = Modifier.weight(1f))
+                        Icon(
+                            imageVector = Icons.Default.KeyboardArrowDown,
+                            contentDescription = null,
+                            tint = accentColor,
+                            modifier = Modifier
+                                .size(20.dp)
+                                .rotate(arrowRotation)
+                        )
+                    }
+                } else if (isNeu) {
+                    NeuActionPill(
+                        onClick = { isConnectorExpanded = !isConnectorExpanded },
+                        isDark = isDark,
+                        accentColor = MaterialTheme.colorScheme.primary,
+                        minHeight = 44.dp,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("connector_diagram_toggle_${motor.id}")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Cable,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = if (isConnectorExpanded) "إغلاق فيشة الأطراف" else "عرض فيشة أطراف الماتور التفاعلية ($activePinsCount طرف)",
+                            style = MaterialTheme.typography.labelLarge.copy(
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        )
+                        Spacer(modifier = Modifier.weight(1f))
+                        Icon(
+                            imageVector = Icons.Default.KeyboardArrowDown,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier
+                                .size(20.dp)
+                                .rotate(arrowRotation)
+                        )
+                    }
+                } else {
+                    OutlinedButton(
+                        onClick = { isConnectorExpanded = !isConnectorExpanded },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("connector_diagram_toggle_${motor.id}"),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            containerColor = if (isConnectorExpanded) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.25f) else Color.Transparent
+                        )
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Cable,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = if (isConnectorExpanded) "إغلاق فيشة الأطراف" else "عرض فيشة أطراف الماتور التفاعلية ($activePinsCount طرف)",
+                            style = MaterialTheme.typography.labelLarge.copy(
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        )
+                        Spacer(modifier = Modifier.weight(1f))
+                        Icon(
+                            imageVector = Icons.Default.KeyboardArrowDown,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier
+                                .size(20.dp)
+                                .rotate(arrowRotation)
+                        )
+                    }
                 }
 
                 // Expandable Interactive Connector Section
@@ -542,13 +634,13 @@ fun MotorCard(
                     Text(
                         text = "عرض التفاصيل الكاملة",
                         style = MaterialTheme.typography.bodySmall.copy(
-                            color = MaterialTheme.colorScheme.outline
+                            color = if (isGlass) GlassTokens.textSecondary(isDark) else MaterialTheme.colorScheme.outline
                         )
                     )
                     Icon(
                         imageVector = Icons.AutoMirrored.Filled.ArrowForwardIos,
                         contentDescription = "عرض التفاصيل",
-                        tint = MaterialTheme.colorScheme.outline,
+                        tint = if (isGlass) GlassTokens.textSecondary(isDark) else MaterialTheme.colorScheme.outline,
                         modifier = Modifier.size(12.dp)
                     )
                 }

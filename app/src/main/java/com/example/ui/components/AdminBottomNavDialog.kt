@@ -39,6 +39,16 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.BottomNavManager
 import com.example.data.model.BottomNavCustomization
+import com.example.ui.theme.GlassPillButton
+import com.example.ui.theme.GlassTokens
+import com.example.ui.theme.LocalAccentColor
+import com.example.ui.theme.LocalIsDarkTheme
+import com.example.ui.theme.LocalIsLiquidGlassTheme
+import com.example.ui.theme.LocalIsSoftNeumorphismTheme
+import com.example.ui.theme.NeuPillButton
+import com.example.ui.theme.NeuTokens
+import com.example.ui.theme.glassCard
+import com.example.ui.theme.neuCard
 
 @Composable
 fun AdminBottomNavDialog(
@@ -46,9 +56,19 @@ fun AdminBottomNavDialog(
 ) {
     val context = LocalContext.current
     val tabsMap by BottomNavManager.tabs.collectAsState()
+    val isNeu = LocalIsSoftNeumorphismTheme.current
+    val isGlass = LocalIsLiquidGlassTheme.current
+    val isDark = LocalIsDarkTheme.current
+    val accentColor = LocalAccentColor.current
 
     AlertDialog(
         onDismissRequest = onDismiss,
+        containerColor = when {
+            isGlass -> GlassTokens.surfaceStrong(isDark)
+            isNeu -> NeuTokens.surface(isDark)
+            else -> MaterialTheme.colorScheme.surface
+        },
+        shape = RoundedCornerShape(22.dp),
         title = {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(Icons.Default.Tune, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
@@ -66,17 +86,25 @@ fun AdminBottomNavDialog(
                 Text(
                     text = "يمكنك كمسؤول إخفاء أو إظهار أي تبويب في الشريط السفلي عن المستخدمين العاديين وتشغيله في أي وقت:",
                     fontSize = 12.sp,
-                    color = MaterialTheme.colorScheme.outline
+                    color = if (isGlass) GlassTokens.textSecondary(isDark) else MaterialTheme.colorScheme.outline
                 )
 
                 // Tab 1: Community (المجتمع: سوق الكروت وجروب الفنيين)
                 val communityTab = tabsMap[BottomNavManager.TAB_COMMUNITY]
                     ?: BottomNavCustomization(id = BottomNavManager.TAB_COMMUNITY, title = "المجتمع (سوق الكروت والجروب)")
                 Surface(
-                    shape = RoundedCornerShape(12.dp),
-                    color = if (communityTab.isHidden) Color(0xFFEF4444).copy(alpha = 0.08f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                    border = BorderStroke(1.dp, if (communityTab.isHidden) Color(0xFFEF4444).copy(alpha = 0.4f) else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
-                    modifier = Modifier.fillMaxWidth()
+                    shape = RoundedCornerShape(14.dp),
+                    color = if (isNeu || isGlass) Color.Transparent else if (communityTab.isHidden) Color(0xFFEF4444).copy(alpha = 0.08f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                    border = if (isNeu || isGlass) null else BorderStroke(1.dp, if (communityTab.isHidden) Color(0xFFEF4444).copy(alpha = 0.4f) else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .then(
+                            when {
+                                isGlass -> Modifier.glassCard(cornerRadius = 14.dp, isDark = isDark, accentGlow = if (communityTab.isHidden) Color(0xFFEF4444) else null)
+                                isNeu -> Modifier.neuCard(cornerRadius = 14.dp, isDark = isDark, backgroundColor = NeuTokens.bg(isDark), accentGlow = if (communityTab.isHidden) Color(0xFFEF4444) else null)
+                                else -> Modifier
+                            }
+                        )
                 ) {
                     Column(modifier = Modifier.padding(12.dp)) {
                         Row(
@@ -127,10 +155,18 @@ fun AdminBottomNavDialog(
                 val toolsTab = tabsMap[BottomNavManager.TAB_TOOLS]
                     ?: BottomNavCustomization(id = BottomNavManager.TAB_TOOLS, title = "الأدوات")
                 Surface(
-                    shape = RoundedCornerShape(12.dp),
-                    color = if (toolsTab.isHidden) Color(0xFFEF4444).copy(alpha = 0.08f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                    border = BorderStroke(1.dp, if (toolsTab.isHidden) Color(0xFFEF4444).copy(alpha = 0.4f) else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
-                    modifier = Modifier.fillMaxWidth()
+                    shape = RoundedCornerShape(14.dp),
+                    color = if (isNeu || isGlass) Color.Transparent else if (toolsTab.isHidden) Color(0xFFEF4444).copy(alpha = 0.08f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                    border = if (isNeu || isGlass) null else BorderStroke(1.dp, if (toolsTab.isHidden) Color(0xFFEF4444).copy(alpha = 0.4f) else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .then(
+                            when {
+                                isGlass -> Modifier.glassCard(cornerRadius = 14.dp, isDark = isDark, accentGlow = if (toolsTab.isHidden) Color(0xFFEF4444) else null)
+                                isNeu -> Modifier.neuCard(cornerRadius = 14.dp, isDark = isDark, backgroundColor = NeuTokens.bg(isDark), accentGlow = if (toolsTab.isHidden) Color(0xFFEF4444) else null)
+                                else -> Modifier
+                            }
+                        )
                 ) {
                     Column(modifier = Modifier.padding(12.dp)) {
                         Row(
@@ -178,10 +214,18 @@ fun AdminBottomNavDialog(
                 val programmerTab = tabsMap[BottomNavManager.TAB_MCU_PROGRAMMER]
                     ?: BottomNavCustomization(id = BottomNavManager.TAB_MCU_PROGRAMMER, title = "البرمجة")
                 Surface(
-                    shape = RoundedCornerShape(12.dp),
-                    color = if (programmerTab.isHidden) Color(0xFFEF4444).copy(alpha = 0.08f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                    border = BorderStroke(1.dp, if (programmerTab.isHidden) Color(0xFFEF4444).copy(alpha = 0.4f) else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
-                    modifier = Modifier.fillMaxWidth()
+                    shape = RoundedCornerShape(14.dp),
+                    color = if (isNeu || isGlass) Color.Transparent else if (programmerTab.isHidden) Color(0xFFEF4444).copy(alpha = 0.08f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                    border = if (isNeu || isGlass) null else BorderStroke(1.dp, if (programmerTab.isHidden) Color(0xFFEF4444).copy(alpha = 0.4f) else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .then(
+                            when {
+                                isGlass -> Modifier.glassCard(cornerRadius = 14.dp, isDark = isDark, accentGlow = if (programmerTab.isHidden) Color(0xFFEF4444) else null)
+                                isNeu -> Modifier.neuCard(cornerRadius = 14.dp, isDark = isDark, backgroundColor = NeuTokens.bg(isDark), accentGlow = if (programmerTab.isHidden) Color(0xFFEF4444) else null)
+                                else -> Modifier
+                            }
+                        )
                 ) {
                     Column(modifier = Modifier.padding(12.dp)) {
                         Row(
@@ -229,10 +273,18 @@ fun AdminBottomNavDialog(
                 val homeTab = tabsMap[BottomNavManager.TAB_HOME]
                     ?: BottomNavCustomization(id = BottomNavManager.TAB_HOME, title = "شاشة البدء")
                 Surface(
-                    shape = RoundedCornerShape(12.dp),
-                    color = if (homeTab.isHidden) Color(0xFFEF4444).copy(alpha = 0.08f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                    border = BorderStroke(1.dp, if (homeTab.isHidden) Color(0xFFEF4444).copy(alpha = 0.4f) else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
-                    modifier = Modifier.fillMaxWidth()
+                    shape = RoundedCornerShape(14.dp),
+                    color = if (isNeu || isGlass) Color.Transparent else if (homeTab.isHidden) Color(0xFFEF4444).copy(alpha = 0.08f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                    border = if (isNeu || isGlass) null else BorderStroke(1.dp, if (homeTab.isHidden) Color(0xFFEF4444).copy(alpha = 0.4f) else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .then(
+                            when {
+                                isGlass -> Modifier.glassCard(cornerRadius = 14.dp, isDark = isDark, accentGlow = if (homeTab.isHidden) Color(0xFFEF4444) else null)
+                                isNeu -> Modifier.neuCard(cornerRadius = 14.dp, isDark = isDark, backgroundColor = NeuTokens.bg(isDark), accentGlow = if (homeTab.isHidden) Color(0xFFEF4444) else null)
+                                else -> Modifier
+                            }
+                        )
                 ) {
                     Column(modifier = Modifier.padding(12.dp)) {
                         Row(
@@ -278,8 +330,31 @@ fun AdminBottomNavDialog(
             }
         },
         confirmButton = {
-            Button(onClick = onDismiss) {
-                Text("إغلاق")
+            when {
+                isGlass -> {
+                    GlassPillButton(
+                        onClick = onDismiss,
+                        isActive = true,
+                        isDark = isDark,
+                        accentColor = accentColor
+                    ) {
+                        Text("إغلاق", fontWeight = FontWeight.Bold, color = accentColor)
+                    }
+                }
+                isNeu -> {
+                    NeuPillButton(
+                        onClick = onDismiss,
+                        isActive = true,
+                        isDark = isDark
+                    ) {
+                        Text("إغلاق", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                    }
+                }
+                else -> {
+                    Button(onClick = onDismiss) {
+                        Text("إغلاق")
+                    }
+                }
             }
         }
     )

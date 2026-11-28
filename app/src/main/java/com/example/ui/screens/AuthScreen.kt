@@ -70,6 +70,23 @@ import androidx.credentials.CustomCredential
 import androidx.credentials.GetCredentialRequest
 import androidx.credentials.exceptions.GetCredentialCancellationException
 import com.example.R
+import com.example.ui.theme.GlassActionPill
+import com.example.ui.theme.GlassCircleIconButton
+import com.example.ui.theme.GlassPrimaryCtaButton
+import com.example.ui.theme.GlassTokens
+import com.example.ui.theme.LocalAccentColor
+import com.example.ui.theme.LocalIsDarkTheme
+import com.example.ui.theme.LocalIsLiquidGlassTheme
+import com.example.ui.theme.LocalIsSoftNeumorphismTheme
+import com.example.ui.theme.LocalSecondaryAccentColor
+import com.example.ui.theme.NeuActionPill
+import com.example.ui.theme.NeuCircleIconButton
+import com.example.ui.theme.NeuPrimaryCtaButton
+import com.example.ui.theme.NeuTokens
+import com.example.ui.theme.bidiIsolateMixed
+import com.example.ui.theme.glassCanvasBackground
+import com.example.ui.theme.glassCard
+import com.example.ui.theme.neuCard
 import com.google.android.libraries.identity.googleid.GetGoogleIdOption
 import com.google.android.libraries.identity.googleid.GetSignInWithGoogleOption
 import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
@@ -108,31 +125,73 @@ fun AuthScreen(
         }
     }
 
+    val isNeu = LocalIsSoftNeumorphismTheme.current
+    val isGlass = LocalIsLiquidGlassTheme.current
+    val isDark = LocalIsDarkTheme.current
+    val accentColor = LocalAccentColor.current
+    val secondaryAccent = LocalSecondaryAccentColor.current
+
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(
-                Brush.verticalGradient(
-                    colors = listOf(
-                        Color(0xFF0F2B48),
-                        Color(0xFF0A192F),
-                        Color(0xFF040D1A)
+            .then(
+                when {
+                    isNeu -> Modifier.background(NeuTokens.bg(isDark))
+                    isGlass -> Modifier.glassCanvasBackground(isDark, accentColor, secondaryAccent)
+                    else -> Modifier.background(
+                        Brush.verticalGradient(
+                            colors = listOf(
+                                Color(0xFF0F2B48),
+                                Color(0xFF0A192F),
+                                Color(0xFF040D1A)
+                            )
+                        )
                     )
-                )
+                }
             )
     ) {
         if (onBackClick != null) {
-            IconButton(
-                onClick = onBackClick,
-                modifier = Modifier
-                    .padding(top = 40.dp, end = 16.dp)
-                    .align(Alignment.TopEnd)
-            ) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Filled.ArrowForward,
-                    contentDescription = "رجوع إلى الكتالوج",
-                    tint = Color.White
-                )
+            when {
+                isNeu -> NeuCircleIconButton(
+                    onClick = onBackClick,
+                    size = 42.dp,
+                    isDark = isDark,
+                    modifier = Modifier
+                        .padding(top = 40.dp, end = 16.dp)
+                        .align(Alignment.TopEnd)
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.ArrowForward,
+                        contentDescription = "رجوع إلى الكتالوج",
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                }
+                isGlass -> GlassCircleIconButton(
+                    onClick = onBackClick,
+                    size = 42.dp,
+                    isDark = isDark,
+                    modifier = Modifier
+                        .padding(top = 40.dp, end = 16.dp)
+                        .align(Alignment.TopEnd)
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.ArrowForward,
+                        contentDescription = "رجوع إلى الكتالوج",
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                }
+                else -> IconButton(
+                    onClick = onBackClick,
+                    modifier = Modifier
+                        .padding(top = 40.dp, end = 16.dp)
+                        .align(Alignment.TopEnd)
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.ArrowForward,
+                        contentDescription = "رجوع إلى الكتالوج",
+                        tint = Color.White
+                    )
+                }
             }
         }
         Column(
@@ -144,21 +203,51 @@ fun AuthScreen(
             verticalArrangement = Arrangement.Center
         ) {
             // App Branding Logo
-            Surface(
-                shape = CircleShape,
-                color = Color.White,
-                modifier = Modifier
-                    .size(105.dp)
-                    .clip(CircleShape)
-                    .border(3.dp, Color(0xFF38BDF8), CircleShape)
-                    .shadow(8.dp, CircleShape)
-            ) {
-                Image(
-                    painter = painterResource(id = R.drawable.logo_albaraa),
-                    contentDescription = "شعار البراء إلكترونيك",
-                    modifier = Modifier.fillMaxSize(),
-                    contentScale = ContentScale.Crop
-                )
+            when {
+                isNeu -> Box(
+                    modifier = Modifier
+                        .size(112.dp)
+                        .neuCard(cornerRadius = 56.dp, isDark = isDark, backgroundColor = NeuTokens.bg(isDark))
+                        .padding(5.dp)
+                        .clip(CircleShape)
+                ) {
+                    Image(
+                        painter = painterResource(id = R.drawable.logo_albaraa),
+                        contentDescription = "شعار البراء إلكترونيك",
+                        modifier = Modifier.fillMaxSize().clip(CircleShape),
+                        contentScale = ContentScale.Crop
+                    )
+                }
+                isGlass -> Box(
+                    modifier = Modifier
+                        .size(114.dp)
+                        .glassCard(cornerRadius = 57.dp, isDark = isDark, accentGlow = accentColor)
+                        .padding(5.dp)
+                        .clip(CircleShape)
+                ) {
+                    Image(
+                        painter = painterResource(id = R.drawable.logo_albaraa),
+                        contentDescription = "شعار البراء إلكترونيك",
+                        modifier = Modifier.fillMaxSize().clip(CircleShape),
+                        contentScale = ContentScale.Crop
+                    )
+                }
+                else -> Surface(
+                    shape = CircleShape,
+                    color = Color.White,
+                    modifier = Modifier
+                        .size(105.dp)
+                        .clip(CircleShape)
+                        .border(3.dp, Color(0xFF38BDF8), CircleShape)
+                        .shadow(8.dp, CircleShape)
+                ) {
+                    Image(
+                        painter = painterResource(id = R.drawable.logo_albaraa),
+                        contentDescription = "شعار البراء إلكترونيك",
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop
+                    )
+                }
             }
 
             Spacer(modifier = Modifier.height(20.dp))
@@ -167,7 +256,11 @@ fun AuthScreen(
                 text = "البراء إلكترونيك",
                 style = MaterialTheme.typography.headlineMedium.copy(
                     fontWeight = FontWeight.Bold,
-                    color = Color.White,
+                    color = when {
+                        isNeu -> NeuTokens.textPrimary(isDark)
+                        isGlass -> GlassTokens.textPrimary(isDark)
+                        else -> Color.White
+                    },
                     letterSpacing = 0.5.sp
                 ),
                 textAlign = TextAlign.Center
@@ -178,7 +271,11 @@ fun AuthScreen(
             Text(
                 text = "المنظومة الشاملة لمخططات وضفائر ومواتير الغسالات",
                 style = MaterialTheme.typography.bodyMedium.copy(
-                    color = Color(0xFF94A3B8),
+                    color = when {
+                        isNeu -> NeuTokens.textSecondary(isDark)
+                        isGlass -> GlassTokens.textSecondary(isDark)
+                        else -> Color(0xFF94A3B8)
+                    },
                     fontSize = 14.sp
                 ),
                 textAlign = TextAlign.Center
@@ -186,72 +283,154 @@ fun AuthScreen(
 
             Spacer(modifier = Modifier.height(40.dp))
 
-            // Interactive Google Sign-In Button
-            Button(
-                onClick = {
-                    isLoading = true
-                    handleInteractiveGoogleSignIn(
-                        context = context,
-                        credentialManager = credentialManager,
-                        onAuthSuccess = { signedInEmail ->
-                            isLoading = false
-                            onAuthSuccess(signedInEmail)
-                        },
-                        onAuthError = { errorMsg ->
-                            isLoading = false
-                            coroutineScope.launch {
-                                snackbarHostState.showSnackbar(errorMsg)
-                            }
-                        },
-                        onCancelled = {
-                            isLoading = false
-                        },
-                        scope = coroutineScope
-                    )
-                },
-                modifier = Modifier
-                    .testTag("google_sign_in_button")
-                    .fillMaxWidth()
-                    .height(54.dp),
-                enabled = !isLoading,
-                shape = RoundedCornerShape(12.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = Color(0xFF0284C7),
-                    contentColor = Color.White
+            val onGoogleSignInClick = {
+                isLoading = true
+                handleInteractiveGoogleSignIn(
+                    context = context,
+                    credentialManager = credentialManager,
+                    onAuthSuccess = { signedInEmail ->
+                        isLoading = false
+                        onAuthSuccess(signedInEmail)
+                    },
+                    onAuthError = { errorMsg ->
+                        isLoading = false
+                        coroutineScope.launch {
+                            snackbarHostState.showSnackbar(errorMsg)
+                        }
+                    },
+                    onCancelled = {
+                        isLoading = false
+                    },
+                    scope = coroutineScope
                 )
-            ) {
-                if (isLoading) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(24.dp),
-                        color = Color.White,
-                        strokeWidth = 2.dp
-                    )
-                } else {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.Center
-                    ) {
-                        Surface(
-                            shape = CircleShape,
-                            color = Color.White,
-                            modifier = Modifier.size(24.dp)
+            }
+
+            // Interactive Google Sign-In Button
+            when {
+                isNeu -> NeuPrimaryCtaButton(
+                    onClick = onGoogleSignInClick,
+                    enabled = !isLoading,
+                    isDark = isDark,
+                    accentColor = Color(0xFF0284C7),
+                    modifier = Modifier
+                        .testTag("google_sign_in_button")
+                        .fillMaxWidth()
+                ) {
+                    if (isLoading) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(24.dp),
+                            color = Color(0xFF0284C7),
+                            strokeWidth = 2.dp
+                        )
+                    } else {
+                        Box(
+                            modifier = Modifier
+                                .size(26.dp)
+                                .neuCard(cornerRadius = 13.dp, isDark = isDark, backgroundColor = NeuTokens.bg(isDark)),
+                            contentAlignment = Alignment.Center
                         ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Text(
-                                    text = "G",
-                                    color = Color(0xFF0F172A),
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 14.sp
-                                )
-                            }
+                            Text(
+                                text = "G",
+                                color = Color(0xFF0284C7),
+                                fontWeight = FontWeight.ExtraBold,
+                                fontSize = 14.sp
+                            )
                         }
                         Spacer(modifier = Modifier.width(12.dp))
                         Text(
-                            text = "تسجيل الدخول عبر Google",
+                            text = "تسجيل الدخول عبر Google".bidiIsolateMixed(),
                             style = MaterialTheme.typography.titleMedium.copy(
-                                fontWeight = FontWeight.Bold
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFF0284C7)
                             )
                         )
+                    }
+                }
+                isGlass -> GlassPrimaryCtaButton(
+                    onClick = onGoogleSignInClick,
+                    enabled = !isLoading,
+                    isDark = isDark,
+                    accentColor = Color(0xFF0284C7),
+                    modifier = Modifier
+                        .testTag("google_sign_in_button")
+                        .fillMaxWidth()
+                ) {
+                    if (isLoading) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(24.dp),
+                            color = Color(0xFF0284C7),
+                            strokeWidth = 2.dp
+                        )
+                    } else {
+                        Box(
+                            modifier = Modifier
+                                .size(26.dp)
+                                .glassCard(cornerRadius = 13.dp, isDark = isDark, accentGlow = Color(0xFF0284C7)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = "G",
+                                color = Color(0xFF0284C7),
+                                fontWeight = FontWeight.ExtraBold,
+                                fontSize = 14.sp
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Text(
+                            text = "تسجيل الدخول عبر Google".bidiIsolateMixed(),
+                            style = MaterialTheme.typography.titleMedium.copy(
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFF0284C7)
+                            )
+                        )
+                    }
+                }
+                else -> Button(
+                    onClick = onGoogleSignInClick,
+                    modifier = Modifier
+                        .testTag("google_sign_in_button")
+                        .fillMaxWidth()
+                        .height(54.dp),
+                    enabled = !isLoading,
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color(0xFF0284C7),
+                        contentColor = Color.White
+                    )
+                ) {
+                    if (isLoading) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(24.dp),
+                            color = Color.White,
+                            strokeWidth = 2.dp
+                        )
+                    } else {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center
+                        ) {
+                            Surface(
+                                shape = CircleShape,
+                                color = Color.White,
+                                modifier = Modifier.size(24.dp)
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Text(
+                                        text = "G",
+                                        color = Color(0xFF0F172A),
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 14.sp
+                                    )
+                                }
+                            }
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Text(
+                                text = "تسجيل الدخول عبر Google".bidiIsolateMixed(),
+                                style = MaterialTheme.typography.titleMedium.copy(
+                                    fontWeight = FontWeight.Bold
+                                )
+                            )
+                        }
                     }
                 }
             }
@@ -259,26 +438,20 @@ fun AuthScreen(
             Spacer(modifier = Modifier.height(14.dp))
 
             // Skip / Continue as Guest Button
-            OutlinedButton(
-                onClick = onContinueAsGuest,
-                modifier = Modifier
-                    .testTag("skip_as_guest_button")
-                    .fillMaxWidth()
-                    .height(52.dp),
-                shape = RoundedCornerShape(12.dp),
-                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF475569)),
-                colors = ButtonDefaults.outlinedButtonColors(
-                    contentColor = Color(0xFFF1F5F9)
-                )
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.Center
+            when {
+                isNeu -> NeuActionPill(
+                    onClick = onContinueAsGuest,
+                    isDark = isDark,
+                    accentColor = MaterialTheme.colorScheme.primary,
+                    minHeight = 52.dp,
+                    modifier = Modifier
+                        .testTag("skip_as_guest_button")
+                        .fillMaxWidth()
                 ) {
                     Icon(
                         imageVector = Icons.Default.Visibility,
                         contentDescription = "دخول كضيف",
-                        tint = Color(0xFF38BDF8),
+                        tint = MaterialTheme.colorScheme.primary,
                         modifier = Modifier.size(20.dp)
                     )
                     Spacer(modifier = Modifier.width(10.dp))
@@ -286,9 +459,65 @@ fun AuthScreen(
                         text = "تخطي / دخول كضيف",
                         style = MaterialTheme.typography.titleMedium.copy(
                             fontWeight = FontWeight.SemiBold,
-                            color = Color(0xFFF8FAFC)
+                            color = NeuTokens.textPrimary(isDark)
                         )
                     )
+                }
+                isGlass -> GlassActionPill(
+                    onClick = onContinueAsGuest,
+                    isDark = isDark,
+                    accentColor = MaterialTheme.colorScheme.primary,
+                    minHeight = 52.dp,
+                    modifier = Modifier
+                        .testTag("skip_as_guest_button")
+                        .fillMaxWidth()
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Visibility,
+                        contentDescription = "دخول كضيف",
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Text(
+                        text = "تخطي / دخول كضيف",
+                        style = MaterialTheme.typography.titleMedium.copy(
+                            fontWeight = FontWeight.SemiBold,
+                            color = GlassTokens.textPrimary(isDark)
+                        )
+                    )
+                }
+                else -> OutlinedButton(
+                    onClick = onContinueAsGuest,
+                    modifier = Modifier
+                        .testTag("skip_as_guest_button")
+                        .fillMaxWidth()
+                        .height(52.dp),
+                    shape = RoundedCornerShape(12.dp),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF475569)),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        contentColor = Color(0xFFF1F5F9)
+                    )
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Visibility,
+                            contentDescription = "دخول كضيف",
+                            tint = Color(0xFF38BDF8),
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Text(
+                            text = "تخطي / دخول كضيف",
+                            style = MaterialTheme.typography.titleMedium.copy(
+                                fontWeight = FontWeight.SemiBold,
+                                color = Color(0xFFF8FAFC)
+                            )
+                        )
+                    }
                 }
             }
         }
